@@ -1,0 +1,16 @@
+# Local state and secrets
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Build outputs
+/target/
+/bin/
+/dist/
+/tmp/
