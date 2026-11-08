@@ -5,11 +5,18 @@
 schema = "mamela-lab/v1"
 
 [proxmox]
-api_url = "https://pve.example.invalid:8006/api2/json"
-node = "pve-node-1"            # the single node used for lab VMs
+api_url = "https://pve.example.invalid:8006"
+node = "pve-node-1"                       # the single node used for lab VMs
+# The operating token: may change only what is inside the lab pool.
 token_id = "mamela@pve!lab"
-token_secret_file = "~/.config/mamela/lab-token"   # outside the repository
-tls_ca_file = ""               # empty: system trust store
+token_secret_file = "~/.config/mamela/lab-token"     # outside the repository
+# The audit token: read-only everywhere (PVEAuditor), used only by preflight/postflight.
+audit_token_id = "mamela-audit@pve!audit"   # a separate user from the operating token
+audit_token_secret_file = "~/.config/mamela/audit-token"
+# TLS: pin the server certificate's SHA-256 fingerprint (Proxmox uses a self-signed CA by default),
+# or give a CA file. One of the two is required.
+tls_fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+tls_ca_file = ""
 
 [boundary]
 pool = "mamela-lab"
@@ -32,7 +39,5 @@ max_disk_gib_per_vm = 10
 [safety]
 # Host MemAvailable minus the new VM's memory must stay above this.
 min_host_mem_available_mib = 2048
-# Refuse when the disk thin pool would exceed this data usage.
-max_thinpool_data_percent = 80
-# Require the cluster to be quorate before any write.
-require_quorum = true
+# Refuse when the disk thin pool would exceed this usage.
+max_thinpool_used_percent = 80

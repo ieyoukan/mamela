@@ -140,3 +140,22 @@ func TestPlanWithSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestLabBootstrapPrintsScript(t *testing.T) {
+	code, stdout, stderr := runCLI("lab", "bootstrap", "--site", filepath.Join("..", "..", "lab", "site.example.toml"))
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{"#!/usr/bin/env bash", "set -euo pipefail", "pveum pool add mamela-lab", "PVEAuditor"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("script lacks %q", want)
+		}
+	}
+}
+
+func TestLabPreflightNeedsSecrets(t *testing.T) {
+	code, _, stderr := runCLI("lab", "preflight", "--site", filepath.Join("..", "..", "lab", "site.example.toml"))
+	if code != 1 || !strings.Contains(stderr, "mamela-audit@pve!audit") {
+		t.Errorf("code=%d stderr=%s", code, stderr)
+	}
+}

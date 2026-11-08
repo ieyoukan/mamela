@@ -73,23 +73,27 @@ Token の秘密そのものはリポジトリにもこのファイルにも書�
 
 ### 4.1 一度だけの準備（人が実行）
 
-pool・ロール・ユーザー・Token・ACL の作成には root 権限が要る。Mamela にその権限は持たせない。`lab/` の宣言から、冪等な `pveum` コマンド列を生成するツールを用意し、**人が内容を確認してから** root で実行する（既定では dry-run で表示するだけ）。
+pool・ロール・ユーザー・Token・ACL の作成には root 権限が要る。Mamela にその権限は持たせない。`mamela lab bootstrap --site lab/site.local.toml` が冪等な bash スクリプトを**表示するだけ**なので、**人が内容を確認してから**クラスタのノードで root として実行する。スクリプトは追加しかしない（削除・既存ゲスト・ストレージ・ネットワーク・HA には触れない）。もう一度実行しても同じ状態に収束する。
 
 作るもの（名前は例）:
 
 - pool `mamela-lab`
-- ユーザー `mamela@pve`（ログイン用パスワードなし）と、権限分離した Token `mamela@pve!lab`
-- ロール `MamelaLab` と、次の ACL（最小集合はステップ 2 で実測して確定する）
+- **操作用**: ユーザー `mamela@pve`（パスワードなし）と、権限分離した Token `mamela@pve!lab`。次の ACL だけを持つ。
+- **検査用**: 別ユーザー `mamela-audit@pve` と Token `mamela-audit@pve!audit`。組み込みロール `PVEAuditor`（読み取り専用）を `/` に持ち、preflight / postflight だけが使う。操作用と同じユーザーにすることは設定の検証で拒否する。
 
-| パス | 権限の候補 | 用途 |
-|---|---|---|
-| `/pool/mamela-lab` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.*`（必要なものだけ）, `VM.PowerMgmt` | pool 内の VM の作成・設定・起動停止 |
-| `/storage/<disk storage>` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
-| `/storage/<iso storage>` | `Datastore.AllocateTemplate`, `Datastore.Audit` | cloud-init seed ISO のアップロード |
-| `/sdn/zones/<zone>/<bridge>` | `SDN.Use` | ネットワーク接続 |
-| `/nodes/<node>` | `Sys.Audit` | preflight でのノード状態の読み取り |
+操作用 Token の ACL。パスごとに専用のロールを作り、そのパスで必要な権限だけを入れる（同じロールを複数のパスに付けると、不要な権限が別のパスにも付くため）。
 
-`/`、`/vms`、他の pool、他のノードには何も付けない。HA への登録、バックアップジョブ、既存テンプレートには触れない。
+| パス | ロール | 権限 | 用途 |
+|---|---|---|---|
+| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt` | pool 内の VM の作成・設定・起動停止 |
+| `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
+| `/storage/<iso storage>` | `MamelaLabISO` | `Datastore.AllocateTemplate`, `Datastore.Audit` | cloud-init seed ISO のアップロード |
+| `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
+| `/nodes/<node>` | `MamelaLabAudit` | `Sys.Audit` | ノード状態の読み取り |
+
+`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。最小集合はステップ 2 の L1 で実測して確定する。
+
+Token の秘密は作成時に一度だけ表示される。`site.local.toml` に書いたパス（リポジトリ外）に保存し、`chmod 600` にする（グループや他人が読めるファイルは Mamela が拒否する）。
 
 ### 4.2 VM テンプレート
 
@@ -102,7 +106,13 @@ pool・ロール・ユーザー・Token・ACL の作成には root 権限が要�
 
 ## 5. preflight / postflight
 
-E2E テストの前後に、Token（読み取り）で次を確認する。一つでも満たさなければ、何も作らずに終了する。
+~~~bash
+mamela lab preflight  --site lab/site.local.toml   # 検査し、問題がなければ管理外ゲストの baseline を .mamela/lab-baseline.json に保存
+# ... 実機テスト ...
+mamela lab postflight --site lab/site.local.toml   # baseline と比べ、管理外ゲストが変わっていないことを確認
+~~~
+
+どちらも読み取りだけで、一つでも BLOCK があれば終了コード 1 になる。結果のコードは [reason-codes.md](reason-codes.md#lab--検証環境) にある。
 
 ### preflight
 

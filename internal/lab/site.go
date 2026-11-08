@@ -1,0 +1,181 @@
+// Package lab defines the test lab boundary on a shared Proxmox cluster and checks it.
+//
+// The lab is declared in lab/site.local.toml (gitignored; lab/site.example.toml is the template).
+// From it, Mamela generates the one-time bootstrap script that a person runs as root, and runs
+// read-only preflight and postflight checks around every live test. See docs/lab.md.
+package lab
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+// SiteSchema is the only accepted value of `schema`.
+const SiteSchema = "mamela-lab/v1"
+
+// Site is the lab definition.
+type Site struct {
+	Schema    string    `toml:"schema"`
+	Proxmox   Proxmox   `toml:"proxmox"`
+	Boundary  Boundary  `toml:"boundary"`
+	Placement Placement `toml:"placement"`
+	Budget    Budget    `toml:"budget"`
+	Safety    Safety    `toml:"safety"`
+}
+
+type Proxmox struct {
+	APIURL               string `toml:"api_url"`
+	Node                 string `toml:"node"`
+	TokenID              string `toml:"token_id"`
+	TokenSecretFile      string `toml:"token_secret_file"`
+	AuditTokenID         string `toml:"audit_token_id"`
+	AuditTokenSecretFile string `toml:"audit_token_secret_file"`
+	TLSFingerprint       string `toml:"tls_fingerprint"`
+	TLSCAFile            string `toml:"tls_ca_file"`
+}
+
+type Boundary struct {
+	Pool    string `toml:"pool"`
+	VMIDMin int    `toml:"vmid_min"`
+	VMIDMax int    `toml:"vmid_max"`
+	Tag     string `toml:"tag"`
+}
+
+type Placement struct {
+	DiskStorage string `toml:"disk_storage"`
+	ISOStorage  string `toml:"iso_storage"`
+	Bridge      string `toml:"bridge"`
+	SDNZone     string `toml:"sdn_zone"`
+}
+
+type Budget struct {
+	MaxVMs            int   `toml:"max_vms"`
+	MaxVCPUPerVM      int   `toml:"max_vcpu_per_vm"`
+	MaxMemoryMiBPerVM int64 `toml:"max_memory_mib_per_vm"`
+	MaxDiskGiBPerVM   int64 `toml:"max_disk_gib_per_vm"`
+}
+
+type Safety struct {
+	MinHostMemAvailableMiB int64 `toml:"min_host_mem_available_mib"`
+	MaxThinpoolUsedPercent int   `toml:"max_thinpool_used_percent"`
+}
+
+var (
+	nameRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	tokenRe  = regexp.MustCompile(`^[A-Za-z0-9._-]+@pve![A-Za-z0-9._-]+$`)
+	fprintRe = regexp.MustCompile(`^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$`)
+)
+
+// LoadSite reads and validates a site file. Unknown keys are errors.
+func LoadSite(path string) (*Site, error) {
+	var s Site
+	md, err := toml.DecodeFile(path, &s)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	if und := md.Undecoded(); len(und) > 0 {
+		keys := make([]string, len(und))
+		for i, k := range und {
+			keys[i] = k.String()
+		}
+		return nil, fmt.Errorf("%s: unknown keys: %s", path, strings.Join(keys, ", "))
+	}
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return &s, nil
+}
+
+// Validate checks the site for mistakes that would weaken the boundary.
+func (s *Site) Validate() error {
+	var errs []string
+	bad := func(format string, args ...any) { errs = append(errs, fmt.Sprintf(format, args...)) }
+	if s.Schema != SiteSchema {
+		bad("schema must be %q", SiteSchema)
+	}
+	p := s.Proxmox
+	if !strings.HasPrefix(p.APIURL, "https://") {
+		bad("proxmox.api_url must start with https://")
+	}
+	for k, v := range map[string]string{"proxmox.node": p.Node, "boundary.pool": s.Boundary.Pool, "boundary.tag": s.Boundary.Tag,
+		"placement.disk_storage": s.Placement.DiskStorage, "placement.iso_storage": s.Placement.ISOStorage,
+		"placement.bridge": s.Placement.Bridge, "placement.sdn_zone": s.Placement.SDNZone} {
+		if !nameRe.MatchString(v) {
+			bad("%s %q is missing or not a plain name", k, v)
+		}
+	}
+	for k, v := range map[string]string{"proxmox.token_id": p.TokenID, "proxmox.audit_token_id": p.AuditTokenID} {
+		if !tokenRe.MatchString(v) {
+			bad("%s %q must look like user@pve!name (a @pve user, not root@pam)", k, v)
+		}
+	}
+	opUser, _, _ := strings.Cut(p.TokenID, "!")
+	auditUser, _, _ := strings.Cut(p.AuditTokenID, "!")
+	if opUser == auditUser {
+		// The audit user holds PVEAuditor on /. Sharing a user with the operating token would
+		// widen what any token of that user (for example one created without privsep) can do.
+		bad("the audit token must belong to a different user than the operating token")
+	}
+	if p.TokenSecretFile == "" || p.AuditTokenSecretFile == "" {
+		bad("token secret files are required (outside the repository)")
+	}
+	if (p.TLSFingerprint == "") == (p.TLSCAFile == "") {
+		bad("set exactly one of proxmox.tls_fingerprint and proxmox.tls_ca_file")
+	}
+	if p.TLSFingerprint != "" && !fprintRe.MatchString(p.TLSFingerprint) {
+		bad("proxmox.tls_fingerprint must be a SHA-256 fingerprint (32 hex bytes separated by ':')")
+	}
+	b := s.Boundary
+	if b.VMIDMin < 100 || b.VMIDMax < b.VMIDMin || b.VMIDMax > 999999999 || b.VMIDMax-b.VMIDMin > 999 {
+		bad("boundary.vmid_min..vmid_max must be a range of at most 1000 IDs, from 100 up")
+	}
+	bu := s.Budget
+	if bu.MaxVMs < 1 || bu.MaxVMs > 10 || bu.MaxVCPUPerVM < 1 || bu.MaxMemoryMiBPerVM < 256 || bu.MaxDiskGiBPerVM < 1 {
+		bad("budget values must be positive (max_vms 1..10, memory at least 256 MiB)")
+	}
+	if s.Safety.MinHostMemAvailableMiB < 512 {
+		bad("safety.min_host_mem_available_mib must be at least 512")
+	}
+	if s.Safety.MaxThinpoolUsedPercent < 1 || s.Safety.MaxThinpoolUsedPercent > 90 {
+		bad("safety.max_thinpool_used_percent must be 1..90")
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid site:\n  - %s", strings.Join(errs, "\n  - "))
+	}
+	return nil
+}
+
+// TokenUser is the Proxmox user of the operating token ("mamela@pve").
+func (s *Site) TokenUser() string { u, _, _ := strings.Cut(s.Proxmox.TokenID, "!"); return u }
+
+// ReadSecret reads a token secret file ("~/" is expanded). The file must not be readable by others.
+func ReadSecret(path string) (string, error) {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%s is readable by group or others (mode %v); run: chmod 600 %s", path, fi.Mode().Perm(), path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	secret := strings.TrimSpace(string(b))
+	if secret == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return secret, nil
+}

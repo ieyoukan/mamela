@@ -390,6 +390,8 @@ mamela/
 │   ├── store/            # SQLite
 │   ├── reconcile/        # apply with journal, leases, re-observation
 │   ├── provider/fake/    # in-memory provider with fault injection
+│   ├── proxmox/          # Proxmox API client (read-only for now)
+│   ├── lab/              # lab site, bootstrap script, preflight / postflight
 │   ├── provider/proxmox/
 │   └── agent/
 │       ├── pull/

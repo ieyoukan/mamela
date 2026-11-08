@@ -38,6 +38,9 @@
 
 ## ステップ 2: Proxmox（検証環境 L0 → L1）
 
+**L0 の道具は用意済み (2026-11-09):** `mamela lab bootstrap`（root 用スクリプトの生成のみ）、`mamela lab preflight` / `postflight`（読み取り専用）、`internal/proxmox`（GET しか送れない API クライアント、証明書の fingerprint 固定）。次は人が bootstrap を実行し、L0 を実機で回す。
+
+
 前提: [検証環境](lab.md) の一度だけの準備（pool・ロール・Token・テンプレート）を人が実行済み。
 
 - L0: Token で読み取りだけ行う。preflight / postflight（資源の余裕、権限の範囲、管理外ゲストの不変性）を実装し、何も作らずに回す。
