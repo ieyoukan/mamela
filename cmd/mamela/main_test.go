@@ -34,7 +34,7 @@ func TestUsage(t *testing.T) {
 	if code, _, stderr := runCLI(); code != 2 || !strings.Contains(stderr, "Usage") {
 		t.Errorf("no args: code=%d stderr=%q", code, stderr)
 	}
-	if code, _, stderr := runCLI("apply"); code != 2 || !strings.Contains(stderr, `unknown command "apply"`) {
+	if code, _, stderr := runCLI("destroy"); code != 2 || !strings.Contains(stderr, `unknown command "destroy"`) {
 		t.Errorf("unknown command: code=%d stderr=%q", code, stderr)
 	}
 	if code, _, _ := runCLI("eval"); code != 2 {
@@ -90,5 +90,53 @@ func TestEvalMissingToolchain(t *testing.T) {
 	code, _, stderr := runCLI("eval", "--toolchain", t.TempDir(), ".")
 	if code != 1 || !strings.Contains(stderr, "MAM-EVAL-0001") || !strings.Contains(stderr, "install-toolchain.sh") {
 		t.Errorf("code=%d stderr=%s", code, stderr)
+	}
+}
+
+func TestPlanReplayApprove(t *testing.T) {
+	dir := toolchainDir(t)
+	db := filepath.Join(t.TempDir(), "state.db")
+	code, stdout, stderr := runCLI("plan", "--db", db, "--toolchain", dir, filepath.Join("..", "..", "examples", "homelab"))
+	if code != 0 {
+		t.Fatalf("plan: code=%d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{"+ VirtualMachine app-server  [needs approval]", "MAM-PLAN-0101", "Nothing has been changed"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("plan output lacks %q:\n%s", want, stdout)
+		}
+	}
+	i := strings.Index(stdout, "mamela approve ")
+	if i < 0 {
+		t.Fatalf("no approve hint:\n%s", stdout)
+	}
+	digest := strings.TrimSpace(stdout[i+len("mamela approve "):])
+
+	if code, out, errOut := runCLI("plan", "--db", db, "--replay", digest); code != 0 || !strings.Contains(out, "recomputes to the same digest") {
+		t.Errorf("replay: code=%d out=%s err=%s", code, out, errOut)
+	}
+	if code, out, errOut := runCLI("approve", "--db", db, "--by", "alice", digest); code != 0 || !strings.Contains(out, "approved "+digest+" by alice") {
+		t.Errorf("approve: code=%d out=%s err=%s", code, out, errOut)
+	}
+	if code, _, _ := runCLI("approve", "--db", db, "--by", "alice", "sha256:unknown"); code != 1 {
+		t.Errorf("approving an unknown plan: code=%d", code)
+	}
+}
+
+func TestPlanWithSnapshot(t *testing.T) {
+	dir := toolchainDir(t)
+	snap := filepath.Join(t.TempDir(), "snap.json")
+	const body = `{"asOf":"2026-11-08T12:00:00Z","vms":{"app-server":{"managed":true,"cpu":1,"memoryMiB":1024,"diskGiB":20,"image":"ubuntu-24.04","observedAt":"2026-11-08T12:00:00Z"}},"packages":{},"services":{}}`
+	if err := os.WriteFile(snap, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := runCLI("plan", "--db", filepath.Join(t.TempDir(), "s.db"), "--toolchain", dir, "--snapshot", snap,
+		filepath.Join("..", "..", "examples", "homelab"))
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	for _, want := range []string{"[DENIED]", "diskGiB: 20 -> 10", "MAM-POL-0301", "MAM-PLAN-0103"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("output lacks %q:\n%s", want, stdout)
+		}
 	}
 }

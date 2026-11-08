@@ -384,10 +384,12 @@ mamela/
 │   ├── graph/            # mamela-graph/v1 parser, canonicalization, digest
 │   ├── component/        # WASM component import reader / allowlist
 │   ├── evaluate/         # emela build / wasmtime sandbox / decode
+│   ├── state/            # observation snapshots
+│   ├── policy/           # Auto / ApprovalRequired / Denied
+│   ├── plan/             # pure planner + human rendering
 │   ├── store/            # SQLite
-│   ├── planner/
-│   ├── policy/
-│   ├── reconciler/
+│   ├── reconcile/        # apply with journal, leases, re-observation
+│   ├── provider/fake/    # in-memory provider with fault injection
 │   ├── provider/proxmox/
 │   └── agent/
 │       ├── pull/

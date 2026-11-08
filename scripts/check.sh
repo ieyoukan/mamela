@@ -23,8 +23,8 @@ fi
 step "go: vet"
 go vet ./...
 
-step "go: test"
-go test -count=1 ./...
+step "go: test (race detector on)"
+go test -race -count=1 ./...
 
 step "emela: Mamela Pome (fmt, check, test on JS and WASM)"
 (cd pome/mamela && emela fmt --check && emela check && emela test && emela test --target wasm)

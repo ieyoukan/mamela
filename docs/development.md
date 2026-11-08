@@ -24,16 +24,17 @@
 
 **完了条件の確認:** Emela → WASM → Go で 1 件の検証済み Resource Graph を受け渡せた。2 回の評価で graph digest と `main.wasm` の digest がともに一致した。env / random / clock を使う宣言は実行前に拒否され、無限ループ・巨大出力・メモリの使いすぎは制限で止まることをテストで確認した。
 
-## ステップ 1: Go のドメインと SQLite（ローカル）
+## ステップ 1: Go のドメインと SQLite（ローカル） — 完了 (2026-11-09)
 
-- `Resource`、`Revision`、`Observation`、`Snapshot`、`Plan`、`Operation`、`PolicyDecision` の型とバリデーション。
-- SQLite の migration、WAL、永続化、revision CAS、観測タイムスタンプ。
-- Planner は純粋関数: (Revision, Snapshot, Policy) → Plan。壁時計を読まない。出力順は安定。
-- `mamela plan` の表示（差分・判定・理由コード・解消方法）と `--replay`。
-- 偽 Provider で Observe → Diff → Decide → Execute → Record の Reconciler。
-- 更新競合、操作途中クラッシュ、観測不明、リトライ/バックオフのテスト。
+- `internal/state`: 観測スナップショット。`asOf` を自分で持ち、計画は壁時計を読まない。digest はタイムゾーンや挿入順に依存しない。
+- `internal/policy`: 決定的な判定（Auto / ApprovalRequired / Denied）と理由コード。知らない操作は Denied。
+- `internal/plan`: `Build(graph, snapshot, policy)` は純粋関数。差分・操作・判定・待ち理由・保持（Retain）を出し、Plan digest は全入力を含む。`Render` で人が読める表示。
+- `internal/store`: SQLite（WAL、`modernc.org/sqlite`）。revision / snapshot / policy / plan は digest で保存し、読み出すたびに中身と digest を照合する。Plan は保存された文字列を信じず、入力から再計算して一致を確かめる。承認は Plan digest に紐づき期限付き。操作ジャーナルは Intended → Started（lease）→ Succeeded / Failed / Unknown。
+- `internal/reconcile`: 実行直前に再観測し、Plan の前提と違うリソースには触れない。Denied は承認があっても実行しない。結果不明なら止め、次回は観測で完了を確かめてから再試行する。
+- `internal/provider/fake`: 失敗の注入（変更前の失敗、応答の喪失）ができるメモリ上の Provider。
+- CLI: `mamela plan [--snapshot file] <pome>`、`mamela plan --replay <digest>`、`mamela approve <digest>`。
 
-**完了条件:** DB と Fake Provider のみで正常収束・Blocked・再起動復旧を再現できる。同じ入力から同じ Plan digest が出る。Plan の表示を人が読んで理由が分かる。
+**完了条件の確認:** DB と Fake Provider だけで、正常な収束（承認 → 作成 → 導入・起動 → 一致）、Blocked（古い観測）、応答喪失・変更前の失敗・変更後のクラッシュ・変更前のクラッシュからの復旧、並行実行で作成が 1 回だけになることをテストで再現した。Reconciler の 5 つの安全装置（Denied、承認、前提の照合、観測による確認、claim）は、それぞれ外すとテストが落ちることを確認した（ミューテーションテスト）。同じ入力から同じ Plan digest が出る。
 
 ## ステップ 2: Proxmox（検証環境 L0 → L1）
 

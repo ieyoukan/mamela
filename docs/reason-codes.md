@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go` と `internal/evaluate/errors.go`。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`。
 
 ## MAM-EVAL — 評価
 
@@ -44,3 +44,41 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0104 | 名前が `<node>/<package>` などの形と合わない |
 | MAM-GRAPH-0105 | 値が範囲外 |
 | MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、イメージ名、`Present` 以外の状態） |
+
+## MAM-POL — ポリシーの判定
+
+| コード | 判定 | 意味 |
+|---|---|---|
+| MAM-POL-0101 | Auto | `autoStartServices` にあるサービスの起動（ドリフト修復） |
+| MAM-POL-0201 | ApprovalRequired | VM の作成 |
+| MAM-POL-0202 | ApprovalRequired | VM の CPU / メモリの変更 |
+| MAM-POL-0203 | ApprovalRequired | ディスクの拡張 |
+| MAM-POL-0204 | ApprovalRequired | パッケージの導入（maintainer script が root で動く） |
+| MAM-POL-0205 | ApprovalRequired | サービスの有効化 |
+| MAM-POL-0206 | ApprovalRequired | サービスの起動（自動起動が許可されていない） |
+| MAM-POL-0207 | ApprovalRequired | サービスの停止・無効化 |
+| MAM-POL-0301 | Denied | ディスクの縮小 |
+| MAM-POL-0302 | Denied | イメージの変更（VM の置き換えになる） |
+| MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更 |
+| MAM-POL-0399 | Denied | ポリシーが知らない操作 |
+
+## MAM-PLAN — 計画の状態
+
+| コード | 意味 |
+|---|---|
+| MAM-PLAN-0101 | VM がまだないので待つ |
+| MAM-PLAN-0102 | VM が Foreign なので、その上の設定はしない |
+| MAM-PLAN-0103 | Agent からのパッケージの報告を待つ |
+| MAM-PLAN-0104 | Agent からのサービスの報告を待つ |
+| MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
+| MAM-PLAN-0301 | 宣言から消えたが、削除せず保持する（Retain） |
+
+## MAM-REC — 実行
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-REC-0001 | 保存された Plan が入力から再計算した結果と一致しない | 適用しない。新しく plan する |
+| MAM-REC-0002 | 実行直前の観測で、リソースが Plan の前提と違っていた | 新しく plan してレビューする |
+| MAM-REC-0003 | 操作の結果が不明 | もう一度 apply する（観測してから確認か再試行をする） |
+| MAM-REC-0004 | 操作が失敗した | 原因を直して apply する（失敗した操作は再試行される） |
+| MAM-REC-0005 | 別の worker がこの操作を実行中 | 終わるのを待つ |
