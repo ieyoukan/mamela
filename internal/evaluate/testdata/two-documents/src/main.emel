@@ -1,0 +1,10 @@
+# Prints the graph twice. Must be rejected: exactly one document is allowed.
+import Std.Console.{Console, SystemConsole}
+
+fn main() {
+  with SystemConsole {
+    g = "{\"resources\":[],\"schema\":\"mamela-graph/v1\"}"
+    (use Console).print_line(g)
+    (use Console).print_line(g)
+  }
+}

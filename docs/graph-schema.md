@@ -1,0 +1,69 @@
+# `mamela-graph/v1` — Resource Graph の受け渡し形式
+
+Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 文書。Go 側の正は `internal/graph`。
+
+## 例
+
+~~~json
+{
+  "resources": [
+    {"kind": "VirtualMachine", "name": "app-server",
+     "spec": {"cpu": 1, "diskGiB": 10, "image": "ubuntu-24.04", "memoryMiB": 1024}},
+    {"kind": "NodePackage", "name": "app-server/nginx",
+     "spec": {"node": "app-server", "package": "nginx", "state": "Present"}},
+    {"kind": "NodeService", "name": "app-server/nginx",
+     "spec": {"enabled": true, "node": "app-server", "running": true, "service": "nginx"}}
+  ],
+  "schema": "mamela-graph/v1"
+}
+~~~
+
+実際の出力は空白なし・キーはソート順の 1 行。
+
+## 規則
+
+- 最上位は `schema`（値は `"mamela-graph/v1"` のみ）と `resources`（配列）の 2 つ。
+- 各リソースは `kind`・`name`・`spec` の 3 つ。
+- 書かれていないメンバー、重複したメンバー、`null`、小数・指数表記の数値、不正な UTF-8、文書の後に続くデータは、すべて拒否する（末尾の改行 1 つだけは許す）。
+- 文書は 4 MiB まで、リソースは 10,000 件まで。
+
+## kind
+
+### VirtualMachine
+
+| フィールド | 型 | 範囲 |
+|---|---|---|
+| `name` | string | ホスト名（小文字・数字・`-`、1–63 文字） |
+| `spec.cpu` | 整数 | 1–64 |
+| `spec.memoryMiB` | 整数 | 256–1,048,576 |
+| `spec.diskGiB` | 整数 | 1–16,384 |
+| `spec.image` | string | `ubuntu-24.04` のような名前 |
+
+### NodePackage
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/<package>` |
+| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.package` | string | Debian のパッケージ名 |
+| `spec.state` | string | `"Present"` のみ。削除は宣言できない |
+
+### NodeService
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/<service>` |
+| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.service` | string | systemd のユニット名（`.service` なし） |
+| `spec.enabled` | bool | |
+| `spec.running` | bool | |
+
+## 正規化と digest
+
+- 正規形: リソースを kind の順（VirtualMachine → NodePackage → NodeService）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
+- digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
+- `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。
+
+## 互換性
+
+形を変えるときは `mamela-graph/v2` にする。v1 のまま意味を変えない。

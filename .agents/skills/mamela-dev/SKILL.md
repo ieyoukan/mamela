@@ -46,8 +46,9 @@ Mamela is a declarative, continuously reconciled IaC control plane, with Go Cont
 
 ## Validation
 
-- Go: `go test ./...` (when Go code exists).
+- Everything: `scripts/install-toolchain.sh` once, then `scripts/check.sh`.
+- Go: `go test ./...`. Toolchain-dependent tests skip without `.tools/bin` unless `MAMELA_REQUIRE_TOOLCHAIN=1`.
 - Emela: `emela fmt --check`, `emela check`, `emela test` in the Pome root, and `emela build --target wasm` only after checking runtime/tool prerequisites.
-- The Graph ABI is one `mamela-graph/v1` JSON document on stdout (Emela v0.27 has no user WASM exports; JSON comes from the experimental, pinned Pome `github.com/emela-lang/x/json`). Decode strictly: reject unknown fields, duplicate keys, trailing data and floats. Verify behavior with the pinned emela / Wasmtime 49+ before relying on it.
+- The Graph ABI is one `mamela-graph/v1` JSON document on stdout (Emela v0.27 has no user WASM exports; JSON is written by the small writer in `pome/mamela`, because `x/json` v0.3.0 does not compile on 0.27). Decode strictly: reject unknown fields, duplicate keys, trailing data and floats. Verify behavior with the pinned emela / Wasmtime 49+ before relying on it.
 - Live Proxmox tests only with `MAMELA_LAB=1` and passing preflight/postflight (docs/lab.md).
 - Document unsupported behavior as a limitation rather than asserting it is implemented.

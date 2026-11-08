@@ -9,28 +9,20 @@
 - 決定性と人に優しい出力を、最初の PoC から完了条件に入れる。後付けにしない。
 - 実機 Proxmox は、既存ゲストを壊さない境界（[検証環境](lab.md)）を作り、読み取りだけの L0 から始める。
 
-## ステップ 0: Emela / Wasmtime の PoC（ローカル）
+## ステップ 0: Emela / Wasmtime の PoC（ローカル） — 完了 (2026-11-08)
 
-目的: Emela v0.27 で **副作用なしに、決定的に**構成を評価し、Go で読み取れることを実証する。
+目的: Emela v0.27 で **副作用なしに、決定的に**構成を評価し、Go で読み取れることを実証する。結果と分かった制約は [emela-wasm.md](emela-wasm.md)。
 
-1. emela（v0.27.0）と Wasmtime（49 以上の特定バージョン）を、バージョンと checksum を固定して導入する。固定した値はリポジトリに記録する。
-2. `Pome.toml`、`Pome.lock`、`src/main.emel` の最小 Pome を作り、`github.com/emela-lang/x/json`（v0.3.0）を依存に入れる。`emela check`、`emela fmt --check`、`emela test` を通す。
-3. Graph の型に `Dynamic.Encode` を実装し、`X.Json.encode` で `mamela-graph/v1` の JSON を stdout に書く最小の Emela コードを書く（VM 1 台 + package + service）。`x/json` が v0.27 で動かなければ、その事実を記録して文字列組み立ての代替に切り替える。
-4. `emela build --target wasm` で `main.wasm` を作る。
-5. Go から:
-   - `main.wasm` の import を読み、stdout / stderr / exit 以外があれば拒否する。
-   - `wasmtime run -S p3=y` を子プロセスで直接起動する（`--dir`・ネットワーク・`--env` なし、stdin 空）。
-   - 時間・メモリ・出力量の制限を付ける（Wasmtime のオプションを実測して決める）。
-   - stdout の JSON を厳格にデコードし（未知フィールド・重複キー・末尾データを拒否）、正規化して digest を出す。
-6. 負のテスト:
-   - `Std.Env` / `Std.Random` / `Std.Clock` を使うと、import 検査で拒否される。
-   - 無限ループ、巨大出力、メモリの使いすぎが制限で止まる。
-   - 途中で切れた JSON、未知の `schema`、未知のフィールド、重複キー、浮動小数点の数値が拒否される。
-7. 決定性の確認: 同じソースを 2 回評価し、Graph digest が一致する。
-8. ネットワークなしで `emela build` する方法（依存キャッシュ）を確認する。
-9. 分かった制約（ABI、制限オプション、エラー時の挙動）を `docs/` に記録する。`mamela-graph/v1` の JSON スキーマもここで `schemas/` に書く。
+- `scripts/install-toolchain.sh`: emela v0.27.0 と Wasmtime v49.0.5 を sha256 固定で `.tools/` に導入。
+- `pome/mamela`: Graph を組み立てて `mamela-graph/v1` の JSON を stdout に書く Emela ライブラリ（JS / WASM の両方でテスト）。
+- `examples/homelab`: VM 1 台 + nginx の宣言例。
+- `internal/component`: WASM コンポーネントのトップレベル import を読み、許可リストで検査。
+- `internal/evaluate`: オフラインビルド → import 検査 → 制限付き実行 → 厳格なデコード。拒否・制限のテスト用 Pome は `internal/evaluate/testdata/`。
+- `internal/graph`: 厳格なデコード、意味の検証、正規化、digest。
+- `mamela eval [--twice] [--json] <pome>`: 人が読める要約、または正規化済み JSON。
+- `scripts/check.sh` と CI: 上記すべてのテストと、例の決定性チェック。
 
-**完了条件:** Emela → WASM → Go で、1 件の検証済み Resource Graph を安全に、決定的に受け渡せる。できなければ制約と再現例を `docs/` に残し、`mamela-graph/v1` の JSON を直接読むテスト用アダプタで次へ進む。
+**完了条件の確認:** Emela → WASM → Go で 1 件の検証済み Resource Graph を受け渡せた。2 回の評価で graph digest と `main.wasm` の digest がともに一致した。env / random / clock を使う宣言は実行前に拒否され、無限ループ・巨大出力・メモリの使いすぎは制限で止まることをテストで確認した。
 
 ## ステップ 1: Go のドメインと SQLite（ローカル）
 

@@ -41,7 +41,7 @@ AI / Human / Git
       |
  emela build --target wasm   (固定バージョン / ネットワークなし / lock 必須)
       |
- main.wasm  ── Go: import allowlist 検査 (stdout / stderr / exit のみ)
+ main.wasm  ── Go: import allowlist 検査 (wasi:cli の stdout / stderr / exit / types のみ)
       |
  wasmtime run -S p3=y   (固定バージョン / FS・ネットワーク・env なし / 時間・メモリ・出力量制限)
       |  stdout: mamela-graph/v1 (JSON 1 文書)
@@ -92,7 +92,7 @@ AI / Human / Git
 |---|---|
 | DSL | Emela v0.27 系（`.emel`、Pome）。バージョン固定 |
 | DSL 実行 | WASM（WASI 0.3 component）+ Wasmtime CLI（49 以上、固定バージョン）の隔離子プロセス |
-| Emela → Go の受け渡し | stdout に JSON 1 文書 `mamela-graph/v1`（Emela 側は Pome `github.com/emela-lang/x/json`。§9.2） |
+| Emela → Go の受け渡し | stdout に JSON 1 文書 `mamela-graph/v1`（Emela 側は `pome/mamela` の小さな JSON 書き出し、Go 側は `encoding/json/v2`。§9.2） |
 | Control Plane / CLI | Go |
 | 状態ストア | SQLite（WAL、単一 writer を想定） |
 | VM Provider | Proxmox VE API（Mamela 専用 pool に限定した API Token） |
@@ -265,7 +265,7 @@ VM Ready → Agent enrolled/healthy → NodePackage Ready → NodeService Ready 
 
 ### 2段階のポリシー
 
-**構成評価の安全性:** WASM コンポーネントの import を stdout / stderr / exit に限定し、Wasmtime にはディレクトリ・ネットワーク・環境変数を渡さない。CPU 時間、メモリ、出力量も制限する。Emela の型と Effect は、構成を書く人への補助と、Mamela 用 Pome 内の能力分離に使う。コンパイル成功はインフラ変更の安全性を意味しない。
+**構成評価の安全性:** WASM コンポーネントの import を `wasi:cli` の stdout / stderr / exit / types に限定し、Wasmtime にはディレクトリ・ネットワーク・環境変数を渡さない。CPU 時間、メモリ、出力量も制限する。Emela の型と Effect は、構成を書く人への補助と、Mamela 用 Pome 内の能力分離に使う。コンパイル成功はインフラ変更の安全性を意味しない。
 
 **実操作の安全性:** Go Policy Engine が操作種別、変更量、所有権、承認、実状態を評価し、Agent/Provider が実行直前にも検証する。生成されたコードや Plan 自体を権限の正本としない。
 
@@ -288,7 +288,7 @@ APT インストールは maintainer script の特権実行を含み得るため
 
 ### ビルドのサプライチェーン
 
-- `emela build` は Pome の依存（`x/json` など）を取得し得る。Mamela では `Pome.lock` を必須とし（lock がなければ emela 自体がエラーにする）、依存は事前取得したキャッシュから、ネットワークなしでビルドする。具体的な方法はステップ 0 で確認する。
+- `emela build` は Pome の依存（`x/json` など）を取得し得る。Mamela では `Pome.lock` を必須とし（lock がなければ emela 自体がエラーにする）、依存は事前取得したキャッシュから、ネットワークなしでビルドする。`EMELA_POMEPROXY=off` と `EMELA_POME_CACHE` で実現でき、キャッシュにない依存はビルドが失敗する（ステップ 0 で確認済み。[emela-wasm.md](emela-wasm.md)）。
 - emela / wasmtime のバイナリは checksum を固定して導入する。
 
 ## 8. API / CLI（設計案）
@@ -325,16 +325,12 @@ CLI 名は `mamela`、Node Agent は `mamela-agent`（いずれも未実装）�
 upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 
 - `--target wasm` は `main.wasm` 一つだけを出力する。WASI 0.3 component で、`wasi:cli/run@0.3.0` を export し、`pub fn main` を呼ぶ。
-- import は `wasi:cli/stdout`・`stderr`・`exit` が常に入る。`wasi:cli/environment`、`wasi:random/random`、`wasi:clocks/system-clock` は、`Std.Env`・`Std.Random`・`Std.Clock` に到達したときだけ入る。HTTP サービスでない限り、それ以外は import しない。
+- import は `wasi:cli/stdout`・`stderr`・`exit` が常に入る。実測では、stdout / stderr が使う型だけの interface `wasi:cli/types`（`error-code` 列挙のみ、関数なし）も入る（spec には書かれていない）。`wasi:cli/environment`、`wasi:random/random`、`wasi:clocks/system-clock` は、`Std.Env`・`Std.Random`・`Std.Clock` に到達したときだけ入る。HTTP サービスでない限り、それ以外は import しない。
 - `Std.FileSystem`、`Std.Http` のクライアント、`Clock.sleep` は WASM ではまだ使えない。
 - ユーザーが書く `@export(wasm, ...)` と `@external(wasm, ...)` は WASM ではコンパイルエラー。独自 WIT の宣言も未対応（upstream open question #56）。**ホストと関数単位でやり取りする手段は現時点でない。**
 - `emela run` は `wasmtime run -S p3=y main.wasm` を実行する。Wasmtime 49 以上が必要。
 - v0.26 で `Std.Bytes` が入った。
-- JSON は std にはまだないが、upstream の実験用 Pome **`github.com/emela-lang/x/json`（v0.3.0、`emela = "0.26.0"`）** がある。純粋な Emela で書かれており、`x/dynamic` と `x/base64` に依存する。
-  - `Json.encode[A: Encode]` / `Json.decode` / `Json.parse` / `Json.to_string` を持つ。`Encode` は `Dynamic.Encode`（`to_dynamic(self) -> Dynamic`）。
-  - 書き出しは空白なし、オブジェクトのキーは `Std.Map` の順（ソート済み）で、**同じ値からは常に同じ文字列**になる。
-  - spec では JSON を std に入れ、`derive Encode, Decode` で導出する方針だが、導出の構文は未確定。当面は `to_dynamic` を手で実装する。
-  - `x` は「形が定まるまでの置き場」であり、API が変わり得る。バージョン固定が前提。
+- JSON は std にはまだない（spec では `derive Encode, Decode` で std に入れる方針だが、導出の構文は未確定）。upstream の実験用 Pome `github.com/emela-lang/x/json`（v0.3.0）は **emela 0.26 向けで、0.27 ではコンパイルできない**（0.27 で無名関数が `|x| body` 構文になり、`fn(x) { }` が E0148 になったため）。x の main もまだ 0.27 に対応していない（2026-11-08 時点）。
 - 終了コード: 正常 0、error が残れば 1（`error: ...` を stderr へ）、defect が残れば 101。
 - 0.y の間はマイナー更新で破壊的変更があり得る（v0.27 でも `Exit` の移動など）。バージョン固定が前提。
 
@@ -342,23 +338,23 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 
 上記より、当面の ABI は **`wasi:cli/run` を実行し、stdout に書かれた JSON 1 文書を読む** 方式に決める。
 
-- Emela 側は Mamela 用 Pome の型に `Dynamic.Encode` を実装し、`X.Json.encode` で書き出す。キー順が決まっており、出力は決定的。
+- Emela 側は `pome/mamela` に持つ小さな JSON 書き出し（`Mamela.Json`）を使う。形式は `x/json` と同じ（空白なし、キーはソート順）で、出力は決定的。`x/json` か std の JSON が固定バージョンの emela に対応したら置き換える。
 - 文書は `{"schema":"mamela-graph/v1","resources":[...]}` の形。途中で切れた出力は JSON として不正になるため検出できる。
 - 数値は整数だけを使う（浮動小数点の表記揺れを避ける）。単位はフィールド名で表す（`memoryMiB` など）。
-- Go 側は厳格にデコードする。未知のフィールド、重複キー、末尾の余分なデータ、未知の `schema` はすべて拒否する。
+- Go 側は `encoding/json/v2`（Go 1.27 で標準）で厳格にデコードする。未知のフィールド、重複キー、小数・指数表記の数値、不正な UTF-8、末尾の余分なデータ、未知の `schema` はすべて拒否する。
 - 出力サイズに上限を設ける。stderr は診断として保存するが、Graph としては解釈しない。
 - Go 側で正規化し直してから digest を取る。Emela の出力の並びに依存しない。
 - JSON は `jq` などでそのまま読めるので、人が中身を確かめやすい。
-- `x/json` が v0.27 や WASM で動かない場合の代替として、Emela 側で文字列を組み立てる単純な書き出しを持てるようにしておく（形式は同じ JSON）。
-- スキーマの詳細はステップ 0 で `schemas/` と `docs/` に書く。WIT による正式な ABI は、upstream が独自 WIT に対応してから再検討する。
+- スキーマは [graph-schema.md](graph-schema.md)、理由コードは [reason-codes.md](reason-codes.md)。WIT による正式な ABI は、upstream が独自 WIT に対応してから再検討する。
 
 ### 9.3 評価のサンドボックス
 
 1. `emela build --target wasm` を固定バージョンで実行する（ネットワークなし、lock 必須）。
-2. Go が `main.wasm` の import を読み、`wasi:cli/stdout`・`stderr`・`exit` 以外があれば評価せずに拒否する。これにより env / random / clock を使った非決定的な評価も弾ける。
+2. Go が `main.wasm` のトップレベル import をバイナリから読み、`wasi:cli/stdout`・`stderr`・`exit`・`types`（いずれも `@0.3.0`）以外があれば評価せずに拒否する。読めない形式も拒否する。これにより env / random / clock を使った非決定的な評価も弾ける。
 3. `wasmtime run -S p3=y` を子プロセスで直接起動する（`emela run` は経由しない）。`--dir`、ネットワーク、`--env` は渡さない。stdin は空にする。
-4. 実行時間、メモリ、出力量を制限する（Wasmtime の `-W` オプションや fuel の候補をステップ 0 で実測して決める）。
-5. 終了コードが 0 以外、制限超過、終端行なしは、すべて評価失敗として扱う。
+4. 実行時間（`-W timeout`、既定 10 秒）、メモリ（`-W max-memory-size`、既定 256 MiB）、stdout（4 MiB）を制限する。`-S inherit-env=n,inherit-stdin=n,inherit-network=n,tcp=n,udp=n,allow-ip-name-lookup=n,http=n`、`-C cache=n` も付ける。
+5. 終了コードが 0 以外、制限超過、JSON として不完全な出力は、すべて評価失敗として扱う。
+6. emela のコンパイラ自体はネイティブに動くので、サンドボックスの外にある。ネットワークなし・空の環境変数・時間制限で動かすが、悪意あるソースに対する隔離は今後の課題（§13）。
 
 ### 9.4 その他
 
@@ -386,7 +382,8 @@ mamela/
 ├── internal/
 │   ├── api/
 │   ├── graph/            # mamela-graph/v1 parser, canonicalization, digest
-│   ├── runtime/          # emela build / wasmtime sandbox / import check
+│   ├── component/        # WASM component import reader / allowlist
+│   ├── evaluate/         # emela build / wasmtime sandbox / decode
 │   ├── store/            # SQLite
 │   ├── planner/
 │   ├── policy/
@@ -398,7 +395,7 @@ mamela/
 │           ├── apt/
 │           └── systemd/
 ├── pome/mamela/          # Mamela 用 Emela Pome（Graph 構築と出力）
-├── schemas/
+├── scripts/            # install-toolchain.sh / check.sh
 ├── lab/                  # 検証環境の宣言（サイト固有値は gitignore）
 ├── examples/homelab/
 ├── docs/
@@ -421,9 +418,8 @@ mamela/
 
 ## 13. 未決事項
 
-- `mamela-graph/v1` の JSON スキーマ。`x/json` の v0.27 / WASM での動作と、std に JSON が入ったときの移行。upstream が独自 WIT に対応した後の正式 ABI。
-- Wasmtime のリソース制限オプションの具体値。
-- ネットワークなしでの `emela build`（依存キャッシュ）の手順。
+- `x/json` または std の JSON への移行時期。upstream が独自 WIT に対応した後の正式 ABI。
+- emela コンパイラ自体の隔離（コンテナ / 別ユーザー / VM 内でのビルド）。
 - Node Agent のローカルキャッシュ方式と署名・証明書・鍵のライフサイクル。
 - APT 操作の privilege separation と sandbox / 保守スクリプトの扱い。
 - Mamela 用 VM テンプレートの作り方（cloud image の取り込み方法）。

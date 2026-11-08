@@ -1,0 +1,8 @@
+# Never finishes. Must be stopped by the time limit.
+fn spin(n: Int) -> Int {
+  spin(n + 1)
+}
+
+fn main() {
+  dbg(spin(0))
+}

@@ -1,0 +1,98 @@
+## Mamela: declare the desired state of infrastructure as a graph, and print it as one
+## `mamela-graph/v1` JSON document on standard output.
+##
+## Building a graph is pure. Only `print` uses an effect (`Console`), so evaluating a
+## declaration cannot touch the network, files, the clock or randomness.
+
+import Std.Console.{Console}
+import Json.{Json, Boolean, Integer, Text, Items, Fields}
+
+## The schema written in the `schema` field. The Go side rejects any other value.
+pub const SCHEMA = "mamela-graph/v1"
+
+## A virtual machine. `memory_mib` is in MiB and `disk_gib` in GiB.
+pub type Vm(name: String, cpu: Int, memory_mib: Int, disk_gib: Int, image: String)
+
+## An APT package that should be present on a node.
+pub type Package(node: String, name: String)
+
+## A systemd service on a node.
+pub type Service(node: String, name: String, enabled: Bool, running: Bool)
+
+## The desired state. Resources keep the order in which they were added.
+pub opaque type Graph(vms: List[Vm], packages: List[Package], services: List[Service])
+
+pub fn empty() -> Graph {
+  Graph(vms: [], packages: [], services: [])
+}
+
+pub fn vm(graph: Graph, vm: Vm) -> Graph {
+  Graph(vms: List.append(graph.vms, [vm]), ..graph)
+}
+
+## Declares that `name` is installed on `node`. Taking the `Vm` itself (not its name)
+## keeps the reference from pointing at a node that was never declared by a typo.
+pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
+  Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
+}
+
+pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Bool) -> Graph {
+  s = Service(node: node.name, name:, enabled:, running:)
+  Graph(services: List.append(graph.services, [s]), ..graph)
+}
+
+fn resource(kind: String, name: String, spec: List[(String, Json)]) -> Json {
+  Fields([("kind", Text(kind)), ("name", Text(name)), ("spec", Fields(spec))])
+}
+
+fn vm_json(v: Vm) -> Json {
+  resource(
+    "VirtualMachine",
+    v.name,
+    [
+      ("cpu", Integer(v.cpu)),
+      ("memoryMiB", Integer(v.memory_mib)),
+      ("diskGiB", Integer(v.disk_gib)),
+      ("image", Text(v.image)),
+    ],
+  )
+}
+
+fn package_json(p: Package) -> Json {
+  resource(
+    "NodePackage",
+    "#{p.node}/#{p.name}",
+    [("node", Text(p.node)), ("package", Text(p.name)), ("state", Text("Present"))],
+  )
+}
+
+fn service_json(s: Service) -> Json {
+  resource(
+    "NodeService",
+    "#{s.node}/#{s.name}",
+    [
+      ("node", Text(s.node)),
+      ("service", Text(s.name)),
+      ("enabled", Boolean(s.enabled)),
+      ("running", Boolean(s.running)),
+    ],
+  )
+}
+
+fn graph_json(graph: Graph) -> Json {
+  resources = List.append(
+    graph.vms.map(vm_json),
+    List.append(graph.packages.map(package_json), graph.services.map(service_json)),
+  )
+  Fields([("schema", Text(SCHEMA)), ("resources", Items(resources))])
+}
+
+## The `mamela-graph/v1` JSON text of `graph`: no whitespace, object keys sorted.
+pub fn to_json(graph: Graph) -> String {
+  Json.write(graph_json(graph))
+}
+
+## Writes the graph as one line to standard output.
+pub fn print(graph: Graph) {
+  (use Console).print_line(to_json(graph))
+}

@@ -1,0 +1,53 @@
+import Lib
+import Json.{Null, Boolean, Integer, Text, Items, Fields}
+
+fn app() -> Lib.Vm {
+  Lib.Vm(name: "app-server", cpu: 2, memory_mib: 2048, disk_gib: 10, image: "ubuntu-24.04")
+}
+
+@test
+fn empty_graph() {
+  assert Lib.to_json(Lib.empty()) == "{\"resources\":[],\"schema\":\"mamela-graph/v1\"}"
+}
+
+@test
+fn vm_package_and_service() {
+  g = Lib.empty()
+    |> Lib.vm(app())
+    |> Lib.package(app(), "nginx")
+    |> Lib.service(app(), "nginx", True, True)
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"VirtualMachine\",\"name\":\"app-server\",\"spec\":{\"cpu\":2,\"diskGiB\":10,\"image\":\"ubuntu-24.04\",\"memoryMiB\":2048}},",
+      "{\"kind\":\"NodePackage\",\"name\":\"app-server/nginx\",\"spec\":{\"node\":\"app-server\",\"package\":\"nginx\",\"state\":\"Present\"}},",
+      "{\"kind\":\"NodeService\",\"name\":\"app-server/nginx\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"nginx\"}}",
+      "],\"schema\":\"mamela-graph/v1\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
+}
+
+@test
+fn same_graph_same_text() {
+  g = Lib.empty() |> Lib.vm(app())
+  assert Lib.to_json(g) == Lib.to_json(g)
+}
+
+@test
+fn keys_are_sorted_and_later_value_wins() {
+  assert Json.write(Fields([("b", Integer(1)), ("a", Null), ("b", Integer(2))]))
+    == "{\"a\":null,\"b\":2}"
+}
+
+@test
+fn scalars_and_lists() {
+  assert Json.write(Items([Boolean(True), Boolean(False), Integer(-3), Text("x")]))
+    == "[true,false,-3,\"x\"]"
+}
+
+@test
+fn strings_are_escaped() {
+  assert Json.write(Text("a\"b\\c\nd\te\u{1}")) == "\"a\\\"b\\\\c\\nd\\te\\u0001\""
+  assert Json.write(Text("日本語")) == "\"日本語\""
+}

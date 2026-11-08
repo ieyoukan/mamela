@@ -1,0 +1,6 @@
+# Depends on a Pome that is not in the cache. The build must fail instead of fetching it.
+import Base64
+
+fn main() {
+  dbg(Base64.encode(Bytes.empty()))
+}

@@ -1,0 +1,10 @@
+# Prints an empty graph and writes diagnostics to standard error. Must be accepted.
+import Std.Console.{Console, SystemConsole}
+
+fn main() {
+  with SystemConsole {
+    dbg("evaluating")
+    (use Console).print_error_line("note: nothing declared yet")
+    (use Console).print_line("{\"resources\":[],\"schema\":\"mamela-graph/v1\"}")
+  }
+}

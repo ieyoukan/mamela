@@ -1,0 +1,6 @@
+# Ends with an error.
+error Boom(reason: String) derive Show
+
+fn main() {
+  fail Boom(reason: "the declaration is incomplete")
+}

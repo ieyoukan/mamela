@@ -1,0 +1,9 @@
+# Reads an environment variable: evaluation would depend on the host. Must be rejected.
+import Std.Console.{Console, SystemConsole}
+import Std.Env.{Env, SystemEnv}
+
+fn main() {
+  with SystemConsole, SystemEnv {
+    (use Console).print_line((use Env).get("HOME").or("none"))
+  }
+}

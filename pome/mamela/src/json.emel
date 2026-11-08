@@ -1,0 +1,60 @@
+## A small JSON writer for `mamela-graph/v1`.
+##
+## The output has the same form as `github.com/emela-lang/x/json`: no whitespace, and the
+## members of an object sorted by key. The same value always gives the same text.
+## It exists because `x/json` v0.3.0 is written for emela 0.26 and does not compile on 0.27.
+## Replace it with `x/json` or the std JSON once one of them supports the pinned emela.
+##
+## Only what the graph needs is here: no floats (the Go side rejects them anyway) and no
+## parsing.
+
+import Std.Map
+
+pub enum Json {
+  Null
+  Boolean(Bool)
+  Integer(Int)
+  Text(String)
+  Items(List[Json])
+  ## Members are sorted by key when written. For a repeated key, the later value is kept.
+  Fields(List[(String, Json)])
+}
+
+pub fn write(value: Json) -> String {
+  value match {
+    Null       -> "null"
+    Boolean(b) -> if b { "true" } else { "false" }
+    Integer(n) -> Int.to_string(n)
+    Text(s)    -> quote(s)
+    Items(xs)  -> "[#{xs.map(write).join(",")}]"
+    Fields(fs) -> {
+      members = Map.from_list(fs).to_list().map(|(key, x)| "#{quote(key)}:#{write(x)}")
+      "{#{members.join(",")}}"
+    }
+  }
+}
+
+fn quote(s: String) -> String {
+  "\"#{s.code_points().map(escaped).join("")}\""
+}
+
+fn escaped(p: Int) -> String {
+  p match {
+    34 -> "\\\""
+    92 -> "\\\\"
+    10 -> "\\n"
+    13 -> "\\r"
+    9  -> "\\t"
+    8  -> "\\b"
+    12 -> "\\f"
+    _ -> if p < 32 {
+      "\\u00#{hex(p / 16)}#{hex(p % 16)}"
+    } else {
+      String.from_code_point(p).or("\u{fffd}")
+    }
+  }
+}
+
+fn hex(d: Int) -> String {
+  "0123456789abcdef".chars().get(d).or("0")
+}
