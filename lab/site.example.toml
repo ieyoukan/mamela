@@ -1,0 +1,38 @@
+# Example lab site definition. Copy to lab/site.local.toml (gitignored) and fill in real values.
+# All values below are fictional. Never commit real hostnames, addresses or tokens.
+# See docs/lab.md.
+
+schema = "mamela-lab/v1"
+
+[proxmox]
+api_url = "https://pve.example.invalid:8006/api2/json"
+node = "pve-node-1"            # the single node used for lab VMs
+token_id = "mamela@pve!lab"
+token_secret_file = "~/.config/mamela/lab-token"   # outside the repository
+tls_ca_file = ""               # empty: system trust store
+
+[boundary]
+pool = "mamela-lab"
+vmid_min = 7000
+vmid_max = 7099
+tag = "mamela-lab"
+
+[placement]
+disk_storage = "local-lvm"
+iso_storage = "local"
+bridge = "vmbr0"
+sdn_zone = "localnetwork"
+
+[budget]
+max_vms = 1
+max_vcpu_per_vm = 1
+max_memory_mib_per_vm = 1024
+max_disk_gib_per_vm = 10
+
+[safety]
+# Host MemAvailable minus the new VM's memory must stay above this.
+min_host_mem_available_mib = 2048
+# Refuse when the disk thin pool would exceed this data usage.
+max_thinpool_data_percent = 80
+# Require the cluster to be quorate before any write.
+require_quorum = true

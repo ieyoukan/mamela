@@ -14,3 +14,6 @@
 /bin/
 /dist/
 /tmp/
+
+# Lab site-specific values (hostnames, addresses, token paths)
+/lab/*.local.toml

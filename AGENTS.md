@@ -1,6 +1,6 @@
 # Agent guidance for Mamela
 
-Mamela is an early-stage, safety-first infrastructure controller, not the upstream Emela compiler. See [docs/architecture.md](docs/architecture.md), [docs/development.md](docs/development.md), and [docs/adr/0001-sqlite.md](docs/adr/0001-sqlite.md) before implementing.
+Mamela is an early-stage, safety-first infrastructure controller, not the upstream Emela compiler. See [docs/architecture.md](docs/architecture.md), [docs/development.md](docs/development.md), [docs/lab.md](docs/lab.md), and [docs/adr/0001-sqlite.md](docs/adr/0001-sqlite.md) before implementing. Design goals: deterministic, human-friendly, safe by default.
 
 ## Development rules
 
@@ -9,11 +9,16 @@ Mamela is an early-stage, safety-first infrastructure controller, not the upstre
 - All real changes run through Go-validated resource schemas, ownership, operation intent, explicit policy decisions and a reconciler/agent adapter.
 - Default-deny destructive changes. Deleting a declaration MUST NOT delete a real VM, disk, package or service.
 - Treat WASM as a sandbox, NOT as proof that an infrastructure operation is safe.
+- Emela v0.27 WASM output can only talk to the host via stdout (user `@export`/`@external` on WASM are compile errors). The Graph ABI is one `mamela-graph/v1` JSON document on stdout, written with the experimental, pinned Pome `github.com/emela-lang/x/json` (no JSON in std yet); Go decodes it strictly. Reject any `main.wasm` whose imports go beyond `wasi:cli/stdout`, `stderr` and `exit`.
+- Evaluation and planning MUST be deterministic: no wall clock, randomness, environment or map iteration order in those paths. Time enters only through observation snapshots / fake clocks. Pin toolchain versions.
+- User-facing output (plan, errors) MUST say what changes, why, and how to resolve it, with stable reason codes.
 - The MVP is single Control Plane with SQLite. Do not silently introduce PostgreSQL, etcd or distributed SQLite.
 - For external API operations, record intent first, re-observe after uncertain outcomes and avoid assuming exactly-once execution.
 - Agent must verify node identity, revision digest/signature, validity and local safety constraints before applying.
 - Test rejection cases and interrupted/retried operations, not only happy paths.
-- No live Proxmox or package-changing tests by default in CI. Require explicit opt-in.
+- No live Proxmox or package-changing tests by default in CI. Require explicit opt-in (`MAMELA_LAB=1`).
+- The lab Proxmox cluster runs unrelated production guests. Only touch guests inside the Mamela pool, VMID range and tag; everything else is `Foreign` and read-only. Run preflight/postflight checks (docs/lab.md).
+- This repository is public: never commit lab hostnames, addresses, guest inventories or tokens. Site values live in gitignored `lab/site.local.toml`.
 - Do not claim conceptual Emela DSL examples in docs are valid syntax or shipped APIs.
 
 ## Emela skills
