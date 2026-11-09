@@ -48,7 +48,7 @@ type API interface {
 	CreateVM(ctx context.Context, node string, params url.Values) (string, error)
 	GrowDisk(ctx context.Context, node string, vmid int, disk, size string) (string, error)
 	StartVM(ctx context.Context, node string, vmid int) (string, error)
-	SetDescription(ctx context.Context, node string, vmid int, description, digest string) error
+	SetMarker(ctx context.Context, node string, vmid int, description, tags, digest string) error
 }
 
 // VMIDs reserves VMIDs by VM name (implemented by store.Store).
@@ -88,7 +88,7 @@ type Config struct {
 	SSHPublicKeys  string
 	Catalog        map[string]Image // nil: the built-in Catalog
 	PollInterval   time.Duration    // default 2s
-	TaskTimeout    time.Duration    // default 20m
+	TaskTimeout    time.Duration    // default 60m (importing a disk can take long)
 	UploadDeadline time.Duration    // default 60m
 }
 
@@ -110,7 +110,8 @@ type lab struct {
 	name   string // the Proxmox name
 	marker marker
 	hasMk  bool
-	owned  bool // marker valid and the reservation for its name is this VMID
+	tagged bool
+	owned  bool // marker, in range, reserved for its name, and tagged unless still creating
 	config proxmox.VMConfig
 }
 
@@ -175,7 +176,11 @@ func (p *Provider) scan(ctx context.Context) ([]lab, error) {
 		}
 		v := lab{vmid: r.VMID, name: r.Name, config: cfg}
 		v.marker, v.hasMk = parseMarker(cfg.String("description"))
-		if v.hasMk && p.inBoundary(r.VMID, cfg.String("tags")) {
+		v.tagged = p.tagged(cfg.String("tags"))
+		// A VM being created has no tag yet: Proxmox refuses tags from a pool-scoped token until
+		// the VM is in the pool, so finish sets the tag together with the ready marker. A ready VM
+		// without the tag has been changed by someone else and is not Mamela's.
+		if v.hasMk && p.inRange(r.VMID) && (v.tagged || v.marker.State == stateCreating) {
 			reserved, ok, err := p.VMIDs.VMID(ctx, v.marker.Name)
 			if err != nil {
 				return nil, err
@@ -188,9 +193,12 @@ func (p *Provider) scan(ctx context.Context) ([]lab, error) {
 	return out, nil
 }
 
-func (p *Provider) inBoundary(vmid int, tags string) bool {
-	return vmid >= p.Config.VMIDMin && vmid <= p.Config.VMIDMax &&
-		slices.Contains(strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' }), p.Config.Tag)
+func (p *Provider) inRange(vmid int) bool {
+	return vmid >= p.Config.VMIDMin && vmid <= p.Config.VMIDMax
+}
+
+func (p *Provider) tagged(tags string) bool {
+	return slices.Contains(strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' }), p.Config.Tag)
 }
 
 // Apply performs one step. Only create-vm and grow-vm-disk exist; anything else is refused before
@@ -289,10 +297,10 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 		return fmt.Errorf("VM %s: %w", name, err)
 	}
 	params := url.Values{
-		"vmid":        {strconv.Itoa(vmid)},
-		"name":        {name},
-		"pool":        {p.Config.Pool},
-		"tags":        {p.Config.Tag},
+		"vmid": {strconv.Itoa(vmid)},
+		"name": {name},
+		"pool": {p.Config.Pool},
+		// No tags: Proxmox checks them before the VM is in the pool. finish adds the tag.
 		"description": {marker{Name: name, Image: spec.Image, State: stateCreating}.String()},
 		"ostype":      {"l26"},
 		"cores":       {strconv.FormatInt(spec.CPU, 10)},
@@ -354,7 +362,7 @@ func (p *Provider) finish(ctx context.Context, vmid int, name string, spec graph
 	}
 	if m.State != stateReady {
 		m.State = stateReady
-		if err := p.API.SetDescription(ctx, p.Config.Node, vmid, m.String(), cfg.String("digest")); err != nil {
+		if err := p.API.SetMarker(ctx, p.Config.Node, vmid, m.String(), p.Config.Tag, cfg.String("digest")); err != nil {
 			return writeErr(fmt.Sprintf("mark VM %s ready", name), err)
 		}
 	}
@@ -491,7 +499,7 @@ func (p *Provider) sleep(ctx context.Context, d time.Duration) error {
 
 func (p *Provider) taskTimeout() time.Duration {
 	if p.Config.TaskTimeout == 0 {
-		return 20 * time.Minute
+		return 60 * time.Minute
 	}
 	return p.Config.TaskTimeout
 }

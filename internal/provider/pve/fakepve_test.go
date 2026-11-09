@@ -235,6 +235,9 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.creates++
+	// Proxmox checks tag permissions on /vms/<vmid> without the pool, at the end of the create
+	// task and before it adds the VM to the pool: a pool-scoped token cannot create with tags.
+	tagsAtCreate := form.Get("tags") != ""
 	cfg := map[string]string{}
 	for k := range form {
 		if k != "vmid" && k != "pool" {
@@ -246,6 +249,9 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 	f.vms[id] = vm
 	upid := f.task(2)
 	switch {
+	case tagsAtCreate:
+		f.failed[upid] = fmt.Sprintf("unable to create VM %d - 403 Permission check failed (/vms/%d, VM.Config.Options)", id, id)
+		delete(f.vms, id)
 	case f.createTaskFails:
 		f.failed[upid] = "unable to create VM - import failed"
 		delete(f.vms, id) // Proxmox removes a VM whose create failed
@@ -280,11 +286,16 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 			return
 		}
 		for k := range r.PostForm {
-			if k != "description" && k != "digest" {
+			if k != "description" && k != "tags" && k != "digest" {
 				f.t.Errorf("unexpected config change %s", k)
 			}
 		}
-		vm.config["description"] = r.PostForm.Get("description")
+		if _, ok := r.PostForm["description"]; ok {
+			vm.config["description"] = r.PostForm.Get("description")
+		}
+		if _, ok := r.PostForm["tags"]; ok {
+			vm.config["tags"] = r.PostForm.Get("tags")
+		}
 		vm.version++
 		reply(w, nil)
 	case what == "status/current" && r.Method == http.MethodGet:

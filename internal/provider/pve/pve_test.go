@@ -365,7 +365,12 @@ func TestOnlyFullyMarkedVMsAreManaged(t *testing.T) {
 	add(7006, "copied", "mamela-lab", fmt.Sprintf(marker, "copied"))         // marker but no reservation
 	add(8000, "outside", "mamela-lab", fmt.Sprintf(marker, "outside"))       // outside the VMID range
 	add(7007, "untagged", "something-else", fmt.Sprintf(marker, "untagged")) // without the tag
-	if _, err := e.store.AllocateVMID(e.ctx, "outside", 8000, 8000, func(context.Context, int) (bool, error) { return true, nil }); err != nil {
+	free := func(context.Context, int) (bool, error) { return true, nil }
+	if _, err := e.store.AllocateVMID(e.ctx, "outside", 8000, 8000, free); err != nil {
+		t.Fatal(err)
+	}
+	// Reserved, marked ready and in range, but someone removed the tag: no longer Mamela's.
+	if _, err := e.store.AllocateVMID(e.ctx, "untagged", 7007, 7007, free); err != nil {
 		t.Fatal(err)
 	}
 
@@ -385,6 +390,35 @@ func TestOnlyFullyMarkedVMsAreManaged(t *testing.T) {
 	}
 	if e.fake.creates != 0 {
 		t.Fatal("created a VM")
+	}
+}
+
+// Proxmox refuses tags from a pool-scoped token until the create task has put the VM in the pool,
+// so a VM being created has no tag yet. It is still ours (marker "creating" and the reservation),
+// and finishing it adds the tag together with the ready marker.
+func TestUntaggedVMBeingCreatedIsResumedAndTagged(t *testing.T) {
+	e := newEnv(t)
+	free := func(context.Context, int) (bool, error) { return true, nil }
+	if _, err := e.store.AllocateVMID(e.ctx, "web", 7000, 7000, free); err != nil {
+		t.Fatal(err)
+	}
+	e.fake.vms[7000] = &fakeVM{vmid: 7000, pool: "lab", status: "stopped", config: map[string]string{
+		"name": "web", "cores": "1", "memory": "1024", "scsi0": "local-lvm:vm-7000-disk-0,size=3584M",
+		"description": "Managed by Mamela. Do not edit the lines below.\nmamela-name: web\nmamela-image: ubuntu-24.04\nmamela-state: creating\n"}}
+
+	snap, err := e.p.Observe(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := snap.VMs["web"]; ok {
+		t.Fatalf("a VM being created is observed as %+v, want absent so that create resumes it", snap.VMs["web"])
+	}
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	vm := e.fake.vms[7000]
+	if e.fake.creates != 0 || vm.config["tags"] != "mamela-lab" || !strings.Contains(vm.config["description"], "mamela-state: ready") {
+		t.Fatalf("creates %d tags %q description %q", e.fake.creates, vm.config["tags"], vm.config["description"])
 	}
 }
 

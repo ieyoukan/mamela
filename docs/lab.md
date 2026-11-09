@@ -106,7 +106,11 @@ Token の秘密は作成時に一度だけ表示される。`site.local.toml` �
 1. **image は Mamela のコードに固定する**（`pve.Catalog`）。URL、sha256、サイズ、最小ディスクを持つ。catalog にない名前は拒否する。image の更新は、レビューされるコードの変更になる。
 2. **一度だけアップロードする。** Mamela を動かすマシンが image をダウンロードし、サイズ・sha256・qcow2 のヘッダーを確かめてキャッシュする（`~/.cache/mamela/images` など。開くたびに確かめ直す）。image 用ストレージに `import` としてアップロードし、Proxmox にも sha256 を確かめさせる。ファイル名に sha256 を含めるので、別の中身と取り違えない。
 3. **image から直接 VM を作る。** `POST /nodes/{node}/qemu` に `scsi0: <disk storage>:0,import-from=<image storage>:import/<file>` を渡すと、Proxmox が image を新しいディスクに複製する。Proxmox の cloud-init ドライブ（`ide2: <disk storage>:cloudinit`）に、ユーザー・SSH 公開鍵・DHCP を設定する。
-4. ディスクを宣言のサイズまで広げ、起動し、所有マーカーを `ready` にする。
+4. ディスクを宣言のサイズまで広げ、起動し、タグと所有マーカー `ready` を一度の変更で付ける。
+
+作成時にはタグを付けない。Proxmox は作成タスクの最後に、VM を pool に入れる**前**に `/vms/<vmid>` の `VM.Config.Options` でタグの権限を確かめる（`PVE/GuestHelpers.pm` の `assert_tag_permissions`。pool を渡さない）。そのため pool にだけ権限を持つ Token がタグ付きで作ると、ディスクの複製まで終えたあとで 403 になり、VM ごと消される（L1 の最初の実行で起きた）。pool に入ったあとならタグを付けられる。
+
+image からディスクへの複製は遅いことがある。L1 の最初の実行では 3.5 GiB に約 20 分かかった。作成タスクは最大 60 分待ち、それを過ぎたら結果不明として止める。
 
 image のバージョンは宣言の `image` と catalog で決まるので、同じ宣言からは同じ image の VM ができる。
 
@@ -122,6 +126,8 @@ image のバージョンは宣言の `image` と catalog で決まるので、�
 - VMID は `site.local.toml` の予約範囲だけを使う。`/cluster/nextid` に次の ID を選ばせることはしない（範囲外の ID になり得るため）。範囲内の候補が空いているかを `/cluster/nextid?vmid=<id>` で確かめ、空いている最小の ID を DB に予約する。
 - 予約範囲に、Mamela の所有マーカーを持たないゲストが一つでもあれば、preflight で停止する。
 - 所有マーカーは VM の説明（description）に書く。`mamela-name`、`mamela-image`、`mamela-state`（`creating` / `ready`）を持つ。
+- タグは完成時（`ready` と同時）に付く。作成途中（`creating`）の VM にはタグがない。`ready` なのにタグのない VM は誰かが変えたものとして管理しない（`Foreign`）。
+- preflight / postflight の「検証環境の内側」は pool と VMID 予約範囲で決める（タグは問わない）。作成途中の VM を続きから仕上げられるようにするためである。管理するかどうか（マーカー・予約・タグ）は provider が判断する。
 
 ## 5. preflight / postflight
 

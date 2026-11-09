@@ -166,9 +166,12 @@ func hasTag(tags, tag string) bool {
 	return slices.Contains(strings.FieldsFunc(tags, func(r rune) bool { return r == ';' || r == ',' || r == ' ' }), tag)
 }
 
-// IsLab reports whether a guest is inside the lab boundary: in the pool, in the VMID range and tagged.
+// IsLab reports whether a guest is inside the lab boundary: in the pool and in the VMID range. The
+// tag is not required here: Proxmox lets a pool-scoped token tag a VM only after its create task
+// has put it in the pool, so Mamela tags a VM when it finishes it, and a half-finished one is still
+// a lab guest. Whether Mamela manages a lab guest (marker, reservation, tag) is the provider's call.
 func (s *Site) IsLab(g Guest) bool {
-	return g.Pool == s.Boundary.Pool && s.inRange(g.VMID) && hasTag(g.Tags, s.Boundary.Tag)
+	return g.Pool == s.Boundary.Pool && s.inRange(g.VMID)
 }
 
 // Check evaluates the facts for creating one more lab VM of the maximum budgeted size.
@@ -251,9 +254,9 @@ func CheckFor(s *Site, f *Facts, newVMs int) []Finding {
 		inPool := g.Pool == s.Boundary.Pool
 		switch {
 		case s.inRange(g.VMID) && !s.IsLab(g):
-			add("LAB-0301", Block, "guest %d (%s) is in the lab VMID range but is not a lab guest (pool %q, tags %q)", g.VMID, g.Name, g.Pool, g.Tags)
+			add("LAB-0301", Block, "guest %d (%s) is in the lab VMID range but not in pool %s (pool %q): someone else's guest, or a create still running", g.VMID, g.Name, s.Boundary.Pool, g.Pool)
 		case inPool && !s.IsLab(g):
-			add("LAB-0302", Block, "guest %d (%s) is in the lab pool but outside the VMID range or without the tag", g.VMID, g.Name)
+			add("LAB-0302", Block, "guest %d (%s) is in the lab pool but outside the VMID range", g.VMID, g.Name)
 		case s.IsLab(g):
 			labCount++
 		}
@@ -338,7 +341,11 @@ func Compare(s *Site, before Baseline, after *Facts) []Finding {
 		known[b.VMID] = true
 	}
 	for _, g := range after.Guests {
-		if !known[g.VMID] && !s.IsLab(g) {
+		switch {
+		case known[g.VMID] || s.IsLab(g):
+		case s.inRange(g.VMID):
+			add("LAB-0405", Warn, "guest %d (%s) is in the lab VMID range but not in pool %s: a create that has not finished (Proxmox adds the VM to the pool at the end), or someone else's guest", g.VMID, g.Name, s.Boundary.Pool)
+		default:
 			add("LAB-0405", Warn, "a new guest %d (%s) appeared outside the lab (not created by Mamela?)", g.VMID, g.Name)
 		}
 	}

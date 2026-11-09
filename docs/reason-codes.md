@@ -98,12 +98,12 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | LAB-0201 | BLOCK | 予算上限の VM を作るとノードの空きメモリがしきい値を下回る |
 | LAB-0202 | BLOCK | 予算上限のディスクを足すと thin pool の使用率が上限を超える |
 | LAB-0203 | BLOCK | cloud image 用ストレージが content type `import` を受け付けない（bootstrap をもう一度実行する） |
-| LAB-0301 | BLOCK | VMID 予約範囲に、検証環境のものでないゲストがいる |
-| LAB-0302 | BLOCK | pool の中に、範囲外かタグのないゲストがいる |
+| LAB-0301 | BLOCK | VMID 予約範囲に、pool の外のゲストがいる（他人のゲストか、作成タスクが終わっていない） |
+| LAB-0302 | BLOCK | pool の中に、VMID 予約範囲外のゲストがいる |
 | LAB-0303 | BLOCK | VM 数の予算を超える |
 | LAB-0400 | ok | 管理外のゲストはすべて変わっていない |
 | LAB-0401 | BLOCK | 管理外のゲストが消えた |
 | LAB-0402 | BLOCK | 管理外のゲストの状態（running / stopped）が変わった |
 | LAB-0403 | BLOCK | 管理外のゲストの設定 digest が変わった |
 | LAB-0404 | BLOCK | 管理外のゲストが再起動した（uptime が減った） |
-| LAB-0405 | warn | 管理外に新しいゲストが現れた（Mamela 以外が作った？） |
+| LAB-0405 | warn | 管理外に新しいゲストが現れた（Mamela 以外が作った？）。予約範囲内なら、まだ pool に入っていない作成途中の VM の可能性がある |

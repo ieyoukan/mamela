@@ -387,10 +387,12 @@ func (c *Client) StartVM(ctx context.Context, node string, vmid int) (string, er
 	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/start", nodePath(node), vmid), url.Values{}, &upid)
 }
 
-// SetDescription replaces a VM's description (PUT .../config, applied at once). digest makes the
-// write conditional: Proxmox refuses it if the configuration changed since it was read.
-func (c *Client) SetDescription(ctx context.Context, node string, vmid int, description, digest string) error {
-	v := url.Values{"description": {description}}
+// SetMarker replaces a VM's description and tags in one change (PUT .../config, applied at once).
+// digest makes the change fail if the configuration changed since it was read. Proxmox checks tag
+// permissions on /vms/<vmid> without the pool, so a pool-scoped token can set tags only once the
+// VM is in the pool, i.e. after its create task has ended.
+func (c *Client) SetMarker(ctx context.Context, node string, vmid int, description, tags, digest string) error {
+	v := url.Values{"description": {description}, "tags": {tags}}
 	if digest != "" {
 		v.Set("digest", digest)
 	}

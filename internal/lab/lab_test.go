@@ -153,9 +153,13 @@ func TestCheckBlocks(t *testing.T) {
 		"low memory":        {func(f *Facts) { f.MemAvailable = 2500 << 20 }, "LAB-0201", Block},
 		"thin pool full":    {func(f *Facts) { f.DiskUsed = 75 << 30 }, "LAB-0202", Block},
 		"squatter in range": {func(f *Facts) { f.Guests = append(f.Guests, Guest{VMID: 7005, Name: "someone"}) }, "LAB-0301", Block},
-		"untagged in pool": {func(f *Facts) {
+		"pool outside range": {func(f *Facts) {
+			f.Guests = append(f.Guests, Guest{VMID: 150, Pool: "mamela-lab", Tags: "mamela-lab", Name: "x"})
+		}, "LAB-0302", Block},
+		// A VM whose create has not been finished has no tag yet; it is a lab guest and counts.
+		"untagged in pool counts": {func(f *Facts) {
 			f.Guests = append(f.Guests, Guest{VMID: 7001, Pool: "mamela-lab", Name: "x"})
-		}, "LAB-0301", Block},
+		}, "LAB-0303", Block},
 		"budget full": {func(f *Facts) {
 			f.Guests = append(f.Guests, Guest{VMID: 7000, Pool: "mamela-lab", Tags: "mamela-lab", Name: "lab-1"})
 		}, "LAB-0303", Block},
@@ -187,11 +191,12 @@ func TestCompare(t *testing.T) {
 		edit func(*Facts)
 		code string
 	}{
-		"disappeared":  {func(f *Facts) { f.Guests = f.Guests[1:] }, "LAB-0401"},
-		"stopped":      {func(f *Facts) { f.Guests[0].Status = "stopped" }, "LAB-0402"},
-		"reconfigured": {func(f *Facts) { f.Guests[0].ConfigDigest = "other" }, "LAB-0403"},
-		"restarted":    {func(f *Facts) { f.Guests[0].Uptime = 5 }, "LAB-0404"},
-		"new guest":    {func(f *Facts) { f.Guests = append(f.Guests, Guest{VMID: 150, Name: "new"}) }, "LAB-0405"},
+		"disappeared":         {func(f *Facts) { f.Guests = f.Guests[1:] }, "LAB-0401"},
+		"stopped":             {func(f *Facts) { f.Guests[0].Status = "stopped" }, "LAB-0402"},
+		"reconfigured":        {func(f *Facts) { f.Guests[0].ConfigDigest = "other" }, "LAB-0403"},
+		"restarted":           {func(f *Facts) { f.Guests[0].Uptime = 5 }, "LAB-0404"},
+		"new guest":           {func(f *Facts) { f.Guests = append(f.Guests, Guest{VMID: 150, Name: "new"}) }, "LAB-0405"},
+		"create not finished": {func(f *Facts) { f.Guests = append(f.Guests, Guest{VMID: 7003, Name: "web"}) }, "LAB-0405"},
 	} {
 		f := healthyFacts()
 		f.Guests[0].Uptime, f.Guests[1].Uptime = 1100, 2100
