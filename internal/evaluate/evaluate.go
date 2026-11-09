@@ -1,8 +1,9 @@
 // Package evaluate turns an Emela Pome into a validated Resource Graph without side effects.
 //
 // Steps:
-//  1. build: `emela build --target wasm` with no network (EMELA_POMEPROXY=off), a clean
-//     environment and an output directory outside the source tree;
+//  1. build: check the cached dependencies against Pome.lock (`emela pome verify`), then
+//     `emela build --target wasm` with no network (EMELA_POMEPROXY=off), a clean environment and
+//     an output directory outside the source tree;
 //  2. inspect: read the component's top-level imports and refuse anything beyond
 //     stdout/stderr/exit (component.EvaluationPolicy) before running it;
 //  3. run: `wasmtime run` with no environment, no stdin, no directories, no network, and limits on
@@ -26,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/BurntSushi/toml"
 
 	"github.com/ieyoukan/mamela/internal/component"
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -170,14 +173,18 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 
 	ctx, cancel := context.WithTimeout(ctx, e.Limits.BuildTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, e.Toolchain.Emela, "build", "--target", "wasm", "--out-dir", out, abs)
-	cmd.Dir = work
-	cmd.Env = minimalEnv([]string{
+	env := minimalEnv([]string{
 		"HOME=" + home,
 		"EMELA_POMEPROXY=off",
 		"EMELA_POMESUMDB=off",
 		"EMELA_POME_CACHE=" + cache,
 	})
+	if err := e.verifyDependencies(ctx, abs, env); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, e.Toolchain.Emela, "build", "--target", "wasm", "--out-dir", out, abs)
+	cmd.Dir = work
+	cmd.Env = env
 	var diag limitedBuffer
 	diag.max = e.Limits.MaxStderrBytes
 	cmd.Stdout = &diag
@@ -192,6 +199,13 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 		if strings.TrimSpace(detail) == "" {
 			detail = err.Error()
 		}
+		if strings.Contains(detail, "nowhere to get it from") {
+			return "", &Error{Code: CodeBuildFailed, Stage: StageBuild,
+				Message: "a dependency in Pome.lock is not in the Pome cache " + cache + " (nothing is fetched while evaluating)",
+				Hint: "fetch it with `emela pome install` in the Pome (scripts/install-toolchain.sh does this for this " +
+					"repository), and point EMELA_POME_CACHE or --pome-cache at that cache",
+				Detail: detail}
+		}
 		return "", &Error{Code: CodeBuildFailed, Stage: StageBuild,
 			Message: "the Emela source did not compile",
 			Hint:    "fix the errors below; `emela check` in the Pome shows the same diagnostics",
@@ -204,6 +218,63 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 			Hint:    "the Pome needs src/main.emel with a main function", Detail: diag.String()}
 	}
 	return wasm, nil
+}
+
+// verifyDependencies checks the cached dependencies of the Pome in dir against the hashes in its
+// Pome.lock. `emela build` compiles whatever the cache holds without checking it, so without this
+// a modified cache could change what a declaration means while its source and lock stay the same.
+// A dependency missing from the cache is left to the build, which fails on it (there is no network).
+func (e *Evaluator) verifyDependencies(ctx context.Context, dir string, env []string) error {
+	n, err := lockedDependencies(dir)
+	if err != nil {
+		return &Error{Code: CodeBuildFailed, Stage: StageBuild,
+			Message: "Pome.lock cannot be read: " + err.Error(),
+			Hint:    "run `emela pome install` in the Pome to write it again"}
+	}
+	if n == 0 {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, e.Toolchain.Emela, "pome", "verify")
+	cmd.Dir = dir
+	cmd.Env = env
+	var diag limitedBuffer
+	diag.max = e.Limits.MaxStderrBytes
+	cmd.Stdout = &diag
+	cmd.Stderr = &diag
+	err = cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return &Error{Code: CodeBuildTimeout, Stage: StageBuild,
+			Message: fmt.Sprintf("checking the dependencies did not finish within %s", e.Limits.BuildTimeout),
+			Detail:  diag.String()}
+	}
+	if err != nil {
+		return &Error{Code: CodeDependencyMismatch, Stage: StageBuild,
+			Message: "the cached dependencies differ from the hashes in Pome.lock; nothing was built",
+			Hint: "the dependency cache was modified or damaged: remove the entries named below from it " +
+				"and fetch them again with `emela pome install` (scripts/install-toolchain.sh does this for this repository)",
+			Detail: diag.String()}
+	}
+	return nil
+}
+
+// lockedDependencies counts the dependencies recorded in dir/Pome.lock (0 when there is no lock).
+func lockedDependencies(dir string) (int, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "Pome.lock"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var lock struct {
+		Pome []struct {
+			Path string `toml:"path"`
+		} `toml:"pome"`
+	}
+	if _, err := toml.Decode(string(data), &lock); err != nil {
+		return 0, err
+	}
+	return len(lock.Pome), nil
 }
 
 func (e *Evaluator) run(ctx context.Context, wasmPath string) ([]byte, string, error) {

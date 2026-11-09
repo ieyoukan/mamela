@@ -22,7 +22,7 @@ go run ./cmd/mamela eval --json examples/homelab | jq .
 | 事柄 | 内容 | 対応 |
 |---|---|---|
 | ホストとの関数呼び出し | ユーザーの `@export` / `@external` は WASM でコンパイルエラー | stdout に JSON 1 文書を書く方式（[graph-schema.md](graph-schema.md)） |
-| JSON | std にない。`x/json` v0.3.0 は 0.26 向けで、0.27 ではコンパイルできない（`fn(x) { }` 形式の無名関数が E0148） | `pome/mamela/src/json.emel` に小さな書き出しを持つ。形式は `x/json` と同じ |
+| JSON | std にない。`x/json` は v0.3.1 で 0.27 に対応した（v0.3.0 は `fn(x) { }` 形式の無名関数が E0148 でコンパイルできない） | `x/json` v0.3.1 を使う。それまで持っていた同じ形式の書き出しと Graph の digest は同じ |
 | 無名関数 | `|x| body` で書く | — |
 | `escape` | 予約語（エラー処理の構文）。関数名に使えない | — |
 | `++` | 文字列連結の演算子はない | `String.concat` / `List.join` |
@@ -49,6 +49,8 @@ go run ./cmd/mamela eval --json examples/homelab | jq .
 
 - `EMELA_POMEPROXY=off` で取得を止め、`EMELA_POME_CACHE` に事前取得した依存だけを使える。キャッシュにない依存は `nowhere to get it from (EMELA_POMEPROXY)` でビルドが失敗する。
 - `[replace]` でパス指定した依存（`pome/mamela`）は lock に hash が載らない。公開して lock で固定するまでは、リポジトリ内のソースそのものが正。
+- **`emela build` はキャッシュの中身を lock の hash と照合しない。** `x/json` の `write.emel` を書き換えたキャッシュでも、エラーなくビルドされた（WASM の digest だけが変わる）。照合するのは `emela pome verify` で、`h1:… in the cache, h1:… in Pome.lock` と違いを示して失敗する。評価器はビルドの前に必ず verify する（`MAM-EVAL-0103`）。
+- `emela pome verify` はキャッシュにある依存だけを照合し、キャッシュにない依存は成功扱いにする（欠けた依存はビルドが失敗するので、両方を合わせて使う）。`[pome]` のない Pome.toml には失敗するので、lock に依存が載っているときだけ実行する。
 
 ### Go 1.27
 

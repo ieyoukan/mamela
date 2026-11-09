@@ -1,8 +1,10 @@
 package evaluate
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,9 +33,35 @@ func toolchainForTest(t *testing.T) Toolchain {
 	return tc
 }
 
+// examplePome is the dependency every example needs in the Pome cache.
+const examplePome = "github.com/emela-lang/x/json@v0.3.1"
+
+// pomeCacheForTest returns the cache of fetched dependencies (EMELA_POME_CACHE, normally
+// <repo>/.tools/pomes, filled by scripts/install-toolchain.sh).
+func pomeCacheForTest() string {
+	if dir := os.Getenv("EMELA_POME_CACHE"); dir != "" {
+		return dir
+	}
+	dir, _ := filepath.Abs(filepath.Join("..", "..", ".tools", "pomes"))
+	return dir
+}
+
+// requirePomeCache skips (or fails under MAMELA_REQUIRE_TOOLCHAIN=1) when the dependencies of the
+// examples have not been fetched.
+func requirePomeCache(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(pomeCacheForTest(), filepath.FromSlash(examplePome))); err != nil {
+		if os.Getenv("MAMELA_REQUIRE_TOOLCHAIN") == "1" {
+			t.Fatalf("Pome cache required: %v", err)
+		}
+		t.Skipf("dependencies not fetched (run scripts/install-toolchain.sh): %v", err)
+	}
+}
+
 func testEvaluator(t *testing.T) *Evaluator {
 	t.Helper()
 	return &Evaluator{
+		PomeCache: pomeCacheForTest(),
 		Toolchain: toolchainForTest(t),
 		Limits: Limits{
 			BuildTimeout:   2 * time.Minute,
@@ -47,6 +75,7 @@ func testEvaluator(t *testing.T) *Evaluator {
 
 func TestEvaluateHomelab(t *testing.T) {
 	t.Parallel()
+	requirePomeCache(t)
 	e := testEvaluator(t)
 	res, err := e.EvaluateTwice(context.Background(), filepath.Join("..", "..", "examples", "homelab"))
 	if err != nil {
@@ -73,6 +102,7 @@ func TestEvaluateHomelab(t *testing.T) {
 
 func TestBuildIsReproducible(t *testing.T) {
 	t.Parallel()
+	requirePomeCache(t)
 	e := testEvaluator(t)
 	dir := filepath.Join("..", "..", "examples", "homelab")
 	a, err := e.Evaluate(context.Background(), dir)
@@ -86,6 +116,61 @@ func TestBuildIsReproducible(t *testing.T) {
 	if a.WasmDigest != b.WasmDigest {
 		t.Errorf("two builds of the same source gave different main.wasm: %s vs %s", a.WasmDigest, b.WasmDigest)
 	}
+}
+
+func TestModifiedDependencyCacheIsRejected(t *testing.T) {
+	t.Parallel()
+	requirePomeCache(t)
+	e := testEvaluator(t)
+	// A copy of the cache in which x/json writes null differently. The lock and the source of the
+	// example are unchanged, so only the hashes in Pome.lock can tell.
+	cache := filepath.Join(t.TempDir(), "pomes")
+	if err := copyTree(pomeCacheForTest(), cache); err != nil {
+		t.Fatal(err)
+	}
+	write := filepath.Join(cache, filepath.FromSlash(examplePome), "src", "write.emel")
+	src, err := os.ReadFile(write)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(write, bytes.Replace(src, []byte(`"null"`), []byte(`"NULL"`), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.PomeCache = cache
+	res, err := e.Evaluate(context.Background(), filepath.Join("..", "..", "examples", "homelab"))
+	var ee *Error
+	if !errors.As(err, &ee) || ee.Code != CodeDependencyMismatch {
+		t.Fatalf("want %s, got %v (result %+v)", CodeDependencyMismatch, err, res)
+	}
+	if !strings.Contains(ee.Detail, "github.com/emela-lang/x/json v0.3.1") {
+		t.Errorf("the detail does not name the modified dependency: %q", ee.Detail)
+	}
+}
+
+// copyTree copies a directory of regular files, making the copy writable (the Pome cache is
+// read-only).
+func copyTree(from, to string) error {
+	return filepath.WalkDir(from, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(from, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(to, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s is not a regular file", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 func TestEvaluateAcceptsDiagnosticsOnStderr(t *testing.T) {
@@ -105,10 +190,11 @@ func TestEvaluateAcceptsDiagnosticsOnStderr(t *testing.T) {
 
 func TestEvaluateRejects(t *testing.T) {
 	tests := []struct {
-		dir    string
-		code   Code
-		graph  graph.Code // set when the failure is in the graph itself
-		detail string     // a substring the diagnostics must contain, to pin the reason
+		dir     string
+		code    Code
+		graph   graph.Code // set when the failure is in the graph itself
+		detail  string     // a substring the diagnostics must contain, to pin the reason
+		noCache bool       // build with an empty Pome cache instead of the shared one
 	}{
 		{dir: "uses-env", code: CodeImportDenied},
 		{dir: "uses-random", code: CodeImportDenied},
@@ -120,7 +206,8 @@ func TestEvaluateRejects(t *testing.T) {
 		{dir: "defect", code: CodeProgramDefect, detail: "division by zero"},
 		{dir: "compile-error", code: CodeBuildFailed, detail: "undefined_function"},
 		// The dependency is not cached and fetching is off: the build must not reach the network.
-		{dir: "needs-fetch", code: CodeBuildFailed, detail: "nowhere to get it from"},
+		// Its lock names a dependency that is in no cache: the build must fail, never fetch.
+		{dir: "needs-fetch", code: CodeBuildFailed, detail: "nowhere to get it from", noCache: true},
 		{dir: "not-json", graph: graph.CodeInvalidJSON},
 		{dir: "two-documents", graph: graph.CodeTrailingData},
 		{dir: "invalid-graph", graph: graph.CodeInvalidName},
@@ -129,6 +216,9 @@ func TestEvaluateRejects(t *testing.T) {
 		t.Run(tt.dir, func(t *testing.T) {
 			t.Parallel()
 			e := testEvaluator(t)
+			if tt.noCache {
+				e.PomeCache = t.TempDir()
+			}
 			start := time.Now()
 			res, err := e.Evaluate(context.Background(), filepath.Join("testdata", tt.dir))
 			if err == nil {

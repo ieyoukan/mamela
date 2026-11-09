@@ -92,7 +92,7 @@ AI / Human / Git
 |---|---|
 | DSL | Emela v0.27 系（`.emel`、Pome）。バージョン固定 |
 | DSL 実行 | WASM（WASI 0.3 component）+ Wasmtime CLI（49 以上、固定バージョン）の隔離子プロセス |
-| Emela → Go の受け渡し | stdout に JSON 1 文書 `mamela-graph/v1`（Emela 側は `pome/mamela` の小さな JSON 書き出し、Go 側は `encoding/json/v2`。§9.2） |
+| Emela → Go の受け渡し | stdout に JSON 1 文書 `mamela-graph/v1`（Emela 側は `x/json`（v0.3.1）、Go 側は `encoding/json/v2`。§9.2） |
 | Control Plane / CLI | Go |
 | 状態ストア | SQLite（WAL、単一 writer を想定） |
 | VM Provider | Proxmox VE API（Mamela 専用 pool に限定した API Token） |
@@ -289,6 +289,7 @@ APT インストールは maintainer script の特権実行を含み得るため
 ### ビルドのサプライチェーン
 
 - `emela build` は Pome の依存（`x/json` など）を取得し得る。Mamela では `Pome.lock` を必須とし（lock がなければ emela 自体がエラーにする）、依存は事前取得したキャッシュから、ネットワークなしでビルドする。`EMELA_POMEPROXY=off` と `EMELA_POME_CACHE` で実現でき、キャッシュにない依存はビルドが失敗する（ステップ 0 で確認済み。[emela-wasm.md](emela-wasm.md)）。
+- **`emela build` はキャッシュの中身を `Pome.lock` の hash と照合しない**（中身を書き換えたキャッシュからでも、そのままビルドする。実測）。そのため評価の前に必ず `emela pome verify` を実行し、違えば何もビルドせずに止める（`MAM-EVAL-0103`）。キャッシュは `scripts/install-toolchain.sh` が proxy と sumdb を通して `.tools/pomes` に取得する。
 - emela / wasmtime のバイナリは checksum を固定して導入する。
 
 ## 8. API / CLI（設計案）
@@ -330,7 +331,7 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 - ユーザーが書く `@export(wasm, ...)` と `@external(wasm, ...)` は WASM ではコンパイルエラー。独自 WIT の宣言も未対応（upstream open question #56）。**ホストと関数単位でやり取りする手段は現時点でない。**
 - `emela run` は `wasmtime run -S p3=y main.wasm` を実行する。Wasmtime 49 以上が必要。
 - v0.26 で `Std.Bytes` が入った。
-- JSON は std にはまだない（spec では `derive Encode, Decode` で std に入れる方針だが、導出の構文は未確定）。upstream の実験用 Pome `github.com/emela-lang/x/json`（v0.3.0）は **emela 0.26 向けで、0.27 ではコンパイルできない**（0.27 で無名関数が `|x| body` 構文になり、`fn(x) { }` が E0148 になったため）。x の main もまだ 0.27 に対応していない（2026-11-08 時点）。
+- JSON は std にはまだない（spec では `derive Encode, Decode` で std に入れる方針だが、導出の構文は未確定）。upstream の実験用 Pome `github.com/emela-lang/x/json` は v0.3.1（2026-11-09）で 0.27 に対応した（v0.3.0 は 0.26 向けで、0.27 ではコンパイルできない）。
 - 終了コード: 正常 0、error が残れば 1（`error: ...` を stderr へ）、defect が残れば 101。
 - 0.y の間はマイナー更新で破壊的変更があり得る（v0.27 でも `Exit` の移動など）。バージョン固定が前提。
 
@@ -338,7 +339,7 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 
 上記より、当面の ABI は **`wasi:cli/run` を実行し、stdout に書かれた JSON 1 文書を読む** 方式に決める。
 
-- Emela 側は `pome/mamela` に持つ小さな JSON 書き出し（`Mamela.Json`）を使う。形式は `x/json` と同じ（空白なし、キーはソート順）で、出力は決定的。`x/json` か std の JSON が固定バージョンの emela に対応したら置き換える。
+- Emela 側は `x/json`（v0.3.1、`Json.to_string`）で書く。空白なし、キーは `Map` の順（ソート順）で、出力は決定的。`x/json` が 0.27 に対応するまでの間は `pome/mamela` に同じ形式の小さな書き出しを持っていたが、置き換えても Graph の digest は変わらなかった。std に JSON が入ったら、そちらに移る。
 - 文書は `{"schema":"mamela-graph/v1","resources":[...]}` の形。途中で切れた出力は JSON として不正になるため検出できる。
 - 数値は整数だけを使う（浮動小数点の表記揺れを避ける）。単位はフィールド名で表す（`memoryMiB` など）。
 - Go 側は `encoding/json/v2`（Go 1.27 で標準）で厳格にデコードする。未知のフィールド、重複キー、小数・指数表記の数値、不正な UTF-8、末尾の余分なデータ、未知の `schema` はすべて拒否する。
@@ -422,7 +423,7 @@ mamela/
 
 ## 13. 未決事項
 
-- `x/json` または std の JSON への移行時期。upstream が独自 WIT に対応した後の正式 ABI。
+- std の JSON への移行時期。upstream が独自 WIT に対応した後の正式 ABI。
 - emela コンパイラ自体の隔離（コンテナ / 別ユーザー / VM 内でのビルド）。
 - Node Agent のローカルキャッシュ方式と署名・証明書・鍵のライフサイクル。
 - APT 操作の privilege separation と sandbox / 保守スクリプトの扱い。

@@ -21,6 +21,18 @@ func toolchainDir(t *testing.T) string {
 		}
 		t.Skipf("toolchain not installed: %v", err)
 	}
+	// The examples need x/json from the Pome cache; the CLI finds it through EMELA_POME_CACHE.
+	cache := os.Getenv("EMELA_POME_CACHE")
+	if cache == "" {
+		cache, _ = filepath.Abs(filepath.Join("..", "..", ".tools", "pomes"))
+	}
+	if _, err := os.Stat(filepath.Join(cache, "github.com", "emela-lang", "x", "json@v0.3.1")); err != nil {
+		if os.Getenv("MAMELA_REQUIRE_TOOLCHAIN") == "1" {
+			t.Fatalf("Pome cache required: %v", err)
+		}
+		t.Skipf("dependencies not fetched (run scripts/install-toolchain.sh): %v", err)
+	}
+	t.Setenv("EMELA_POME_CACHE", cache)
 	return dir
 }
 

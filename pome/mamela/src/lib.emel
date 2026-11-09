@@ -5,7 +5,9 @@
 ## declaration cannot touch the network, files, the clock or randomness.
 
 import Std.Console.{Console}
-import Json.{Json, Boolean, Integer, Text, Items, Fields}
+import Dynamic.{Dynamic, Text, Items}
+import Dynamic.Number
+import Json
 
 ## The schema written in the `schema` field. The Go side rejects any other value.
 pub const SCHEMA = "mamela-graph/v1"
@@ -41,24 +43,32 @@ pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Boo
   Graph(services: List.append(graph.services, [s]), ..graph)
 }
 
-fn resource(kind: String, name: String, spec: List[(String, Json)]) -> Json {
-  Fields([("kind", Text(kind)), ("name", Text(name)), ("spec", Fields(spec))])
+fn integer(n: Int) -> Dynamic {
+  Dynamic.Number(Number.from_int(n))
 }
 
-fn vm_json(v: Vm) -> Json {
+fn boolean(b: Bool) -> Dynamic {
+  Dynamic.Bool(b)
+}
+
+fn resource(kind: String, name: String, spec: List[(String, Dynamic)]) -> Dynamic {
+  Dynamic.object([("kind", Text(kind)), ("name", Text(name)), ("spec", Dynamic.object(spec))])
+}
+
+fn vm_json(v: Vm) -> Dynamic {
   resource(
     "VirtualMachine",
     v.name,
     [
-      ("cpu", Integer(v.cpu)),
-      ("memoryMiB", Integer(v.memory_mib)),
-      ("diskGiB", Integer(v.disk_gib)),
+      ("cpu", integer(v.cpu)),
+      ("memoryMiB", integer(v.memory_mib)),
+      ("diskGiB", integer(v.disk_gib)),
       ("image", Text(v.image)),
     ],
   )
 }
 
-fn package_json(p: Package) -> Json {
+fn package_json(p: Package) -> Dynamic {
   resource(
     "NodePackage",
     "#{p.node}/#{p.name}",
@@ -66,30 +76,31 @@ fn package_json(p: Package) -> Json {
   )
 }
 
-fn service_json(s: Service) -> Json {
+fn service_json(s: Service) -> Dynamic {
   resource(
     "NodeService",
     "#{s.node}/#{s.name}",
     [
       ("node", Text(s.node)),
       ("service", Text(s.name)),
-      ("enabled", Boolean(s.enabled)),
-      ("running", Boolean(s.running)),
+      ("enabled", boolean(s.enabled)),
+      ("running", boolean(s.running)),
     ],
   )
 }
 
-fn graph_json(graph: Graph) -> Json {
+fn graph_json(graph: Graph) -> Dynamic {
   resources = List.append(
     graph.vms.map(vm_json),
     List.append(graph.packages.map(package_json), graph.services.map(service_json)),
   )
-  Fields([("schema", Text(SCHEMA)), ("resources", Items(resources))])
+  Dynamic.object([("schema", Text(SCHEMA)), ("resources", Items(resources))])
 }
 
-## The `mamela-graph/v1` JSON text of `graph`: no whitespace, object keys sorted.
+## The `mamela-graph/v1` JSON text of `graph`, written by `x/json`: no whitespace, and object
+## keys in sorted order (the order of `Map`).
 pub fn to_json(graph: Graph) -> String {
-  Json.write(graph_json(graph))
+  Json.to_string(graph_json(graph))
 }
 
 ## Writes the graph as one line to standard output.

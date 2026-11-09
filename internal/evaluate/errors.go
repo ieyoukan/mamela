@@ -9,18 +9,19 @@ import (
 type Code string
 
 const (
-	CodeToolchain        Code = "MAM-EVAL-0001"
-	CodeBuildFailed      Code = "MAM-EVAL-0101"
-	CodeBuildTimeout     Code = "MAM-EVAL-0102"
-	CodeNotComponent     Code = "MAM-EVAL-0201"
-	CodeImportDenied     Code = "MAM-EVAL-0202"
-	CodeProgramError     Code = "MAM-EVAL-0301"
-	CodeProgramDefect    Code = "MAM-EVAL-0302"
-	CodeTimeout          Code = "MAM-EVAL-0303"
-	CodeMemoryLimit      Code = "MAM-EVAL-0304"
-	CodeOutputLimit      Code = "MAM-EVAL-0305"
-	CodeAbnormalExit     Code = "MAM-EVAL-0306"
-	CodeNotDeterministic Code = "MAM-EVAL-0401"
+	CodeToolchain          Code = "MAM-EVAL-0001"
+	CodeBuildFailed        Code = "MAM-EVAL-0101"
+	CodeBuildTimeout       Code = "MAM-EVAL-0102"
+	CodeDependencyMismatch Code = "MAM-EVAL-0103"
+	CodeNotComponent       Code = "MAM-EVAL-0201"
+	CodeImportDenied       Code = "MAM-EVAL-0202"
+	CodeProgramError       Code = "MAM-EVAL-0301"
+	CodeProgramDefect      Code = "MAM-EVAL-0302"
+	CodeTimeout            Code = "MAM-EVAL-0303"
+	CodeMemoryLimit        Code = "MAM-EVAL-0304"
+	CodeOutputLimit        Code = "MAM-EVAL-0305"
+	CodeAbnormalExit       Code = "MAM-EVAL-0306"
+	CodeNotDeterministic   Code = "MAM-EVAL-0401"
 )
 
 // Stage is the step of evaluation that failed.

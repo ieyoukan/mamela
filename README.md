@@ -11,7 +11,8 @@ Early design stage — no production-ready implementation yet. What works today 
 Requires Go 1.27 and Node.js (for `emela test`), on macOS arm64 or Linux x86_64.
 
 ```sh
-scripts/install-toolchain.sh                      # pinned emela + wasmtime into .tools/ (sha256-verified)
+scripts/install-toolchain.sh                      # pinned emela + wasmtime (sha256-verified) and Pome dependencies into .tools/
+export EMELA_POME_CACHE="$PWD/.tools/pomes"       # evaluation builds offline from this cache
 go run ./cmd/mamela eval --twice examples/homelab # evaluate twice; the digests must match
 scripts/check.sh                                  # every local check
 ```

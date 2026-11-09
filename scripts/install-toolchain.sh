@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Installs the pinned Emela and Wasmtime toolchain into ./.tools (gitignored).
-# Every download is verified against a pinned sha256. Nothing is installed system-wide.
+# Installs the pinned Emela and Wasmtime toolchain into ./.tools (gitignored), and fetches the
+# Emela dependencies of this repository's Pomes into ./.tools/pomes.
+# Every download is verified: the tools against a pinned sha256, the Pomes against the sumdb and
+# the hashes in each Pome.lock. Nothing is installed system-wide.
 #
 # Usage: scripts/install-toolchain.sh
 # Afterwards: export PATH="$PWD/.tools/bin:$PATH"
@@ -78,7 +80,30 @@ wasmtime_bin="$(find "$work/wasmtime" -type f -name wasmtime -perm -u+x | head -
 [[ -n "$wasmtime_bin" ]] || { echo "wasmtime binary not found in $wasmtime_asset" >&2; exit 1; }
 install -m 0755 "$wasmtime_bin" "$bin/wasmtime"
 
+# Fetch the dependencies of every Pome whose lock records some. This is the only step that needs
+# the network for them; evaluation and scripts/check.sh then build offline from this cache.
+# Always through the proxy and checked against the sumdb, whatever the caller's environment says.
+unset EMELA_POMEPROXY EMELA_POMESUMDB EMELA_POMEPRIVATE
+export EMELA_POME_CACHE="$tools/pomes"
+locked_pomes() {
+  # internal/evaluate/testdata holds deliberately broken Pomes (one names a dependency that must
+  # stay unfetched); the dependencies they need otherwise are those of pome/mamela.
+  git -C "$root" ls-files '*Pome.lock' ':!:internal/evaluate/testdata/**' | while read -r lock; do
+    if grep -q '^\[\[pome\]\]' "$root/$lock"; then dirname "$lock"; fi
+  done
+}
+while read -r dir; do
+  before="$(sha256 "$root/$dir/Pome.lock")"
+  (cd "$root/$dir" && "$bin/emela" pome install >/dev/null && "$bin/emela" pome verify >/dev/null)
+  if [[ "$(sha256 "$root/$dir/Pome.lock")" != "$before" ]]; then
+    echo "$dir/Pome.lock did not match its Pome.toml and was rewritten; review and commit it" >&2
+    exit 1
+  fi
+  echo "fetched the dependencies of $dir"
+done < <(locked_pomes)
+
 echo "installed:"
 "$bin/emela" --version
 "$bin/wasmtime" --version
 echo "add to PATH: export PATH=\"$bin:\$PATH\""
+echo "and to use the fetched dependencies: export EMELA_POME_CACHE=\"$tools/pomes\""

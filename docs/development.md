@@ -24,6 +24,8 @@
 
 **完了条件の確認:** Emela → WASM → Go で 1 件の検証済み Resource Graph を受け渡せた。2 回の評価で graph digest と `main.wasm` の digest がともに一致した。env / random / clock を使う宣言は実行前に拒否され、無限ループ・巨大出力・メモリの使いすぎは制限で止まることをテストで確認した。
 
+**x/json への移行 (2026-11-09):** upstream の `x/json` が v0.3.1 で 0.27 に対応したので（emela-lang/x#29）、`pome/mamela` の自前の JSON 書き出しを置き換えた。Graph の digest は変わらなかった。依存は `scripts/install-toolchain.sh` が proxy と sumdb を通して `.tools/pomes` に取得し、評価はそこからオフラインでビルドする。`emela build` がキャッシュを lock と照合しないことが分かったので、評価の前に `emela pome verify` を実行する（`MAM-EVAL-0103`。書き換えたキャッシュを拒否するテストと、verify を外すとそのテストが落ちることで確認）。
+
 ## ステップ 1: Go のドメインと SQLite（ローカル） — 完了 (2026-11-09)
 
 - `internal/state`: 観測スナップショット。`asOf` を自分で持ち、計画は壁時計を読まない。digest はタイムゾーンや挿入順に依存しない。

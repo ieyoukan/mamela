@@ -11,6 +11,7 @@ cd "$root"
 export PATH="$root/.tools/bin:$PATH"
 export MAMELA_REQUIRE_TOOLCHAIN=1
 export EMELA_POMEPROXY=off
+export EMELA_POME_CACHE="$root/.tools/pomes"
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -22,6 +23,14 @@ fi
 
 step "go: vet"
 go vet ./...
+
+step "emela: the dependency cache matches every Pome.lock"
+git ls-files '*Pome.lock' ':!:internal/evaluate/testdata/**' | while read -r lock; do
+  if grep -q '^\[\[pome\]\]' "$lock"; then
+    (cd "$(dirname "$lock")" && emela pome verify >/dev/null) || {
+      echo "$lock: the cache differs (run scripts/install-toolchain.sh)"; exit 1; }
+  fi
+done
 
 step "go: test (race detector on)"
 go test -race -count=1 ./...
