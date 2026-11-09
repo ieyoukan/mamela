@@ -44,6 +44,7 @@ type API interface {
 	VMStatus(ctx context.Context, node string, vmid int) (proxmox.VMStatus, error)
 	StorageContent(ctx context.Context, node, storage, content string) ([]proxmox.Volume, error)
 	TaskStatus(ctx context.Context, node, upid string) (proxmox.Task, error)
+	Tasks(ctx context.Context, node string, vmid int, typ string) ([]proxmox.TaskEntry, error)
 	Upload(ctx context.Context, node, storage, content, filename, sha256hex string, file io.Reader, size int64) (string, error)
 	CreateVM(ctx context.Context, node string, params url.Values) (string, error)
 	GrowDisk(ctx context.Context, node string, vmid int, disk, size string) (string, error)
@@ -88,7 +89,7 @@ type Config struct {
 	SSHPublicKeys  string
 	Catalog        map[string]Image // nil: the built-in Catalog
 	PollInterval   time.Duration    // default 2s
-	TaskTimeout    time.Duration    // default 60m (importing a disk can take long)
+	TaskTimeout    time.Duration    // default 2h (importing a disk can take long)
 	UploadDeadline time.Duration    // default 60m
 }
 
@@ -283,13 +284,9 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 		return fmt.Errorf("VM %s: check VMID %d: %w", name, vmid, err)
 	}
 	if !free {
-		// Taken, but not visible as our VM in the pool: an earlier create that has not finished
-		// (Proxmox adds the VM to the pool at the end), or someone else's guest. Never pick another
-		// VMID for this name: that is how duplicates are made.
-		return fmt.Errorf("VM %s: VMID %d, reserved for it, is in use by a guest Mamela cannot see in pool %s. "+
-			"If an earlier create of %s is still running, wait for it and apply again; otherwise remove the "+
-			"other guest from VMID %d or release the reservation by hand: %w",
-			name, vmid, p.Config.Pool, name, vmid, reconcile.ErrUnknownOutcome)
+		// Taken, but not visible as our VM in the pool: a create of ours that has not ended yet
+		// (Proxmox adds the VM to the pool at the end of the task), or someone else's guest.
+		return p.resume(ctx, vmid, name, spec)
 	}
 
 	volume, err := p.ensureImage(ctx, spec.Image, img)
@@ -322,8 +319,52 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 	}
 	upid, err := p.API.CreateVM(ctx, p.Config.Node, params)
 	if err != nil {
-		return writeErr(fmt.Sprintf("create VM %s (VMID %d)", name, vmid), err)
+		if !proxmox.Uncertain(err) {
+			return writeErr(fmt.Sprintf("create VM %s (VMID %d)", name, vmid), err)
+		}
+		// The answer was lost: the create may or may not have started. Proxmox knows.
+		t, ok, lerr := p.createTask(ctx, vmid)
+		if lerr != nil || !ok {
+			return writeErr(fmt.Sprintf("create VM %s (VMID %d)", name, vmid), err)
+		}
+		upid = t.UPID
 	}
+	return p.awaitCreate(ctx, vmid, name, spec, upid)
+}
+
+// resume continues a create whose VMID is in use but whose VM is not visible in the pool yet. Mamela
+// never picks another VMID for the name: that is how duplicates are made. It asks Proxmox for the
+// token's own create task for the VMID instead of guessing.
+func (p *Provider) resume(ctx context.Context, vmid int, name string, spec graph.VirtualMachineSpec) error {
+	t, ok, err := p.createTask(ctx, vmid)
+	if err != nil {
+		return unknownErr(fmt.Sprintf("VM %s: list the create tasks of VMID %d", name, vmid), err)
+	}
+	if !ok || (!t.Running() && t.Status != "OK" && !strings.HasPrefix(t.Status, "WARNINGS")) {
+		last := "no create task of this token"
+		if ok {
+			last = "the last create task of this token failed: " + t.Status
+		}
+		return fmt.Errorf("VM %s: VMID %d, reserved for it, is in use by a guest outside pool %s that Mamela did not "+
+			"create (%s). Remove that guest from VMID %d or release the reservation by hand; Mamela will not use "+
+			"another VMID for %s", name, vmid, p.Config.Pool, last, vmid, name)
+	}
+	return p.awaitCreate(ctx, vmid, name, spec, t.UPID)
+}
+
+// createTask is the newest create task of this token for vmid, running or not.
+func (p *Provider) createTask(ctx context.Context, vmid int) (proxmox.TaskEntry, bool, error) {
+	tasks, err := p.API.Tasks(ctx, p.Config.Node, vmid, "qmcreate")
+	if err != nil || len(tasks) == 0 {
+		return proxmox.TaskEntry{}, false, err
+	}
+	return tasks[0], true, nil
+}
+
+// awaitCreate waits for the create task to end, then finishes the VM. A failed task is a definite
+// failure with Proxmox's reason (Proxmox removes the VM again), and the next attempt uses the same
+// VMID. A task still running at the deadline is picked up again by the next apply.
+func (p *Provider) awaitCreate(ctx context.Context, vmid int, name string, spec graph.VirtualMachineSpec, upid string) error {
 	if err := p.wait(ctx, upid, p.taskTimeout()); err != nil {
 		return fmt.Errorf("create VM %s (VMID %d): %w", name, vmid, err)
 	}
@@ -457,25 +498,35 @@ func (p *Provider) ensureImage(ctx context.Context, name string, img Image) (str
 
 // wait polls a task until it stops. A task that does not finish in time, or whose status cannot
 // be read, has an unknown outcome.
+// wait polls a task until it ends. Reading its status may fail for a while (a busy node, a
+// network blip) without changing anything, so a few failures in a row are tolerated. Only a task
+// that is still running at the deadline, or whose status cannot be read, is an unknown outcome;
+// the task keeps its ID, so the next run waits for the same task instead of starting another.
 func (p *Provider) wait(ctx context.Context, upid string, timeout time.Duration) error {
 	interval := p.Config.PollInterval
 	if interval == 0 {
 		interval = 2 * time.Second
 	}
+	const maxReadFailures = 5
 	start := p.Clock()
+	failures := 0
 	for {
 		t, err := p.API.TaskStatus(ctx, p.Config.Node, upid)
-		if err != nil {
+		switch {
+		case err != nil && proxmox.Uncertain(err) && failures < maxReadFailures:
+			failures++
+		case err != nil:
 			return unknownErr("read task "+upid, err)
-		}
-		if t.Status == "stopped" {
-			if t.Succeeded() {
-				return nil
-			}
-			return fmt.Errorf("task failed: %s", t.ExitStatus)
+		case t.Status == "stopped" && t.Succeeded():
+			return nil
+		case t.Status == "stopped":
+			return fmt.Errorf("Proxmox task failed: %s", t.ExitStatus)
+		default:
+			failures = 0
 		}
 		if p.Clock().Sub(start) > timeout {
-			return fmt.Errorf("task %s still running after %s: %w", upid, timeout, reconcile.ErrUnknownOutcome)
+			return fmt.Errorf("task %s is still running after %s; apply again to keep waiting for the same task "+
+				"(nothing is created twice): %w", upid, timeout, reconcile.ErrUnknownOutcome)
 		}
 		if err := p.sleep(ctx, interval); err != nil {
 			return unknownErr("wait for task "+upid, err)
@@ -499,7 +550,7 @@ func (p *Provider) sleep(ctx context.Context, d time.Duration) error {
 
 func (p *Provider) taskTimeout() time.Duration {
 	if p.Config.TaskTimeout == 0 {
-		return 60 * time.Minute
+		return 2 * time.Hour
 	}
 	return p.Config.TaskTimeout
 }

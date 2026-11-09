@@ -29,6 +29,7 @@ type fakePVE struct {
 	hidden  map[int]bool     // VMIDs used by guests the token cannot see
 	volumes map[string]int64 // volid -> size
 	tasks   map[string]int   // upid -> polls left until stopped
+	meta    map[string]taskMeta
 	failed  map[string]string
 	seq     int
 
@@ -38,10 +39,17 @@ type fakePVE struct {
 	loseCreateResponse bool // perform the create, then drop the connection before answering
 	createTaskFails    bool // the create task ends with an error (Proxmox removes the VM again)
 	createStaysRunning bool // the create task never finishes; the VM stays locked outside the pool
+	taskStatusErrors   int  // answer this many task status reads with 503
 
 	// Counters.
 	creates, uploads, starts, resizes int
 	methods                           map[string]int
+}
+
+type taskMeta struct {
+	typ   string
+	vmid  int
+	start int64
 }
 
 type fakeVM struct {
@@ -55,17 +63,27 @@ type fakeVM struct {
 
 func newFakePVE(t *testing.T) (*fakePVE, *httptest.Server) {
 	f := &fakePVE{t: t, vms: map[int]*fakeVM{}, hidden: map[int]bool{}, volumes: map[string]int64{},
-		tasks: map[string]int{}, failed: map[string]string{}, methods: map[string]int{}, imageVirtualSize: "3584M"}
+		tasks: map[string]int{}, meta: map[string]taskMeta{}, failed: map[string]string{}, methods: map[string]int{}, imageVirtualSize: "3584M"}
 	srv := httptest.NewTLSServer(f)
 	t.Cleanup(srv.Close)
 	return f, srv
 }
 
-func (f *fakePVE) task(polls int) string {
+func (f *fakePVE) task(polls int, typ string, vmid int) string {
 	f.seq++
-	upid := fmt.Sprintf("UPID:n1:%08X:fake:", f.seq)
+	upid := fmt.Sprintf("UPID:n1:%08X:%s:%d:mamela@pve!lab:", f.seq, typ, vmid)
 	f.tasks[upid] = polls
+	f.meta[upid] = taskMeta{typ: typ, vmid: vmid, start: int64(f.seq)}
 	return upid
+}
+
+// finishTasks ends every running task (as if time passed).
+func (f *fakePVE) finishTasks() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for upid := range f.tasks {
+		f.tasks[upid] = 0
+	}
 }
 
 func reply(w http.ResponseWriter, data any) {
@@ -81,6 +99,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 
 var (
 	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|resize)$`)
+	tasksPath = "/api2/json/nodes/n1/tasks"
 	taskPath  = regexp.MustCompile(`^/api2/json/nodes/n1/tasks/([^/]+)/status$`)
 	importVol = regexp.MustCompile(`^local-lvm:0,import-from=(local:import/[^,]+),discard=on$`)
 )
@@ -127,6 +146,31 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.upload(w, r)
 	case r.Method == http.MethodPost && p == "/api2/json/nodes/n1/qemu":
 		f.create(w, r)
+	case p == tasksPath && r.Method == http.MethodGet:
+		q := r.URL.Query()
+		if q.Get("source") != "all" {
+			f.t.Errorf("task list without source=all misses running tasks: %s", r.URL.RawQuery)
+		}
+		id, _ := strconv.Atoi(q.Get("vmid"))
+		out := []map[string]any{}
+		for upid, m := range f.meta {
+			if m.vmid != id || m.typ != q.Get("typefilter") {
+				continue
+			}
+			e := map[string]any{"upid": upid, "type": m.typ, "id": strconv.Itoa(m.vmid), "starttime": m.start, "status": "RUNNING"}
+			if f.tasks[upid] == 0 {
+				e["endtime"] = m.start + 1
+				e["status"] = "OK"
+				if msg := f.failed[upid]; msg != "" {
+					e["status"] = msg
+				}
+			}
+			out = append(out, e)
+		}
+		reply(w, out)
+	case taskPath.MatchString(p) && r.Method == http.MethodGet && f.taskStatusErrors > 0:
+		f.taskStatusErrors--
+		fail(w, http.StatusServiceUnavailable, "busy")
 	case taskPath.MatchString(p) && r.Method == http.MethodGet:
 		upid, _ := url.PathUnescape(taskPath.FindStringSubmatch(p)[1])
 		left, ok := f.tasks[upid]
@@ -205,7 +249,7 @@ func (f *fakePVE) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.uploads++
-	upid := f.task(1)
+	upid := f.task(1, "imgcopy", 0)
 	if hex.EncodeToString(sum.Sum(nil)) != fields["checksum"] {
 		f.failed[upid] = "checksum mismatch"
 	} else {
@@ -247,7 +291,7 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 	cfg["scsi0"] = fmt.Sprintf("local-lvm:vm-%d-disk-0,discard=on,size=%s", id, f.imageVirtualSize)
 	vm := &fakeVM{vmid: id, status: "stopped", lock: "create", config: cfg}
 	f.vms[id] = vm
-	upid := f.task(2)
+	upid := f.task(2, "qmcreate", id)
 	switch {
 	case tagsAtCreate:
 		f.failed[upid] = fmt.Sprintf("unable to create VM %d - 403 Permission check failed (/vms/%d, VM.Config.Options)", id, id)
@@ -303,7 +347,7 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 	case what == "status/start" && r.Method == http.MethodPost:
 		f.starts++
 		vm.status = "running"
-		reply(w, f.task(1))
+		reply(w, f.task(1, "qmstart", vm.vmid))
 	case what == "resize" && r.Method == http.MethodPut:
 		r.ParseForm()
 		size := r.PostForm.Get("size")
@@ -315,7 +359,7 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 		f.resizes++
 		vm.config["scsi0"] = strings.Split(vm.config["scsi0"], "size=")[0] + "size=" + size
 		vm.version++
-		reply(w, f.task(1))
+		reply(w, f.task(1, "resize", vm.vmid))
 	default:
 		f.t.Errorf("unexpected %s on VM %d %s", r.Method, vm.vmid, what)
 		fail(w, http.StatusNotImplemented, "not implemented by the fake")

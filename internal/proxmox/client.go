@@ -8,6 +8,7 @@ package proxmox
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -361,6 +363,31 @@ type Task struct {
 // Succeeded reports whether a stopped task ended without an error.
 func (t Task) Succeeded() bool {
 	return t.Status == "stopped" && (t.ExitStatus == "OK" || strings.HasPrefix(t.ExitStatus, "WARNINGS"))
+}
+
+// TaskEntry is one task in a node's task list (GET /nodes/{node}/tasks).
+type TaskEntry struct {
+	UPID      string `json:"upid"`
+	Type      string `json:"type"`
+	ID        string `json:"id"` // the VMID for guest tasks
+	StartTime int64  `json:"starttime"`
+	EndTime   int64  `json:"endtime"` // 0 while the task runs
+	Status    string `json:"status"`  // "RUNNING" while it runs, then OK, WARNINGS: n or an error
+}
+
+// Running reports whether the task has not ended.
+func (t TaskEntry) Running() bool { return t.EndTime == 0 }
+
+// Tasks lists the tasks of one type for a guest on node, running ones included, newest first.
+// Without Sys.Audit on the node, Proxmox lists only the token's own tasks.
+func (c *Client) Tasks(ctx context.Context, node string, vmid int, typ string) ([]TaskEntry, error) {
+	q := url.Values{"vmid": {strconv.Itoa(vmid)}, "typefilter": {typ}, "source": {"all"}, "limit": {"50"}}
+	var out []TaskEntry
+	if err := c.get(ctx, nodePath(node)+"/tasks?"+q.Encode(), &out); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(out, func(a, b TaskEntry) int { return cmp.Compare(b.StartTime, a.StartTime) })
+	return out, nil
 }
 
 func (c *Client) TaskStatus(ctx context.Context, node, upid string) (Task, error) {

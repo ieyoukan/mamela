@@ -196,26 +196,38 @@ func TestPlanApplyConverges(t *testing.T) {
 
 // The create request reaches Proxmox but its answer is lost. The next run must find the VM by its
 // reserved VMID and finish it, not create a second one.
-func TestLostCreateResponseIsResumedNotRepeated(t *testing.T) {
+// The answer to the create is lost. Mamela finds its create task in Proxmox's task list and
+// carries on with it in the same run: no unknown outcome and no second create.
+func TestLostCreateResponseIsFoundInTheTaskList(t *testing.T) {
 	e := newEnv(t)
 	e.fake.loseCreateResponse = true
-	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
-	if !errors.Is(err, reconcile.ErrUnknownOutcome) {
-		t.Fatalf("want an unknown outcome, got %v", err)
-	}
-	// Not ready yet, so it is not reported as existing: the plan still says create.
-	snap, err := e.p.Observe(e.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := snap.VMs["web"]; ok {
-		t.Fatal("a VM that is still being created was reported as existing")
-	}
 	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
-		t.Fatal(err)
+		t.Fatalf("want the create found and finished, got %v", err)
 	}
 	if e.fake.creates != 1 || len(e.fake.vms) != 1 || e.fake.vms[7000].status != "running" {
 		t.Fatalf("creates %d, VMs %d", e.fake.creates, len(e.fake.vms))
+	}
+}
+
+// Reading a task's status fails now and then (a busy node). That is not an unknown outcome.
+func TestTaskStatusBlipsAreTolerated(t *testing.T) {
+	e := newEnv(t)
+	e.fake.taskStatusErrors = 3
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatalf("want success despite 3 failed status reads, got %v", err)
+	}
+	// A status that cannot be read for long is unknown, and the next run waits for the same task.
+	e.fake.taskStatusErrors = 100
+	err := e.apply(policy.OpCreateVM, vmResource("db", 1, 512, 8))
+	if !errors.Is(err, reconcile.ErrUnknownOutcome) {
+		t.Fatalf("want an unknown outcome, got %v", err)
+	}
+	e.fake.taskStatusErrors = 0
+	if err := e.apply(policy.OpCreateVM, vmResource("db", 1, 512, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if e.fake.creates != 2 {
+		t.Fatalf("creates %d, want 2", e.fake.creates)
 	}
 }
 
@@ -230,8 +242,9 @@ func TestCreateStillRunningIsNeverDuplicated(t *testing.T) {
 	}
 	for range 3 {
 		err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
-		if !errors.Is(err, reconcile.ErrUnknownOutcome) || !strings.Contains(err.Error(), "VMID 7000") {
-			t.Fatalf("retry: want an unknown outcome about VMID 7000, got %v", err)
+		if !errors.Is(err, reconcile.ErrUnknownOutcome) || !strings.Contains(err.Error(), "VMID 7000") ||
+			!strings.Contains(err.Error(), "still running") {
+			t.Fatalf("retry: want to keep waiting for the create of VMID 7000, got %v", err)
 		}
 	}
 	if e.fake.creates != 1 || len(e.fake.vms) != 1 {
@@ -253,8 +266,8 @@ func TestFailedCreateIsRetriedOnTheSameVMID(t *testing.T) {
 	e := newEnv(t)
 	e.fake.createTaskFails = true
 	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
-	if err == nil || errors.Is(err, reconcile.ErrUnknownOutcome) {
-		t.Fatalf("want a definite failure, got %v", err)
+	if err == nil || errors.Is(err, reconcile.ErrUnknownOutcome) || !strings.Contains(err.Error(), "import failed") {
+		t.Fatalf("want a definite failure with Proxmox's reason, got %v", err)
 	}
 	e.fake.createTaskFails = false
 	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
@@ -282,8 +295,9 @@ func TestReservedVMIDTakenBySomeoneElse(t *testing.T) {
 	e.fake.hidden[7002] = true
 	before := e.fake.creates
 	err := e.apply(policy.OpCreateVM, vmResource("db", 1, 1024, 10))
-	if err == nil || !strings.Contains(err.Error(), "VMID 7002") {
-		t.Fatalf("want a refusal about VMID 7002, got %v", err)
+	if err == nil || errors.Is(err, reconcile.ErrUnknownOutcome) || !strings.Contains(err.Error(), "VMID 7002") ||
+		!strings.Contains(err.Error(), "no create task of this token") {
+		t.Fatalf("want a definite refusal about VMID 7002, got %v", err)
 	}
 	if e.fake.creates != before {
 		t.Fatal("created a VM although its reserved VMID is taken")
