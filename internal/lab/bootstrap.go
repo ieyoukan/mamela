@@ -20,13 +20,14 @@ type Grant struct {
 func (s *Site) Grants() []Grant {
 	return []Grant{
 		{Path: "/pool/" + s.Boundary.Pool, Role: "MamelaLabVM", Privs: []string{
-			"VM.Allocate", "VM.Audit", "VM.Clone",
+			"VM.Allocate", "VM.Audit",
 			"VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Cloudinit", "VM.Config.Disk",
 			"VM.Config.HWType", "VM.Config.Memory", "VM.Config.Network", "VM.Config.Options",
 			"VM.PowerMgmt",
 		}},
 		{Path: "/storage/" + s.Placement.DiskStorage, Role: "MamelaLabDisk", Privs: []string{"Datastore.AllocateSpace", "Datastore.Audit"}},
-		{Path: "/storage/" + s.Placement.ISOStorage, Role: "MamelaLabISO", Privs: []string{"Datastore.AllocateTemplate", "Datastore.Audit"}},
+		// Upload pinned cloud images (AllocateTemplate) and import them into new disks (Audit).
+		{Path: "/storage/" + s.Placement.ImageStorage, Role: "MamelaLabImage", Privs: []string{"Datastore.AllocateTemplate", "Datastore.Audit"}},
 		{Path: "/sdn/zones/" + s.Placement.SDNZone + "/" + s.Placement.Bridge, Role: "MamelaLabNet", Privs: []string{"SDN.Use"}},
 		{Path: "/nodes/" + s.Proxmox.Node, Role: "MamelaLabAudit", Privs: []string{"Sys.Audit"}},
 	}
@@ -59,23 +60,28 @@ func (s *Site) BootstrapScript() string {
 	w("# 1. The lab pool. Mamela creates guests only inside it.")
 	w("exists \"/pools/%s\" || pveum pool add %s --comment \"Mamela lab: guests here are managed by Mamela\"", s.Boundary.Pool, s.Boundary.Pool)
 	w("")
-	w("# 2. One role per path, with only the privileges that path needs.")
+	w("# 2. Let the image storage hold importable disk images (content type \"import\"). This only adds")
+	w("#    \"import\" to the storage's content types; the existing ones are kept.")
+	w("content=\"$(pvesh get /storage/%s --output-format json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"content\"])')\"", s.Placement.ImageStorage)
+	w("case \",$content,\" in *,import,*) ;; *) pvesm set %s --content \"$content,import\" ;; esac", s.Placement.ImageStorage)
+	w("")
+	w("# 3. One role per path, with only the privileges that path needs.")
 	for _, g := range s.Grants() {
 		w("ensure_role %s %q", g.Role, strings.Join(g.Privs, ","))
 	}
 	w("")
-	w("# 3. The operating user and its privilege-separated token (no password, no login).")
+	w("# 4. The operating user and its privilege-separated token (no password, no login).")
 	w("ensure_user %s \"Mamela lab automation\"", user)
 	w("new_token %s %s %q \"Mamela lab: changes inside pool %s only\"", user, labToken, s.Proxmox.TokenSecretFile, s.Boundary.Pool)
 	w("")
-	w("# 4. ACLs. With privilege separation, the token gets the intersection of its own ACLs and its user's,")
+	w("# 5. ACLs. With privilege separation, the token gets the intersection of its own ACLs and its user's,")
 	w("#    so both receive the same grants. Nothing is granted on /, /vms or other pools.")
 	for _, g := range s.Grants() {
 		w("pveum acl modify %s --users %s --roles %s", g.Path, user, g.Role)
 		w("pveum acl modify %s --tokens '%s' --roles %s", g.Path, s.Proxmox.TokenID, g.Role)
 	}
 	w("")
-	w("# 5. The audit token: read-only everywhere (built-in PVEAuditor), used only by preflight/postflight")
+	w("# 6. The audit token: read-only everywhere (built-in PVEAuditor), used only by preflight/postflight")
 	w("#    to check that guests outside the lab are unchanged.")
 	if auditUser != user {
 		w("ensure_user %s \"Mamela lab audit (read-only)\"", auditUser)

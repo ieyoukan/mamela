@@ -26,9 +26,14 @@ tag = "mamela-lab"
 
 [placement]
 disk_storage = "local-lvm"
-iso_storage = "local"
+image_storage = "local"                   # pinned cloud images to import (content type "import")
 bridge = "vmbr0"
 sdn_zone = "localnetwork"
+
+[guest]
+# cloud-init for lab VMs: the login user and an SSH public key file (optional, outside the repository).
+user = "mamela"
+ssh_public_key_file = "~/.ssh/id_ed25519.pub"
 
 [budget]
 max_vms = 1

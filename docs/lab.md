@@ -62,7 +62,8 @@ lab/
 
 - Proxmox API の URL、検証に使う 1 台のノード名
 - pool 名、VMID 予約範囲、タグ
-- ディスク用ストレージ、ISO 用ストレージ、ブリッジ
+- ディスク用ストレージ、cloud image 用ストレージ（content type `import`）、ブリッジ
+- 検証用 VM の cloud-init（ログインユーザーと SSH 公開鍵ファイル）
 - 予算（VM 数、vCPU、メモリ、ディスク）
 - 安全しきい値（ホストの残りメモリ、thin pool の使用率上限）
 - API Token の秘密を置いたファイルのパス（リポジトリ外）
@@ -73,11 +74,12 @@ Token の秘密そのものはリポジトリにもこのファイルにも書�
 
 ### 4.1 一度だけの準備（人が実行）
 
-pool・ロール・ユーザー・Token・ACL の作成には root 権限が要る。Mamela にその権限は持たせない。`mamela lab bootstrap --site lab/site.local.toml` が冪等な bash スクリプトを**表示するだけ**なので、**人が内容を確認してから**クラスタのノードで root として実行する。スクリプトは追加しかしない（削除・既存ゲスト・ストレージ・ネットワーク・HA には触れない）。もう一度実行しても同じ状態に収束する。
+pool・ロール・ユーザー・Token・ACL の作成と、ストレージの content type の追加には root 権限が要る。Mamela にその権限は持たせない。`mamela lab bootstrap --site lab/site.local.toml` が冪等な bash スクリプトを**表示するだけ**なので、**人が内容を確認してから**クラスタのノードで root として実行する。スクリプトは追加しかしない（削除しない。既存ゲスト・ネットワーク・HA には触れない。ストレージは cloud image 用ストレージの content type に `import` を足すだけで、既存の content type は残す）。もう一度実行しても同じ状態に収束する。
 
 作るもの（名前は例）:
 
 - pool `mamela-lab`
+- cloud image 用ストレージ（例 `local`）の content type に `import` を追加
 - **操作用**: ユーザー `mamela@pve`（パスワードなし）と、権限分離した Token `mamela@pve!lab`。次の ACL だけを持つ。
 - **検査用**: 別ユーザー `mamela-audit@pve` と Token `mamela-audit@pve!audit`。組み込みロール `PVEAuditor`（読み取り専用）を `/` に持ち、preflight / postflight だけが使う。操作用と同じユーザーにすることは設定の検証で拒否する。
 
@@ -85,24 +87,41 @@ pool・ロール・ユーザー・Token・ACL の作成には root 権限が要�
 
 | パス | ロール | 権限 | 用途 |
 |---|---|---|---|
-| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Clone`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt` | pool 内の VM の作成・設定・起動停止 |
+| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt` | pool 内の VM の作成・設定・起動停止 |
 | `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
-| `/storage/<iso storage>` | `MamelaLabISO` | `Datastore.AllocateTemplate`, `Datastore.Audit` | cloud-init seed ISO のアップロード |
+| `/storage/<image storage>` | `MamelaLabImage` | `Datastore.AllocateTemplate`, `Datastore.Audit` | 固定した cloud image のアップロード（AllocateTemplate）と、新しいディスクへの取り込み（Audit） |
 | `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
 | `/nodes/<node>` | `MamelaLabAudit` | `Sys.Audit` | ノード状態の読み取り |
 
-`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。最小集合はステップ 2 の L1 で実測して確定する。
+`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。各権限が必要な理由は、Proxmox VE 9.2 のソース（`PVE/API2/Qemu.pm` の `create_vm` と `check_storage_access`、`PVE/Storage.pm` の `check_volume_access`、`PVE/API2/Storage/Status.pm` の `upload`）で確認した。L1 の実機の実行で過不足を確かめて確定する。
+
+`download-url`（ノードに URL から直接ダウンロードさせる API）は使わない。`Sys.AccessNetwork`（ノードのネットワークを任意に探れる権限）が要るためである。代わりに、Mamela を動かすマシンが cloud image をダウンロードして sha256 を確かめ、それをアップロードする。
 
 Token の秘密は作成時に一度だけ表示される。`site.local.toml` に書いたパス（リポジトリ外）に保存し、`chmod 600` にする（グループや他人が読めるファイルは Mamela が拒否する）。
 
-### 4.2 VM テンプレート
+### 4.2 テンプレートを使わない VM の作り方
 
-既存のテンプレートは使わない。Ubuntu 24.04 cloud image（sha256 固定）から、Mamela 用テンプレートを pool 内・VMID 予約範囲内に作る。ディスクの取り込みには root 権限が要るため、これも 4.1 の一度だけの準備に含める。
+テンプレートは使わない。既存のテンプレートも、Mamela 用のテンプレートも作らない。テンプレートには、人が手で作って更新する手間がかかり、中身（どの image から、いつ作ったか）が宣言から見えないという弱点があるためである。代わりに、宣言の `image`（例 `ubuntu-24.04`）から毎回次のように作る（`internal/provider/pve`）。
+
+1. **image は Mamela のコードに固定する**（`pve.Catalog`）。URL、sha256、サイズ、最小ディスクを持つ。catalog にない名前は拒否する。image の更新は、レビューされるコードの変更になる。
+2. **一度だけアップロードする。** Mamela を動かすマシンが image をダウンロードし、サイズ・sha256・qcow2 のヘッダーを確かめてキャッシュする（`~/.cache/mamela/images` など。開くたびに確かめ直す）。image 用ストレージに `import` としてアップロードし、Proxmox にも sha256 を確かめさせる。ファイル名に sha256 を含めるので、別の中身と取り違えない。
+3. **image から直接 VM を作る。** `POST /nodes/{node}/qemu` に `scsi0: <disk storage>:0,import-from=<image storage>:import/<file>` を渡すと、Proxmox が image を新しいディスクに複製する。Proxmox の cloud-init ドライブ（`ide2: <disk storage>:cloudinit`）に、ユーザー・SSH 公開鍵・DHCP を設定する。
+4. ディスクを宣言のサイズまで広げ、起動し、所有マーカーを `ready` にする。
+
+image のバージョンは宣言の `image` と catalog で決まるので、同じ宣言からは同じ image の VM ができる。
+
+**中断と再試行:**
+
+- VMID は作成の前に Mamela の DB に予約し、以後その名前の VM には同じ VMID しか使わない。応答が失われて再試行しても、2 台目は作れない（同じ VMID への 2 回目の作成は Proxmox が拒否する）。
+- 作成中の VM（Proxmox はタスクの最後に pool に入れる）は、Token から見えない。予約した VMID が使用中なのに見えないときは、結果不明として止め、別の VMID を選ばない。
+- マーカーが `ready` でない VM は「まだない」と観測する。次の実行の create は、新しく作らずに途中から再開する（ディスク拡張・起動・マーカー）。
+- 所有マーカーを持つのに DB に予約がない VM（別の DB や失われた DB）は管理せず、同じ名前で作り直すことも拒否する。
 
 ### 4.3 VMID とタグ
 
-- VMID は `site.local.toml` の予約範囲だけを使う。`/cluster/nextid` は使わない（他のツールや手作業と衝突し得るため）。
+- VMID は `site.local.toml` の予約範囲だけを使う。`/cluster/nextid` に次の ID を選ばせることはしない（範囲外の ID になり得るため）。範囲内の候補が空いているかを `/cluster/nextid?vmid=<id>` で確かめ、空いている最小の ID を DB に予約する。
 - 予約範囲に、Mamela の所有マーカーを持たないゲストが一つでもあれば、preflight で停止する。
+- 所有マーカーは VM の説明（description）に書く。`mamela-name`、`mamela-image`、`mamela-state`（`creating` / `ready`）を持つ。
 
 ## 5. preflight / postflight
 
@@ -112,7 +131,15 @@ mamela lab preflight  --site lab/site.local.toml   # 検査し、問題がなけ
 mamela lab postflight --site lab/site.local.toml   # baseline と比べ、管理外ゲストが変わっていないことを確認
 ~~~
 
-どちらも読み取りだけで、一つでも BLOCK があれば終了コード 1 になる。結果のコードは [reason-codes.md](reason-codes.md#lab--検証環境) にある。
+L1 から先は、`mamela apply` が同じ preflight / postflight を前後に自動で実行する:
+
+~~~bash
+mamela plan --site lab/site.local.toml examples/lab-vm   # 実機を読み取りで観測して計画し、保存する
+mamela approve <plan-digest>                             # その計画だけを承認する
+mamela apply --site lab/site.local.toml <plan-digest>    # preflight → 再観測して実行 → postflight
+~~~
+
+preflight / postflight はどちらも読み取りだけで、一つでも BLOCK があれば終了コード 1 になる。結果のコードは [reason-codes.md](reason-codes.md#lab--検証環境) にある。
 
 ### preflight
 
@@ -121,6 +148,7 @@ mamela lab postflight --site lab/site.local.toml   # baseline と比べ、管理
 - 対象ノードの空きメモリから、これから作る VM のメモリを引いても、しきい値以上残る。
 - ディスク用 thin pool の使用率が上限未満で、作る VM のディスクを足しても上限を超えない。
 - pool 内の VM 数・vCPU・メモリ・ディスクの合計が予算内。
+- cloud image 用ストレージが content type `import` を受け付け、操作用 Token から使える。
 - 予約範囲に、所有マーカーのないゲストがない。
 - **管理外ゲストのスナップショット**を取る: 全ゲストの VMID、ノード、状態、設定 `digest`、稼働中なら uptime。
 
@@ -136,7 +164,7 @@ mamela lab postflight --site lab/site.local.toml   # baseline と比べ、管理
 | 段階 | 内容 | 既存ゲストへのリスク |
 |---|---|---|
 | L0 | 読み取りのみ。Token で pool・ノード状態を観測し、preflight / postflight を回す | なし（権限上も読み取りだけ） |
-| L1 | 予算内で VM を 1 台作成・起動・観測・停止。重複作成防止と中断からの再観測を試す | メモリ・thin pool のみ（予算と preflight で抑える） |
+| L1 | 予算内で VM を 1 台、テンプレートなしで作成・起動・観測する。重複作成防止と中断からの再観測を試す（停止・削除は実装しない） | メモリ・thin pool のみ（予算と preflight で抑える） |
 | L2 | cloud-init で Agent を導入し、Enrollment、APT、systemd、ドリフト修復を試す | L1 と同じ |
 | L3 | 検証環境の VM 自体を Emela で宣言し、Mamela で管理する（dogfooding） | L1 と同じ |
 

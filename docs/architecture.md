@@ -96,7 +96,7 @@ AI / Human / Git
 | Control Plane / CLI | Go |
 | 状態ストア | SQLite（WAL、単一 writer を想定） |
 | VM Provider | Proxmox VE API（Mamela 専用 pool に限定した API Token） |
-| 初期設定 | cloud-init（NoCloud seed ISO を候補とする。§10） |
+| 初期設定 | cloud-init（ステップ 2 は Proxmox の cloud-init ドライブ。Agent の導入には NoCloud seed ISO を候補とする。§10） |
 | VM 内の変更 | Pull 型 Go Agent、APT、systemd |
 | ノード認証 | 初回限定トークン → mTLS 証明書 |
 | Agent ローカル永続化 | SQLite または原子的なローカルキャッシュ（検証時に確定） |
@@ -365,8 +365,8 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 ## 10. 初回 VM 作成から OS 管理まで
 
 1. Emela で VM、Package、Service を宣言。
-2. Go Policy が許可した Proxmox 作成 Operation を、予約範囲の VMID とともに記録してから実行。
-3. Agent 登録情報を含む cloud-init を渡す。Proxmox API では snippets をアップロードできないため、NoCloud seed ISO を生成して ISO としてアップロードし、CD-ROM に接続する方式を第一候補とする（ステップ 2 で検証）。
+2. Go Policy が許可した Proxmox 作成 Operation を、予約範囲の VMID とともに記録してから実行。テンプレートは使わず、固定した cloud image（sha256）を取り込んで作る（[lab.md §4.2](lab.md#42-テンプレートを使わない-vm-の作り方)）。
+3. Agent 登録情報を含む cloud-init を渡す。ステップ 2 ではユーザー・SSH 公開鍵・DHCP だけなので Proxmox の cloud-init ドライブで足りる。任意の user-data は Proxmox API では渡せない（snippets はアップロードできない）ため、Agent の導入（ステップ 3）では NoCloud seed ISO を生成して ISO としてアップロードし、CD-ROM に接続する方式を第一候補とする。
 4. cloud-init で Agent を導入し、systemd に登録。
 5. 一回限りの Token を使って Agent を Enrollment。
 6. Agent が自ノードの署名済み Desired Revision を Pull。
@@ -427,7 +427,7 @@ mamela/
 - emela コンパイラ自体の隔離（コンテナ / 別ユーザー / VM 内でのビルド）。
 - Node Agent のローカルキャッシュ方式と署名・証明書・鍵のライフサイクル。
 - APT 操作の privilege separation と sandbox / 保守スクリプトの扱い。
-- Mamela 用 VM テンプレートの作り方（cloud image の取り込み方法）。
+- 固定した cloud image の更新の手順（新しい release の sha256 をどう確かめて catalog に入れるか。SHA256SUMS の署名の検証）。
 - 宣言の所有権粒度（リソース単位 → 必要に応じフィールド単位）。
 - SQLite の永続ストレージ・バックアップ・マイグレーション規約。
 - 更新失敗・再起動時の確認と rollback をどこまで保証するか。

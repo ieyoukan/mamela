@@ -74,6 +74,9 @@ func TestBootstrapScriptOnlyAdds(t *testing.T) {
 	if !strings.Contains(script, "pveum acl modify / --tokens 'mamela-audit@pve!audit' --roles PVEAuditor") {
 		t.Error("audit token is not read-only PVEAuditor on /")
 	}
+	if !strings.Contains(script, `pvesm set local --content "$content,import"`) || strings.Contains(code, "pvesm set local-lvm") {
+		t.Error("the script must add the import content type to the image storage only, keeping the others")
+	}
 	if strings.Count(script, "acl modify / ") != 2 {
 		t.Error("only the audit user and token may have ACLs on /")
 	}
@@ -109,7 +112,7 @@ func TestExcessPermissions(t *testing.T) {
 func healthyFacts() *Facts {
 	return &Facts{
 		Quorate: true, NodesTotal: 3, NodesOnline: 3, NodeOnline: true,
-		MemAvailable: 8 << 30, DiskTotal: 100 << 30, DiskUsed: 20 << 30,
+		MemAvailable: 8 << 30, DiskTotal: 100 << 30, DiskUsed: 20 << 30, ImportStorages: []string{"local"},
 		LabPermissions: map[string]map[string]int{"/pool/mamela-lab": {"VM.Allocate": 1}},
 		Guests: []Guest{
 			{VMID: 101, Type: "qemu", Node: "pve-node-1", Name: "prod-db", Status: "running", Uptime: 1000, ConfigDigest: "d1"},
@@ -223,4 +226,24 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+func TestImageStorageMustAcceptImports(t *testing.T) {
+	f := healthyFacts()
+	f.ImportStorages = []string{"other"}
+	if got := codes(Check(exampleSite(t), f), Block); len(got) != 1 || got[0] != "LAB-0203" {
+		t.Fatalf("blocks %v, want only LAB-0203", got)
+	}
+}
+
+func TestCheckForExistingVMsOnly(t *testing.T) {
+	s := exampleSite(t)
+	f := healthyFacts()
+	f.Guests = append(f.Guests, Guest{VMID: 7000, Type: "qemu", Node: "pve-node-1", Name: "web", Pool: "mamela-lab", Tags: "mamela-lab"})
+	if got := codes(CheckFor(s, f, 1), Block); len(got) != 1 || got[0] != "LAB-0303" {
+		t.Fatalf("one more VM: blocks %v, want LAB-0303", got)
+	}
+	if got := codes(CheckFor(s, f, 0), Block); len(got) != 0 {
+		t.Fatalf("no new VM: blocks %v", got)
+	}
 }

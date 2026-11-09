@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
+	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
@@ -34,6 +35,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
 	snapshotFile := fs.String("snapshot", "", "observed state as a snapshot JSON file (default: an empty world, observed now)")
+	sitePath := fs.String("site", "", "observe the lab Proxmox of this site definition instead (read-only)")
 	replay := fs.String("replay", "", "recompute a stored plan by digest and check that it is unchanged")
 	toolchainDir := fs.String("toolchain", envOr("MAMELA_TOOLCHAIN_DIR", ".tools/bin"), "directory containing the pinned emela and wasmtime")
 	pomeCache := fs.String("pome-cache", defaultPomeCache(), "directory of already fetched Pome dependencies")
@@ -87,6 +89,27 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	snap := state.Empty(wallClock())
+	if *snapshotFile != "" && *sitePath != "" {
+		fmt.Fprintln(stderr, "mamela plan: use either --snapshot or --site, not both")
+		return 2
+	}
+	if *sitePath != "" {
+		site, err := lab.LoadSite(*sitePath)
+		if err != nil {
+			return report(stderr, err)
+		}
+		operating, err := labClient(site, site.Proxmox.TokenID, site.Proxmox.TokenSecretFile)
+		if err != nil {
+			return report(stderr, err)
+		}
+		prov, err := labProvider(site, operating, st, "")
+		if err != nil {
+			return report(stderr, err)
+		}
+		if snap, err = prov.Observe(ctx); err != nil {
+			return report(stderr, fmt.Errorf("observe the lab: %w", err))
+		}
+	}
 	if *snapshotFile != "" {
 		b, err := os.ReadFile(*snapshotFile)
 		if err != nil {

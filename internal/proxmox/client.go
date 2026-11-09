@@ -1,10 +1,13 @@
 // Package proxmox is a minimal Proxmox VE API client.
 //
-// For now it is read-only by construction: the only request it can send is GET. Write operations
-// arrive with the provider (step 2, L1), behind the lab boundary checks.
+// It can only send GET, POST and PUT, and only through the typed calls below: there is no generic
+// request method and no DELETE at all, so nothing built on this client can delete a guest, a disk
+// or a volume. The writes it offers are the ones the lab provider needs: upload an image, create a
+// VM, grow a disk, start a VM and update a VM's description.
 package proxmox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -15,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +32,7 @@ type Client struct {
 	base    string // https://host:8006/api2/json
 	auth    string // PVEAPIToken=user@realm!id=secret
 	http    *http.Client
+	timeout time.Duration // per request, except uploads (bounded by the caller's context)
 	maxBody int64
 }
 
@@ -82,55 +88,107 @@ func New(apiURL, tokenID, secret string, opts Options) (*Client, error) {
 	return &Client{
 		base:    strings.TrimRight(apiURL, "/") + "/api2/json",
 		auth:    "PVEAPIToken=" + tokenID + "=" + secret,
-		http:    &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: tlsConf, Proxy: nil}},
+		http:    &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConf, Proxy: nil}},
+		timeout: timeout,
 		maxBody: 32 << 20,
 	}, nil
 }
 
-// APIError is a non-2xx response.
+// APIError is a response with a non-2xx status: the server answered, so the outcome is known.
 type APIError struct {
+	Method string
 	Path   string
 	Status int
 	Body   string
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("proxmox: GET %s: %d %s", e.Path, e.Status, strings.TrimSpace(e.Body))
+	return fmt.Sprintf("proxmox: %s %s: %d %s", e.Method, e.Path, e.Status, strings.TrimSpace(e.Body))
 }
 
-// get performs GET <path> and decodes the "data" member into out.
-func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+// Uncertain reports whether a write that failed with err may still have taken effect: the request
+// may have reached the server, but no definite answer came back (a lost connection, a timeout, or a
+// gateway status from pveproxy). A definite API error means the request was refused or failed.
+func Uncertain(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Status {
+		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 595, 596, 599:
+			return true
+		}
+		return false
+	}
+	return true
+}
+
+// methods is everything this client can send. DELETE is deliberately absent.
+var methods = map[string]bool{http.MethodGet: true, http.MethodPost: true, http.MethodPut: true}
+
+// do sends one request and decodes the "data" member of the response into out (when out is not nil).
+func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, long bool, out any) error {
+	if !methods[method] {
+		return fmt.Errorf("proxmox: method %s is not allowed", method)
+	}
+	if !long {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
 	if err != nil {
 		return err
+	}
+	if sr, ok := body.(*sizedReader); ok {
+		req.ContentLength = sr.n
 	}
 	req.Header.Set("Authorization", c.auth)
 	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("proxmox: GET %s: %w", path, err)
+		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody))
 	if err != nil {
-		return err
+		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	if resp.StatusCode/100 != 2 {
-		if len(body) > 512 {
-			body = body[:512]
+		if len(data) > 512 {
+			data = data[:512]
 		}
-		return &APIError{Path: path, Status: resp.StatusCode, Body: string(body)}
+		msg := string(data)
+		if m := resp.Status; strings.TrimSpace(msg) == "" || msg == `{"data":null}` {
+			msg = m // pveproxy puts the reason in the status line
+		}
+		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: msg}
+	}
+	if out == nil {
+		return nil
 	}
 	var envelope struct {
 		Data jsontext.Value `json:"data"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("proxmox: GET %s: %w", path, err)
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
-		return fmt.Errorf("proxmox: GET %s: %w", path, err)
+		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	return nil
+}
+
+func (c *Client) get(ctx context.Context, path string, out any) error {
+	return c.do(ctx, http.MethodGet, path, "", nil, false, out)
+}
+
+func (c *Client) form(ctx context.Context, method, path string, values url.Values, out any) error {
+	return c.do(ctx, method, path, "application/x-www-form-urlencoded", strings.NewReader(values.Encode()), false, out)
 }
 
 // ClusterStatusEntry is one entry of GET /cluster/status.
@@ -212,6 +270,165 @@ func (c *Client) ConfigDigest(ctx context.Context, node, kind string, vmid int) 
 	}
 	err := c.get(ctx, fmt.Sprintf("/nodes/%s/%s/%d/config", url.PathEscape(node), kind, vmid), &out)
 	return out.Digest, err
+}
+
+// nodePath is /nodes/<node> with the node name escaped.
+func nodePath(node string) string { return "/nodes/" + url.PathEscape(node) }
+
+// VMIDFree asks the cluster whether a VMID is unused (GET /cluster/nextid?vmid=N). Any user may ask.
+func (c *Client) VMIDFree(ctx context.Context, vmid int) (bool, error) {
+	var out jsontext.Value
+	err := c.get(ctx, "/cluster/nextid?vmid="+strconv.Itoa(vmid), &out)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusBadRequest && strings.Contains(apiErr.Body, "already exists") {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// VMConfig is a VM's configuration (GET /nodes/{node}/qemu/{vmid}/config). Values are kept as
+// Proxmox returns them; numbers arrive as numbers or strings depending on the option.
+type VMConfig map[string]jsontext.Value
+
+// String returns option key as text ("" when absent).
+func (c VMConfig) String(key string) string {
+	v, ok := c[key]
+	if !ok {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(v, &s) == nil {
+		return s
+	}
+	return strings.TrimSpace(string(v))
+}
+
+// Int returns option key as an integer (0 when absent or not a number).
+func (c VMConfig) Int(key string) int64 {
+	n, _ := strconv.ParseInt(c.String(key), 10, 64)
+	return n
+}
+
+func (c *Client) VMConfig(ctx context.Context, node string, vmid int) (VMConfig, error) {
+	var out VMConfig
+	return out, c.get(ctx, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), &out)
+}
+
+// VMStatus is the part of GET /nodes/{node}/qemu/{vmid}/status/current Mamela uses.
+type VMStatus struct {
+	Status string `json:"status"` // running, stopped
+	Lock   string `json:"lock"`
+}
+
+func (c *Client) VMStatus(ctx context.Context, node string, vmid int) (VMStatus, error) {
+	var out VMStatus
+	return out, c.get(ctx, fmt.Sprintf("%s/qemu/%d/status/current", nodePath(node), vmid), &out)
+}
+
+// Volume is one entry of GET /nodes/{node}/storage/{storage}/content.
+type Volume struct {
+	VolID  string `json:"volid"`
+	Format string `json:"format"`
+	Size   int64  `json:"size"`
+}
+
+func (c *Client) StorageContent(ctx context.Context, node, storage, content string) ([]Volume, error) {
+	var out []Volume
+	return out, c.get(ctx, nodePath(node)+"/storage/"+url.PathEscape(storage)+"/content?content="+url.QueryEscape(content), &out)
+}
+
+// Storages lists the storages on node that are enabled for a content type and visible to the token.
+func (c *Client) Storages(ctx context.Context, node, content string) ([]string, error) {
+	var out []struct {
+		Storage string `json:"storage"`
+	}
+	if err := c.get(ctx, nodePath(node)+"/storage?content="+url.QueryEscape(content), &out); err != nil {
+		return nil, err
+	}
+	names := make([]string, len(out))
+	for i, s := range out {
+		names[i] = s.Storage
+	}
+	return names, nil
+}
+
+// Task is the state of a background task (GET /nodes/{node}/tasks/{upid}/status).
+type Task struct {
+	Status     string `json:"status"`     // running, stopped
+	ExitStatus string `json:"exitstatus"` // OK, WARNINGS: n, or an error message (when stopped)
+}
+
+// Succeeded reports whether a stopped task ended without an error.
+func (t Task) Succeeded() bool {
+	return t.Status == "stopped" && (t.ExitStatus == "OK" || strings.HasPrefix(t.ExitStatus, "WARNINGS"))
+}
+
+func (c *Client) TaskStatus(ctx context.Context, node, upid string) (Task, error) {
+	var out Task
+	return out, c.get(ctx, nodePath(node)+"/tasks/"+url.PathEscape(upid)+"/status", &out)
+}
+
+// CreateVM starts creating a VM (POST /nodes/{node}/qemu) and returns the task ID.
+func (c *Client) CreateVM(ctx context.Context, node string, params url.Values) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPost, nodePath(node)+"/qemu", params, &upid)
+}
+
+// GrowDisk extends a disk to size (PUT .../resize). Proxmox refuses to shrink.
+func (c *Client) GrowDisk(ctx context.Context, node string, vmid int, disk, size string) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/resize", nodePath(node), vmid),
+		url.Values{"disk": {disk}, "size": {size}}, &upid)
+}
+
+// StartVM starts a VM and returns the task ID.
+func (c *Client) StartVM(ctx context.Context, node string, vmid int) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/start", nodePath(node), vmid), url.Values{}, &upid)
+}
+
+// SetDescription replaces a VM's description (PUT .../config, applied at once). digest makes the
+// write conditional: Proxmox refuses it if the configuration changed since it was read.
+func (c *Client) SetDescription(ctx context.Context, node string, vmid int, description, digest string) error {
+	v := url.Values{"description": {description}}
+	if digest != "" {
+		v.Set("digest", digest)
+	}
+	return c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), v, nil)
+}
+
+// Upload sends a file of size bytes to a storage (POST .../upload) and returns the task ID.
+// Proxmox verifies the SHA-256 checksum before it keeps the file. pveproxy needs the exact length
+// of the multipart body, so it is computed up front. The request is bounded only by ctx.
+func (c *Client) Upload(ctx context.Context, node, storage, content, filename, sha256hex string, file io.Reader, size int64) (string, error) {
+	var head bytes.Buffer
+	mw := multipart.NewWriter(&head)
+	for _, kv := range [][2]string{{"content", content}, {"checksum-algorithm", "sha256"}, {"checksum", sha256hex}} {
+		if err := mw.WriteField(kv[0], kv[1]); err != nil {
+			return "", err
+		}
+	}
+	if _, err := mw.CreateFormFile("filename", filename); err != nil {
+		return "", err
+	}
+	headLen := head.Len()
+	if err := mw.Close(); err != nil {
+		return "", err
+	}
+	tail := append([]byte(nil), head.Bytes()[headLen:]...)
+	body := io.MultiReader(bytes.NewReader(head.Bytes()[:headLen]), io.LimitReader(file, size), bytes.NewReader(tail))
+	length := int64(headLen) + size + int64(len(tail))
+
+	var upid string
+	err := c.do(ctx, http.MethodPost, nodePath(node)+"/storage/"+url.PathEscape(storage)+"/upload",
+		mw.FormDataContentType(), &sizedReader{body, length}, true, &upid)
+	return upid, err
+}
+
+// sizedReader lets net/http send a Content-Length instead of a chunked body.
+type sizedReader struct {
+	io.Reader
+	n int64
 }
 
 func parseFingerprint(s string) (string, error) {

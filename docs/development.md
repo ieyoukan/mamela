@@ -44,13 +44,15 @@
 
 **L0 を実機で通した (2026-11-09):** bootstrap の後、preflight（quorum、ノード、Token の権限が境界内、資源の余裕、予算）と postflight（管理外ゲストの不変）がすべて通った。Token の秘密ファイルが group / others から読める間は preflight が止まることも実機で確かめた。
 
-前提: [検証環境](lab.md) の一度だけの準備（pool・ロール・Token・テンプレート）を人が実行済み。
+**L1 の道具を実装した (2026-11-09):** `internal/provider/pve`（テンプレートなしで VM を作る Provider。[lab.md §4.2](lab.md#42-テンプレートを使わない-vm-の作り方)）、Proxmox クライアントの書き込み（GET / POST / PUT だけ。DELETE は送れない）、VMID の予約（`store` の `vmids` 表）、`mamela plan --site`（実機を観測して計画）、`mamela apply --site`（preflight → 再観測して実行 → postflight）、L1 用の宣言 `examples/lab-vm`。偽の Proxmox API に対して、応答の喪失・作成タスクの未完了・作成の失敗・予約した VMID の横取り・マーカーだけの VM・予算外の要求をテストした。安全装置（VMID の予約、作成中の VM を「まだない」と見ること、予約のない VM の拒否、応答喪失を結果不明とすること）は、外すとテストが落ちることを確認した。実機での実行はまだ。
+
+前提: [検証環境](lab.md) の一度だけの準備（pool・ロール・Token、cloud image 用ストレージの `import`）を人が実行済み。
 
 - L0: Token で読み取りだけ行う。preflight / postflight（資源の余裕、権限の範囲、管理外ゲストの不変性）を実装し、何も作らずに回す。
 - Token の最小権限を実測して `docs/lab.md` の表を確定する。
 - L1: API の read / create を実装。VMID 予約範囲・タグ・所有マーカーで管理する。
 - VMID と Intent を先に保存し、Timeout や Control Plane 再起動で重複 VM を作らない。
-- cloud-init: NoCloud seed ISO を生成・アップロードして CD-ROM に接続する方式を検証する。
+- cloud-init: L1 は Proxmox の cloud-init ドライブ（ユーザー・SSH 公開鍵・DHCP）。任意の user-data が要る Agent の導入（ステップ 3）で NoCloud seed ISO を検証する。
 - 削除、ディスク縮小、VM 置換を実装しない（API で拒否）。
 
 **完了条件:** 予算内の Ubuntu VM を 1 台作成し、障害再実行でも 2 台にならない。postflight で管理外ゲストに変化がない。

@@ -275,3 +275,36 @@ func TestEventsAreOrdered(t *testing.T) {
 		t.Fatalf("events: %v %+v", err, evs)
 	}
 }
+
+func TestAllocateVMIDIsStableAndSkipsUsedIDs(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := open(t)
+	inCluster := map[int]bool{7000: true} // someone else's guest
+	asked := 0
+	free := func(_ context.Context, v int) (bool, error) { asked++; return !inCluster[v], nil }
+
+	a, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
+	if err != nil || a != 7001 {
+		t.Fatalf("first allocation: %d %v, want 7001", a, err)
+	}
+	// Once reserved, the same name always gets the same VMID, even if the cluster now says it is
+	// in use (by the VM this reservation created).
+	inCluster[7001] = true
+	again, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
+	if err != nil || again != 7001 {
+		t.Fatalf("second allocation: %d %v, want 7001", again, err)
+	}
+	b, err := st.AllocateVMID(ctx, "db", 7000, 7002, free)
+	if err != nil || b != 7002 {
+		t.Fatalf("other name: %d %v, want 7002", b, err)
+	}
+	if _, err := st.AllocateVMID(ctx, "cache", 7000, 7002, free); err == nil {
+		t.Fatal("allocated beyond the range")
+	}
+	if v, ok, err := st.VMID(ctx, "web"); err != nil || !ok || v != 7001 {
+		t.Fatalf("VMID(web) = %d %v %v", v, ok, err)
+	}
+	if _, ok, _ := st.VMID(ctx, "nothing"); ok {
+		t.Fatal("found a VMID for an unknown name")
+	}
+}

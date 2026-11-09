@@ -1,0 +1,13 @@
+[pome]
+name = "github.com/ieyoukan/mamela/examples/lab-vm"
+version = "0.1.0"
+emela = "0.27.0"
+
+[build]
+target = "wasm"
+
+[dependencies]
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.1.0"
+
+[replace]
+"github.com/ieyoukan/mamela/pome/mamela" = { path = "../../pome/mamela" }

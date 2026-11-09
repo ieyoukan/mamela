@@ -1,4 +1,4 @@
-// Command mamela is the Mamela CLI. Only `eval` exists so far.
+// Command mamela is the Mamela CLI.
 package main
 
 import (
@@ -24,6 +24,7 @@ Usage:
   mamela plan [flags] <pome-dir>      show and save what would change, and what needs approval
   mamela plan --replay <plan-digest>  recompute a saved plan and check it is unchanged
   mamela approve <plan-digest>        approve exactly that plan
+  mamela apply --site <file> <plan-digest>  carry out an approved plan on the lab Proxmox
   mamela lab <bootstrap|preflight|postflight>  set up and check the live test lab (docs/lab.md)
 
 Run 'mamela <command> -h' for flags.
@@ -47,6 +48,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runPlan(ctx, args[1:], stdout, stderr)
 	case "approve":
 		return runApprove(ctx, args[1:], stdout, stderr)
+	case "apply":
+		return runApply(ctx, args[1:], stdout, stderr)
 	case "lab":
 		return runLab(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":

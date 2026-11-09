@@ -60,6 +60,8 @@ type Facts struct {
 	// The operating token's own view: its permissions and the guests it can see.
 	LabPermissions   map[string]map[string]int
 	LabVisibleGuests []Guest
+	// Storages on the lab node that accept importable images and that the operating token can use.
+	ImportStorages []string
 }
 
 // API is the read-only part of the Proxmox client that preflight needs.
@@ -70,6 +72,7 @@ type API interface {
 	StorageStatus(ctx context.Context, node, storage string) (proxmox.StorageStatus, error)
 	Permissions(ctx context.Context) (map[string]map[string]int, error)
 	ConfigDigest(ctx context.Context, node, kind string, vmid int) (string, error)
+	Storages(ctx context.Context, node, content string) ([]string, error)
 }
 
 // Gather collects the facts. audit is the read-only audit token; operating is the lab token.
@@ -134,6 +137,11 @@ func Gather(ctx context.Context, s *Site, audit, operating API) (*Facts, error) 
 		return nil, fmt.Errorf("operating token: %w", err)
 	}
 	f.LabVisibleGuests = guestsOf(visible)
+	if f.NodeOnline {
+		if f.ImportStorages, err = operating.Storages(ctx, s.Proxmox.Node, "import"); err != nil {
+			return nil, fmt.Errorf("operating token: %w", err)
+		}
+	}
 	return f, nil
 }
 
@@ -164,7 +172,11 @@ func (s *Site) IsLab(g Guest) bool {
 }
 
 // Check evaluates the facts for creating one more lab VM of the maximum budgeted size.
-func Check(s *Site, f *Facts) []Finding {
+func Check(s *Site, f *Facts) []Finding { return CheckFor(s, f, 1) }
+
+// CheckFor evaluates the facts for creating newVMs more lab VMs of the maximum budgeted size
+// (0 when a run only changes or finishes existing ones).
+func CheckFor(s *Site, f *Facts, newVMs int) []Finding {
 	var out []Finding
 	add := func(code string, sev Severity, format string, args ...any) {
 		out = append(out, Finding{Code: code, Severity: sev, Message: fmt.Sprintf(format, args...)})
@@ -206,7 +218,7 @@ func Check(s *Site, f *Facts) []Finding {
 	}
 
 	// Shared resources on the lab node, for one more VM of the maximum size.
-	vmMem := s.Budget.MaxMemoryMiBPerVM << 20
+	vmMem := int64(newVMs) * s.Budget.MaxMemoryMiBPerVM << 20
 	leftMiB := (f.MemAvailable - vmMem) >> 20
 	if leftMiB < s.Safety.MinHostMemAvailableMiB {
 		add("LAB-0201", Block, "only %d MiB would remain available on %s after a %d MiB VM (minimum %d MiB)",
@@ -217,13 +229,20 @@ func Check(s *Site, f *Facts) []Finding {
 	if f.DiskTotal <= 0 {
 		add("LAB-0202", Block, "the size of storage %s is unknown", s.Placement.DiskStorage)
 	} else {
-		after := float64(f.DiskUsed+s.Budget.MaxDiskGiBPerVM<<30) / float64(f.DiskTotal) * 100
+		after := float64(f.DiskUsed+int64(newVMs)*s.Budget.MaxDiskGiBPerVM<<30) / float64(f.DiskTotal) * 100
 		if after > float64(s.Safety.MaxThinpoolUsedPercent) {
 			add("LAB-0202", Block, "storage %s would be %.1f%% used after a %d GiB disk (maximum %d%%)",
 				s.Placement.DiskStorage, after, s.Budget.MaxDiskGiBPerVM, s.Safety.MaxThinpoolUsedPercent)
 		} else {
 			add("LAB-0202", OK, "storage %s would be %.1f%% used after a %d GiB disk", s.Placement.DiskStorage, after, s.Budget.MaxDiskGiBPerVM)
 		}
+	}
+
+	if slices.Contains(f.ImportStorages, s.Placement.ImageStorage) {
+		add("LAB-0203", OK, "storage %s accepts cloud images to import", s.Placement.ImageStorage)
+	} else {
+		add("LAB-0203", Block, "storage %s does not accept importable images (content type \"import\") for the operating token; run the bootstrap script again",
+			s.Placement.ImageStorage)
 	}
 
 	// The boundary itself.
@@ -239,8 +258,8 @@ func Check(s *Site, f *Facts) []Finding {
 			labCount++
 		}
 	}
-	if labCount+1 > s.Budget.MaxVMs {
-		add("LAB-0303", Block, "the lab already has %d VM(s); one more would exceed max_vms %d", labCount, s.Budget.MaxVMs)
+	if labCount+newVMs > s.Budget.MaxVMs {
+		add("LAB-0303", Block, "the lab already has %d VM(s); %d more would exceed max_vms %d", labCount, newVMs, s.Budget.MaxVMs)
 	} else {
 		add("LAB-0303", OK, "the lab has %d VM(s); budget allows %d", labCount, s.Budget.MaxVMs)
 	}

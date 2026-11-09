@@ -24,6 +24,7 @@ type Site struct {
 	Proxmox   Proxmox   `toml:"proxmox"`
 	Boundary  Boundary  `toml:"boundary"`
 	Placement Placement `toml:"placement"`
+	Guest     GuestInit `toml:"guest"`
 	Budget    Budget    `toml:"budget"`
 	Safety    Safety    `toml:"safety"`
 }
@@ -48,9 +49,16 @@ type Boundary struct {
 
 type Placement struct {
 	DiskStorage string `toml:"disk_storage"`
-	ISOStorage  string `toml:"iso_storage"`
-	Bridge      string `toml:"bridge"`
-	SDNZone     string `toml:"sdn_zone"`
+	// ImageStorage holds the pinned cloud images VMs are created from (content type "import").
+	ImageStorage string `toml:"image_storage"`
+	Bridge       string `toml:"bridge"`
+	SDNZone      string `toml:"sdn_zone"`
+}
+
+// GuestInit is the cloud-init configuration of lab VMs.
+type GuestInit struct {
+	User             string `toml:"user"`
+	SSHPublicKeyFile string `toml:"ssh_public_key_file"` // optional; "~/" is expanded
 }
 
 type Budget struct {
@@ -103,7 +111,7 @@ func (s *Site) Validate() error {
 		bad("proxmox.api_url must start with https://")
 	}
 	for k, v := range map[string]string{"proxmox.node": p.Node, "boundary.pool": s.Boundary.Pool, "boundary.tag": s.Boundary.Tag,
-		"placement.disk_storage": s.Placement.DiskStorage, "placement.iso_storage": s.Placement.ISOStorage,
+		"placement.disk_storage": s.Placement.DiskStorage, "placement.image_storage": s.Placement.ImageStorage, "guest.user": s.Guest.User,
 		"placement.bridge": s.Placement.Bridge, "placement.sdn_zone": s.Placement.SDNZone} {
 		if !nameRe.MatchString(v) {
 			bad("%s %q is missing or not a plain name", k, v)
@@ -178,4 +186,30 @@ func ReadSecret(path string) (string, error) {
 		return "", fmt.Errorf("%s is empty", path)
 	}
 	return secret, nil
+}
+
+// SSHPublicKeys reads the guest's SSH public key file ("" when none is configured).
+func (s *Site) SSHPublicKeys() (string, error) {
+	path := s.Guest.SSHPublicKeyFile
+	if path == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	keys := strings.TrimSpace(string(b))
+	for _, line := range strings.Split(keys, "\n") {
+		if strings.Contains(line, "PRIVATE KEY") || !strings.HasPrefix(line, "ssh-") && !strings.HasPrefix(line, "ecdsa-") {
+			return "", fmt.Errorf("%s does not look like an SSH public key file", path)
+		}
+	}
+	return keys, nil
 }

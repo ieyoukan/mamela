@@ -166,8 +166,22 @@ func TestLabBootstrapPrintsScript(t *testing.T) {
 }
 
 func TestLabPreflightNeedsSecrets(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no token files, whatever this machine has
 	code, _, stderr := runCLI("lab", "preflight", "--site", filepath.Join("..", "..", "lab", "site.example.toml"))
 	if code != 1 || !strings.Contains(stderr, "mamela-audit@pve!audit") {
 		t.Errorf("code=%d stderr=%s", code, stderr)
+	}
+}
+
+func TestApplyNeedsALabAndAStoredPlan(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db := filepath.Join(t.TempDir(), "state.db")
+	site := filepath.Join("..", "..", "lab", "site.example.toml")
+	code, _, stderr := runCLI("apply", "--db", db, "--site", site, "sha256:0000")
+	if code != 1 || !strings.Contains(stderr, "no plan sha256:0000") {
+		t.Errorf("unknown plan: code=%d stderr=%s", code, stderr)
+	}
+	if code, _, _ := runCLI("apply", "--db", db, "--site", site); code != 2 {
+		t.Errorf("no digest: code=%d", code)
 	}
 }

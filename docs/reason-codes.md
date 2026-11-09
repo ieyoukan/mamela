@@ -86,7 +86,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 
 ## LAB — 検証環境
 
-`mamela lab preflight` / `postflight` の結果。BLOCK が一つでもあれば実機テストをしない。
+`mamela lab preflight` / `postflight` と `mamela apply` の前後の検査の結果。BLOCK が一つでもあれば実機テストをしない。
 
 | コード | 重さ | 意味 |
 |---|---|---|
@@ -97,6 +97,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | LAB-0102 | BLOCK | 操作用 Token から pool 外のゲストが見える |
 | LAB-0201 | BLOCK | 予算上限の VM を作るとノードの空きメモリがしきい値を下回る |
 | LAB-0202 | BLOCK | 予算上限のディスクを足すと thin pool の使用率が上限を超える |
+| LAB-0203 | BLOCK | cloud image 用ストレージが content type `import` を受け付けない（bootstrap をもう一度実行する） |
 | LAB-0301 | BLOCK | VMID 予約範囲に、検証環境のものでないゲストがいる |
 | LAB-0302 | BLOCK | pool の中に、範囲外かタグのないゲストがいる |
 | LAB-0303 | BLOCK | VM 数の予算を超える |
