@@ -100,6 +100,29 @@ func TestEvaluateHomelab(t *testing.T) {
 	}
 }
 
+func TestRelativePomeCacheIsResolvedFromTheCallersDirectory(t *testing.T) {
+	t.Parallel()
+	requirePomeCache(t)
+	e := testEvaluator(t)
+	rel, err := filepath.Rel(mustGetwd(t), e.PomeCache)
+	if err != nil || filepath.IsAbs(rel) {
+		t.Skipf("the Pome cache %s has no relative path from here", e.PomeCache)
+	}
+	e.PomeCache = rel
+	if _, err := e.Evaluate(context.Background(), filepath.Join("..", "..", "examples", "homelab")); err != nil {
+		t.Fatalf("Evaluate with relative Pome cache %s: %v", rel, err)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
 func TestBuildIsReproducible(t *testing.T) {
 	t.Parallel()
 	requirePomeCache(t)

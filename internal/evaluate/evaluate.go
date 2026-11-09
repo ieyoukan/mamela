@@ -165,6 +165,10 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 	if cache == "" {
 		cache = filepath.Join(work, "empty-pome-cache")
 	}
+	// emela runs inside the Pome, so a relative cache must be resolved against our directory first.
+	if cache, err = filepath.Abs(cache); err != nil {
+		return "", err
+	}
 	for _, d := range []string{out, home, cache} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return "", err
