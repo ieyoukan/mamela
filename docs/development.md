@@ -42,6 +42,7 @@
 
 **L0 の道具は用意済み (2026-11-09):** `mamela lab bootstrap`（root 用スクリプトの生成のみ）、`mamela lab preflight` / `postflight`（読み取り専用）、`internal/proxmox`（GET しか送れない API クライアント、証明書の fingerprint 固定）。次は人が bootstrap を実行し、L0 を実機で回す。
 
+**L0 を実機で通した (2026-11-09):** bootstrap の後、preflight（quorum、ノード、Token の権限が境界内、資源の余裕、予算）と postflight（管理外ゲストの不変）がすべて通った。Token の秘密ファイルが group / others から読める間は preflight が止まることも実機で確かめた。
 
 前提: [検証環境](lab.md) の一度だけの準備（pool・ロール・Token・テンプレート）を人が実行済み。
 
