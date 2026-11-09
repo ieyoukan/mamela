@@ -40,6 +40,7 @@ type fakePVE struct {
 	createTaskFails    bool // the create task ends with an error (Proxmox removes the VM again)
 	createStaysRunning bool // the create task never finishes; the VM stays locked outside the pool
 	taskStatusErrors   int  // answer this many task status reads with 503
+	noPoolAudit        bool // the token lacks Pool.Audit: /cluster/resources leaves out the pool
 
 	// Counters.
 	creates, uploads, starts, resizes int
@@ -125,8 +126,12 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if vm.pool != "lab" {
 				continue
 			}
-			out = append(out, map[string]any{"id": fmt.Sprintf("qemu/%d", vm.vmid), "type": "qemu", "vmid": vm.vmid,
-				"node": "n1", "name": vm.config["name"], "status": vm.status, "pool": vm.pool, "tags": vm.config["tags"]})
+			e := map[string]any{"id": fmt.Sprintf("qemu/%d", vm.vmid), "type": "qemu", "vmid": vm.vmid,
+				"node": "n1", "name": vm.config["name"], "status": vm.status, "pool": vm.pool, "tags": vm.config["tags"]}
+			if f.noPoolAudit {
+				delete(e, "pool")
+			}
+			out = append(out, e)
 		}
 		reply(w, out)
 	case r.Method == http.MethodGet && p == "/api2/json/cluster/nextid":

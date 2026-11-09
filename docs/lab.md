@@ -87,13 +87,13 @@ pool・ロール・ユーザー・Token・ACL の作成と、ストレージの 
 
 | パス | ロール | 権限 | 用途 |
 |---|---|---|---|
-| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt` | pool 内の VM の作成・設定・起動停止 |
+| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt`, `Pool.Audit` | pool 内の VM の作成・設定・起動停止。`Pool.Audit` がないと `/cluster/resources` が VM の pool を返さず、自分の VM を見分けられない（L1 で判明） |
 | `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
 | `/storage/<image storage>` | `MamelaLabImage` | `Datastore.AllocateTemplate`, `Datastore.Audit` | 固定した cloud image のアップロード（AllocateTemplate）と、新しいディスクへの取り込み（Audit） |
 | `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
 | `/nodes/<node>` | `MamelaLabAudit` | `Sys.Audit` | ノード状態の読み取り |
 
-`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。各権限が必要な理由は、Proxmox VE 9.2 のソース（`PVE/API2/Qemu.pm` の `create_vm` と `check_storage_access`、`PVE/Storage.pm` の `check_volume_access`、`PVE/API2/Storage/Status.pm` の `upload`）で確認した。L1 の実機の実行で過不足を確かめて確定する。
+`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。各権限が必要な理由は、Proxmox VE 9.2 のソース（`PVE/API2/Qemu.pm` の `create_vm` と `check_storage_access`、`PVE/Storage.pm` の `check_volume_access`、`PVE/API2/Storage/Status.pm` の `upload`）で確認した。L1 の実機の実行で確かめた（`Pool.Audit` の不足が見つかり追加した）。足りない権限があれば preflight が LAB-0104 で止める。
 
 `download-url`（ノードに URL から直接ダウンロードさせる API）は使わない。`Sys.AccessNetwork`（ノードのネットワークを任意に探れる権限）が要るためである。代わりに、Mamela を動かすマシンが cloud image をダウンロードして sha256 を確かめ、それをアップロードする。
 

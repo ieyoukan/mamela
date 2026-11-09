@@ -44,7 +44,13 @@
 
 **L0 を実機で通した (2026-11-09):** bootstrap の後、preflight（quorum、ノード、Token の権限が境界内、資源の余裕、予算）と postflight（管理外ゲストの不変）がすべて通った。Token の秘密ファイルが group / others から読める間は preflight が止まることも実機で確かめた。
 
-**L1 の道具を実装した (2026-11-09):** `internal/provider/pve`（テンプレートなしで VM を作る Provider。[lab.md §4.2](lab.md#42-テンプレートを使わない-vm-の作り方)）、Proxmox クライアントの書き込み（GET / POST / PUT だけ。DELETE は送れない）、VMID の予約（`store` の `vmids` 表）、`mamela plan --site`（実機を観測して計画）、`mamela apply --site`（preflight → 再観測して実行 → postflight）、L1 用の宣言 `examples/lab-vm`。偽の Proxmox API に対して、応答の喪失・作成タスクの未完了・作成の失敗・予約した VMID の横取り・マーカーだけの VM・予算外の要求をテストした。安全装置（VMID の予約、作成中の VM を「まだない」と見ること、予約のない VM の拒否、応答喪失を結果不明とすること）は、外すとテストが落ちることを確認した。実機での実行はまだ。
+**L1 の道具を実装した (2026-11-09):** `internal/provider/pve`（テンプレートなしで VM を作る Provider。[lab.md §4.2](lab.md#42-テンプレートを使わない-vm-の作り方)）、Proxmox クライアントの書き込み（GET / POST / PUT だけ。DELETE は送れない）、VMID の予約（`store` の `vmids` 表）、`mamela plan --site`（実機を観測して計画）、`mamela apply --site`（preflight → 再観測して実行 → postflight）、L1 用の宣言 `examples/lab-vm`。偽の Proxmox API に対して、応答の喪失・作成タスクの未完了・作成の失敗・予約した VMID の横取り・マーカーだけの VM・予算外の要求をテストした。安全装置（VMID の予約、作成中の VM を「まだない」と見ること、予約のない VM の拒否、応答喪失を結果不明とすること）は、外すとテストが落ちることを確認した。
+
+**L1 を実機で実行した (2026-11-10):** 2 回目の実行で、lab ノードにテンプレートなしで VM を 1 台作成・起動でき、SSH でログインできた（Ubuntu 24.04、cloud-init のユーザーと鍵、DHCP、ディスク 10 GiB に拡張済み）。postflight で管理外のゲストが変わっていないことを確かめた。実機で分かったこと:
+
+- 作成時にタグを付けると、ディスク複製のあとで 403 になり VM が消える（Proxmox はタグの権限を pool に入れる前に確かめる）。完成時に付けるように直した。
+- 操作用 Token に `Pool.Audit` がないと `/cluster/resources` が pool を返さず、作った VM を自分のものと見分けられない（plan がまた作成を出した）。権限に加え、pool が分からないときは観測をエラーにし、足りない権限を preflight（LAB-0104）で検出するようにした。
+- image の複製は lab ノードのディスクで遅い（1 回目は約 20 分）。待ち時間を延ばし、作成タスクを Proxmox のタスク一覧から追って、結果不明で止まる場面を減らした。
 
 前提: [検証環境](lab.md) の一度だけの準備（pool・ロール・Token、cloud image 用ストレージの `import`）を人が実行済み。
 

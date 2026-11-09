@@ -208,9 +208,19 @@ func CheckFor(s *Site, f *Facts, newVMs int) []Finding {
 	} else {
 		add("LAB-0101", OK, "the operating token's permissions are within the lab boundary")
 	}
+	if missing := s.MissingPermissions(f.LabPermissions); len(missing) > 0 {
+		add("LAB-0104", Block, "the operating token lacks %s; review and run the bootstrap script again (mamela lab bootstrap)", strings.Join(missing, ", "))
+	} else {
+		add("LAB-0104", OK, "the operating token has every permission the lab needs")
+	}
+	// Pool membership comes from the audit token's view: the operating token may not be shown it.
+	poolOf := map[int]string{}
+	for _, g := range f.Guests {
+		poolOf[g.VMID] = g.Pool
+	}
 	var seen []string
 	for _, g := range f.LabVisibleGuests {
-		if g.Pool != s.Boundary.Pool {
+		if poolOf[g.VMID] != s.Boundary.Pool {
 			seen = append(seen, fmt.Sprintf("%d (%s)", g.VMID, g.Name))
 		}
 	}

@@ -436,6 +436,19 @@ func TestUntaggedVMBeingCreatedIsResumedAndTagged(t *testing.T) {
 	}
 }
 
+// Found in L1: without Pool.Audit, Proxmox leaves the pool out of /cluster/resources. Mamela must
+// say so instead of taking its own VM for someone else's and planning to create it again.
+func TestPoolHiddenFromTheTokenIsAnError(t *testing.T) {
+	e := newEnv(t)
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	e.fake.noPoolAudit = true
+	if _, err := e.p.Observe(e.ctx); err == nil || !strings.Contains(err.Error(), "Pool.Audit") {
+		t.Fatalf("want an error about Pool.Audit, got %v", err)
+	}
+}
+
 func TestImageCacheVerifiesDownloads(t *testing.T) {
 	img := testImage()
 	body := imageBytes

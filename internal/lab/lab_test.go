@@ -109,11 +109,27 @@ func TestExcessPermissions(t *testing.T) {
 	}
 }
 
+// grantedPermissions is what /access/permissions shows for a token set up by the bootstrap.
+func grantedPermissions() map[string]map[string]int {
+	s, err := LoadSite(filepath.Join("..", "..", "lab", "site.example.toml"))
+	if err != nil {
+		panic(err)
+	}
+	out := map[string]map[string]int{}
+	for _, g := range s.Grants() {
+		out[g.Path] = map[string]int{}
+		for _, p := range g.Privs {
+			out[g.Path][p] = 1
+		}
+	}
+	return out
+}
+
 func healthyFacts() *Facts {
 	return &Facts{
 		Quorate: true, NodesTotal: 3, NodesOnline: 3, NodeOnline: true,
 		MemAvailable: 8 << 30, DiskTotal: 100 << 30, DiskUsed: 20 << 30, ImportStorages: []string{"local"},
-		LabPermissions: map[string]map[string]int{"/pool/mamela-lab": {"VM.Allocate": 1}},
+		LabPermissions: grantedPermissions(),
 		Guests: []Guest{
 			{VMID: 101, Type: "qemu", Node: "pve-node-1", Name: "prod-db", Status: "running", Uptime: 1000, ConfigDigest: "d1"},
 			{VMID: 102, Type: "lxc", Node: "pve-node-2", Name: "dns", Status: "running", Uptime: 2000, ConfigDigest: "d2"},
@@ -145,10 +161,16 @@ func TestCheckBlocks(t *testing.T) {
 		code string
 		sev  Severity
 	}{
-		"no quorum":         {func(f *Facts) { f.Quorate = false }, "LAB-0001", Block},
-		"no quorum margin":  {func(f *Facts) { f.NodesTotal, f.NodesOnline = 4, 3 }, "LAB-0002", Warn},
-		"node offline":      {func(f *Facts) { f.NodeOnline = false }, "LAB-0003", Block},
-		"broad token":       {func(f *Facts) { f.LabPermissions["/"] = map[string]int{"VM.Allocate": 1} }, "LAB-0101", Block},
+		"no quorum":            {func(f *Facts) { f.Quorate = false }, "LAB-0001", Block},
+		"no quorum margin":     {func(f *Facts) { f.NodesTotal, f.NodesOnline = 4, 3 }, "LAB-0002", Warn},
+		"node offline":         {func(f *Facts) { f.NodeOnline = false }, "LAB-0003", Block},
+		"broad token":          {func(f *Facts) { f.LabPermissions["/"] = map[string]int{"VM.Allocate": 1} }, "LAB-0101", Block},
+		"bootstrap not re-run": {func(f *Facts) { delete(f.LabPermissions["/pool/mamela-lab"], "Pool.Audit") }, "LAB-0104", Block},
+		// The operating token is not shown pools; membership comes from the audit token's view.
+		"lab VM, pool hidden from token": {func(f *Facts) {
+			f.Guests = append(f.Guests, Guest{VMID: 7000, Pool: "mamela-lab", Tags: "mamela-lab", Name: "lab-1"})
+			f.LabVisibleGuests = []Guest{{VMID: 7000, Name: "lab-1"}}
+		}, "LAB-0102", OK},
 		"token sees others": {func(f *Facts) { f.LabVisibleGuests = []Guest{{VMID: 101, Name: "prod-db"}} }, "LAB-0102", Block},
 		"low memory":        {func(f *Facts) { f.MemAvailable = 2500 << 20 }, "LAB-0201", Block},
 		"thin pool full":    {func(f *Facts) { f.DiskUsed = 75 << 30 }, "LAB-0202", Block},

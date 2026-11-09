@@ -24,6 +24,9 @@ func (s *Site) Grants() []Grant {
 			"VM.Config.CDROM", "VM.Config.CPU", "VM.Config.Cloudinit", "VM.Config.Disk",
 			"VM.Config.HWType", "VM.Config.Memory", "VM.Config.Network", "VM.Config.Options",
 			"VM.PowerMgmt",
+			// Without it Proxmox leaves the pool out of /cluster/resources, and Mamela could not
+			// tell its own VMs from others (found in L1).
+			"Pool.Audit",
 		}},
 		{Path: "/storage/" + s.Placement.DiskStorage, Role: "MamelaLabDisk", Privs: []string{"Datastore.AllocateSpace", "Datastore.Audit"}},
 		// Upload pinned cloud images (AllocateTemplate) and import them into new disks (Audit).
@@ -112,6 +115,20 @@ func (s *Site) allowedPrivs(path string) ([]string, bool) {
 
 // ExcessPermissions lists the (path, privilege) pairs in perms that the operating token must not
 // have. perms is the result of GET /access/permissions for that token.
+// MissingPermissions lists the granted privileges the token does not have (the bootstrap has not
+// been run since the grants changed).
+func (s *Site) MissingPermissions(perms map[string]map[string]int) []string {
+	var missing []string
+	for _, g := range s.Grants() {
+		for _, priv := range g.Privs {
+			if perms[g.Path][priv] == 0 {
+				missing = append(missing, g.Path+" "+priv)
+			}
+		}
+	}
+	return missing
+}
+
 func (s *Site) ExcessPermissions(perms map[string]map[string]int) []string {
 	var excess []string
 	for _, path := range slices.Sorted(maps.Keys(perms)) {

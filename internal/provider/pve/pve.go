@@ -168,6 +168,12 @@ func (p *Provider) scan(ctx context.Context) ([]lab, error) {
 	}
 	var out []lab
 	for _, r := range res {
+		if r.Type == "qemu" && r.Pool == "" && p.inRange(r.VMID) {
+			// Proxmox shows the pool only to tokens with Pool.Audit on it. Without it, Mamela's own
+			// VMs would look like someone else's and the plan would never settle.
+			return nil, fmt.Errorf("guest %d is visible but Proxmox does not say which pool it is in: the operating "+
+				"token needs Pool.Audit on /pool/%s (run the bootstrap script again)", r.VMID, p.Config.Pool)
+		}
 		if r.Type != "qemu" || r.Node != p.Config.Node || r.Pool != p.Config.Pool {
 			continue
 		}
