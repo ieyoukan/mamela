@@ -31,6 +31,7 @@ Usage:
   mamela destroy --site <file> <vm>   destroy a VM Mamela created (shows it first; needs --confirm <vm>)
   mamela serve --site <file>          serve mamelet (the agent in lab VMs): enrollment, revisions, reports
   mamela lab <bootstrap|preflight|postflight|tunnel>  set up and check the live test lab (docs/lab.md)
+  mamela provider <inspect|trust>     check a provider program; trust a native one
   mamela toolchain [status|install]  check or install the pinned emela and wasmtime
   mamela version                      print the Mamela version and its pinned toolchain
 
@@ -65,6 +66,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "destroy":
 		return runDestroy(ctx, args[1:], stdout, stderr)
+	case "provider":
+		return runProvider(ctx, args[1:], stdout, stderr)
 	case "toolchain":
 		return runToolchain(ctx, args[1:], stdout, stderr)
 	case "version", "--version":

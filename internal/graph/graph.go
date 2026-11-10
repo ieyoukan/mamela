@@ -6,11 +6,14 @@
 // the same graph, the same problems and the same digest.
 package graph
 
+import "github.com/ieyoukan/mamela/provider/protocol"
+
 // Schema is the only accepted value of the "schema" member.
 const Schema = "mamela-graph/v1"
 
-// Kind names a resource type.
-type Kind string
+// Kind names a resource type. It is the provider protocol's ResourceKind, so that manifests name
+// kinds with the same type.
+type Kind = protocol.ResourceKind
 
 const (
 	KindVirtualMachine Kind = "VirtualMachine"

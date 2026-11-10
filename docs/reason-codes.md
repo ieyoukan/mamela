@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`。
 
 ## MAM-CLI — コマンド
 
@@ -96,6 +96,18 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-REC-0005 | 別の worker がこの操作を実行中 | 終わるのを待つ |
 | MAM-REC-0006 | 操作の一部が効いたあとで失敗した（部分的な成功） | 原因を直して apply する（観測してから、残りを続ける） |
 | MAM-REC-0007 | plan を作ったときとプロバイダーの契約（マニフェストの digest）が違う。承認はその契約に対するもの | 新しく plan して、レビューと承認をやり直す |
+
+## MAM-PRV — 外部のプロバイダー
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-PRV-0001 | プロバイダーのプログラムとして実行できない。または、許していない import がある（実行していない） | ファイル・ソケット・HTTP を開くコードを除く（例: `net/http` や `os.ReadFile` を使うパッケージを import しない）。API への要求は `host/request` で送る |
+| MAM-PRV-0002 | ネイティブのプロバイダーで、その実行ファイル・source・版を信頼する記録がない | WASM 版を使う。作者とその build を信頼できるときだけ `mamela provider trust` |
+| MAM-PRV-0003 | プロバイダーがプロトコルを破った。またはマニフェストが不正 | プロバイダーの不具合。stdout にはプロトコルのメッセージだけを書く（診断は stderr） |
+| MAM-PRV-0004 | プロバイダーが、許されていない要求を求めた（送っていない）。observe 中の変更、diff 中の要求、許可にない呼び出し・パラメータ・対象・値・前提条件、期限切れ | プロバイダーの不具合か、宣言と許可の不一致。マニフェストに呼び出しとパラメータを宣言し、承認した対象と値だけを送る |
+| MAM-PRV-0005 | 許可が変更と一致しない、期限が切れた、または使用済み | 新しく plan して承認する |
+| MAM-PRV-0006 | プロバイダーのプログラムが止まった、または時間内に答えなかった | stderr の詳細を見る |
+| MAM-PRV-0007 | プロバイダーが、頼まれたことをできなかったと答えた | メッセージに従う |
 
 ## LAB — 検証環境
 
