@@ -1,0 +1,9 @@
+# Draws a random number: evaluation would not be deterministic. Must be rejected.
+import Std.Console.{Console, SystemConsole}
+import Std.Random.{Random, SystemRandom}
+
+fn main() {
+  with SystemConsole, SystemRandom {
+    (use Console).print_line(Int.to_string((use Random).int()))
+  }
+}

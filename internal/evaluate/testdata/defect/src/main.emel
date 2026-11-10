@@ -1,0 +1,8 @@
+# Ends with a defect (division by zero).
+fn divide(a: Int, b: Int) -> Int {
+  a / b
+}
+
+fn main() {
+  dbg(divide(1, 0))
+}

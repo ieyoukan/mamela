@@ -1,0 +1,9 @@
+# Written by `emela pome`. Do not edit.
+version = 1
+
+[[pome]]
+path = "github.com/emela-lang/x/base64"
+version = "v0.1.0"
+commit = "2f73088cc6889077bba0ce9bf6999cc26e055d12"
+hash = "h1:Xd28dHt5fyMXOJ/ZCEFFKTGt32dnzAfp/2wOv+fY9Kc="
+manifest = "h1:FABske4lOjnmQmD1FCv+fII5HF6m8EKhxxdrBzX9JMU="

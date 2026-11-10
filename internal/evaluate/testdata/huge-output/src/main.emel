@@ -1,0 +1,19 @@
+# Writes standard output forever. Must be stopped by the output limit.
+import Std.Console.{Console, SystemConsole}
+
+fn flood(line: String) {
+  (use Console).print_line(line)
+  flood(line)
+}
+
+fn main() {
+  with SystemConsole {
+    flood(
+      String.concat(
+        List.range(0, 1000).map(
+          |_| "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        ),
+      ),
+    )
+  }
+}

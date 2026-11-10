@@ -1,0 +1,8 @@
+# Reads the clock: evaluation would not be deterministic. Must be rejected.
+import Std.Clock.{Clock, SystemClock}
+
+fn main() {
+  with SystemClock {
+    dbg((use Clock).now())
+  }
+}

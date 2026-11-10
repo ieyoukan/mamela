@@ -1,4 +1,5 @@
 # Local state and secrets
+/.mamela/
 *.db
 *.db-*
 *.sqlite
@@ -10,7 +11,13 @@
 !.env.example
 
 # Build outputs
-/target/
+target/
 /bin/
 /dist/
 /tmp/
+
+# Lab site-specific values (hostnames, addresses, token paths)
+/lab/*.local.toml
+
+# Pinned toolchain (scripts/install-toolchain.sh)
+/.tools/

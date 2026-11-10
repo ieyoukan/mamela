@@ -1,0 +1,9 @@
+[pome]
+name = "github.com/ieyoukan/mamela/pome/mamela"
+version = "0.1.0"
+emela = "0.27.0"
+module = "Mamela"
+
+[dependencies]
+"github.com/emela-lang/x/json" = "v0.3.1"
+"github.com/emela-lang/x/dynamic" = "v0.5.1"

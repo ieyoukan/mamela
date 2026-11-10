@@ -1,0 +1,8 @@
+# Prints something that is not a graph.
+import Std.Console.{Console, SystemConsole}
+
+fn main() {
+  with SystemConsole {
+    (use Console).print_line("hello")
+  }
+}

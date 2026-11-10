@@ -14,7 +14,7 @@ Mamela is a declarative, continuously reconciled IaC control plane, with Go Cont
 
 ## Before working
 
-1. Read `docs/architecture.md`, `docs/development.md`, and `docs/adr/0001-sqlite.md`.
+1. Read `docs/architecture.md`, `docs/development.md`, `docs/lab.md`, and `docs/adr/0001-sqlite.md`.
 2. Identify whether the task is DSL evaluation, graph validation, state persistence, reconciliation, provider, agent, or CLI; keep these layers separate.
 3. If Emela syntax / effects / WASM output matter, inspect [upstream README](https://github.com/emela-lang/emela) and `spec/` of the current Emela repository. The mirrored `emela-spec` skill refers to upstream checkout paths and tools.
 4. Check real compiler behavior with `emela check` / `emela run` where possible; do not invent Emela standard-library APIs or output ABIs.
@@ -31,7 +31,9 @@ Mamela is a declarative, continuously reconciled IaC control plane, with Go Cont
 
 ## Safety invariants
 
-- Emela/WASM runs without arbitrary network/host filesystem/Proxmox credentials.
+- Emela/WASM runs without arbitrary network/host filesystem/Proxmox credentials; `main.wasm` imports are checked against an allowlist (stdout, stderr, exit) before running.
+- Evaluation and planning are deterministic: same inputs produce the same graph digest and plan digest.
+- Guests outside the Mamela pool / VMID range / tag are `Foreign`: observe only, never change.
 - Source removal is **not deletion authorization**.
 - A package install is not automatically safe; maintainer scripts can be privileged.
 - mTLS identity alone is insufficient: Agent also validates node binding, revision signature, expiry and local policy.
@@ -44,7 +46,9 @@ Mamela is a declarative, continuously reconciled IaC control plane, with Go Cont
 
 ## Validation
 
-- Go: `go test ./...` (when Go code exists).
+- Everything: `scripts/install-toolchain.sh` once, then `scripts/check.sh`.
+- Go: `go test ./...`. Toolchain-dependent tests skip without `.tools/bin` unless `MAMELA_REQUIRE_TOOLCHAIN=1`.
 - Emela: `emela fmt --check`, `emela check`, `emela test` in the Pome root, and `emela build --target wasm` only after checking runtime/tool prerequisites.
-- Before implementing an ABI, demonstrate Emela-generated component I/O with Wasmtime 49+; current JSON/Bytes support is limited.
+- The Graph ABI is one `mamela-graph/v1` JSON document on stdout (Emela v0.27 has no user WASM exports; JSON is written with `x/json` v0.3.1; `emela build` does not check the Pome cache against Pome.lock, so the evaluator runs `emela pome verify` first). Decode strictly: reject unknown fields, duplicate keys, trailing data and floats. Verify behavior with the pinned emela / Wasmtime 49+ before relying on it.
+- Live Proxmox tests only with `MAMELA_LAB=1` and passing preflight/postflight (docs/lab.md).
 - Document unsupported behavior as a limitation rather than asserting it is implemented.

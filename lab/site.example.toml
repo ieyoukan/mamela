@@ -1,0 +1,57 @@
+# Example lab site definition. Copy to lab/site.local.toml (gitignored) and fill in real values.
+# All values below are fictional. Never commit real hostnames, addresses or tokens.
+# See docs/lab.md.
+
+schema = "mamela-lab/v1"
+
+[proxmox]
+api_url = "https://pve.example.invalid:8006"
+node = "pve-node-1"                       # the single node used for lab VMs
+# The operating token: may change only what is inside the lab pool.
+token_id = "mamela@pve!lab"
+token_secret_file = "~/.config/mamela/lab-token"     # outside the repository
+# The audit token: read-only everywhere (PVEAuditor), used only by preflight/postflight.
+audit_token_id = "mamela-audit@pve!audit"   # a separate user from the operating token
+audit_token_secret_file = "~/.config/mamela/audit-token"
+# TLS: pin the server certificate's SHA-256 fingerprint (Proxmox uses a self-signed CA by default),
+# or give a CA file. One of the two is required.
+tls_fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+tls_ca_file = ""
+
+[boundary]
+pool = "mamela-lab"
+vmid_min = 7000
+vmid_max = 7099
+tag = "mamela-lab"
+
+[placement]
+disk_storage = "local-lvm"
+image_storage = "local"                   # pinned cloud images to import (content type "import")
+bridge = "vmbr0"
+sdn_zone = "localnetwork"
+
+[guest]
+# cloud-init for lab VMs: the login user and an SSH public key file (optional, outside the repository).
+user = "mamela"
+ssh_public_key_file = "~/.ssh/id_ed25519.pub"
+
+[budget]
+max_vms = 1
+max_vcpu_per_vm = 1
+max_memory_mib_per_vm = 1024
+max_disk_gib_per_vm = 10
+
+[safety]
+# Host MemAvailable minus the new VM's memory must stay above this.
+min_host_mem_available_mib = 2048
+# Refuse when the disk thin pool would exceed this usage.
+max_thinpool_used_percent = 80
+
+[controlplane]
+# Optional. With it, new lab VMs get mamelet (the Mamela agent) from a cloud-init seed, and pull
+# from the Control Plane (`mamela serve`) through an SSH reverse tunnel (`mamela lab tunnel`).
+url = "https://127.0.0.1:8443"            # as seen from inside the VM, through the tunnel
+listen = "127.0.0.1:8443"                 # where `mamela serve` listens (loopback only)
+state_dir = "~/.config/mamela/cp"         # CA and signing keys, outside the repository
+mamelet_binary = ".mamela/bin/mamelet-linux-amd64"   # built by scripts/build-mamelet.sh
+tunnel_jump = ""                          # optional SSH jump host to reach lab VMs

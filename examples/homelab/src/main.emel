@@ -1,0 +1,20 @@
+# A minimal homelab declaration: one VM with nginx installed and running.
+# Evaluating it only prints the desired state; it changes nothing.
+
+import Std.Console.{SystemConsole}
+import Mamela.{Vm}
+
+fn infrastructure() -> Mamela.Graph {
+  app = Vm(name: "app-server", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+
+  Mamela.empty()
+    |> Mamela.vm(app)
+    |> Mamela.package(app, "nginx")
+    |> Mamela.service(app, "nginx", True, True)
+}
+
+fn main() {
+  with SystemConsole {
+    infrastructure() |> Mamela.print
+  }
+}
