@@ -2,6 +2,7 @@ package external
 
 import (
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -26,6 +27,14 @@ import (
 //	api_url    = "https://kv.example.com/api"
 //	token_file = "~/.config/kv/token"   # sent as "Authorization: Bearer <token>"
 //	catalog    = "kv-catalog.json"      # the API's catalog: the effect of each call
+//
+//	[provider.pve-vm]
+//	api_url         = "https://pve.example:8006/api2/json"
+//	auth            = "proxmox"          # "Authorization: PVEAPIToken=<token_id>=<token>"
+//	token_id        = "mamela@pve!lab"
+//	token_file      = "~/.config/mamela/pve-token"
+//	tls_fingerprint = "AA:BB:..."        # pin the server certificate (SHA-256)
+//	catalog         = "builtin:proxmox"  # a catalog Mamela ships
 type Config struct {
 	Provider map[string]APIConfig `toml:"provider"`
 	dir      string
@@ -36,6 +45,12 @@ type APIConfig struct {
 	APIURL    string `toml:"api_url"`
 	TokenFile string `toml:"token_file"`
 	Catalog   string `toml:"catalog"`
+	// Auth is how the token is sent: "bearer" (the default) or "proxmox" (with TokenID).
+	Auth    string `toml:"auth"`
+	TokenID string `toml:"token_id"`
+	// TLSFingerprint pins the server certificate's SHA-256 ("AA:BB:..."), for an API with a
+	// self-signed certificate. Otherwise the system's CAs verify it.
+	TLSFingerprint string `toml:"tls_fingerprint"`
 }
 
 // LoadConfig reads the configuration. A missing file configures nothing.
@@ -59,6 +74,17 @@ func LoadConfig(path string) (Config, error) {
 		if err := host.CheckBase(a.APIURL); err != nil {
 			return c, fmt.Errorf("%s: provider %s: %w", path, name, err)
 		}
+		switch {
+		case a.Auth != "" && a.Auth != "bearer" && a.Auth != "proxmox":
+			return c, fmt.Errorf("%s: provider %s: auth %q (bearer or proxmox)", path, name, a.Auth)
+		case a.Auth == "proxmox" && (a.TokenID == "" || a.TokenFile == ""):
+			return c, fmt.Errorf("%s: provider %s: auth proxmox needs token_id and token_file", path, name)
+		}
+		if a.TLSFingerprint != "" {
+			if _, err := fingerprint(a.TLSFingerprint); err != nil {
+				return c, fmt.Errorf("%s: provider %s: %w", path, name, err)
+			}
+		}
 	}
 	return c, nil
 }
@@ -71,7 +97,13 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error
 		return nil, protocol.Catalog{}, "", nil
 	}
 	var catalog protocol.Catalog
-	if a.Catalog != "" {
+	if name, ok := strings.CutPrefix(a.Catalog, "builtin:"); ok {
+		c, found := Catalogs[name]
+		if !found {
+			return nil, catalog, "", fmt.Errorf("provider %s: Mamela has no catalog %q", name, a.Catalog)
+		}
+		catalog = c
+	} else if a.Catalog != "" {
 		data, err := os.ReadFile(c.resolve(a.Catalog))
 		if err != nil {
 			return nil, catalog, "", fmt.Errorf("provider %s: catalog: %w", name, err)
@@ -85,19 +117,56 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error
 	}
 	var token string
 	if a.TokenFile != "" {
-		data, err := os.ReadFile(c.resolve(a.TokenFile))
+		path := c.resolve(a.TokenFile)
+		if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+			return nil, catalog, "", fmt.Errorf("provider %s: token file %s is readable by group or others (mode %v); run: chmod 600 %s", name, path, fi.Mode().Perm(), path)
+		}
+		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, catalog, "", fmt.Errorf("provider %s: token: %w", name, err)
 		}
 		token = strings.TrimSpace(string(data))
 	}
-	up := host.HTTP{Base: strings.TrimRight(a.APIURL, "/"), Client: &http.Client{Timeout: 2 * time.Minute},
+	client := &http.Client{Timeout: 2 * time.Minute}
+	if a.TLSFingerprint != "" {
+		want, _ := fingerprint(a.TLSFingerprint)
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12,
+			// The chain is not verified against a CA; the leaf certificate must match the pin.
+			InsecureSkipVerify: true,
+			VerifyConnection: func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return errors.New("the server sent no certificate")
+				}
+				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); hex.EncodeToString(got[:]) != want {
+					return errors.New("the server certificate does not match the pinned fingerprint")
+				}
+				return nil
+			}}}
+	}
+	authorization := ""
+	switch {
+	case token == "":
+	case a.Auth == "proxmox":
+		authorization = "PVEAPIToken=" + a.TokenID + "=" + token
+	default:
+		authorization = "Bearer " + token
+	}
+	up := host.HTTP{Base: strings.TrimRight(a.APIURL, "/"), Client: client,
 		Authorize: func(r *http.Request) {
-			if token != "" {
-				r.Header.Set("Authorization", "Bearer "+token)
+			if authorization != "" {
+				r.Header.Set("Authorization", authorization)
 			}
 		}}
-	return up, catalog, endpointID(up.Base, token, catalog), nil
+	return up, catalog, endpointID(up.Base, a.Auth+"\x00"+a.TokenID+"\x00"+token+"\x00"+strings.ToLower(a.TLSFingerprint), catalog), nil
+}
+
+// fingerprint parses "AA:BB:..." (32 bytes) into lowercase hex.
+func fingerprint(s string) (string, error) {
+	h := strings.ToLower(strings.ReplaceAll(s, ":", ""))
+	if b, err := hex.DecodeString(h); err != nil || len(b) != sha256.Size {
+		return "", fmt.Errorf("tls_fingerprint %q is not a SHA-256 fingerprint", s)
+	}
+	return h, nil
 }
 
 // endpointID identifies an API endpoint: the URL, the credential and the catalog. The credential

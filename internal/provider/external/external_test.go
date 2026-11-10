@@ -68,6 +68,11 @@ name = "example.com/app"
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An absolute [replace] path is used as is.
+	write(t, filepath.Join(root, "abs/Pome.toml"), "[pome]\nname = \"example.com/abs\"\n[replace]\n\"example.com/local\" = { path = \""+filepath.ToSlash(filepath.Join(root, "local"))+"\" }\n")
+	if abs, err := Discover(filepath.Join(root, "abs"), cache); err != nil || len(abs) != 1 || abs[0].Provider != "local" {
+		t.Errorf("an absolute replace path: %+v %v", abs, err)
+	}
 	if len(pkgs) != 2 || pkgs[0].Provider != "local" || pkgs[0].Version != "local" || pkgs[1].Provider != "kv" || pkgs[1].Source != "example.com/Acme/kv" {
 		t.Fatalf("%+v", pkgs)
 	}
@@ -161,5 +166,14 @@ func TestObserveChecksTheDiff(t *testing.T) {
 	if _, err := Start(t.Context(), []store.Program{{Provider: "kv-example", Version: "9.9.9", Source: "test",
 		Digest: "sha256:" + hex.EncodeToString(sum[:]), Data: data}}, cfg, wasmtime(t)); err == nil {
 		t.Error("a program of another version started")
+	}
+}
+
+// The catalogs Mamela ships are consistent.
+func TestBuiltinCatalogs(t *testing.T) {
+	for name, c := range Catalogs {
+		if err := c.Check(); err != nil || c.API != name {
+			t.Errorf("%s: %v (api %q)", name, err, c.API)
+		}
 	}
 }

@@ -1,0 +1,42 @@
+## Pve: virtual machines on Proxmox VE, managed by the pve-vm provider (examples/pve), which runs
+## isolated and reaches Proxmox only through Mamela.
+##
+## A VM here has an empty disk and no operating system. The provider creates it (stopped) and
+## changes its vCPUs and memory; it never deletes, starts or stops one.
+
+import Mamela
+import Dynamic.{Dynamic, Text}
+import Dynamic.Number
+
+## The provider, as its manifest names it.
+pub const PROVIDER = "pve-vm"
+
+## A VM: on `node`, with this VMID, in `pool`, with an empty disk of `disk_gib` on `storage`.
+pub type Vm(
+  name: String,
+  node: String,
+  vmid: Int,
+  pool: String,
+  storage: String,
+  cores: Int,
+  memory_mib: Int,
+  disk_gib: Int,
+)
+
+fn int(n: Int) -> Dynamic {
+  Dynamic.Number(Number.from_int(n))
+}
+
+## Declares the VM.
+pub fn vm(graph: Mamela.Graph, vm: Vm) -> Mamela.Graph {
+  spec = [
+    ("node", Text(vm.node)),
+    ("vmid", int(vm.vmid)),
+    ("pool", Text(vm.pool)),
+    ("storage", Text(vm.storage)),
+    ("cores", int(vm.cores)),
+    ("memoryMiB", int(vm.memory_mib)),
+    ("diskGiB", int(vm.disk_gib)),
+  ]
+  Mamela.provided(graph, PROVIDER, "PveVM", vm.name, spec)
+}

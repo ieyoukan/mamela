@@ -3,4 +3,4 @@
 provider = "kv-example"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "bf155e56151cf2b55b9f7d56c9a47eb3fd356b0deb4e4da7a91d788d09b035f4"
+sha256 = "31658281f8119efe1de6d40af2fe1117bcfb10642c10388d7930d4e67ca6ffcd"

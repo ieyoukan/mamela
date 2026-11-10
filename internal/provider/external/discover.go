@@ -77,7 +77,11 @@ func Discover(dir, pomeCache string) ([]Package, error) {
 		if !ok {
 			continue
 		}
-		candidates = append(candidates, candidate{src, "local", filepath.Join(dir, filepath.FromSlash(p))})
+		d := filepath.FromSlash(p)
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(dir, d)
+		}
+		candidates = append(candidates, candidate{src, "local", d})
 	}
 	var lock pomeLock
 	if _, err := toml.DecodeFile(filepath.Join(dir, "Pome.lock"), &lock); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -220,6 +220,22 @@ apply は、plan のときに SQLite に保存したプログラムを動かす�
 
 `examples/kv-demo` で試せる（`go run ./examples/kv/cmd/kv-api` が、ローカルの API になる）。
 
+### Mamela が持つカタログと、Proxmox
+
+Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox`（`internal/provider/external/catalogs.go`）がある。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く。
+
+```toml
+[provider.pve-vm]
+api_url         = "https://pve.example:8006/api2/json"
+auth            = "proxmox"                     # Authorization: PVEAPIToken=<token_id>=<token>
+token_id        = "mamela@pve!lab"
+token_file      = "~/.config/mamela/pve-token"  # chmod 600 でなければ拒否する
+tls_fingerprint = "AA:BB:..."                   # サーバー証明書の SHA-256 を固定する
+catalog         = "builtin:proxmox"
+```
+
+例として、Proxmox の VM（OS を入れない空の VM）を作り、vCPU とメモリを変えるプロバイダーが [`examples/pve`](../examples/pve) にある。偽の Proxmox（`examples/pve/fakepve`）で適合テストを通し、検証環境の実機でも plan・apply した（`docs/development.md`）。
+
 ## ネイティブのプロバイダー
 
 ネイティブの実行ファイルは、サンドボックスの外で動く。使う人のファイル、環境変数、ネットワーク（クラウドの VM では、メタデータとその資格情報）に届く。そのため、使う人が明示して信頼したときだけ動かす。
