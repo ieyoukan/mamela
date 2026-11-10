@@ -17,6 +17,7 @@ const labUsage = `Usage:
   mamela lab preflight  --site <file> [--baseline <out>]  read-only checks before a live test; records a baseline
   mamela lab postflight --site <file> --baseline <in>     read-only check that nothing outside the lab changed
   mamela lab tunnel     --site <file> <vm-name>          SSH reverse tunnel so the VM's mamelet reaches mamela serve
+  mamela lab permissions --site <file>                   what the operating token needs and why, and what it has (read-only)
 
 See docs/lab.md.
 `
@@ -48,6 +49,8 @@ func runLab(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "bootstrap":
 		fmt.Fprint(stdout, site.BootstrapScript())
 		return 0
+	case "permissions":
+		return runPermissions(ctx, site, stdout, stderr)
 	case "preflight", "postflight":
 	default:
 		fmt.Fprintf(stderr, "mamela lab: unknown command %q\n\n%s", sub, labUsage)
@@ -113,4 +116,40 @@ func labClient(site *lab.Site, tokenID, secretFile string) (*proxmox.Client, err
 	}
 	return proxmox.New(site.Proxmox.APIURL, tokenID, secret,
 		proxmox.Options{Fingerprint: site.Proxmox.TLSFingerprint, CAFile: site.Proxmox.TLSCAFile})
+}
+
+// runPermissions prints the operating token's grants as derived from the permission catalog, with
+// the reason for every privilege, and compares them with what the token actually has.
+func runPermissions(ctx context.Context, site *lab.Site, stdout, stderr io.Writer) int {
+	for _, g := range site.Grants() {
+		fmt.Fprintf(stdout, "%s  (role %s)\n", g.Path, g.Role)
+		for _, p := range g.Privs {
+			fmt.Fprintf(stdout, "  %s\n", p)
+			for _, r := range g.Reasons[p] {
+				fmt.Fprintf(stdout, "      %s\n", r)
+			}
+		}
+	}
+	operating, err := labClient(site, site.Proxmox.TokenID, site.Proxmox.TokenSecretFile)
+	if err != nil {
+		return report(stderr, err)
+	}
+	perms, err := operating.Permissions(ctx)
+	if err != nil {
+		return report(stderr, fmt.Errorf("read the operating token's permissions: %w", err))
+	}
+	missing, excess := site.MissingPermissions(perms), site.ExcessPermissions(perms)
+	fmt.Fprintln(stdout)
+	for _, m := range missing {
+		fmt.Fprintf(stdout, "+ missing  %s\n", m)
+	}
+	for _, e := range excess {
+		fmt.Fprintf(stdout, "- excess   %s (no API call Mamela makes needs it)\n", e)
+	}
+	if len(missing)+len(excess) == 0 {
+		fmt.Fprintln(stdout, "the operating token has exactly these permissions")
+		return 0
+	}
+	fmt.Fprintln(stdout, "\nreview and run the bootstrap script (mamela lab bootstrap) to make them match")
+	return 1
 }

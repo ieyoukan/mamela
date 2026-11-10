@@ -74,7 +74,7 @@ Token の秘密そのものはリポジトリにもこのファイルにも書�
 
 ### 4.1 一度だけの準備（人が実行）
 
-pool・ロール・ユーザー・Token・ACL の作成と、ストレージの content type の追加には root 権限が要る。Mamela にその権限は持たせない。`mamela lab bootstrap --site lab/site.local.toml` が冪等な bash スクリプトを**表示するだけ**なので、**人が内容を確認してから**クラスタのノードで root として実行する。スクリプトは追加しかしない（削除しない。既存ゲスト・ネットワーク・HA には触れない。ストレージは cloud image 用ストレージの content type に `import` を足すだけで、既存の content type は残す）。もう一度実行しても同じ状態に収束する。
+pool・ロール・ユーザー・Token・ACL の作成と、ストレージの content type の追加には root 権限が要る。Mamela にその権限は持たせない。`mamela lab bootstrap --site lab/site.local.toml` が冪等な bash スクリプトを**表示するだけ**なので、**人が内容を確認してから**クラスタのノードで root として実行する。スクリプトは追加が中心で、消すのは**操作用ユーザーと Token 自身の ACL のうち、もう要らないもの**だけ（以前のスクリプトが付けたもの。他のユーザーの権限、既存ゲスト・ネットワーク・HA には触れない。ストレージは cloud image 用ストレージの content type に `import` を足すだけで、既存の content type は残す）。もう一度実行しても同じ状態に収束する。
 
 作るもの（名前は例）:
 
@@ -85,15 +85,25 @@ pool・ロール・ユーザー・Token・ACL の作成と、ストレージの 
 
 操作用 Token の ACL。パスごとに専用のロールを作り、そのパスで必要な権限だけを入れる（同じロールを複数のパスに付けると、不要な権限が別のパスにも付くため）。
 
-| パス | ロール | 権限 | 用途 |
-|---|---|---|---|
-| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt`, `Pool.Audit`, `VM.GuestAgent.Audit` | pool 内の VM の作成・設定・起動停止。`Pool.Audit` がないと `/cluster/resources` が VM の pool を返さず、自分の VM を見分けられない（L1 で判明） |
-| `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
-| `/storage/<image storage>` | `MamelaLabImage` | `Datastore.AllocateTemplate`, `Datastore.Audit` | 固定した cloud image のアップロード（AllocateTemplate）と、新しいディスクへの取り込み（Audit） |
-| `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
-| `/nodes/<node>` | `MamelaLabAudit` | `Sys.Audit` | ノード状態の読み取り |
+**権限は手で決めない。** Mamela が呼ぶ Proxmox API のすべてと、VM の作成・設定変更で送るパラメータのすべてについて、Proxmox VE 9.2 が確かめる権限を**権限カタログ**（`internal/proxmox/permissions.go`）に書いてある。根拠は API スキーマの permissions（`/usr/share/pve-docs/api-viewer/apidoc.js`）と、ハンドラの中のチェック（`PVE/API2/Qemu.pm` の `create_vm`・`check_storage_access`・`check_vm_modify_config_perm`・`check_vm_create_serial_perm`、`PVE/Storage.pm` の `check_volume_access`、`PVE/GuestHelpers.pm` の `assert_tag_permissions`、`PVE/API2/Cluster.pm` の `resources`）。bootstrap の付与内容（`lab.Grants`）は、このカタログと、provider が実際に送るパラメータから導く。
 
-`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの表（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば停止する。各権限が必要な理由は、Proxmox VE 9.2 のソース（`PVE/API2/Qemu.pm` の `create_vm` と `check_storage_access`、`PVE/Storage.pm` の `check_volume_access`、`PVE/API2/Storage/Status.pm` の `upload`）で確認した。L1 の実機の実行で確かめた（`Pool.Audit` の不足が見つかり追加した）。足りない権限があれば preflight が LAB-0104 で止める。
+- client は、カタログにない API やパラメータを**送る前に拒否する**。権限を書かずに新しい API を使うと、テストで必ず落ちる。
+- Proxmox が `Permission check failed (path, priv)` を返したら、Mamela は「カタログにある権限が Token にない（bootstrap を再実行）」のか「カタログに漏れがある（Mamela のバグ）」のかを添えて報告する。
+- テストでは、Proxmox と同じ権限チェックをする偽の API（カタログとは別にソースから書いたもの）に対して、導いた権限で作成・観測・拡張・アドレスの読み取りがすべて通ること、**どの権限を一つ外しても何かが失敗すること**（余分な権限がないこと）を確かめる。
+- `mamela lab permissions --site <file>`（読み取りのみ）は、パスごとの権限と、それを必要とする API・パラメータ、Token が実際に持つ権限との差を表示する。
+
+導いた結果（例のサイト。Control Plane あり＝seed で mamelet を入れる場合）:
+
+| パス | ロール | 権限 | 主な用途 |
+|---|---|---|---|
+| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CPU,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt`, `Pool.Audit`, `VM.GuestAgent.Audit` | pool 内の VM の作成（オプションごとの権限）、観測、拡張、起動、マーカーとタグ。`Pool.Audit` がないと `/cluster/resources` が VM の pool を返さない。`VM.GuestAgent.Audit` は `mamela lab tunnel` が VM のアドレスを読むため |
+| `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace` | VM のディスクの確保と拡張 |
+| `/storage/<image storage>` | `MamelaLabImage` | `Datastore.AllocateTemplate`, `Datastore.Audit` | cloud image と seed のアップロード（AllocateTemplate）、一覧と、取り込み・CD-ROM での利用（Audit） |
+| `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
+
+Control Plane がなければ（Proxmox の cloud-init ドライブを使う場合）、`MamelaLabVM` に `VM.Config.Cloudinit` が加わる。以前の版が付けていた `VM.Config.CDROM`、ディスク用ストレージの `Datastore.Audit`、`/nodes/<node>` の `Sys.Audit` は、どの API も必要としないので外した（VM 作成時の CD-ROM やディスクは、ドライブではなくストレージの権限だけが確かめられる）。
+
+`/`、`/vms`、他の pool、他のノードには何も付けない。preflight は操作用 Token の実効権限（`GET /access/permissions`）がこの一覧（と、pool に属する予約範囲内の `/vms/<id>`）を一つでも超えていれば LAB-0101 で、足りなければ LAB-0104 で止める。
 
 `download-url`（ノードに URL から直接ダウンロードさせる API）は使わない。`Sys.AccessNetwork`（ノードのネットワークを任意に探れる権限）が要るためである。代わりに、Mamela を動かすマシンが cloud image をダウンロードして sha256 を確かめ、それをアップロードする。
 

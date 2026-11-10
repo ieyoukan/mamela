@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"slices"
 	"strconv"
@@ -313,44 +314,13 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 	if err != nil {
 		return fmt.Errorf("VM %s: %w", name, err)
 	}
-	params := url.Values{
-		"vmid": {strconv.Itoa(vmid)},
-		"name": {name},
-		"pool": {p.Config.Pool},
-		// No tags: Proxmox checks them before the VM is in the pool. finish adds the tag.
-		"description": {marker{Name: name, Image: spec.Image, State: stateCreating}.String()},
-		"ostype":      {"l26"},
-		"cores":       {strconv.FormatInt(spec.CPU, 10)},
-		"memory":      {strconv.FormatInt(spec.MemoryMiB, 10)},
-		"scsihw":      {"virtio-scsi-single"},
-		"scsi0":       {p.Config.DiskStorage + ":0,import-from=" + volume + ",discard=on"},
-		"ide2":        {p.Config.DiskStorage + ":cloudinit"},
-		"boot":        {"order=scsi0"},
-		"serial0":     {"socket"},
-		"vga":         {"serial0"},
-		"net0":        {"virtio,bridge=" + p.Config.Bridge},
-		"ipconfig0":   {"ip=dhcp"},
-		"ciuser":      {p.Config.User},
-		"onboot":      {"0"},
-	}
-	if keys := strings.TrimSpace(p.Config.SSHPublicKeys); keys != "" {
-		// Proxmox expects the keys URL-encoded inside the (also encoded) form value.
-		params.Set("sshkeys", strings.ReplaceAll(url.QueryEscape(keys+"\n"), "+", "%20"))
-	}
+	seedVol := ""
 	if p.Seeds != nil {
-		// Our own NoCloud seed replaces Proxmox's cloud-init drive (two would conflict): it holds
-		// the user and keys too, plus mamelet. qemu-guest-agent (installed by the seed) reports the
-		// VM's addresses to Proxmox.
-		seedVol, err := p.ensureSeed(ctx, name, vmid)
-		if err != nil {
+		if seedVol, err = p.ensureSeed(ctx, name, vmid); err != nil {
 			return fmt.Errorf("VM %s: %w", name, err)
 		}
-		for _, k := range []string{"ciuser", "sshkeys", "ipconfig0"} {
-			params.Del(k)
-		}
-		params.Set("ide2", seedVol+",media=cdrom")
-		params.Set("agent", "enabled=1")
 	}
+	params := p.Config.createParams(name, spec, vmid, volume, seedVol)
 	upid, err := p.API.CreateVM(ctx, p.Config.Node, params)
 	if err != nil {
 		if !proxmox.Uncertain(err) {
@@ -488,6 +458,54 @@ func (p *Provider) growTo(ctx context.Context, vmid int, name string, gib int64)
 }
 
 // ensureImage uploads the image once and returns its volume ID ("<storage>:import/<file>").
+// createParams is everything sent to create a VM. Every key must be in the permission catalog
+// (proxmox.CreateParams); the operating token's grants are derived from these keys.
+func (c Config) createParams(name string, spec graph.VirtualMachineSpec, vmid int, volume, seedVol string) url.Values {
+	params := url.Values{
+		"vmid": {strconv.Itoa(vmid)},
+		"name": {name},
+		"pool": {c.Pool},
+		// No tags: Proxmox checks them before the VM is in the pool. finish adds the tag.
+		"description": {marker{Name: name, Image: spec.Image, State: stateCreating}.String()},
+		"ostype":      {"l26"},
+		"cores":       {strconv.FormatInt(spec.CPU, 10)},
+		"memory":      {strconv.FormatInt(spec.MemoryMiB, 10)},
+		"scsihw":      {"virtio-scsi-single"},
+		"scsi0":       {c.DiskStorage + ":0,import-from=" + volume + ",discard=on"},
+		"boot":        {"order=scsi0"},
+		"serial0":     {"socket"},
+		"vga":         {"serial0"},
+		"net0":        {"virtio,bridge=" + c.Bridge},
+		"onboot":      {"0"},
+	}
+	if seedVol != "" {
+		// Our own NoCloud seed replaces Proxmox's cloud-init drive (two would conflict): it holds
+		// the user and keys too, plus mamelet. qemu-guest-agent (installed by the seed) reports the
+		// VM's addresses to Proxmox.
+		params.Set("ide2", seedVol+",media=cdrom")
+		params.Set("agent", "enabled=1")
+		return params
+	}
+	params.Set("ide2", c.DiskStorage+":cloudinit")
+	params.Set("ipconfig0", "ip=dhcp")
+	params.Set("ciuser", c.User)
+	if keys := strings.TrimSpace(c.SSHPublicKeys); keys != "" {
+		// Proxmox expects the keys URL-encoded inside the (also encoded) form value.
+		params.Set("sshkeys", strings.ReplaceAll(url.QueryEscape(keys+"\n"), "+", "%20"))
+	}
+	return params
+}
+
+// CreateParamNames are the parameters sent to create a VM, with or without a mamelet seed.
+func CreateParamNames(withSeed bool) []string {
+	c := Config{Pool: "p", DiskStorage: "d", Bridge: "b", User: "u", SSHPublicKeys: "ssh-ed25519 k"}
+	seed := ""
+	if withSeed {
+		seed = "i:iso/s.iso"
+	}
+	return slices.Sorted(maps.Keys(c.createParams("n", graph.VirtualMachineSpec{CPU: 1, MemoryMiB: 1, Image: "x"}, 1, "v", seed)))
+}
+
 // ensureSeed returns the seed volume for the VM, uploading a new seed unless one made for it earlier
 // (a retried create) is still on the storage and its token still good.
 func (p *Provider) ensureSeed(ctx context.Context, name string, vmid int) (string, error) {
@@ -582,6 +600,9 @@ func (p *Provider) wait(ctx context.Context, upid string, timeout time.Duration)
 		case t.Status == "stopped" && t.Succeeded():
 			return nil
 		case t.Status == "stopped":
+			if why := proxmox.ExplainPermission(t.ExitStatus); why != "" {
+				return fmt.Errorf("Proxmox task failed: %s — %s", t.ExitStatus, why)
+			}
 			return fmt.Errorf("Proxmox task failed: %s", t.ExitStatus)
 		default:
 			failures = 0

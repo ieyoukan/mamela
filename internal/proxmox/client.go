@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -106,7 +107,13 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("proxmox: %s %s: %d %s", e.Method, e.Path, e.Status, strings.TrimSpace(e.Body))
+	msg := fmt.Sprintf("proxmox: %s %s: %d %s", e.Method, e.Path, e.Status, strings.TrimSpace(e.Body))
+	if e.Status == http.StatusForbidden {
+		if why := ExplainPermission(e.Body); why != "" {
+			msg += " — " + why
+		}
+	}
+	return msg
 }
 
 // Uncertain reports whether a write that failed with err may still have taken effect: the request
@@ -134,6 +141,10 @@ var methods = map[string]bool{http.MethodGet: true, http.MethodPost: true, http.
 func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, long bool, out any) error {
 	if !methods[method] {
 		return fmt.Errorf("proxmox: method %s is not allowed", method)
+	}
+	if _, ok := LookupEndpoint(method, path); !ok {
+		return fmt.Errorf("proxmox: %s %s is not in Mamela's permission catalog (internal/proxmox/permissions.go); "+
+			"add it with the privileges Proxmox checks before calling it", method, path)
 	}
 	if !long {
 		var cancel context.CancelFunc
@@ -424,6 +435,9 @@ func (c *Client) GuestIPv4(ctx context.Context, node string, vmid int) ([]string
 
 // CreateVM starts creating a VM (POST /nodes/{node}/qemu) and returns the task ID.
 func (c *Client) CreateVM(ctx context.Context, node string, params url.Values) (string, error) {
+	if err := checkParams(CreateParams, slices.Collect(maps.Keys(params)), "create VM"); err != nil {
+		return "", err
+	}
 	var upid string
 	return upid, c.form(ctx, http.MethodPost, nodePath(node)+"/qemu", params, &upid)
 }
@@ -449,6 +463,9 @@ func (c *Client) SetMarker(ctx context.Context, node string, vmid int, descripti
 	v := url.Values{"description": {description}, "tags": {tags}}
 	if digest != "" {
 		v.Set("digest", digest)
+	}
+	if err := checkParams(ConfigParams, slices.Collect(maps.Keys(v)), "change VM configuration"); err != nil {
+		return err
 	}
 	return c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), v, nil)
 }

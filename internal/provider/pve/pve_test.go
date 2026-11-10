@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/pve"
@@ -62,6 +64,7 @@ type env struct {
 	clock  *clock
 	images *memImages
 	p      *pve.Provider
+	api    *proxmox.Client
 }
 
 func newEnv(t *testing.T) *env {
@@ -94,7 +97,7 @@ func newEnv(t *testing.T) *env {
 		},
 		API: api, VMIDs: st, Images: images, Clock: c.Now, Sleep: c.Sleep,
 	}
-	return &env{t: t, ctx: context.Background(), fake: fake, store: st, clock: c, images: images, p: p}
+	return &env{t: t, ctx: context.Background(), fake: fake, store: st, clock: c, images: images, p: p, api: api}
 }
 
 func vmResource(name string, cpu, mem, disk int64) graph.Resource {
@@ -545,5 +548,74 @@ func TestCreatesVMWithMameletSeed(t *testing.T) {
 	}
 	if len(seeds.made) != 2 {
 		t.Fatalf("seeds %v", seeds.made)
+	}
+}
+
+// The operating token's grants are derived from the permission catalog (lab.Grants). Against a
+// fake Proxmox that checks permissions the way Proxmox VE 9.2 does (written from its source, not
+// from the catalog), they must be enough for everything Mamela does, and every single privilege
+// must be needed: without it, something fails.
+func TestDerivedGrantsAreEnoughAndEachIsNeeded(t *testing.T) {
+	for _, withSeed := range []bool{true, false} {
+		site := &lab.Site{Proxmox: lab.Proxmox{Node: "n1"}, Boundary: lab.Boundary{Pool: "lab", VMIDMin: 7000, VMIDMax: 7009, Tag: "mamela-lab"},
+			Placement: lab.Placement{DiskStorage: "local-lvm", ImageStorage: "local", Bridge: "vmbr0", SDNZone: "localnetwork"}}
+		if withSeed {
+			site.ControlPlane = lab.ControlPlane{URL: "https://127.0.0.1:8443"}
+		}
+		grants := map[string][]string{}
+		var all [][2]string
+		for _, g := range site.Grants() {
+			grants[g.Path] = g.Privs
+			for _, p := range g.Privs {
+				all = append(all, [2]string{g.Path, p})
+			}
+		}
+		everything := func(acl map[string][]string) error {
+			e := newEnv(t)
+			e.fake.acl = acl
+			if withSeed {
+				e.p.Seeds = &fakeSeeds{}
+			}
+			if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+				return fmt.Errorf("create: %w", err)
+			}
+			snap, err := e.p.Observe(e.ctx)
+			if err != nil {
+				return fmt.Errorf("observe: %w", err)
+			}
+			if vm, ok := snap.VMs["web"]; !ok || !vm.Managed {
+				return fmt.Errorf("observe: web not seen as managed (%+v)", snap.VMs)
+			}
+			if err := e.apply(policy.OpGrowVMDisk, vmResource("web", 1, 1024, 12)); err != nil {
+				return fmt.Errorf("grow: %w", err)
+			}
+			if ips, err := e.api.GuestIPv4(e.ctx, "n1", 7000); err != nil || len(ips) != 1 {
+				return fmt.Errorf("guest addresses: %v %v", ips, err)
+			}
+			return nil
+		}
+		if err := everything(grants); err != nil {
+			t.Fatalf("seed %v: the derived grants are not enough: %v", withSeed, err)
+		}
+		for _, drop := range all {
+			acl := map[string][]string{}
+			for path, privs := range grants {
+				acl[path] = slices.DeleteFunc(slices.Clone(privs), func(p string) bool { return path == drop[0] && p == drop[1] })
+			}
+			if err := everything(acl); err == nil {
+				t.Errorf("seed %v: %s on %s is granted but nothing needs it", withSeed, drop[1], drop[0])
+			}
+		}
+	}
+}
+
+// A 403 from Proxmox says what Mamela knows: a privilege in the catalog that the token lacks.
+func TestPermissionErrorsAreExplained(t *testing.T) {
+	e := newEnv(t)
+	e.fake.acl = map[string][]string{"/pool/lab": {"VM.Audit", "Pool.Audit"}, "/storage/local": {"Datastore.Audit"}}
+	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
+	if err == nil || !strings.Contains(err.Error(), "the operating token lacks Datastore.AllocateTemplate on /storage/local") ||
+		!strings.Contains(err.Error(), "upload the pinned cloud image") {
+		t.Fatalf("got %v", err)
 	}
 }

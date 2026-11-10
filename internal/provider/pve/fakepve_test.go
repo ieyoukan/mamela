@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,6 +42,11 @@ type fakePVE struct {
 	createStaysRunning bool // the create task never finishes; the VM stays locked outside the pool
 	taskStatusErrors   int  // answer this many task status reads with 503
 	noPoolAudit        bool // the token lacks Pool.Audit: /cluster/resources leaves out the pool
+
+	// acl, when set, is the token's privileges by ACL path, and every request is checked the way
+	// Proxmox VE 9.2 checks it (transcribed from its source, independently of Mamela's catalog).
+	// Grants on /pool/lab reach the VMs in the pool. nil: everything is allowed.
+	acl map[string][]string
 
 	// Counters.
 	creates, uploads, starts, resizes int
@@ -99,7 +105,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 }
 
 var (
-	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|resize)$`)
+	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|resize|agent/network-get-interfaces)$`)
 	tasksPath = "/api2/json/nodes/n1/tasks"
 	taskPath  = regexp.MustCompile(`^/api2/json/nodes/n1/tasks/([^/]+)/status$`)
 	importVol = regexp.MustCompile(`^local-lvm:0,import-from=(local:import/[^,]+),discard=on$`)
@@ -123,12 +129,12 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && p == "/api2/json/cluster/resources":
 		var out []map[string]any
 		for _, vm := range f.sorted() {
-			if vm.pool != "lab" {
+			if vm.pool != "lab" || !f.onVM(vm, "VM.Audit") {
 				continue
 			}
 			e := map[string]any{"id": fmt.Sprintf("qemu/%d", vm.vmid), "type": "qemu", "vmid": vm.vmid,
 				"node": "n1", "name": vm.config["name"], "status": vm.status, "pool": vm.pool, "tags": vm.config["tags"]}
-			if f.noPoolAudit {
+			if f.noPoolAudit || !f.has("/pool/lab", "Pool.Audit") {
 				delete(e, "pool")
 			}
 			out = append(out, e)
@@ -142,6 +148,9 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(w, strconv.Itoa(id))
 	case r.Method == http.MethodGet && p == "/api2/json/nodes/n1/storage/local/content":
+		if !f.check(w, "/storage/local", true, "Datastore.Audit", "Datastore.AllocateSpace") {
+			return
+		}
 		var out []map[string]any
 		content := r.URL.Query().Get("content")
 		for volid, size := range f.volumes {
@@ -151,6 +160,9 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(w, out)
 	case r.Method == http.MethodPost && p == "/api2/json/nodes/n1/storage/local/upload":
+		if !f.check(w, "/storage/local", false, "Datastore.AllocateTemplate") {
+			return
+		}
 		f.upload(w, r)
 	case r.Method == http.MethodPost && p == "/api2/json/nodes/n1/qemu":
 		f.create(w, r)
@@ -282,6 +294,9 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, fmt.Sprintf("unable to create VM %d - VM %d already exists on node 'n1'", id, id))
 		return
 	}
+	if !f.createAllowed(w, form) {
+		return
+	}
 	m := importVol.FindStringSubmatch(form.Get("scsi0"))
 	if m == nil {
 		fail(w, http.StatusBadRequest, "scsi0: expected <storage>:0,import-from=<volume>: "+form.Get("scsi0"))
@@ -329,7 +344,17 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what string) {
+	need := map[string][]string{"config GET": {"VM.Audit"}, "status/current GET": {"VM.Audit"}, "status/start POST": {"VM.PowerMgmt"},
+		"resize PUT": {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
+	if privs := need[what+" "+r.Method]; privs != nil && !f.checkVM(w, vm, len(privs) > 1, privs...) {
+		return
+	}
 	switch {
+	case what == "agent/network-get-interfaces" && r.Method == http.MethodGet:
+		reply(w, map[string]any{"result": []any{
+			map[string]any{"name": "lo", "ip-addresses": []any{map[string]any{"ip-address": "127.0.0.1", "ip-address-type": "ipv4"}}},
+			map[string]any{"name": "eth0", "ip-addresses": []any{map[string]any{"ip-address": "192.0.2.10", "ip-address-type": "ipv4"},
+				map[string]any{"ip-address": "fe80::1", "ip-address-type": "ipv6"}}}}})
 	case what == "config" && r.Method == http.MethodGet:
 		out := map[string]any{"digest": fmt.Sprintf("d%d", vm.version)}
 		for k, v := range vm.config {
@@ -345,6 +370,9 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 		for k := range r.PostForm {
 			if k != "description" && k != "tags" && k != "digest" {
 				f.t.Errorf("unexpected config change %s", k)
+			}
+			if k != "digest" && !f.checkVM(w, vm, false, "VM.Config.Options") {
+				return
 			}
 		}
 		if _, ok := r.PostForm["description"]; ok {
@@ -369,6 +397,9 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 			fail(w, http.StatusInternalServerError, "shrinking disks is not supported")
 			return
 		}
+		if !f.check(w, "/storage/local-lvm", false, "Datastore.AllocateSpace") {
+			return
+		}
 		f.resizes++
 		vm.config["scsi0"] = strings.Split(vm.config["scsi0"], "size=")[0] + "size=" + size
 		vm.version++
@@ -385,4 +416,96 @@ func gib(s string) float64 {
 		return n / 1024
 	}
 	return n
+}
+
+// has reports whether the token holds priv on path.
+func (f *fakePVE) has(path, priv string) bool {
+	return f.acl == nil || slices.Contains(f.acl[path], priv)
+}
+
+func deny(w http.ResponseWriter, path, priv string) {
+	fail(w, http.StatusForbidden, fmt.Sprintf("Permission check failed (%s, %s)", path, priv))
+}
+
+// check is Proxmox's check on one path: all privileges, or any of them.
+func (f *fakePVE) check(w http.ResponseWriter, path string, any bool, privs ...string) bool {
+	for _, p := range privs {
+		if f.has(path, p) == any {
+			if any {
+				return true
+			}
+			deny(w, path, p)
+			return false
+		}
+	}
+	if any {
+		deny(w, path, privs[0])
+		return false
+	}
+	return true
+}
+
+// onVM: a VM's privileges come from /vms/<id> or, while it is in the pool, from the pool.
+func (f *fakePVE) onVM(vm *fakeVM, priv string) bool {
+	return f.has(fmt.Sprintf("/vms/%d", vm.vmid), priv) || (vm.pool == "lab" && f.has("/pool/lab", priv))
+}
+
+func (f *fakePVE) checkVM(w http.ResponseWriter, vm *fakeVM, any bool, privs ...string) bool {
+	for _, p := range privs {
+		if f.onVM(vm, p) == any {
+			if any {
+				return true
+			}
+			deny(w, fmt.Sprintf("/vms/%d", vm.vmid), p)
+			return false
+		}
+	}
+	if any {
+		deny(w, fmt.Sprintf("/vms/%d", vm.vmid), privs[0])
+		return false
+	}
+	return true
+}
+
+// createAllowed is create_vm's permission checks (Qemu.pm): VM.Allocate on the pool, the storage
+// of each drive (check_storage_access, check_volume_access), each option by its group
+// (check_vm_modify_config_perm, with the pool), serial sockets (VM.Config.HWType) and bridges
+// (SDN.Use). Drives themselves are not checked against VM.Config.Disk/CDROM at create.
+func (f *fakePVE) createAllowed(w http.ResponseWriter, form url.Values) bool {
+	pool := "/pool/" + form.Get("pool")
+	if !f.check(w, pool, false, "VM.Allocate") {
+		return false
+	}
+	groups := map[string]string{"name": "VM.Config.Options", "description": "VM.Config.Options", "ostype": "VM.Config.Options",
+		"onboot": "VM.Config.Options", "agent": "VM.Config.Options", "cores": "VM.Config.CPU", "memory": "VM.Config.Memory",
+		"scsihw": "VM.Config.HWType", "vga": "VM.Config.HWType", "boot": "VM.Config.Disk", "net0": "VM.Config.Network",
+		"ciuser": "VM.Config.Cloudinit", "sshkeys": "VM.Config.Cloudinit", "serial0": "VM.Config.HWType"}
+	for k := range form {
+		switch {
+		case k == "vmid" || k == "pool" || k == "tags" || k == "scsi0" || k == "ide2":
+		case k == "ipconfig0":
+			if !f.check(w, pool, true, "VM.Config.Cloudinit", "VM.Config.Network") {
+				return false
+			}
+		case groups[k] != "":
+			if !f.check(w, pool, false, groups[k]) {
+				return false
+			}
+		default:
+			f.t.Errorf("the fake does not know the permissions of create parameter %s", k)
+		}
+	}
+	if strings.HasPrefix(form.Get("scsi0"), "local-lvm:0,") && !f.check(w, "/storage/local-lvm", false, "Datastore.AllocateSpace") {
+		return false
+	}
+	if strings.Contains(form.Get("scsi0"), "import-from=local:") && !f.check(w, "/storage/local", true, "Datastore.Audit", "Datastore.AllocateSpace") {
+		return false
+	}
+	if strings.HasPrefix(form.Get("ide2"), "local:iso/") && !f.check(w, "/storage/local", true, "Datastore.Audit", "Datastore.AllocateSpace") {
+		return false
+	}
+	if strings.Contains(form.Get("net0"), "bridge=") && !f.check(w, "/sdn/zones/localnetwork/vmbr0", false, "SDN.Use") {
+		return false
+	}
+	return true
 }

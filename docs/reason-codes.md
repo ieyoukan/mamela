@@ -98,9 +98,9 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | LAB-0001 | BLOCK | クラスタがクォーラムを満たしていない |
 | LAB-0002 | warn | クォーラムに余裕がない（あと 1 台止まると失う） |
 | LAB-0003 | BLOCK | 検証用ノードがオンラインでない |
-| LAB-0101 | BLOCK | 操作用 Token が境界を超える権限を持っている |
+| LAB-0101 | BLOCK | 操作用 Token が、Mamela のどの API 呼び出しも必要としない権限を持っている（権限カタログを超えている。bootstrap の再実行で外れる） |
 | LAB-0102 | BLOCK | 操作用 Token から pool 外のゲストが見える（pool の所属は監査用 Token の一覧で判定する） |
-| LAB-0104 | BLOCK | 操作用 Token に、bootstrap が付けるはずの権限が足りない（bootstrap を再実行する） |
+| LAB-0104 | BLOCK | 操作用 Token に、権限カタログが必要とする権限が足りない（bootstrap を再実行する。`mamela lab permissions` で理由が分かる） |
 | LAB-0201 | BLOCK | 予算上限の VM を作るとノードの空きメモリがしきい値を下回る |
 | LAB-0202 | BLOCK | 予算上限のディスクを足すと thin pool の使用率が上限を超える |
 | LAB-0203 | BLOCK | cloud image 用ストレージが content type `import` を受け付けない（bootstrap をもう一度実行する） |

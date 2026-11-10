@@ -1,8 +1,11 @@
 package lab
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -46,16 +49,23 @@ func TestLoadSiteRejectsUnknownKeysAndWeakSettings(t *testing.T) {
 	}
 }
 
-func TestBootstrapScriptOnlyAdds(t *testing.T) {
+// The script adds, and removes only ACL entries of Mamela's own operating user and token.
+func TestBootstrapScriptRemovesOnlyMamelasOwnACLs(t *testing.T) {
 	s := exampleSite(t)
 	script := s.BootstrapScript()
-	var commands []string // the script without comment lines
+	allowedDeletes := []string{
+		`  if [ "$type" = token ]; then pveum acl delete "$path" --tokens "$ugid" --roles "$role"; else pveum acl delete "$path" --users "$ugid" --roles "$role"; fi`,
+	}
+	var commands []string // the script without comment lines and the allowed deletions
 	for _, line := range strings.Split(script, "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+		if !strings.HasPrefix(strings.TrimSpace(line), "#") && !slices.Contains(allowedDeletes, line) {
 			commands = append(commands, line)
 		}
 	}
 	code := strings.Join(commands, "\n")
+	if !strings.Contains(script, `"$keep" 'mamela@pve' 'mamela@pve!lab' |`) {
+		t.Error("the removal must look only at the operating user and token")
+	}
 	for _, forbidden := range []string{" delete", " destroy", "qm ", "pct ", "acl modify /vms", "--roles Administrator", "--roles PVEAdmin", "root@pam"} {
 		if strings.Contains(code, forbidden) {
 			t.Errorf("bootstrap script contains %q", forbidden)
@@ -88,7 +98,6 @@ func TestExcessPermissions(t *testing.T) {
 		"/pool/mamela-lab":              {"VM.Allocate": 1, "VM.PowerMgmt": 1},
 		"/vms/7000":                     {"VM.Config.CPU": 1},
 		"/storage/local-lvm":            {"Datastore.AllocateSpace": 1},
-		"/nodes/pve-node-1":             {"Sys.Audit": 1},
 		"/sdn/zones/localnetwork/vmbr0": {"SDN.Use": 1},
 		"/":                             {"Sys.Audit": 0},
 	}
@@ -102,6 +111,10 @@ func TestExcessPermissions(t *testing.T) {
 		"wrong priv":       {"/storage/local-lvm": {"Datastore.Allocate": 1}},
 		"user admin":       {"/access": {"User.Modify": 1}},
 		"other pool":       {"/pool/production": {"VM.Allocate": 1}},
+		// Granted by older bootstraps, needed by no API call Mamela makes.
+		"node audit":      {"/nodes/pve-node-1": {"Sys.Audit": 1}},
+		"cdrom":           {"/pool/mamela-lab": {"VM.Config.CDROM": 1}},
+		"disk store read": {"/storage/local-lvm": {"Datastore.Audit": 1}},
 	} {
 		if ex := s.ExcessPermissions(perms); len(ex) == 0 {
 			t.Errorf("%s: not flagged", name)
@@ -272,5 +285,69 @@ func TestCheckForExistingVMsOnly(t *testing.T) {
 	}
 	if got := codes(CheckFor(s, f, 0), Block); len(got) != 0 {
 		t.Fatalf("no new VM: blocks %v", got)
+	}
+}
+
+// The grants are derived from the permission catalog. This pins the result for the example site
+// (with a Control Plane, so VMs get a mamelet seed instead of Proxmox's cloud-init drive): a
+// change here is a change of the token's power and must be reviewed.
+func TestGrantsFromCatalog(t *testing.T) {
+	s := exampleSite(t)
+	got := map[string]string{}
+	for _, g := range s.Grants() {
+		got[g.Path] = g.Role + " " + strings.Join(g.Privs, ",")
+		for _, p := range g.Privs {
+			if len(g.Reasons[p]) == 0 {
+				t.Errorf("%s %s has no reason", g.Path, p)
+			}
+		}
+	}
+	want := map[string]string{
+		"/pool/mamela-lab": "MamelaLabVM Pool.Audit,VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType," +
+			"VM.Config.Memory,VM.Config.Network,VM.Config.Options,VM.GuestAgent.Audit,VM.PowerMgmt",
+		"/storage/local-lvm":            "MamelaLabDisk Datastore.AllocateSpace",
+		"/storage/local":                "MamelaLabImage Datastore.AllocateTemplate,Datastore.Audit",
+		"/sdn/zones/localnetwork/vmbr0": "MamelaLabNet SDN.Use",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("grants:\n got  %v\n want %v", got, want)
+	}
+	if s.Grants()[0].Path != "/pool/mamela-lab" {
+		t.Error("the pool's grant must come first")
+	}
+
+	// Without a Control Plane, VMs use Proxmox's cloud-init drive, which needs VM.Config.Cloudinit.
+	s.ControlPlane = ControlPlane{}
+	if g := s.Grants()[0]; !slices.Contains(g.Privs, "VM.Config.Cloudinit") {
+		t.Errorf("without a seed: %v", g.Privs)
+	}
+}
+
+// Runs the script's filter of stale ACL entries on a sample of what Proxmox returns.
+func TestBootstrapStaleACLFilter(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	s := exampleSite(t)
+	var keep []string
+	for _, g := range s.Grants() {
+		keep = append(keep, g.Path+" "+g.Role)
+	}
+	acl := `[
+{"path":"/pool/mamela-lab","roleid":"MamelaLabVM","type":"token","ugid":"mamela@pve!lab"},
+{"path":"/nodes/pve-node-1","roleid":"MamelaLabAudit","type":"token","ugid":"mamela@pve!lab"},
+{"path":"/storage/local","roleid":"MamelaLabISO","type":"user","ugid":"mamela@pve"},
+{"path":"/","roleid":"PVEAuditor","type":"user","ugid":"mamela-audit@pve"},
+{"path":"/","roleid":"Administrator","type":"user","ugid":"admin@pam"},
+{"path":"/pool/mamela-lab","roleid":"MamelaLabVM","type":"user","ugid":"someone@pve"}]`
+	cmd := exec.Command("python3", "-c", staleACLs, strings.Join(keep, "\\n"), "mamela@pve", "mamela@pve!lab")
+	cmd.Stdin = strings.NewReader(acl)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "token mamela@pve!lab /nodes/pve-node-1 MamelaLabAudit\nuser mamela@pve /storage/local MamelaLabISO\n"
+	if string(out) != want {
+		t.Fatalf("stale entries:\n%s\nwant:\n%s", out, want)
 	}
 }

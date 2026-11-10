@@ -204,12 +204,13 @@ func CheckFor(s *Site, f *Facts, newVMs int) []Finding {
 
 	// The operating token's reach.
 	if excess := s.ExcessPermissions(f.LabPermissions); len(excess) > 0 {
-		add("LAB-0101", Block, "the operating token has permissions beyond the lab boundary: %s", strings.Join(excess, ", "))
+		add("LAB-0101", Block, "the operating token has permissions that no API call Mamela makes needs: %s; "+
+			"run the bootstrap script again (it removes them), and see `mamela lab permissions`", strings.Join(excess, ", "))
 	} else {
 		add("LAB-0101", OK, "the operating token's permissions are within the lab boundary")
 	}
 	if missing := s.MissingPermissions(f.LabPermissions); len(missing) > 0 {
-		add("LAB-0104", Block, "the operating token lacks %s; review and run the bootstrap script again (mamela lab bootstrap)", strings.Join(missing, ", "))
+		add("LAB-0104", Block, "the operating token lacks %s; review and run the bootstrap script again (mamela lab bootstrap)", strings.Join(missing, "; "))
 	} else {
 		add("LAB-0104", OK, "the operating token has every permission the lab needs")
 	}
