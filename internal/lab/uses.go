@@ -96,6 +96,8 @@ func (s *Site) UsesOf(op policy.Op, r graph.Resource, c *plan.Change) OpUses {
 		u.Mamelet = fmt.Sprintf("no Proxmox permission; mamelet on %s runs systemctl disable %s once", r.NodeService.Node, r.NodeService.Service)
 	case op == policy.OpStopService && r.NodeService != nil:
 		u.Mamelet = fmt.Sprintf("no Proxmox permission; mamelet on %s runs systemctl stop %s once", r.NodeService.Node, r.NodeService.Service)
+	case op == policy.OpShrinkVMDisk || op == policy.OpReplaceVMImage:
+		u.Unsupported = "never carried out (denied by policy: it can destroy data)"
 	default:
 		u.Unsupported = "neither the Proxmox provider nor mamelet carries out " + string(op)
 	}
@@ -134,9 +136,10 @@ func (s *Site) PlanUses(p *plan.Plan, g *graph.Graph) []ChangeUses {
 // possibleOps are the operations a resource kind can lead to (including ones that are denied or
 // not carried out, so the reader sees them).
 var possibleOps = map[graph.Kind][]policy.Op{
-	graph.KindVirtualMachine: {policy.OpCreateVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory},
-	graph.KindNodePackage:    {policy.OpInstallPackage},
-	graph.KindNodeService:    {policy.OpEnableService, policy.OpStartService, policy.OpDisableService, policy.OpStopService},
+	graph.KindVirtualMachine: {policy.OpCreateVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory,
+		policy.OpShrinkVMDisk, policy.OpReplaceVMImage},
+	graph.KindNodePackage: {policy.OpInstallPackage},
+	graph.KindNodeService: {policy.OpEnableService, policy.OpStartService, policy.OpDisableService, policy.OpStopService},
 }
 
 // KindUses is what declaring a kind of resource may lead to.

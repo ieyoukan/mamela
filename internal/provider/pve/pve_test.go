@@ -589,6 +589,9 @@ func TestDerivedGrantsAreEnoughAndEachIsNeeded(t *testing.T) {
 			if err := e.apply(policy.OpGrowVMDisk, vmResource("web", 1, 1024, 12)); err != nil {
 				return fmt.Errorf("grow: %w", err)
 			}
+			if err := e.apply(policy.OpResizeVMCPU, vmResource("web", 2, 2048, 12)); err != nil {
+				return fmt.Errorf("resize: %w", err)
+			}
 			if ips, err := e.api.GuestIPv4(e.ctx, "n1", 7000); err != nil || len(ips) != 1 {
 				return fmt.Errorf("guest addresses: %v %v", ips, err)
 			}
@@ -675,8 +678,51 @@ func TestCallsCoverWhatTheProviderSends(t *testing.T) {
 			t.Fatal(err)
 		}
 		check("grow", e, declared(append(grow, pve.ObserveCalls...)))
+
+		e.fake.requests = nil
+		resize, _ := pve.OperationCalls(policy.OpResizeVMCPU, withSeed)
+		if err := e.apply(policy.OpResizeVMCPU, vmResource("web", 2, 2048, 12)); err != nil {
+			t.Fatal(err)
+		}
+		check("resize", e, declared(append(resize, pve.ObserveCalls...)))
 	}
-	if _, ok := pve.OperationCalls(policy.OpResizeVMCPU, true); ok {
+	if _, ok := pve.OperationCalls(policy.OpShrinkVMDisk, true); ok {
 		t.Error("claims calls for an operation the provider does not carry out")
+	}
+}
+
+// Resizing sets whatever differs in one change and restarts a running VM once to apply it; the
+// second resize operation of the same change finds nothing left to do.
+func TestResizeRestartsOnce(t *testing.T) {
+	e := newEnv(t)
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	for _, op := range []policy.Op{policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
+		if err := e.apply(op, vmResource("web", 2, 2048, 10)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vm := e.fake.vms[7000]
+	if vm.config["cores"] != "2" || vm.config["memory"] != "2048" || e.fake.reboots != 1 {
+		t.Fatalf("cores %s memory %s reboots %d", vm.config["cores"], vm.config["memory"], e.fake.reboots)
+	}
+	snap, _ := e.p.Observe(e.ctx)
+	if got := snap.VMs["web"]; got.CPU != 2 || got.MemoryMiB != 2048 {
+		t.Fatalf("observed %+v", got)
+	}
+
+	// A stopped VM takes the change without a restart.
+	vm.status = "stopped"
+	if err := e.apply(policy.OpResizeVMMemory, vmResource("web", 2, 1536, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if vm.config["memory"] != "1536" || e.fake.reboots != 1 {
+		t.Fatalf("memory %s reboots %d", vm.config["memory"], e.fake.reboots)
+	}
+	// Over the budget: refused before anything is sent.
+	before := e.writes()
+	if err := e.apply(policy.OpResizeVMCPU, vmResource("web", 8, 1536, 10)); err == nil || e.writes() != before {
+		t.Fatalf("over budget: %v", err)
 	}
 }

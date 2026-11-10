@@ -102,6 +102,7 @@ var Endpoints = []Endpoint{
 		vm("grow a lab VM's disk", "VM.Config.Disk"),
 		{Scope: ScopeDiskStorage, Privs: []string{"Datastore.AllocateSpace"}, Why: "grow a disk on the disk storage"}}},
 	{"POST", "/nodes/{node}/qemu/{vmid}/status/start", []Token{Operating}, []Need{vm("start a lab VM", "VM.PowerMgmt")}},
+	{"POST", "/nodes/{node}/qemu/{vmid}/status/reboot", []Token{Operating}, []Need{vm("restart a lab VM to apply a new size", "VM.PowerMgmt")}},
 }
 
 // CreateParams is every parameter Mamela may send to POST /nodes/{node}/qemu ("{n}" stands for
@@ -148,6 +149,8 @@ var ConfigParams = map[string][]Need{
 	"digest":      nil,
 	"description": {vm("mark the VM ready", "VM.Config.Options")},
 	"tags":        {vm("tag the VM (allowed once it is in the pool; tags are free-form here)", "VM.Config.Options")},
+	"cores":       {vm("change the vCPUs", "VM.Config.CPU")},
+	"memory":      {vm("change the memory", "VM.Config.Memory")},
 }
 
 var segment = regexp.MustCompile(`\{[a-z]+\}`)

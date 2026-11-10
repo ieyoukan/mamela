@@ -470,6 +470,22 @@ func (c *Client) SetMarker(ctx context.Context, node string, vmid int, descripti
 	return c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), v, nil)
 }
 
+// SetSize sets a VM's vCPUs and memory (PUT .../config). digest makes it fail if the configuration
+// changed since it was read. On a running VM the change stays pending until a restart.
+func (c *Client) SetSize(ctx context.Context, node string, vmid int, cores, memoryMiB int64, digest string) error {
+	v := url.Values{"cores": {strconv.FormatInt(cores, 10)}, "memory": {strconv.FormatInt(memoryMiB, 10)}, "digest": {digest}}
+	if err := checkParams(ConfigParams, slices.Collect(maps.Keys(v)), "change VM configuration"); err != nil {
+		return err
+	}
+	return c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), v, nil)
+}
+
+// RebootVM restarts a VM (shutdown, then start), which applies pending changes. Returns the task ID.
+func (c *Client) RebootVM(ctx context.Context, node string, vmid int) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/reboot", nodePath(node), vmid), url.Values{}, &upid)
+}
+
 // Upload sends a file of size bytes to a storage (POST .../upload) and returns the task ID.
 // Proxmox verifies the SHA-256 checksum before it keeps the file. pveproxy needs the exact length
 // of the multipart body, so it is computed up front. The request is bounded only by ctx.

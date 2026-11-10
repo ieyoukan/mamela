@@ -106,7 +106,8 @@ func (p Policy) Decide(s Subject) Decision {
 		return Decision{ApprovalRequired, "MAM-POL-0201", "creating a VM reserves host CPU, memory and disk",
 			"approve the plan if the host has room for it"}
 	case OpResizeVMCPU, OpResizeVMMemory:
-		return Decision{ApprovalRequired, "MAM-POL-0202", "resizing a VM may need a restart of the guest", ""}
+		return Decision{ApprovalRequired, "MAM-POL-0202", "changing vCPUs or memory restarts the VM if it is running (Proxmox applies it at the next start)",
+			"approve when a short outage of the VM is acceptable"}
 	case OpGrowVMDisk:
 		return Decision{ApprovalRequired, "MAM-POL-0203", "growing a disk uses shared storage and cannot be undone", ""}
 	case OpInstallPackage:

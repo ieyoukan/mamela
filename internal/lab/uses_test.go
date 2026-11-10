@@ -101,8 +101,11 @@ func TestMayNeedCoversEveryKind(t *testing.T) {
 	if vm[0].Op != policy.OpCreateVM || vm[0].Proxmox[0].Path != "/pool/<lab pool>" {
 		t.Errorf("create-vm: %+v", vm[0])
 	}
-	if !slices.ContainsFunc(vm, func(u OpUses) bool { return u.Op == policy.OpResizeVMCPU && u.Unsupported != "" }) {
-		t.Error("resize-vm-cpu is not shown as not carried out")
+	if !slices.ContainsFunc(vm, func(u OpUses) bool { return u.Op == policy.OpShrinkVMDisk && u.Unsupported != "" }) {
+		t.Error("shrink-vm-disk is not shown as never carried out")
+	}
+	if !slices.ContainsFunc(vm, func(u OpUses) bool { return u.Op == policy.OpResizeVMCPU && len(u.Proxmox) > 0 }) {
+		t.Error("resize-vm-cpu does not say what it uses")
 	}
 	if kinds[graph.KindNodePackage][0].Mamelet == "" {
 		t.Error("install-package does not say what mamelet does")

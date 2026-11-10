@@ -150,14 +150,8 @@ func (b builder) vm(r graph.Resource) Change {
 		return c
 	}
 	var subjects []policy.Subject
-	if got.CPU != want.CPU {
-		c.Diffs = append(c.Diffs, Diff{"cpu", itoa(got.CPU), itoa(want.CPU)})
-		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMCPU})
-	}
-	if got.MemoryMiB != want.MemoryMiB {
-		c.Diffs = append(c.Diffs, Diff{"memoryMiB", itoa(got.MemoryMiB), itoa(want.MemoryMiB)})
-		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMMemory})
-	}
+	// The disk first: resizing CPU or memory restarts a running VM, and the guest grows its
+	// filesystem to the disk at boot (cloud-init growpart).
 	if got.DiskGiB != want.DiskGiB {
 		c.Diffs = append(c.Diffs, Diff{"diskGiB", itoa(got.DiskGiB), itoa(want.DiskGiB)})
 		op := policy.OpGrowVMDisk
@@ -165,6 +159,14 @@ func (b builder) vm(r graph.Resource) Change {
 			op = policy.OpShrinkVMDisk
 		}
 		subjects = append(subjects, policy.Subject{Op: op})
+	}
+	if got.CPU != want.CPU {
+		c.Diffs = append(c.Diffs, Diff{"cpu", itoa(got.CPU), itoa(want.CPU)})
+		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMCPU})
+	}
+	if got.MemoryMiB != want.MemoryMiB {
+		c.Diffs = append(c.Diffs, Diff{"memoryMiB", itoa(got.MemoryMiB), itoa(want.MemoryMiB)})
+		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMMemory})
 	}
 	if got.Image != want.Image {
 		c.Diffs = append(c.Diffs, Diff{"image", got.Image, want.Image})

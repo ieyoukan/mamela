@@ -54,6 +54,8 @@ type API interface {
 	GrowDisk(ctx context.Context, node string, vmid int, disk, size string) (string, error)
 	StartVM(ctx context.Context, node string, vmid int) (string, error)
 	SetMarker(ctx context.Context, node string, vmid int, description, tags, digest string) error
+	SetSize(ctx context.Context, node string, vmid int, cores, memoryMiB int64, digest string) error
+	RebootVM(ctx context.Context, node string, vmid int) (string, error)
 }
 
 // VMIDs reserves VMIDs by VM name (implemented by store.Store).
@@ -240,6 +242,8 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return p.create(ctx, r.Name, spec, img)
 	case policy.OpGrowVMDisk:
 		return p.grow(ctx, r.Name, spec)
+	case policy.OpResizeVMCPU, policy.OpResizeVMMemory:
+		return p.resize(ctx, r.Name, spec)
 	default:
 		return fmt.Errorf("the Proxmox provider does not implement %s", step.Op)
 	}
@@ -416,23 +420,67 @@ func (p *Provider) finish(ctx context.Context, vmid int, name string, spec graph
 
 // grow extends the disk of a managed, ready VM.
 func (p *Provider) grow(ctx context.Context, name string, spec graph.VirtualMachineSpec) error {
-	vmid, ok, err := p.VMIDs.VMID(ctx, name)
+	v, err := p.managed(ctx, name)
 	if err != nil {
 		return err
 	}
+	return p.growTo(ctx, v.vmid, name, spec.DiskGiB)
+}
+
+// managed finds the VM Mamela created for name (ready, owned, its reserved VMID).
+func (p *Provider) managed(ctx context.Context, name string) (lab, error) {
+	vmid, ok, err := p.VMIDs.VMID(ctx, name)
+	if err != nil {
+		return lab{}, err
+	}
 	if !ok {
-		return fmt.Errorf("VM %s has no VMID reserved by Mamela; it is not managed", name)
+		return lab{}, fmt.Errorf("VM %s has no VMID reserved by Mamela; it is not managed", name)
 	}
 	vms, err := p.scan(ctx)
 	if err != nil {
-		return err
+		return lab{}, err
 	}
 	for _, v := range vms {
-		if v.vmid == vmid && v.owned && v.marker.Name == name {
-			return p.growTo(ctx, vmid, name, spec.DiskGiB)
+		if v.vmid == vmid && v.owned && v.marker.Name == name && v.marker.State == stateReady {
+			return v, nil
 		}
 	}
-	return fmt.Errorf("VM %s (VMID %d) is not a managed VM in pool %s", name, vmid, p.Config.Pool)
+	return lab{}, fmt.Errorf("VM %s (VMID %d) is not a managed VM in pool %s", name, vmid, p.Config.Pool)
+}
+
+// resize sets the declared vCPUs and memory in one change (whichever differ), and restarts a
+// running VM so that it takes effect (Proxmox keeps CPU and memory changes pending until then;
+// its reboot applies pending changes). Both resize operations call it: the second finds nothing
+// left to do, so a VM is restarted once.
+func (p *Provider) resize(ctx context.Context, name string, spec graph.VirtualMachineSpec) error {
+	v, err := p.managed(ctx, name)
+	if err != nil {
+		return err
+	}
+	cores := v.config.Int("cores")
+	if cores == 0 {
+		cores = 1
+	}
+	if cores == spec.CPU && memoryMiB(v.config.String("memory")) == spec.MemoryMiB {
+		return nil
+	}
+	if err := p.API.SetSize(ctx, p.Config.Node, v.vmid, spec.CPU, spec.MemoryMiB, v.config.String("digest")); err != nil {
+		return writeErr(fmt.Sprintf("resize VM %s", name), err)
+	}
+	st, err := p.API.VMStatus(ctx, p.Config.Node, v.vmid)
+	if err != nil {
+		return unknownErr(fmt.Sprintf("read the status of VM %s", name), err)
+	}
+	if st.Status == "running" {
+		upid, err := p.API.RebootVM(ctx, p.Config.Node, v.vmid)
+		if err != nil {
+			return writeErr(fmt.Sprintf("restart VM %s to apply the new size", name), err)
+		}
+		if err := p.wait(ctx, upid, p.taskTimeout()); err != nil {
+			return fmt.Errorf("restart VM %s to apply the new size: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func (p *Provider) growTo(ctx context.Context, vmid int, name string, gib int64) error {

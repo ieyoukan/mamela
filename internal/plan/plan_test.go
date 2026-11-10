@@ -149,7 +149,7 @@ func TestResizeNeedsApproval(t *testing.T) {
 	if c.Verdict != policy.ApprovalRequired {
 		t.Fatalf("verdict %s", c.Verdict)
 	}
-	want := []policy.Op{policy.OpResizeVMCPU, policy.OpResizeVMMemory, policy.OpGrowVMDisk}
+	want := []policy.Op{policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory}
 	if got := ops(c); len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Errorf("ops %v, want %v", got, want)
 	}

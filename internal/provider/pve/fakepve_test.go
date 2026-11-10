@@ -51,8 +51,8 @@ type fakePVE struct {
 	requests []string // "METHOD /path" of every request, in order
 
 	// Counters.
-	creates, uploads, starts, resizes int
-	methods                           map[string]int
+	creates, uploads, starts, resizes, reboots int
+	methods                                    map[string]int
 }
 
 type taskMeta struct {
@@ -67,6 +67,7 @@ type fakeVM struct {
 	status  string
 	lock    string
 	config  map[string]string
+	pending map[string]string // changes that take effect at the next restart
 	version int
 }
 
@@ -107,7 +108,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 }
 
 var (
-	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|resize|agent/network-get-interfaces)$`)
+	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|status/reboot|resize|agent/network-get-interfaces)$`)
 	tasksPath = "/api2/json/nodes/n1/tasks"
 	taskPath  = regexp.MustCompile(`^/api2/json/nodes/n1/tasks/([^/]+)/status$`)
 	importVol = regexp.MustCompile(`^local-lvm:0,import-from=(local:import/[^,]+),discard=on$`)
@@ -348,7 +349,8 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what string) {
 	need := map[string][]string{"config GET": {"VM.Audit"}, "status/current GET": {"VM.Audit"}, "status/start POST": {"VM.PowerMgmt"},
-		"resize PUT": {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
+		"status/reboot POST": {"VM.PowerMgmt"},
+		"resize PUT":         {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
 	if privs := need[what+" "+r.Method]; privs != nil && !f.checkVM(w, vm, len(privs) > 1, privs...) {
 		return
 	}
@@ -370,12 +372,30 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 			fail(w, http.StatusInternalServerError, "configuration file has been changed by another user")
 			return
 		}
+		privs := map[string]string{"description": "VM.Config.Options", "tags": "VM.Config.Options", "cores": "VM.Config.CPU", "memory": "VM.Config.Memory"}
 		for k := range r.PostForm {
-			if k != "description" && k != "tags" && k != "digest" {
-				f.t.Errorf("unexpected config change %s", k)
+			if k == "digest" {
+				continue
 			}
-			if k != "digest" && !f.checkVM(w, vm, false, "VM.Config.Options") {
+			if privs[k] == "" {
+				f.t.Errorf("unexpected config change %s", k)
+				continue
+			}
+			if !f.checkVM(w, vm, false, privs[k]) {
 				return
+			}
+		}
+		for _, k := range []string{"cores", "memory"} {
+			if _, ok := r.PostForm[k]; !ok {
+				continue
+			}
+			if vm.status == "running" { // no CPU/memory hotplug: pending until a restart
+				if vm.pending == nil {
+					vm.pending = map[string]string{}
+				}
+				vm.pending[k] = r.PostForm.Get(k)
+			} else {
+				vm.config[k] = r.PostForm.Get(k)
 			}
 		}
 		if _, ok := r.PostForm["description"]; ok {
@@ -388,6 +408,14 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 		reply(w, nil)
 	case what == "status/current" && r.Method == http.MethodGet:
 		reply(w, map[string]any{"status": vm.status, "lock": vm.lock})
+	case what == "status/reboot" && r.Method == http.MethodPost:
+		f.reboots++
+		for k, v := range vm.pending {
+			vm.config[k] = v
+		}
+		vm.pending = nil
+		vm.version++
+		reply(w, f.task(1, "qmreboot", vm.vmid))
 	case what == "status/start" && r.Method == http.MethodPost:
 		f.starts++
 		vm.status = "running"

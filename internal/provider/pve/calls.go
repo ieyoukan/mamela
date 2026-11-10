@@ -41,6 +41,13 @@ func OperationCalls(op policy.Op, withSeed bool) (calls []proxmox.Call, ok bool)
 			proxmox.Call{Method: "GET", Path: "/nodes/{node}/tasks", When: "to find the create task after a lost answer", Maybe: true},
 		)
 		return append(calls, finish...), true
+	case policy.OpResizeVMCPU, policy.OpResizeVMMemory:
+		return []proxmox.Call{
+			{Method: "PUT", Path: "/nodes/{node}/qemu/{vmid}/config", Params: []string{"cores", "memory", "digest"}},
+			{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/status/current"},
+			{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reboot", When: "if the VM is running (applies the change)", Maybe: true},
+			{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status", Maybe: true},
+		}, true
 	case policy.OpGrowVMDisk:
 		return []proxmox.Call{
 			{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/config"},
