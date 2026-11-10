@@ -46,12 +46,15 @@ step "emela: Mamela Pome (fmt, check, test on JS and WASM)"
 (cd pome/mamela && emela fmt --check && emela check && emela test && emela test --target wasm)
 
 step "emela: example and test Pomes (fmt)"
+# Only the directories that are Pomes: examples/kv is a provider written in Go.
 for dir in examples/*/ internal/evaluate/testdata/*/; do
+  [[ -f "$dir/Pome.toml" ]] || continue
   emela fmt --check "$dir" >/dev/null || { echo "not formatted: $dir (run: emela fmt $dir)"; exit 1; }
 done
 
 step "emela: examples (check)"
 for dir in examples/*/; do
+  [[ -f "$dir/Pome.toml" ]] || continue
   (cd "$dir" && emela check)
 done
 
