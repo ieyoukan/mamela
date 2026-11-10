@@ -23,6 +23,7 @@ const usage = `mamela - safe, declarative infrastructure (early development)
 
 Usage:
   mamela eval [flags] <pome-dir>      evaluate an Emela declaration into a Resource Graph (read-only)
+  mamela check [--json] <pome-dir>    list what each resource can need (capability, target) and any problems
   mamela plan [flags] <pome-dir>      show and save what would change, and what needs approval
   mamela plan --replay <plan-digest>  recompute a saved plan and check it is unchanged
   mamela approve <plan-digest>        approve exactly that plan
@@ -50,6 +51,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "eval":
 		return runEval(ctx, args[1:], stdout, stderr)
+	case "check":
+		return runCheck(ctx, args[1:], stdout, stderr)
 	case "plan":
 		return runPlan(ctx, args[1:], stdout, stderr)
 	case "approve":

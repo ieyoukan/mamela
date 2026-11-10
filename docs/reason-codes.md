@@ -2,6 +2,12 @@
 
 Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`。
 
+## MAM-CLI — コマンド
+
+| コード | 意味 | よくある原因と対処 |
+|---|---|---|
+| MAM-CLI-0001 | 上のどの分類にも入らない失敗（`mamela check --json` の診断） | メッセージに従う |
+
 ## MAM-EVAL — 評価
 
 | コード | 意味 | よくある原因と対処 |

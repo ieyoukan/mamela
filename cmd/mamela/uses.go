@@ -3,84 +3,142 @@ package main
 import (
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
+	"github.com/ieyoukan/mamela/internal/provider/spec"
+	"github.com/ieyoukan/mamela/internal/proxmox"
 )
 
-// writeUses prints privileges grouped by path; "?" marks those used only in some cases.
-func writeUses(w io.Writer, indent string, uses []lab.Use) bool {
+// The requirement listings are rendered here, from spec.Requirement values; nothing below the CLI
+// builds sentences about permissions.
+
+// writeRequirements prints requirements grouped by resource and operation, and within one
+// operation by provider and target. It returns whether any is used only in some cases ("?").
+func writeRequirements(w io.Writer, indent string, reqs []spec.Requirement) bool {
 	maybe := false
-	var paths []string
-	byPath := map[string][]string{}
-	for _, u := range uses {
-		if _, ok := byPath[u.Path]; !ok {
-			paths = append(paths, u.Path)
+	type group struct {
+		resource, op string
+		reqs         []spec.Requirement
+	}
+	var groups []group
+	for _, q := range reqs {
+		if n := len(groups); n > 0 && groups[n-1].resource == q.Resource && groups[n-1].op == string(q.Op) {
+			groups[n-1].reqs = append(groups[n-1].reqs, q)
+			continue
 		}
-		p := u.Priv
-		if u.Maybe {
-			p += "?"
+		groups = append(groups, group{resource: q.Resource, op: string(q.Op), reqs: []spec.Requirement{q}})
+	}
+	lastResource := "\x00"
+	for _, g := range groups {
+		in := indent
+		if g.resource != "" {
+			if g.resource != lastResource {
+				fmt.Fprintf(w, "%s%s\n", indent, g.resource)
+			}
+			lastResource = g.resource
+			in += "  "
+		}
+		label := g.op
+		if label == "" {
+			label = "observing"
+		}
+		if writeOp(w, in, label, g.reqs) {
 			maybe = true
 		}
-		byPath[u.Path] = append(byPath[u.Path], p)
-	}
-	for i, p := range paths {
-		label := "uses "
-		if i > 0 {
-			label = "     "
-		}
-		fmt.Fprintf(w, "%s%s%s: %s\n", indent, label, p, strings.Join(byPath[p], ", "))
 	}
 	return maybe
 }
 
-func writeOpUses(w io.Writer, indent string, u lab.OpUses) bool {
-	switch {
-	case u.Unsupported != "":
-		fmt.Fprintf(w, "%snot carried out: %s\n", indent, u.Unsupported)
-	case u.Mamelet != "":
-		fmt.Fprintf(w, "%suses %s\n", indent, u.Mamelet)
-	default:
-		return writeUses(w, indent, u.Proxmox)
+// writeOp prints one operation's requirements: "op  provider  caps on target".
+func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
+	const width = 17
+	pad := func(first bool) string {
+		if first {
+			return fmt.Sprintf("%s%-*s", indent, width, label)
+		}
+		return indent + strings.Repeat(" ", width)
 	}
-	return false
-}
-
-// renderPlanUses says, for each change, which Proxmox privileges (or mamelet actions) applying the
-// plan would use, concretely for the site.
-func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph) {
-	fmt.Fprintln(w, "\nPermissions this plan uses (operating token; from the permission catalog, `mamela lab permissions` explains each):")
-	maybe := writeUses(w, "  observing   ", site.ObserveUses())
-	for _, cu := range site.PlanUses(p, g) {
-		fmt.Fprintf(w, "  %s\n", cu.Change.ID())
-		for _, u := range cu.Ops {
-			fmt.Fprintf(w, "    %s\n", u.Op)
-			if writeOpUses(w, "      ", u) {
-				maybe = true
+	if q := reqs[0]; q.Support != spec.Supported {
+		fmt.Fprintf(w, "%snot carried out: %s\n", pad(true), q.Why)
+		return false
+	}
+	maybe := false
+	type key struct{ provider, target, object string }
+	var keys []key
+	caps := map[key][]string{}
+	notes := map[key][]string{}
+	for _, q := range reqs {
+		k := key{q.Provider, q.Target, q.Object}
+		if _, ok := caps[k]; !ok {
+			keys = append(keys, k)
+		}
+		c := q.Capability
+		if !q.Always {
+			c += "?"
+			maybe = true
+		}
+		if !slices.Contains(caps[k], c) {
+			caps[k] = append(caps[k], c)
+		}
+		for _, n := range []string{q.Limit, standing(q.Standing)} {
+			if n != "" && !slices.Contains(notes[k], n) {
+				notes[k] = append(notes[k], n)
 			}
 		}
 	}
-	if maybe {
+	for i, k := range keys {
+		what := strings.Join(caps[k], ", ")
+		if k.object != "" {
+			what += " " + k.object
+		}
+		on := k.target
+		if t := reqs[0].TargetType; t != "" && !strings.HasPrefix(on, "/") {
+			on = t + " " + on // "node web"; Proxmox ACL paths speak for themselves
+		}
+		provider := k.provider
+		if i > 0 && keys[i-1].provider == k.provider {
+			provider = ""
+		}
+		fmt.Fprintf(w, "%s%-8s %s on %s\n", pad(i == 0), provider, what, on)
+		for _, n := range notes[k] {
+			fmt.Fprintf(w, "%s         %s\n", pad(false), n)
+		}
+	}
+	return maybe
+}
+
+func standing(s string) string {
+	if s == "" {
+		return ""
+	}
+	return "standing: " + s
+}
+
+// renderPlanUses says, for each change, what applying the plan would use, concretely for the site.
+func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph) {
+	fmt.Fprintln(w, "\nWhat applying this plan uses (Proxmox privileges of the operating token, `mamela lab permissions` explains them;")
+	fmt.Fprintln(w, "mamelet actions granted in the node's signed revision):")
+	reqs := append(site.Providers().Observation(g, site), site.PlannedRequirements(p, g)...)
+	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases (for example an upload that is already done)")
 	}
 }
 
-// renderMayNeed says what the declaration's kinds of resources may need, whatever the world is.
+// renderMayNeed says what each resource of the declaration may need, whatever the world is.
 func renderMayNeed(w io.Writer, site *lab.Site, g *graph.Graph) {
-	fmt.Fprintln(w, "\nMay need when applied (by kind of resource; `mamela plan --site` says what a plan actually uses):")
-	maybe := writeUses(w, "  observing   ", site.ObserveUses())
-	for _, ku := range site.MayNeed(g) {
-		fmt.Fprintf(w, "  %s\n", ku.Kind)
-		for _, u := range ku.Ops {
-			fmt.Fprintf(w, "    %s\n", u.Op)
-			if writeOpUses(w, "      ", u) {
-				maybe = true
-			}
-		}
-	}
-	if maybe {
+	fmt.Fprintln(w, "\nMay need when applied (every operation each resource can lead to; `mamela plan --site` says what a plan uses):")
+	ps := site.Providers()
+	reqs := append(ps.Observation(g, site), ps.Analyze(g, site)...)
+	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases")
 	}
+}
+
+// renderProxmoxUses prints what a fixed list of Proxmox calls needs on the site.
+func renderProxmoxUses(w io.Writer, site *lab.Site, label string, calls []proxmox.Call) {
+	writeOp(w, "", label, site.Requirements(proxmox.NeedsFor(calls)))
 }

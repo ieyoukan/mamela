@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,5 +260,40 @@ func TestApplyNeedsALabAndAStoredPlan(t *testing.T) {
 	}
 	if code, _, _ := runCLI("apply", "--db", db, "--site", site); code != 2 {
 		t.Errorf("no digest: code=%d", code)
+	}
+}
+
+func TestCheckJSON(t *testing.T) {
+	dir := toolchainDir(t)
+	code, stdout, stderr := runCLI("check", "--json", "--toolchain", dir, filepath.Join("..", "..", "examples", "lab-l2"))
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	var out CheckResult
+	if err := json.Unmarshal([]byte(stdout), &out, json.RejectUnknownMembers(true)); err != nil {
+		t.Fatal(err)
+	}
+	if out.Schema != CheckSchema || out.Graph == "" || len(out.Diagnostics) != 0 || len(out.Providers) != 2 || len(out.Observation) == 0 {
+		t.Errorf("unexpected: %+v", out)
+	}
+	found := map[string]bool{}
+	for _, q := range out.Requirements {
+		found[q.Resource+" "+string(q.Op)+" "+q.Provider+" "+q.Capability] = true
+	}
+	for _, want := range []string{
+		"VirtualMachine mamela-l2 create-vm proxmox VM.Allocate",
+		"NodePackage mamela-l2/nginx install-package mamelet apt.install",
+		"NodeService mamela-l2/nginx start-service mamelet systemd.start",
+	} {
+		if !found[want] {
+			t.Errorf("requirements lack %q", want)
+		}
+	}
+
+	code, stdout, _ = runCLI("check", "--json", "--toolchain", dir, filepath.Join("..", "..", "internal", "evaluate", "testdata", "invalid-graph"))
+	out = CheckResult{}
+	if err := json.Unmarshal([]byte(stdout), &out); err != nil || code != 1 || len(out.Diagnostics) != 3 ||
+		out.Diagnostics[0].Severity != "error" || !strings.HasPrefix(out.Diagnostics[0].Code, "MAM-GRAPH-") || out.Diagnostics[0].Resource == "" {
+		t.Errorf("invalid graph: code=%d %+v %v", code, out.Diagnostics, err)
 	}
 }

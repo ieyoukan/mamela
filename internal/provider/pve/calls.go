@@ -1,7 +1,9 @@
 package pve
 
 import (
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/proxmox"
 )
 
@@ -57,3 +59,37 @@ func OperationCalls(op policy.Op, withSeed bool) (calls []proxmox.Call, ok bool)
 	}
 	return nil, false
 }
+
+// Version is the version of the Proxmox provider's contract (its manifest).
+const Version = "0.1.0"
+
+// Manifest is the Proxmox provider's declaration of itself, derived from the calls above and the
+// permission catalog. withSeed: VMs get a mamelet seed (the site runs a Control Plane).
+func Manifest(withSeed bool) spec.Manifest {
+	m := spec.Manifest{Schema: spec.Schema, Provider: "proxmox", Version: Version, Observe: needs(ObserveCalls)}
+	k := spec.Kind{Kind: graph.KindVirtualMachine}
+	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
+		calls, _ := OperationCalls(op, withSeed)
+		k.Operations = append(k.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: needs(calls)})
+	}
+	for _, op := range []policy.Op{policy.OpShrinkVMDisk, policy.OpReplaceVMImage} {
+		k.Operations = append(k.Operations, spec.Operation{Op: op, Support: spec.Unsupported,
+			Why: "it can destroy data (the policy denies it)"})
+	}
+	m.Kinds = []spec.Kind{k}
+	return m
+}
+
+// needs turns calls into capabilities: Proxmox privileges on ACL scopes ("pool", "disk-storage";
+// a site resolves them to paths).
+func needs(calls []proxmox.Call) []spec.Need {
+	var out []spec.Need
+	for _, r := range proxmox.NeedsFor(calls) {
+		out = append(out, spec.Need{Capability: r.Priv, Target: spec.Target{Type: TargetACL, Ref: string(r.Scope)},
+			Always: r.Always, Reasons: r.Reasons})
+	}
+	return out
+}
+
+// TargetACL is the target type of Proxmox privileges: an ACL scope.
+const TargetACL = "proxmox-acl"

@@ -12,7 +12,6 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/provider/pve"
-	"github.com/ieyoukan/mamela/internal/proxmox"
 )
 
 // runDestroy destroys one VM Mamela created, after a person has seen exactly what goes and typed
@@ -72,7 +71,7 @@ func runDestroy(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "Its cloud-init seed stays on the storage (%s); `mamela lab cleanup` prints how to remove it.\n", strings.Join(target.Seeds, ", "))
 	}
 	fmt.Fprintln(stdout, "Mamela then forgets its VMID reservation and its mamelet's enrollment (the agent's certificate stops working).")
-	writeUses(stdout, "", site.Uses(proxmox.NeedsFor(pve.DestroyCalls)))
+	renderProxmoxUses(stdout, site, "destroy uses", pve.DestroyCalls)
 	if *confirm != name {
 		fmt.Fprintf(stdout, "\nNothing was changed. To destroy it: mamela destroy --site %s --confirm %s %s\n", *sitePath, name, name)
 		return 1
