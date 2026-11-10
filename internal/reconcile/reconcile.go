@@ -30,6 +30,11 @@ import (
 // effect (a timeout, a lost connection). The reconciler then stops and re-observes next time.
 var ErrUnknownOutcome = errors.New("outcome unknown")
 
+// ErrPartlyDone is returned by a Provider when an operation failed after some of its changes took
+// effect (or may have): neither a clean failure nor unknown as a whole. The reconciler stops, and
+// the next run observes before doing anything, so the operation continues from what is there.
+var ErrPartlyDone = errors.New("partly done")
+
 // Step is one operation handed to a provider.
 type Step struct {
 	OperationID string // stable idempotency key: the same plan, resource and operation give the same ID
@@ -57,6 +62,7 @@ const (
 	OutcomeBusy          Outcome = "busy"           // another worker holds the operation
 	OutcomeFailed        Outcome = "failed"         // executed and known not to have taken effect
 	OutcomeUnknown       Outcome = "unknown"        // executed, outcome unknown
+	OutcomePartial       Outcome = "partly-done"    // failed after some of its changes took effect
 )
 
 // StepReport is one line of a run report.
@@ -209,6 +215,17 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				}
 				rep.add(id, op.Op, OutcomeDone, "")
 				r.event(ctx, planDigest, id, "succeeded", string(op.Op)+" succeeded")
+			case errors.Is(applyErr, ErrPartlyDone):
+				// Recorded like an unknown outcome: it must be observed before it is retried.
+				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
+					return nil, err
+				}
+				rep.add(id, op.Op, OutcomePartial, applyErr.Error())
+				rep.Stopped = &Stop{Code: "MAM-REC-0006",
+					Message: fmt.Sprintf("%s on %s failed after some of its changes took effect: %v", op.Op, id, applyErr),
+					Hint:    "fix the cause, then run apply again: it observes first and continues from what is there"}
+				r.event(ctx, planDigest, id, "partly-done", rep.Stopped.Message)
+				return rep, nil
 			case errors.Is(applyErr, ErrUnknownOutcome):
 				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
 					return nil, err

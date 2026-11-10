@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/proxmox"
@@ -99,7 +100,8 @@ func isDrive(k string) bool {
 // caller has had a person confirm the target; Destroy looks at it again first and refuses if it
 // changed in between.
 func (p *Provider) Destroy(ctx context.Context, d Destroyer, want Target) error {
-	ctx = proxmox.Restrict(ctx, "destroy", append(slices.Clone(ObserveCalls), DestroyCalls...))
+	ctx = proxmox.RestrictOperation(ctx, "destroy", append(slices.Clone(ObserveCalls), DestroyCalls...))
+	ctx = proxmox.Bind(ctx, map[string]string{"node": p.Config.Node, "vmid": strconv.Itoa(want.VMID)})
 	now, err := p.DestroyTarget(ctx, want.Name)
 	if err != nil {
 		return err

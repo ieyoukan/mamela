@@ -157,7 +157,7 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		return fmt.Errorf("proxmox: %s %s is not in Mamela's permission catalog (internal/proxmox/permissions.go); "+
 			"add it with the privileges Proxmox checks before calling it: %w", method, path, ErrNotSent)
 	}
-	if err := allowed(ctx, ep, nil); err != nil {
+	if err := allowed(ctx, ep, path, nil); err != nil {
 		return err
 	}
 	if !long {
@@ -179,6 +179,9 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if changing(method) {
+			record(ctx, method, path) // it may have taken effect
+		}
 		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
@@ -194,7 +197,14 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		if m := resp.Status; strings.TrimSpace(msg) == "" || msg == `{"data":null}` {
 			msg = m // pveproxy puts the reason in the status line
 		}
-		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: msg}
+		apiErr := &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: msg}
+		if changing(method) && Uncertain(apiErr) {
+			record(ctx, method, path)
+		}
+		return apiErr
+	}
+	if changing(method) {
+		record(ctx, method, path)
 	}
 	if out == nil {
 		return nil
@@ -217,7 +227,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 
 func (c *Client) form(ctx context.Context, method, path string, values url.Values, out any) error {
 	if ep, ok := LookupEndpoint(method, path); ok {
-		if err := allowed(ctx, ep, values); err != nil {
+		if err := allowed(ctx, ep, path, values); err != nil {
 			return err
 		}
 	}
