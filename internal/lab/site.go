@@ -54,17 +54,12 @@ type ControlPlane struct {
 	// Plane never change it (ADR 0003).
 	Host string `toml:"host"`
 	// MoveTo is the URL of the Control Plane mamelet should move to: revisions carry it, and
-	// mamelet uses it from then on (ADR 0003). Empty: revisions carry url.
+	// mamelet uses it from then on (ADR 0003). Empty: revisions name no Control Plane (a mamelet
+	// older than ADR 0003 refuses one that does).
 	MoveTo string `toml:"move_to"`
 }
 
-// Advertised is the URL revisions tell mamelet to use.
-func (c ControlPlane) Advertised() string {
-	if c.MoveTo != "" {
-		return c.MoveTo
-	}
-	return c.URL
-}
+
 
 // Enabled reports whether the site has a Control Plane for mamelet.
 func (c ControlPlane) Enabled() bool { return c.URL != "" }

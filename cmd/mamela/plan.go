@@ -173,7 +173,9 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *sitePath != "" {
 		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
-		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.Advertised()); err != nil {
+		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
+		// refuses a revision with a member it does not know.
+		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.MoveTo); err != nil {
 			return report(stderr, err)
 		}
 	}

@@ -377,9 +377,4 @@ func TestControlPlaneListen(t *testing.T) {
 			t.Errorf("%+v: %v", c, err)
 		}
 	}
-	v := *s
-	v.ControlPlane.MoveTo = "https://10.0.0.45:8443"
-	if v.ControlPlane.Advertised() != "https://10.0.0.45:8443" || s.ControlPlane.Advertised() != s.ControlPlane.URL {
-		t.Fatal("advertised URL")
-	}
 }
