@@ -6,15 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/cp"
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/provider/pve"
 	"github.com/ieyoukan/mamela/internal/reconcile"
+	"github.com/ieyoukan/mamela/internal/seed"
 	"github.com/ieyoukan/mamela/internal/store"
 )
 
@@ -90,7 +95,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 	// 2. Reconcile.
 	fmt.Fprintf(stdout, "\n== apply %s\n", p.Digest)
-	prov, err := labProvider(site, operating, st, *imageCache)
+	prov, err := labProvider(site, operating, st, *imageCache, true)
 	if err != nil {
 		return report(stderr, err)
 	}
@@ -160,13 +165,14 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 	}
 }
 
-// labProvider is the Proxmox provider for the lab, using the operating token.
-func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string) (*pve.Provider, error) {
+// labProvider observes and changes the lab: VMs through the Proxmox API (operating token), and
+// what lives in them through mamelet. withSeeds makes new VMs install mamelet (apply only).
+func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string, withSeeds bool) (reconcile.Provider, error) {
 	keys, err := site.SSHPublicKeys()
 	if err != nil {
 		return nil, fmt.Errorf("guest.ssh_public_key_file: %w", err)
 	}
-	return &pve.Provider{
+	vms := &pve.Provider{
 		Config: pve.Config{
 			Node: site.Proxmox.Node, Pool: site.Boundary.Pool, Tag: site.Boundary.Tag,
 			VMIDMin: site.Boundary.VMIDMin, VMIDMax: site.Boundary.VMIDMax,
@@ -176,7 +182,51 @@ func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string
 			User: site.Guest.User, SSHPublicKeys: keys,
 		},
 		API: api, VMIDs: st, Images: &pve.ImageCache{Dir: imageCache}, Clock: wallClock,
-	}, nil
+	}
+	if withSeeds && site.ControlPlane.Enabled() {
+		maker, err := seedMaker(site, st, keys)
+		if err != nil {
+			return nil, err
+		}
+		vms.Seeds = maker
+	}
+	return node.Combined{VMs: vms, Nodes: &node.Provider{Store: st, Clock: wallClock}}, nil
+}
+
+// seedMaker makes cloud-init seeds that install mamelet and point it at this Control Plane.
+func seedMaker(site *lab.Site, st *store.Store, keys string) (*seed.Maker, error) {
+	pki, err := loadPKI(site)
+	if err != nil {
+		return nil, err
+	}
+	bin, err := os.ReadFile(site.ControlPlane.MameletBinary)
+	if err != nil {
+		return nil, fmt.Errorf("controlplane.mamelet_binary: %w (build it with scripts/build-mamelet.sh)", err)
+	}
+	// An ELF64 little-endian x86-64 executable: the lab VMs are amd64.
+	if len(bin) < 20 || string(bin[:4]) != "\x7fELF" || bin[4] != 2 || bin[5] != 1 || bin[18] != 0x3e {
+		return nil, fmt.Errorf("%s is not a linux/amd64 executable (build it with scripts/build-mamelet.sh)", site.ControlPlane.MameletBinary)
+	}
+	var keyList []string
+	if keys != "" {
+		keyList = strings.Split(keys, "\n")
+	}
+	return &seed.Maker{Store: st, Server: site.ControlPlane.URL, CA: pki.CAPEM(), RevisionKey: pki.RevisionPublicKey(),
+		User: site.Guest.User, SSHPublicKeys: keyList, AllowedOrigins: policy.Default.AllowedAptOrigins, MameletBinary: bin}, nil
+}
+
+// loadPKI loads (creating on first use) the Control Plane's keys; the server certificate names the
+// host mamelet connects to.
+func loadPKI(site *lab.Site) (*cp.PKI, error) {
+	dir, err := lab.ExpandHome(site.ControlPlane.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(site.ControlPlane.URL)
+	if err != nil {
+		return nil, err
+	}
+	return cp.LoadPKI(dir, []string{u.Hostname()}, wallClock())
 }
 
 func defaultImageCache() string {

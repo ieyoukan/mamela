@@ -143,8 +143,11 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, strconv.Itoa(id))
 	case r.Method == http.MethodGet && p == "/api2/json/nodes/n1/storage/local/content":
 		var out []map[string]any
+		content := r.URL.Query().Get("content")
 		for volid, size := range f.volumes {
-			out = append(out, map[string]any{"volid": volid, "format": "qcow2", "size": size})
+			if content == "" || strings.HasPrefix(volid, "local:"+content+"/") {
+				out = append(out, map[string]any{"volid": volid, "format": "qcow2", "size": size})
+			}
 		}
 		reply(w, out)
 	case r.Method == http.MethodPost && p == "/api2/json/nodes/n1/storage/local/upload":
@@ -249,8 +252,13 @@ func (f *fakePVE) upload(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(part)
 		fields[part.FormName()] = string(b)
 	}
-	if fields["content"] != "import" || fields["checksum-algorithm"] != "sha256" {
+	content := fields["content"]
+	if (content != "import" && content != "iso") || fields["checksum-algorithm"] != "sha256" {
 		fail(w, http.StatusBadRequest, "bad fields")
+		return
+	}
+	if content == "iso" && !strings.HasSuffix(name, ".iso") {
+		fail(w, http.StatusBadRequest, "wrong file extension")
 		return
 	}
 	f.uploads++
@@ -258,7 +266,7 @@ func (f *fakePVE) upload(w http.ResponseWriter, r *http.Request) {
 	if hex.EncodeToString(sum.Sum(nil)) != fields["checksum"] {
 		f.failed[upid] = "checksum mismatch"
 	} else {
-		f.volumes["local:import/"+name] = size
+		f.volumes["local:"+content+"/"+name] = size
 	}
 	reply(w, upid)
 }

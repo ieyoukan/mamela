@@ -87,7 +87,7 @@ pool・ロール・ユーザー・Token・ACL の作成と、ストレージの 
 
 | パス | ロール | 権限 | 用途 |
 |---|---|---|---|
-| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt`, `Pool.Audit` | pool 内の VM の作成・設定・起動停止。`Pool.Audit` がないと `/cluster/resources` が VM の pool を返さず、自分の VM を見分けられない（L1 で判明） |
+| `/pool/mamela-lab` | `MamelaLabVM` | `VM.Allocate`, `VM.Audit`, `VM.Config.{CDROM,CPU,Cloudinit,Disk,HWType,Memory,Network,Options}`, `VM.PowerMgmt`, `Pool.Audit`, `VM.GuestAgent.Audit` | pool 内の VM の作成・設定・起動停止。`Pool.Audit` がないと `/cluster/resources` が VM の pool を返さず、自分の VM を見分けられない（L1 で判明） |
 | `/storage/<disk storage>` | `MamelaLabDisk` | `Datastore.AllocateSpace`, `Datastore.Audit` | 検証用 VM のディスク |
 | `/storage/<image storage>` | `MamelaLabImage` | `Datastore.AllocateTemplate`, `Datastore.Audit` | 固定した cloud image のアップロード（AllocateTemplate）と、新しいディスクへの取り込み（Audit） |
 | `/sdn/zones/<zone>/<bridge>` | `MamelaLabNet` | `SDN.Use` | ネットワーク接続 |
@@ -133,6 +133,35 @@ image のバージョンは宣言の `image` と catalog で決まるので、�
 - 所有マーカーは VM の説明（description）に書く。`mamela-name`、`mamela-image`、`mamela-state`（`creating` / `ready`）を持つ。
 - タグは完成時（`ready` と同時）に付く。作成途中（`creating`）の VM にはタグがない。`ready` なのにタグのない VM は誰かが変えたものとして管理しない（`Foreign`）。
 - preflight / postflight の「検証環境の内側」は pool と VMID 予約範囲で決める（タグは問わない）。作成途中の VM を続きから仕上げられるようにするためである。管理するかどうか（マーカー・予約・タグ）は provider が判断する。
+
+### 4.4 mamelet（VM 内の agent）を入れる（L2）
+
+`site.local.toml` に `[controlplane]` があると、新しい VM には Proxmox の cloud-init ドライブの代わりに、Mamela が作った NoCloud seed（ISO 9660、ラベル `CIDATA`）を CD-ROM としてつなぐ（`internal/seed`）。Proxmox の API は cloud-init の snippets をアップロードできないが、ISO（content `iso`）ならアップロードできる（`Datastore.AllocateTemplate`。つなぐには `Datastore.Audit` と `VM.Config.CDROM`）。
+
+seed の中身:
+
+- `user-data`（JSON で書いた `#cloud-config`）: ログインユーザーと SSH 公開鍵（パスワードなし）、`qemu-guest-agent` の導入、mamelet の設定（`/etc/mamelet/config.json`: Control Plane の URL・CA 証明書・revision の署名を確かめる公開鍵・許可する APT origin）、**一度きりの登録トークン**（`/etc/mamelet/enroll-token`）、systemd unit。mamelet 本体は seed から sha256 を確かめてから `/usr/local/sbin/mamelet` に置く。
+- `meta-data`、`network-config`（DHCP）、`mamelet`（linux/amd64。`scripts/build-mamelet.sh`）。
+
+登録トークンは VM 名と VMID に結び付き、24 時間で期限が切れ、一度しか使えない（DB にはハッシュだけを保存する）。seed は Proxmox のストレージに残るが、使用済み・期限切れのトークンでは何もできない。作成を再試行するときは、トークンがまだ有効なら同じ seed を使う。
+
+mamelet は VM の中から Control Plane（`mamela serve`）に接続して、自分宛ての署名付き revision を取りに行く（Pull）。Control Plane を動かす Mac は lab の LAN から見えない（NAT の内側）ので、`mamela lab tunnel <vm>` が SSH のリバーストンネルを張り、VM の `127.0.0.1:8443` を Mac の `mamela serve` につなぐ（VM のアドレスは qemu-guest-agent から `VM.GuestAgent.Audit` で読む。踏み台は `controlplane.tunnel_jump`）。
+
+~~~bash
+scripts/build-mamelet.sh                                  # .mamela/bin/mamelet-linux-amd64
+mamela serve --site lab/site.local.toml                   # 別の端末で動かしておく
+mamela plan --site lab/site.local.toml examples/lab-l2    # VM の作成（承認が要る）
+mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
+mamela lab tunnel --site lab/site.local.toml mamela-l2    # 別の端末で動かしておく
+mamela plan --site lab/site.local.toml examples/lab-l2    # mamelet の報告から、nginx の変更集合を計画
+~~~
+
+mamelet の安全装置（`internal/mamelet`）:
+
+- revision の署名（Ed25519）、ノード名と VMID、有効期限、serial の巻き戻しを確かめてから使う。
+- 実行するのは `dpkg-query`、`apt-get`、`systemctl` だけで、シェルは使わない。名前はオプションやパスになり得ない形に限る。
+- インストールは、承認された apt-get -s の変更集合と、直前の再シミュレーションが一致するときだけ、試行ごとに一度だけ行う。削除を含む集合と、許可していない APT origin のパッケージは、revision が許しても拒否する。
+- Control Plane に届かないときは、まだ有効な前回の revision（既定 24 時間）で、policy が許す起動の修復（`autoStartServices`）だけを行う。一度きりの操作は新しく取得した revision でしか行わない。
 
 ## 5. preflight / postflight
 

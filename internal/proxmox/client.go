@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -393,6 +394,32 @@ func (c *Client) Tasks(ctx context.Context, node string, vmid int, typ string) (
 func (c *Client) TaskStatus(ctx context.Context, node, upid string) (Task, error) {
 	var out Task
 	return out, c.get(ctx, nodePath(node)+"/tasks/"+url.PathEscape(upid)+"/status", &out)
+}
+
+// GuestIPv4 returns the IPv4 addresses that qemu-guest-agent in the VM reports, loopback excluded
+// (GET .../agent/network-get-interfaces; needs VM.GuestAgent.Audit).
+func (c *Client) GuestIPv4(ctx context.Context, node string, vmid int) ([]string, error) {
+	var out struct {
+		Result []struct {
+			Name        string `json:"name"`
+			IPAddresses []struct {
+				Address string `json:"ip-address"`
+				Type    string `json:"ip-address-type"`
+			} `json:"ip-addresses"`
+		} `json:"result"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("%s/qemu/%d/agent/network-get-interfaces", nodePath(node), vmid), &out); err != nil {
+		return nil, err
+	}
+	var ips []string
+	for _, iface := range out.Result {
+		for _, a := range iface.IPAddresses {
+			if ip := net.ParseIP(a.Address); a.Type == "ipv4" && ip != nil && !ip.IsLoopback() {
+				ips = append(ips, a.Address)
+			}
+		}
+	}
+	return ips, nil
 }
 
 // CreateVM starts creating a VM (POST /nodes/{node}/qemu) and returns the task ID.

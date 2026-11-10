@@ -61,6 +61,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0301 | Denied | ディスクの縮小 |
 | MAM-POL-0302 | Denied | イメージの変更（VM の置き換えになる） |
 | MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更 |
+| MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
+| MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 
 ## MAM-PLAN — 計画の状態
@@ -71,7 +73,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0102 | VM が Foreign なので、その上の設定はしない |
 | MAM-PLAN-0103 | Agent からのパッケージの報告を待つ |
 | MAM-PLAN-0104 | Agent からのサービスの報告を待つ |
+| MAM-PLAN-0105 | mamelet が、インストールで何が変わるか（apt-get -s）を報告するのを待つ |
+| MAM-PLAN-0106 | サービスの unit がまだない（パッケージが入っていない）ので待つ |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
+| MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
 | MAM-PLAN-0301 | 宣言から消えたが、削除せず保持する（Retain） |
 
 ## MAM-REC — 実行

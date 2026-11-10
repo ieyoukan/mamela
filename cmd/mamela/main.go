@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
@@ -25,13 +26,14 @@ Usage:
   mamela plan --replay <plan-digest>  recompute a saved plan and check it is unchanged
   mamela approve <plan-digest>        approve exactly that plan
   mamela apply --site <file> <plan-digest>  carry out an approved plan on the lab Proxmox
-  mamela lab <bootstrap|preflight|postflight>  set up and check the live test lab (docs/lab.md)
+  mamela serve --site <file>          serve mamelet (the agent in lab VMs): enrollment, revisions, reports
+  mamela lab <bootstrap|preflight|postflight|tunnel>  set up and check the live test lab (docs/lab.md)
 
 Run 'mamela <command> -h' for flags.
 `
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	os.Exit(run(ctx, os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -52,6 +54,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runApply(ctx, args[1:], stdout, stderr)
 	case "lab":
 		return runLab(ctx, args[1:], stdout, stderr)
+	case "serve":
+		return runServe(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0

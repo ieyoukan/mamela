@@ -495,3 +495,55 @@ func TestImageCacheVerifiesDownloads(t *testing.T) {
 		t.Fatalf("left files behind: %v", entries)
 	}
 }
+
+// fakeSeeds makes seeds and remembers them, like seed.Maker over the store.
+type fakeSeeds struct {
+	made     []string
+	reusable string
+}
+
+func (s *fakeSeeds) Reusable(context.Context, string, int) (string, bool, error) {
+	return s.reusable, s.reusable != "", nil
+}
+
+func (s *fakeSeeds) New(_ context.Context, node string, vmid int) (string, []byte, error) {
+	name := fmt.Sprintf("mamela-seed-%s-%d-%d.iso", node, vmid, len(s.made))
+	s.made = append(s.made, name)
+	s.reusable = name
+	return name, []byte("seed image " + name), nil
+}
+
+func TestCreatesVMWithMameletSeed(t *testing.T) {
+	e := newEnv(t)
+	seeds := &fakeSeeds{}
+	e.p.Seeds = seeds
+	e.fake.createTaskFails = true // the first create fails after the seed was uploaded
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err == nil {
+		t.Fatal("want the failed create")
+	}
+	e.fake.createTaskFails = false
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if len(seeds.made) != 1 || e.fake.uploads != 2 {
+		t.Fatalf("seeds %v, uploads %d: the retry must reuse the seed", seeds.made, e.fake.uploads)
+	}
+	cfg := e.fake.vms[7000].config
+	if cfg["ide2"] != "local:iso/"+seeds.made[0]+",media=cdrom" || cfg["agent"] != "enabled=1" {
+		t.Fatalf("ide2 %q agent %q", cfg["ide2"], cfg["agent"])
+	}
+	for _, k := range []string{"ciuser", "sshkeys", "ipconfig0"} {
+		if _, ok := cfg[k]; ok {
+			t.Errorf("%s set although the seed provides it", k)
+		}
+	}
+
+	// A seed that is no longer on the storage is made again.
+	delete(e.fake.volumes, "local:iso/"+seeds.made[0])
+	if err := e.apply(policy.OpCreateVM, vmResource("db", 1, 512, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if len(seeds.made) != 2 {
+		t.Fatalf("seeds %v", seeds.made)
+	}
+}

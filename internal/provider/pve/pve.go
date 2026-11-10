@@ -19,7 +19,10 @@
 package pve
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +67,14 @@ type ImageFile interface {
 	io.Closer
 }
 
+// Seeds makes the cloud-init seed images that install mamelet (implemented by seed.Maker).
+type Seeds interface {
+	// Reusable names a seed already made for the VM that can still be used.
+	Reusable(ctx context.Context, node string, vmid int) (string, bool, error)
+	// New makes a seed with a fresh one-time enrollment token and returns its file name and image.
+	New(ctx context.Context, node string, vmid int) (string, []byte, error)
+}
+
 // Images opens verified image files (implemented by ImageCache).
 type Images interface {
 	Open(ctx context.Context, img Image) (ImageFile, error)
@@ -99,8 +110,11 @@ type Provider struct {
 	API    API
 	VMIDs  VMIDs
 	Images Images
-	Clock  func() time.Time
-	Sleep  func(context.Context, time.Duration) error // nil: a real sleep
+	// Seeds, when set, makes each new VM's cloud-init seed (an ISO with mamelet and its one-time
+	// token, attached as a CD-ROM) instead of Proxmox's cloud-init drive.
+	Seeds Seeds
+	Clock func() time.Time
+	Sleep func(context.Context, time.Duration) error // nil: a real sleep
 }
 
 var _ reconcile.Provider = (*Provider)(nil)
@@ -323,6 +337,20 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 		// Proxmox expects the keys URL-encoded inside the (also encoded) form value.
 		params.Set("sshkeys", strings.ReplaceAll(url.QueryEscape(keys+"\n"), "+", "%20"))
 	}
+	if p.Seeds != nil {
+		// Our own NoCloud seed replaces Proxmox's cloud-init drive (two would conflict): it holds
+		// the user and keys too, plus mamelet. qemu-guest-agent (installed by the seed) reports the
+		// VM's addresses to Proxmox.
+		seedVol, err := p.ensureSeed(ctx, name, vmid)
+		if err != nil {
+			return fmt.Errorf("VM %s: %w", name, err)
+		}
+		for _, k := range []string{"ciuser", "sshkeys", "ipconfig0"} {
+			params.Del(k)
+		}
+		params.Set("ide2", seedVol+",media=cdrom")
+		params.Set("agent", "enabled=1")
+	}
 	upid, err := p.API.CreateVM(ctx, p.Config.Node, params)
 	if err != nil {
 		if !proxmox.Uncertain(err) {
@@ -460,6 +488,36 @@ func (p *Provider) growTo(ctx context.Context, vmid int, name string, gib int64)
 }
 
 // ensureImage uploads the image once and returns its volume ID ("<storage>:import/<file>").
+// ensureSeed returns the seed volume for the VM, uploading a new seed unless one made for it earlier
+// (a retried create) is still on the storage and its token still good.
+func (p *Provider) ensureSeed(ctx context.Context, name string, vmid int) (string, error) {
+	volid := func(file string) string { return p.Config.ImageStorage + ":iso/" + file }
+	if file, ok, err := p.Seeds.Reusable(ctx, name, vmid); err != nil {
+		return "", err
+	} else if ok {
+		vols, err := p.API.StorageContent(ctx, p.Config.Node, p.Config.ImageStorage, "iso")
+		if err != nil {
+			return "", fmt.Errorf("list ISOs on %s: %w", p.Config.ImageStorage, err)
+		}
+		if slices.ContainsFunc(vols, func(v proxmox.Volume) bool { return v.VolID == volid(file) }) {
+			return volid(file), nil
+		}
+	}
+	file, img, err := p.Seeds.New(ctx, name, vmid)
+	if err != nil {
+		return "", fmt.Errorf("make the cloud-init seed: %w", err)
+	}
+	sum := sha256.Sum256(img)
+	upid, err := p.API.Upload(ctx, p.Config.Node, p.Config.ImageStorage, "iso", file, hex.EncodeToString(sum[:]), bytes.NewReader(img), int64(len(img)))
+	if err != nil {
+		return "", fmt.Errorf("upload the cloud-init seed to %s: %w", p.Config.ImageStorage, err)
+	}
+	if err := p.wait(ctx, upid, p.taskTimeout()); err != nil {
+		return "", fmt.Errorf("upload the cloud-init seed: %w", err)
+	}
+	return volid(file), nil
+}
+
 func (p *Provider) ensureImage(ctx context.Context, name string, img Image) (string, error) {
 	file := VolumeName(name, img)
 	want := p.Config.ImageStorage + ":import/" + file
@@ -502,8 +560,6 @@ func (p *Provider) ensureImage(ctx context.Context, name string, img Image) (str
 	return want, nil
 }
 
-// wait polls a task until it stops. A task that does not finish in time, or whose status cannot
-// be read, has an unknown outcome.
 // wait polls a task until it ends. Reading its status may fail for a while (a busy node, a
 // network blip) without changing anything, so a few failures in a row are tolerated. Only a task
 // that is still running at the deadline, or whose status cannot be read, is an unknown outcome;

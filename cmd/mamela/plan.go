@@ -14,6 +14,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 )
@@ -39,10 +40,12 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	replay := fs.String("replay", "", "recompute a stored plan by digest and check that it is unchanged")
 	toolchainDir := fs.String("toolchain", envOr("MAMELA_TOOLCHAIN_DIR", ".tools/bin"), "directory containing the pinned emela and wasmtime")
 	pomeCache := fs.String("pome-cache", defaultPomeCache(), "directory of already fetched Pome dependencies")
+	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
 			"Shows what would change, why, and what needs approval. Saves the plan so it can be approved.\n"+
-			"Nothing outside the state database is changed.\n\nFlags:\n")
+			"Nothing outside the state database is changed. With --site, it also updates what each node's\n"+
+			"mamelet observes (never what it may change: that takes an approved apply).\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -102,7 +105,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return report(stderr, err)
 		}
-		prov, err := labProvider(site, operating, st, "")
+		prov, err := labProvider(site, operating, st, "", false)
 		if err != nil {
 			return report(stderr, err)
 		}
@@ -120,9 +123,24 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	pol := policy.Default
+	if *policyFile != "" {
+		b, err := os.ReadFile(*policyFile)
+		if err != nil {
+			return report(stderr, err)
+		}
+		if pol, err = policy.Decode(b); err != nil {
+			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
+		}
+	}
 	p := plan.Build(res.Graph, snap, pol)
 	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
 		return report(stderr, err)
+	}
+	if *sitePath != "" {
+		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
+		if err := node.Publish(ctx, st, res.Graph, pol); err != nil {
+			return report(stderr, err)
+		}
 	}
 	plan.Render(stdout, p)
 	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)

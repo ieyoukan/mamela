@@ -7,6 +7,8 @@ package lab
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,7 +29,27 @@ type Site struct {
 	Guest     GuestInit `toml:"guest"`
 	Budget    Budget    `toml:"budget"`
 	Safety    Safety    `toml:"safety"`
+	// ControlPlane is optional: without it, VMs get Proxmox's cloud-init drive and no mamelet.
+	ControlPlane ControlPlane `toml:"controlplane"`
 }
+
+// ControlPlane is where mamelet in lab VMs reaches Mamela, and how Mamela serves it.
+type ControlPlane struct {
+	// URL is how mamelet reaches the Control Plane, for example https://127.0.0.1:8443 through an
+	// SSH reverse tunnel (mamela lab tunnel).
+	URL string `toml:"url"`
+	// Listen is the address `mamela serve` listens on (keep it on loopback).
+	Listen string `toml:"listen"`
+	// StateDir holds the Control Plane's CA and signing keys (outside the repository; "~/" is expanded).
+	StateDir string `toml:"state_dir"`
+	// MameletBinary is the linux/amd64 build of mamelet put into each seed (scripts/build-mamelet.sh).
+	MameletBinary string `toml:"mamelet_binary"`
+	// TunnelJump is an optional SSH jump host for `mamela lab tunnel`.
+	TunnelJump string `toml:"tunnel_jump"`
+}
+
+// Enabled reports whether the site has a Control Plane for mamelet.
+func (c ControlPlane) Enabled() bool { return c.URL != "" }
 
 type Proxmox struct {
 	APIURL               string `toml:"api_url"`
@@ -152,10 +174,38 @@ func (s *Site) Validate() error {
 	if s.Safety.MaxThinpoolUsedPercent < 1 || s.Safety.MaxThinpoolUsedPercent > 90 {
 		bad("safety.max_thinpool_used_percent must be 1..90")
 	}
+	if cp := s.ControlPlane; cp != (ControlPlane{}) {
+		if u, err := url.Parse(cp.URL); err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" {
+			bad("controlplane.url %q must be https://host:port", cp.URL)
+		}
+		if host, _, err := net.SplitHostPort(cp.Listen); err != nil || host == "" {
+			bad("controlplane.listen %q must be host:port", cp.Listen)
+		} else if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			bad("controlplane.listen %q must be a loopback address (mamelet reaches it through the tunnel)", cp.Listen)
+		}
+		if cp.StateDir == "" || cp.MameletBinary == "" {
+			bad("controlplane.state_dir and controlplane.mamelet_binary are required")
+		}
+		if cp.TunnelJump != "" && !nameRe.MatchString(cp.TunnelJump) {
+			bad("controlplane.tunnel_jump %q is not a plain host name", cp.TunnelJump)
+		}
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid site:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// ExpandHome expands a leading "~/".
+func ExpandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // TokenUser is the Proxmox user of the operating token ("mamela@pve").

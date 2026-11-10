@@ -46,3 +46,12 @@ max_disk_gib_per_vm = 10
 min_host_mem_available_mib = 2048
 # Refuse when the disk thin pool would exceed this usage.
 max_thinpool_used_percent = 80
+
+[controlplane]
+# Optional. With it, new lab VMs get mamelet (the Mamela agent) from a cloud-init seed, and pull
+# from the Control Plane (`mamela serve`) through an SSH reverse tunnel (`mamela lab tunnel`).
+url = "https://127.0.0.1:8443"            # as seen from inside the VM, through the tunnel
+listen = "127.0.0.1:8443"                 # where `mamela serve` listens (loopback only)
+state_dir = "~/.config/mamela/cp"         # CA and signing keys, outside the repository
+mamelet_binary = ".mamela/bin/mamelet-linux-amd64"   # built by scripts/build-mamelet.sh
+tunnel_jump = ""                          # optional SSH jump host to reach lab VMs

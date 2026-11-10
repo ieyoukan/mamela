@@ -27,6 +27,8 @@ func (s *Site) Grants() []Grant {
 			// Without it Proxmox leaves the pool out of /cluster/resources, and Mamela could not
 			// tell its own VMs from others (found in L1).
 			"Pool.Audit",
+			// Read the addresses qemu-guest-agent reports (mamela lab tunnel); nothing else of the agent.
+			"VM.GuestAgent.Audit",
 		}},
 		{Path: "/storage/" + s.Placement.DiskStorage, Role: "MamelaLabDisk", Privs: []string{"Datastore.AllocateSpace", "Datastore.Audit"}},
 		// Upload pinned cloud images (AllocateTemplate) and import them into new disks (Audit).

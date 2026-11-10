@@ -16,6 +16,7 @@ const labUsage = `Usage:
   mamela lab bootstrap  --site <file>                    print the one-time root setup script (does not run it)
   mamela lab preflight  --site <file> [--baseline <out>]  read-only checks before a live test; records a baseline
   mamela lab postflight --site <file> --baseline <in>     read-only check that nothing outside the lab changed
+  mamela lab tunnel     --site <file> <vm-name>          SSH reverse tunnel so the VM's mamelet reaches mamela serve
 
 See docs/lab.md.
 `
@@ -26,6 +27,9 @@ func runLab(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	sub, rest := args[0], args[1:]
+	if sub == "tunnel" {
+		return runTunnel(ctx, rest, stdout, stderr)
+	}
 	fs := flag.NewFlagSet("mamela lab "+sub, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	sitePath := fs.String("site", envOr("MAMELA_LAB_SITE", "lab/site.local.toml"), "lab site definition")
