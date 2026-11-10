@@ -1,6 +1,6 @@
 # ADR 0002 — プロバイダーの契約: 信頼境界、承認した 1 操作の許可、能力の宣言、版の指定
 
-- 状態: Accepted（2026-11-10 に合意。段階 1 と段階 2a は実装済み。段階 2b 以降はこれから）
+- 状態: Accepted（2026-11-10 に合意。段階 1・2a・2b、段階 3 の Pome による配布は実装済み）
 - 日付: 2026-11-10
 - 対象: Proxmox と mamelet の次に、外部の開発者が書くプロバイダー（AWS など）
 
@@ -200,14 +200,16 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
    - ネイティブを信頼するための明示（`mamela provider trust`、`mamela.trust.toml`）
    - プロバイダー作者向けの適合テスト `provider/providertest`
    - 例のプロバイダー `examples/kv`
-3. **段階 2b（Mamela の流れにつなぐ）**
-   - plan・approve・apply から外部のプロバイダーを使う。Graph が、知らない種類のリソースを運べるようにする
-   - 許可の一度きりを SQLite に記録する
-   - 効果の検証を policy の判定に組み込む
-   - plan の digest に、プロバイダーの実行ファイルの digest とプロトコルの版を加える
-   - 今の Proxmox と mamelet を、この契約の上に移す。Proxmox のカタログを host のカタログにする
+3. **段階 2b（Mamela の流れにつなぐ）: 実装済み**
+   - `mamela-graph/v2`: プロバイダーの種類のリソース（`provider` と、解釈しない spec）
+   - plan: プロバイダーの観測と diff を、スナップショットに記録する（apt のシミュレーションと同じ扱い）。plan は、承認する変更の要求をパラメータまで持つ。プロバイダーのプログラムを SQLite に保存する
+   - apply: plan と同じプログラムを動かす。新しい diff が承認した変更と完全に同じときだけ実行する。許可の一度きりを SQLite に記録する
+   - policy: 効果の検証で判定する（データを失いうる → 拒否、分類できない → 承認、`autoProviderEffects` → 自動）
+   - plan の digest に、プロバイダーの実行ファイルの digest とプロトコルの版を加えた
+   - 残り: 今の Proxmox と mamelet を、この契約の上に移す。Proxmox のカタログを host のカタログにする
 4. **段階 3**
-   - Pome と `provider.lock` による配布と、版の指定
+   - Pome による配布と版の指定: 実装済み。Pome に `mamela-provider.toml` と WASM のプログラムを入れる。`provider.lock` は作らず、Pome.lock と sumdb の hash の鎖をそのまま使う。宣言で import する
+   - 残り: `pome/mamela` v0.2.0 と例のプロバイダーの Pome の公開
 5. **段階 4**
    - AWS（EC2 の VM）。ARN と条件キーによる能力と、セッションポリシーによる最小の付与
    - エディタ向けの `mamela lsp`

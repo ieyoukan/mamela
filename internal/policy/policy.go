@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/v2"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -72,6 +73,9 @@ type Policy struct {
 	// AllowedAptOrigins are the APT origins (prefixes, e.g. "Ubuntu:") packages may be installed
 	// from. A change set with any other origin is denied.
 	AllowedAptOrigins []string `json:"allowedAptOrigins"`
+	// AutoProviderEffects are the effects (from the host's catalog) that a provider's operation
+	// may have and still run without approval. Empty: every provider operation needs approval.
+	AutoProviderEffects []protocol.Effect `json:"autoProviderEffects,omitempty"`
 }
 
 // Default is the conservative policy used when nothing else is configured.
@@ -100,6 +104,27 @@ type Subject struct {
 	// For install-package: whether the change set removes packages, and its origins.
 	Removes bool
 	Origins []string
+}
+
+// DecideProvided decides an operation of a provider from what the host's catalog verifies about
+// the requests it would send, never from what the provider says about them.
+func (p Policy) DecideProvided(v protocol.Verified) Decision {
+	switch {
+	case v.MayLoseData():
+		return Decision{Denied, "MAM-POL-0306", "the host's catalog says a request of this change can destroy data; Mamela never sends it",
+			"change the declaration so that the provider does not need it, or do it by hand"}
+	case len(v.Unclassified) > 0:
+		return Decision{ApprovalRequired, "MAM-POL-0208",
+			fmt.Sprintf("%d of its requests are calls the host's catalog does not know; review the requests before approving", len(v.Unclassified)),
+			"add the API's catalog to the provider's configuration to have them classified"}
+	case len(p.AutoProviderEffects) > 0 && v.AutoApprovable(p.AutoProviderEffects):
+		return Decision{Auto, "MAM-POL-0102", "the policy lets these effects run automatically (autoProviderEffects)", ""}
+	}
+	var es []string
+	for _, e := range v.Effects {
+		es = append(es, string(e))
+	}
+	return Decision{ApprovalRequired, "MAM-POL-0209", "a change through a provider (" + strings.Join(es, ", ") + ")", ""}
 }
 
 // Decide returns the decision for one operation. It is a pure function of the policy and subject.

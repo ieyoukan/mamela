@@ -1,5 +1,6 @@
 ## Mamela: declare the desired state of infrastructure as a graph, and print it as one
-## `mamela-graph/v1` JSON document on standard output.
+## `mamela-graph/v1` JSON document on standard output (`mamela-graph/v2` when it has resources
+## of providers).
 ##
 ## Building a graph is pure. Only `print` uses an effect (`Console`), so evaluating a
 ## declaration cannot touch the network, files, the clock or randomness.
@@ -12,6 +13,9 @@ import Json
 ## The schema written in the `schema` field. The Go side rejects any other value.
 pub const SCHEMA = "mamela-graph/v1"
 
+## The schema of a graph with resources of providers.
+pub const SCHEMA_V2 = "mamela-graph/v2"
+
 ## A virtual machine. `memory_mib` is in MiB and `disk_gib` in GiB.
 pub type Vm(name: String, cpu: Int, memory_mib: Int, disk_gib: Int, image: String)
 
@@ -21,11 +25,34 @@ pub type Package(node: String, name: String)
 ## A systemd service on a node.
 pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 
+## A resource of a provider's kind. A provider's Pome wraps `provided` in typed functions, so
+## that a declaration writes `Kv.item(...)`, not this.
+pub type Provided(provider: String, kind: String, name: String, spec: List[(String, Dynamic)])
+
 ## The desired state. Resources keep the order in which they were added.
-pub opaque type Graph(vms: List[Vm], packages: List[Package], services: List[Service])
+pub opaque type Graph(
+  vms: List[Vm],
+  packages: List[Package],
+  services: List[Service],
+  by_providers: List[Provided],
+)
 
 pub fn empty() -> Graph {
-  Graph(vms: [], packages: [], services: [])
+  Graph(vms: [], packages: [], services: [], by_providers: [])
+}
+
+## Declares a resource of a provider: `kind` is a kind of the provider named `provider`, and
+## `spec` its fields (strings, integers, booleans, lists and objects). Mamela passes the spec to
+## the provider, which says what would change; Mamela checks every request it then sends.
+pub fn provided(
+  graph: Graph,
+  provider: String,
+  kind: String,
+  name: String,
+  spec: List[(String, Dynamic)],
+) -> Graph {
+  r = Provided(provider:, kind:, name:, spec:)
+  Graph(by_providers: List.append(graph.by_providers, [r]), ..graph)
 }
 
 pub fn vm(graph: Graph, vm: Vm) -> Graph {
@@ -89,15 +116,30 @@ fn service_json(s: Service) -> Dynamic {
   )
 }
 
+fn provided_json(p: Provided) -> Dynamic {
+  Dynamic.object(
+    [
+      ("kind", Text(p.kind)),
+      ("name", Text(p.name)),
+      ("provider", Text(p.provider)),
+      ("spec", Dynamic.object(p.spec)),
+    ],
+  )
+}
+
 fn graph_json(graph: Graph) -> Dynamic {
   resources = List.append(
     graph.vms.map(vm_json),
-    List.append(graph.packages.map(package_json), graph.services.map(service_json)),
+    List.append(
+      graph.packages.map(package_json),
+      List.append(graph.services.map(service_json), graph.by_providers.map(provided_json)),
+    ),
   )
-  Dynamic.object([("schema", Text(SCHEMA)), ("resources", Items(resources))])
+  schema = if List.is_empty(graph.by_providers) { SCHEMA } else { SCHEMA_V2 }
+  Dynamic.object([("schema", Text(schema)), ("resources", Items(resources))])
 }
 
-## The `mamela-graph/v1` JSON text of `graph`, written by `x/json`: no whitespace, and object
+## The `mamela-graph/v1` (or v2) JSON text of `graph`, written by `x/json`: no whitespace, and object
 ## keys in sorted order (the order of `Map`).
 pub fn to_json(graph: Graph) -> String {
   Json.to_string(graph_json(graph))

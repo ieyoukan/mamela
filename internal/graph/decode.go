@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -22,9 +23,10 @@ type wireGraph struct {
 }
 
 type wireResource struct {
-	Kind *string        `json:"kind"`
-	Name *string        `json:"name"`
-	Spec jsontext.Value `json:"spec"`
+	Kind     *string        `json:"kind"`
+	Name     *string        `json:"name"`
+	Provider *string        `json:"provider"`
+	Spec     jsontext.Value `json:"spec"`
 }
 
 type wireVirtualMachine struct {
@@ -68,9 +70,9 @@ func Decode(data []byte) (*Graph, error) {
 		return nil, single(CodeMissingField, "/schema", "the document has no \"schema\" member",
 			fmt.Sprintf("the first member should be \"schema\":%q", Schema))
 	}
-	if *w.Schema != Schema {
+	if *w.Schema != Schema && *w.Schema != SchemaV2 {
 		return nil, single(CodeUnknownSchema, "/schema",
-			fmt.Sprintf("schema %q is not supported; this Mamela reads %q", *w.Schema, Schema),
+			fmt.Sprintf("schema %q is not supported; this Mamela reads %q and %q", *w.Schema, Schema, SchemaV2),
 			"use a Mamela Pome that matches this version of Mamela")
 	}
 	if w.Resources == nil {
@@ -84,6 +86,12 @@ func Decode(data []byte) (*Graph, error) {
 	var problems []Problem
 	g := &Graph{Resources: make([]Resource, 0, len(*w.Resources))}
 	for i, wr := range *w.Resources {
+		if wr.Provider != nil && *w.Schema == Schema {
+			problems = append(problems, Problem{Code: CodeNeedsV2, Path: fmt.Sprintf("/resources/%d/provider", i),
+				Message: "a resource of a provider needs schema " + SchemaV2,
+				Hint:    "use a Mamela Pome that writes " + SchemaV2})
+			continue
+		}
 		r, ps := decodeResource(i, wr)
 		problems = append(problems, ps...)
 		if r != nil {
@@ -128,6 +136,19 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		}
 	}
 
+	if wr.Provider != nil {
+		spec, err := providedSpec(wr.Spec)
+		if err != nil {
+			return nil, []Problem{{Code: CodeWrongType, Path: where + " spec", Message: err.Error(),
+				Hint: "the spec of a provider's resource is a JSON object; numbers must be integers"}}
+		}
+		if _, builtin := kindOrder[r.Kind]; builtin {
+			return nil, []Problem{{Code: CodeUnknownKind, Path: at + "/kind",
+				Message: fmt.Sprintf("%s is a built-in kind; a provider cannot declare it", r.Kind)}}
+		}
+		r.Provided = &ProvidedSpec{Provider: *wr.Provider, Spec: spec}
+		return r, nil
+	}
 	switch r.Kind {
 	case KindVirtualMachine:
 		var s wireVirtualMachine
@@ -167,12 +188,53 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 	default:
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
 			Message: fmt.Sprintf("kind %q is not known", r.Kind),
-			Hint:    "known kinds are VirtualMachine, NodePackage and NodeService"})
+			Hint:    "known kinds are VirtualMachine, NodePackage and NodeService; a provider's kind needs its \"provider\""})
 	}
 	if len(problems) > 0 {
 		return nil, problems
 	}
 	return r, nil
+}
+
+// maxSpecDepth bounds the nesting of a provider's spec.
+const maxSpecDepth = 32
+
+// providedSpec checks a provider's spec (a JSON object of strings, integers, booleans, arrays and
+// objects, no null, no duplicate member) and returns its canonical form.
+func providedSpec(v jsontext.Value) ([]byte, error) {
+	dec := jsontext.NewDecoder(strings.NewReader(string(v)))
+	depth := 0
+	for first := true; ; first = false {
+		tok, err := dec.ReadToken()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if first && tok.Kind() != '{' {
+			return nil, errors.New("the spec is not a JSON object")
+		}
+		switch tok.Kind() {
+		case '{', '[':
+			if depth++; depth > maxSpecDepth {
+				return nil, fmt.Errorf("the spec is nested deeper than %d", maxSpecDepth)
+			}
+		case '}', ']':
+			depth--
+		case 'n':
+			return nil, errors.New("the spec has a null")
+		case '0':
+			if strings.ContainsAny(tok.String(), ".eE") {
+				return nil, fmt.Errorf("the spec has a number %s that is not an integer", tok.String())
+			}
+		}
+	}
+	out := jsontext.Value(append([]byte(nil), v...))
+	if err := out.Canonicalize(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func problemsOf(err error) []Problem {

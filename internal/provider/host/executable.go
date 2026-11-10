@@ -85,8 +85,19 @@ func Inspect(path string) (Executable, error) {
 	if len(data) > maxExecutable {
 		return Executable{}, &Error{Code: CodeExecutable, Message: fmt.Sprintf("%s is larger than %d MiB", path, maxExecutable>>20)}
 	}
+	return InspectBytes(path, data)
+}
+
+// InspectBytes inspects a provider program held in memory (one stored with a plan). name is
+// for messages; a native program inspected this way runs only when trusted, like any other.
+func InspectBytes(name string, data []byte) (Executable, error) {
+	path := name
+	if len(data) > maxExecutable {
+		return Executable{}, &Error{Code: CodeExecutable, Message: fmt.Sprintf("%s is larger than %d MiB", path, maxExecutable>>20)}
+	}
 	sum := sha256.Sum256(data)
 	exe := Executable{Path: path, Digest: "sha256:" + hex.EncodeToString(sum[:]), data: data}
+	var err error
 	var policy component.Policy
 	switch {
 	case component.IsCoreModule(data):

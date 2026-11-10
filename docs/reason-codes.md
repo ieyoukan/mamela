@@ -40,6 +40,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0008 | 同じメンバーが 2 回ある |
 | MAM-GRAPH-0009 | 文書の後にデータが続いている |
 | MAM-GRAPH-0010 | リソースが多すぎる |
+| MAM-GRAPH-0011 | プロバイダーのリソース（`provider` を持つリソース）が `mamela-graph/v1` の文書にある（v2 が要る） |
 
 ## MAM-GRAPH — Graph の意味
 
@@ -57,6 +58,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | コード | 判定 | 意味 |
 |---|---|---|
 | MAM-POL-0101 | Auto | `autoStartServices` にあるサービスの起動（ドリフト修復） |
+| MAM-POL-0102 | Auto | プロバイダーの変更で、host のカタログが分類した効果がすべて policy の `autoProviderEffects` にある |
 | MAM-POL-0201 | ApprovalRequired | VM の作成 |
 | MAM-POL-0202 | ApprovalRequired | VM の CPU / メモリの変更 |
 | MAM-POL-0203 | ApprovalRequired | ディスクの拡張 |
@@ -64,11 +66,14 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0205 | ApprovalRequired | サービスの有効化 |
 | MAM-POL-0206 | ApprovalRequired | サービスの起動（自動起動が許可されていない） |
 | MAM-POL-0207 | ApprovalRequired | サービスの停止・無効化 |
+| MAM-POL-0208 | ApprovalRequired | プロバイダーの変更に、host のカタログが知らない呼び出しの要求がある（要求をレビューする） |
+| MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0301 | Denied | ディスクの縮小 |
 | MAM-POL-0302 | Denied | イメージの変更（VM の置き換えになる） |
 | MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更 |
 | MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
 | MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
+| MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 
 ## MAM-PLAN — 計画の状態
@@ -81,8 +86,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0104 | Agent からのサービスの報告を待つ |
 | MAM-PLAN-0105 | mamelet が、インストールで何が変わるか（apt-get -s）を報告するのを待つ |
 | MAM-PLAN-0106 | サービスの unit がまだない（パッケージが入っていない）ので待つ |
+| MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
+| MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 宣言から消えたが、削除せず保持する（Retain） |
 
 ## MAM-REC — 実行

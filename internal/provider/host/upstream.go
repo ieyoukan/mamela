@@ -38,8 +38,8 @@ type HTTP struct {
 
 // Do implements Upstream.
 func (h HTTP) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
-	if !strings.HasPrefix(h.Base, "https://") {
-		return 0, nil, fmt.Errorf("%w: the API base must be https", ErrNotSent)
+	if err := CheckBase(h.Base); err != nil {
+		return 0, nil, fmt.Errorf("%w: %v", ErrNotSent, err)
 	}
 	req, err := newRequest(ctx, h.Base, r)
 	if err != nil {
@@ -71,6 +71,22 @@ func (h HTTP) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, erro
 		return resp.StatusCode, nil, fmt.Errorf("a response larger than %d MiB", maxResponse>>20)
 	}
 	return resp.StatusCode, body, nil
+}
+
+// CheckBase accepts an https API base, or http on the loopback interface only (a local API, as
+// in development): credentials never cross a network in clear text.
+func CheckBase(base string) error {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("API base %q is not a plain URL", base)
+	}
+	switch {
+	case u.Scheme == "https":
+		return nil
+	case u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost"):
+		return nil
+	}
+	return fmt.Errorf("API base %q must be https (http only on 127.0.0.1, ::1 or localhost)", base)
 }
 
 func newRequest(ctx context.Context, base string, r protocol.HostRequest) (*http.Request, error) {

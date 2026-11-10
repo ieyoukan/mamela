@@ -18,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // Status summarizes one resource in the plan.
@@ -73,6 +74,11 @@ type Change struct {
 	// Verdict is the strictest decision among the operations; empty when there are none.
 	Verdict policy.Verdict `json:"verdict,omitempty"`
 	Note    *Note          `json:"note,omitempty"`
+	// Provider is set for a resource of a provider's kind.
+	Provider string `json:"provider,omitempty"`
+	// ProviderChanges are the provider's changes, one per operation, with exactly the requests
+	// each sends: approving the plan approves these and nothing else.
+	ProviderChanges []protocol.Change `json:"providerChanges,omitempty"`
 }
 
 // ID is the resource identity ("Kind name").
@@ -110,6 +116,10 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.pkg(r))
 		case graph.KindNodeService:
 			p.Changes = append(p.Changes, b.service(r))
+		default:
+			if r.Provided != nil {
+				p.Changes = append(p.Changes, b.provided(r))
+			}
 		}
 	}
 	// Managed VMs that are no longer declared are kept: removal is not deletion.
@@ -121,8 +131,74 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 					Hint: "delete it by hand if it is no longer needed"}})
 		}
 	}
+	// The same for the resources of providers: a provider reports what Mamela created.
+	declared := map[string]bool{}
+	for _, r := range g.Resources {
+		declared[r.ID()] = true
+	}
+	for _, id := range slices.Sorted(maps.Keys(snap.Provided)) {
+		if o := snap.Provided[id]; !o.Declared && !declared[id] && o.Observed.Exists && o.Observed.Owned {
+			p.Changes = append(p.Changes, Change{Kind: o.Kind, Name: o.Name, Status: StatusRetained, Provider: o.Provider,
+				Diffs: []Diff{}, Operations: []Operation{},
+				Note: &Note{Code: "MAM-PLAN-0301", Message: "removed from the declaration; Mamela keeps it and never deletes it",
+					Hint: "delete it by hand if it is no longer needed"}})
+		}
+	}
 	p.Digest = digest(p)
 	return p
+}
+
+// provided plans a resource of a provider from the provider's observation and diff.
+func (b builder) provided(r graph.Resource) Change {
+	c := newChange(r)
+	c.Provider = r.Provided.Provider
+	got, observed := b.snap.Provided[r.ID()]
+	switch {
+	case !observed || got.Provider != r.Provided.Provider || !got.Declared:
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0107",
+			Message: fmt.Sprintf("provider %s has not observed it", r.Provided.Provider),
+			Hint:    "plan with the declaration's Pome so that its providers observe (mamela plan <pome-dir>)"}
+		return c
+	case got.SpecDigest != state.SpecDigest(r.Provided.Spec):
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0203",
+			Message: "the provider's changes were computed for another declaration of it",
+			Hint:    "observe again (make the plan again)"}
+		return c
+	case b.stale(got.ObservedAt):
+		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
+		return c
+	case got.Observed.Exists && !got.Observed.Owned:
+		return b.withOps(c, policy.Subject{Op: policy.OpChangeForeign})
+	}
+	if len(got.Changes) == 0 {
+		return b.withOps(c)
+	}
+	c.Status, c.Verdict = StatusChange, policy.Auto
+	for _, pc := range got.Changes {
+		for _, reason := range pc.Change.Reasons {
+			c.Diffs = append(c.Diffs, Diff{Field: string(pc.Change.Op), To: reason})
+		}
+		d := b.pol.DecideProvided(pc.Verified)
+		c.Operations = append(c.Operations, Operation{Op: pc.Change.Op, Decision: d})
+		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
+		c.ProviderChanges = append(c.ProviderChanges, pc.Change)
+	}
+	return c
+}
+
+// SameProviderChanges reports whether every change of fresh is one of approved, exactly: the
+// same operation, objects, requests and precondition.
+func SameProviderChanges(fresh, approved []protocol.Change) bool {
+	for _, f := range fresh {
+		fj, _ := json.Marshal(f, json.Deterministic(true))
+		if !slices.ContainsFunc(approved, func(a protocol.Change) bool {
+			aj, _ := json.Marshal(a, json.Deterministic(true))
+			return string(aj) == string(fj)
+		}) {
+			return false
+		}
+	}
+	return true
 }
 
 type builder struct {

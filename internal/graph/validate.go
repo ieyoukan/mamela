@@ -24,6 +24,10 @@ var (
 	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,254}$`)
 	// An image reference such as "ubuntu-24.04".
 	imageRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
+	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
+	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
+	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 )
 
 // Validate checks the meaning of a decoded graph: names, ranges, references and duplicates.
@@ -52,6 +56,21 @@ func Validate(g *Graph) error {
 	}
 
 	for _, r := range g.Resources {
+		if p := r.Provided; p != nil {
+			if !providedKindRe.MatchString(string(r.Kind)) {
+				add(r, CodeInvalidName, "kind", fmt.Sprintf("kind %q is not a valid kind name", r.Kind),
+					"a kind is an uppercase letter and up to 63 letters and digits, such as \"KVItem\"")
+			}
+			if !providerNameRe.MatchString(p.Provider) {
+				add(r, CodeInvalidName, "provider", fmt.Sprintf("provider %q is not a valid provider name", p.Provider),
+					"a provider name is lowercase letters, digits and '-'")
+			}
+			if !providedNameRe.MatchString(r.Name) {
+				add(r, CodeInvalidName, "name", fmt.Sprintf("name %q is not a valid resource name", r.Name),
+					"use letters, digits and '.', '_', ':', '@', '-', starting with a letter or digit")
+			}
+			continue
+		}
 		switch r.Kind {
 		case KindVirtualMachine:
 			s := r.VirtualMachine

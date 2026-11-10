@@ -1,0 +1,10 @@
+{
+  "api": "kv-example/v1",
+  "entries": [
+    {"method": "GET", "path": "/items", "effect": "read"},
+    {"method": "GET", "path": "/items/{item}", "effect": "read"},
+    {"method": "PUT", "path": "/items/{item}", "effect": "change", "form": ["value", "owner", "version"], "precondition": "version"},
+    {"method": "PUT", "path": "/items/{item}/labels", "effect": "change", "form": ["labels"]},
+    {"method": "DELETE", "path": "/items/{item}", "effect": "lose-data"}
+  ]
+}

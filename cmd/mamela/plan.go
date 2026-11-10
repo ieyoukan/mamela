@@ -39,6 +39,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	replay := fs.String("replay", "", "recompute a stored plan by digest and check that it is unchanged")
 	tf := addToolFlags(fs)
 	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
+	providersFile := addProvidersFlag(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
 			"Shows what would change, why, and what needs approval. Saves the plan so it can be approved.\n"+
@@ -87,6 +88,15 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err)
 	}
+	// The providers the declaration imports (its Pome's dependencies), running isolated.
+	rt, err := startProviders(ctx, fs.Arg(0), t, *providersFile)
+	if err != nil {
+		return report(stderr, err)
+	}
+	defer rt.Close()
+	if err := rt.CheckGraph(res.Graph); err != nil {
+		return report(stderr, err)
+	}
 
 	snap := state.Empty(wallClock())
 	if *snapshotFile != "" && *sitePath != "" {
@@ -129,8 +139,19 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
 		}
 	}
-	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().Digest())
+	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
+	if err != nil {
+		return report(stderr, err)
+	}
+	if len(provided) > 0 {
+		snap.Provided = provided
+	}
+	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
 	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
+		return report(stderr, err)
+	}
+	// The programs the plan was made with: apply runs exactly these.
+	if err := st.SavePlanPrograms(ctx, p.Digest, rt.Programs()); err != nil {
 		return report(stderr, err)
 	}
 	if *sitePath != "" {

@@ -16,6 +16,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/provider/pve"
 	"github.com/ieyoukan/mamela/internal/reconcile"
@@ -23,19 +24,24 @@ import (
 	"github.com/ieyoukan/mamela/internal/store"
 )
 
-// runApply carries out an approved plan on the lab: preflight, reconcile, postflight.
+// runApply carries out an approved plan: through the providers the plan was made with and, when it
+// changes VMs or what runs on them, on the lab (preflight, reconcile, postflight).
 func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
-	sitePath := fs.String("site", envOr("MAMELA_LAB_SITE", "lab/site.local.toml"), "lab site definition")
+	sitePath := fs.String("site", envOr("MAMELA_LAB_SITE", "lab/site.local.toml"), "lab site definition (needed when the plan changes VMs or what runs on them)")
 	imageCache := fs.String("image-cache", defaultImageCache(), "directory of downloaded, verified cloud images")
 	baseline := fs.String("baseline", ".mamela/lab-baseline.json", "where to record the guests outside the lab before applying")
+	providersFile := addProvidersFlag(fs)
+	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela apply [flags] <plan-digest>\n\n"+
-			"Carries out an approved plan on the lab Proxmox (docs/lab.md). It runs the read-only preflight first and\n"+
-			"stops if anything blocks, observes again and changes only what the plan expected, then checks with the\n"+
-			"postflight that nothing outside the lab changed. Denied operations never run.\n\nFlags:\n")
+			"Carries out an approved plan. Resources of providers go through the providers the plan was made with\n"+
+			"(the same programs, stored with the plan), each change under a permit for exactly its approved requests.\n"+
+			"Changes to VMs and what runs on them go to the lab Proxmox (docs/lab.md): the read-only preflight runs\n"+
+			"first and stops if anything blocks, and the postflight checks that nothing outside the lab changed.\n"+
+			"The world is observed again first, and only what the plan expected is changed. Denied operations never run.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -45,16 +51,12 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fs.Usage()
 		return 2
 	}
-	site, err := lab.LoadSite(*sitePath)
-	if err != nil {
-		return report(stderr, err)
-	}
 	st, err := openStore(ctx, *db)
 	if err != nil {
 		return report(stderr, err)
 	}
 	defer st.Close()
-	p, _, err := st.LoadPlan(ctx, fs.Arg(0))
+	p, in, err := st.LoadPlan(ctx, fs.Arg(0))
 	if errors.Is(err, store.ErrNotFound) {
 		fmt.Fprintf(stderr, "no plan %s in %s\n", fs.Arg(0), *db)
 		return 1
@@ -63,7 +65,48 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "MAM-REC-0001: %v\n  hint: the stored plan or its inputs changed; do not apply it, make a new plan\n", err)
 		return 1
 	}
+	programs, err := st.PlanPrograms(ctx, p.Digest)
+	if err != nil {
+		return report(stderr, err)
+	}
+	var rt *external.Runtime
+	if len(programs) > 0 {
+		t, err := tf.find()
+		if err != nil {
+			return report(stderr, err)
+		}
+		if rt, err = startPrograms(ctx, programs, t, *providersFile); err != nil {
+			return report(stderr, err)
+		}
+		defer rt.Close()
+	}
+	siteGiven := false
+	fs.Visit(func(f *flag.Flag) { siteGiven = siteGiven || f.Name == "site" })
+	if !builtinChanges(p) && !siteGiven && os.Getenv("MAMELA_LAB_SITE") == "" {
+		// Only resources of providers: no lab involved.
+		host, _ := os.Hostname()
+		var site *lab.Site
+		digest := site.Providers().DigestWith(rt.Refs())
+		prov := &external.Provider{Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
+		rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: time.Hour, Providers: digest}
+		fmt.Fprintf(stdout, "== apply %s\n", p.Digest)
+		rep, applyErr := rec.Apply(ctx, p.Digest)
+		if rep != nil {
+			printReport(stdout, rep)
+		}
+		switch {
+		case applyErr != nil:
+			return report(stderr, applyErr)
+		case rep.Stopped != nil:
+			return 1
+		}
+		return 0
+	}
 
+	site, err := lab.LoadSite(*sitePath)
+	if err != nil {
+		return report(stderr, err)
+	}
 	audit, err := labClient(site, site.Proxmox.AuditTokenID, site.Proxmox.AuditTokenSecretFile)
 	if err != nil {
 		return report(stderr, err)
@@ -95,13 +138,18 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 
 	// 2. Reconcile.
 	fmt.Fprintf(stdout, "\n== apply %s\n", p.Digest)
-	prov, err := labProvider(site, operating, st, *imageCache, true)
+	labProv, err := labProvider(site, operating, st, *imageCache, true)
 	if err != nil {
 		return report(stderr, err)
 	}
+	digest := site.Providers().DigestWith(rt.Refs())
+	var prov reconcile.Provider = labProv
+	if rt != nil {
+		prov = &external.Provider{Base: labProv, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
+	}
 	host, _ := os.Hostname()
 	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour,
-		Providers: site.Providers().Digest()}
+		Providers: digest}
 	rep, applyErr := rec.Apply(ctx, p.Digest)
 	if rep != nil {
 		printReport(stdout, rep)
@@ -126,6 +174,16 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	return 0
+}
+
+// builtinChanges reports whether the plan changes anything of the built-in kinds (the lab).
+func builtinChanges(p *plan.Plan) bool {
+	for _, c := range p.Changes {
+		if c.Provider == "" && c.Status == plan.StatusChange {
+			return true
+		}
+	}
+	return false
 }
 
 // creates counts the VMs the plan would create.

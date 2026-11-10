@@ -38,6 +38,7 @@ var ErrPartlyDone = errors.New("partly done")
 // Step is one operation handed to a provider.
 type Step struct {
 	OperationID string // stable idempotency key: the same plan, resource and operation give the same ID
+	PlanDigest  string
 	Op          policy.Op
 	Resource    graph.Resource // the desired resource
 	// Approved is the resource's change in the approved plan. A provider acts on what was approved
@@ -224,7 +225,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				return rep, nil
 			}
 			r.event(ctx, planDigest, id, "started", fmt.Sprintf("%s started (operation %s)", op.Op, opID))
-			applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, Op: op.Op, Resource: desired[id], Approved: c})
+			applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, PlanDigest: planDigest, Op: op.Op, Resource: desired[id], Approved: c})
 			switch {
 			case applyErr == nil:
 				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageSucceeded, ""); err != nil {
@@ -298,6 +299,11 @@ func findChange(p *plan.Plan, id string) (plan.Change, bool) {
 // change. Anything new or different means the plan must be made again.
 func partOf(fresh, approved plan.Change) bool {
 	if fresh.Status != approved.Status || len(fresh.Operations) == 0 {
+		return false
+	}
+	// A provider's change must still be exactly an approved one: the same requests, objects and
+	// precondition. Anything else (a new version of the object, other values) needs a new plan.
+	if fresh.Provider != approved.Provider || !plan.SameProviderChanges(fresh.ProviderChanges, approved.ProviderChanges) {
 		return false
 	}
 	for _, d := range fresh.Diffs {

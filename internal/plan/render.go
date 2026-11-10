@@ -3,6 +3,8 @@ package plan
 import (
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,7 +32,11 @@ func Render(w io.Writer, p *Plan) {
 		if c.Status == StatusChange && len(c.Diffs) > 0 && allFromEmpty(c.Diffs) {
 			sym = "+"
 		}
-		fmt.Fprintf(w, "%s %s %s  [%s]\n", sym, c.Kind, c.Name, label(c))
+		via := ""
+		if c.Provider != "" {
+			via = "  via " + c.Provider
+		}
+		fmt.Fprintf(w, "%s %s %s  [%s]%s\n", sym, c.Kind, c.Name, label(c), via)
 		for _, d := range c.Diffs {
 			if d.From == "" {
 				fmt.Fprintf(w, "      %s: %s\n", d.Field, d.To)
@@ -42,6 +48,19 @@ func Render(w io.Writer, p *Plan) {
 			fmt.Fprintf(w, "    %s: %s (%s %s)\n", op.Op, verdictText(op.Decision.Verdict), op.Decision.Code, op.Decision.Message)
 			if op.Decision.Hint != "" {
 				fmt.Fprintf(w, "      hint: %s\n", op.Decision.Hint)
+			}
+			// What approving approves, exactly: the objects and every request with its parameters.
+			for _, pc := range c.ProviderChanges {
+				if pc.Op != op.Op {
+					continue
+				}
+				fmt.Fprintf(w, "      objects: %s\n", formatMap(pc.IDs))
+				if pc.Precondition != "" {
+					fmt.Fprintf(w, "      based on version %s\n", pc.Precondition)
+				}
+				for _, r := range pc.Requests {
+					fmt.Fprintf(w, "      sends %s %s %s\n", r.Method, r.Path, formatParams(r.Params))
+				}
 			}
 		}
 		if c.Note != nil {
@@ -117,6 +136,25 @@ func summaryLabel(k string, n int) string {
 		return "in sync"
 	}
 	return k
+}
+
+func formatMap(m map[string]string) string {
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, k+"="+m[k])
+	}
+	return strings.Join(out, " ")
+}
+
+func formatParams(ps map[string][]string) string {
+	if len(ps) == 0 {
+		return "(no parameters)"
+	}
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(ps)) {
+		out = append(out, k+"="+strings.Join(ps[k], ","))
+	}
+	return strings.Join(out, " ")
 }
 
 func allFromEmpty(ds []Diff) bool {

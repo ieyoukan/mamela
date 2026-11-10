@@ -120,3 +120,14 @@ func reply(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	json.MarshalWrite(w, v, json.Deterministic(true))
 }
+
+// RequireToken answers 401 to a request without "Authorization: Bearer <token>".
+func RequireToken(token string, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			reply(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
+}

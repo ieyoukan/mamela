@@ -3,6 +3,7 @@ package graph
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"sort"
 )
@@ -15,9 +16,10 @@ type canonGraph struct {
 }
 
 type canonResource struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
-	Spec any    `json:"spec"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+	Spec     any    `json:"spec"`
 }
 
 type canonVirtualMachine struct {
@@ -40,25 +42,53 @@ type canonNodeService struct {
 	Service string `json:"service"`
 }
 
-// Sorted returns the resources in canonical order: by kind (nodes first), then by name.
-// Declaration order carries no meaning, so reordering a declaration does not change the digest.
+// Sorted returns the resources in canonical order: by kind (nodes first, then the providers'
+// kinds by name), then by name. Declaration order carries no meaning, so reordering a declaration
+// does not change the digest.
 func (g *Graph) Sorted() []Resource {
 	rs := append([]Resource(nil), g.Resources...)
+	order := func(k Kind) int {
+		if o, ok := kindOrder[k]; ok {
+			return o
+		}
+		return len(kindOrder)
+	}
 	sort.SliceStable(rs, func(i, j int) bool {
-		if kindOrder[rs[i].Kind] != kindOrder[rs[j].Kind] {
-			return kindOrder[rs[i].Kind] < kindOrder[rs[j].Kind]
+		if oi, oj := order(rs[i].Kind), order(rs[j].Kind); oi != oj {
+			return oi < oj
+		}
+		if rs[i].Kind != rs[j].Kind {
+			return rs[i].Kind < rs[j].Kind
 		}
 		return rs[i].Name < rs[j].Name
 	})
 	return rs
 }
 
-// Canonical returns the canonical mamela-graph/v1 encoding: resources in canonical order,
+// HasProvided reports whether the graph has resources of providers (and is then v2).
+func (g *Graph) HasProvided() bool {
+	for _, r := range g.Resources {
+		if r.Provided != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// Canonical returns the canonical encoding (mamela-graph/v1, or v2 with providers' resources): resources in canonical order,
 // object keys sorted, no whitespace, no trailing newline.
 func (g *Graph) Canonical() []byte {
 	cg := canonGraph{Schema: Schema, Resources: []canonResource{}}
+	if g.HasProvided() {
+		cg.Schema = SchemaV2
+	}
 	for _, r := range g.Sorted() {
 		cr := canonResource{Kind: string(r.Kind), Name: r.Name}
+		if p := r.Provided; p != nil {
+			cr.Provider, cr.Spec = p.Provider, jsontext.Value(p.Spec)
+			cg.Resources = append(cg.Resources, cr)
+			continue
+		}
 		switch r.Kind {
 		case KindVirtualMachine:
 			s := r.VirtualMachine

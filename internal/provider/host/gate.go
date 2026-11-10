@@ -89,7 +89,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 		g.used[approved] = true
 	}
 	if g.upstream == nil {
-		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider"
+		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider (its section in mamela.providers.toml)"
 		g.record = append(g.record, rec)
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: rec.Reason}
 	}

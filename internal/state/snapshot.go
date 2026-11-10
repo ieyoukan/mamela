@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/noderev"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // Snapshot is a time-stamped view of the observed world.
@@ -24,6 +25,38 @@ type Snapshot struct {
 	Packages map[string]Package `json:"packages"`
 	// Services by "<node>/<service>". Absent means "not observed".
 	Services map[string]Service `json:"services"`
+	// Provided are resources of providers, by graph ID ("KVItem web"): the declared ones and
+	// those a provider found that Mamela created and that are no longer declared.
+	Provided map[string]Provided `json:"provided,omitempty"`
+}
+
+// Provided is what a provider observed of one resource, and the changes its diff computed from
+// that observation for the declared spec. Like an apt simulation of a package, the changes are
+// part of the observation: a plan is computed from them, and approving the plan approves exactly
+// these requests.
+type Provided struct {
+	Provider string                `json:"provider"`
+	Kind     protocol.ResourceKind `json:"kind"`
+	Name     string                `json:"name"`
+	Declared bool                  `json:"declared"`
+	Observed protocol.Observed     `json:"observed"`
+	// SpecDigest identifies the declared spec the changes were computed for (SpecDigest()).
+	SpecDigest string           `json:"specDigest,omitempty"`
+	Changes    []ProvidedChange `json:"changes,omitempty"`
+	ObservedAt time.Time        `json:"observedAt"`
+}
+
+// ProvidedChange is one change a provider's diff computed, with what the host's catalog verifies
+// about its requests (computed by Mamela, not by the provider).
+type ProvidedChange struct {
+	Change   protocol.Change   `json:"change"`
+	Verified protocol.Verified `json:"verified"`
+}
+
+// SpecDigest identifies a provider's spec (canonical JSON).
+func SpecDigest(spec []byte) string {
+	sum := sha256.Sum256(spec)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // VM is an observed virtual machine.
@@ -91,6 +124,13 @@ func (s Snapshot) normalized() Snapshot {
 	for k, v := range s.Services {
 		v.ObservedAt = v.ObservedAt.UTC()
 		n.Services[k] = v
+	}
+	if len(s.Provided) > 0 {
+		n.Provided = map[string]Provided{}
+		for k, v := range s.Provided {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.Provided[k] = v
+		}
 	}
 	return n
 }
