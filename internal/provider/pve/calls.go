@@ -82,6 +82,8 @@ func Manifest(withSeed bool) spec.Manifest {
 		k.Operations = append(k.Operations, spec.Operation{Op: op, Support: spec.Unsupported,
 			Why: "it can destroy data (the policy denies it)"})
 	}
+	k.Operations = append(k.Operations, spec.Operation{Op: policy.OpChangeVMNetwork, Support: spec.Unsupported,
+		Why: "a VM gets its network only when it is created (the policy denies changing it)"})
 	m.Kinds = []spec.Kind{k}
 	return m
 }

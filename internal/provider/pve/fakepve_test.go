@@ -532,7 +532,7 @@ func (f *fakePVE) createAllowed(w http.ResponseWriter, form url.Values) bool {
 	groups := map[string]string{"name": "VM.Config.Options", "description": "VM.Config.Options", "ostype": "VM.Config.Options",
 		"onboot": "VM.Config.Options", "agent": "VM.Config.Options", "cores": "VM.Config.CPU", "memory": "VM.Config.Memory",
 		"scsihw": "VM.Config.HWType", "vga": "VM.Config.HWType", "boot": "VM.Config.Disk", "net0": "VM.Config.Network",
-		"ciuser": "VM.Config.Cloudinit", "sshkeys": "VM.Config.Cloudinit", "serial0": "VM.Config.HWType"}
+		"ciuser": "VM.Config.Cloudinit", "sshkeys": "VM.Config.Cloudinit", "nameserver": "VM.Config.Cloudinit", "serial0": "VM.Config.HWType"}
 	for k := range form {
 		switch {
 		case k == "vmid" || k == "pool" || k == "tags" || k == "scsi0" || k == "ide2":

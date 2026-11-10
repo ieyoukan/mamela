@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
@@ -147,6 +149,16 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		snap.Provided = provided
 	}
 	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
+	if site != nil {
+		// A VM the site would refuse to create is refused here, before anyone approves it.
+		if refused := siteRefusals(site, p, res.Graph); len(refused) > 0 {
+			for _, r := range refused {
+				fmt.Fprintf(stderr, "LAB-0304: %s\n", r)
+			}
+			fmt.Fprintf(stderr, "  hint: declare an address in the site's network.static_first..static_last, or Dhcp if network.dhcp allows it (%s)\n", *sitePath)
+			return 1
+		}
+	}
 	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
 		return report(stderr, err)
 	}
@@ -212,4 +224,22 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run\n", denied, plural(denied), choose(denied == 1, "is", "are"))
 	}
 	return 0
+}
+
+// siteRefusals says which VMs the plan would create with a network the site does not allow.
+func siteRefusals(site *lab.Site, p *plan.Plan, g *graph.Graph) []string {
+	var out []string
+	for _, c := range p.Changes {
+		if c.Kind != graph.KindVirtualMachine || !slices.ContainsFunc(c.Operations, func(o plan.Operation) bool { return o.Op == policy.OpCreateVM }) {
+			continue
+		}
+		for _, r := range g.Resources {
+			if r.Kind == graph.KindVirtualMachine && r.Name == c.Name {
+				if err := site.Allows(r.Name, r.VirtualMachine.Network); err != nil {
+					out = append(out, err.Error())
+				}
+			}
+		}
+	}
+	return out
 }

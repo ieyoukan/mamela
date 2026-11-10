@@ -44,13 +44,15 @@ const (
 	OpGrowVMDisk     Op = "grow-vm-disk"
 	OpShrinkVMDisk   Op = "shrink-vm-disk"
 	OpReplaceVMImage Op = "replace-vm-image"
-	OpChangeForeign  Op = "change-foreign"
-	OpInstallPackage Op = "install-package"
-	OpEnableService  Op = "enable-service"
-	OpDisableService Op = "disable-service"
-	OpStartService   Op = "start-service"
-	OpStopService    Op = "stop-service"
-	OpInstallK3s     Op = "install-k3s"
+	// OpChangeVMNetwork changes the network a VM was created with.
+	OpChangeVMNetwork Op = "change-vm-network"
+	OpChangeForeign   Op = "change-foreign"
+	OpInstallPackage  Op = "install-package"
+	OpEnableService   Op = "enable-service"
+	OpDisableService  Op = "disable-service"
+	OpStartService    Op = "start-service"
+	OpStopService     Op = "stop-service"
+	OpInstallK3s      Op = "install-k3s"
 )
 
 // Code is a stable reason code for a decision.
@@ -171,6 +173,9 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpReplaceVMImage:
 		return Decision{Denied, "MAM-POL-0302", "changing the image would mean replacing the VM and its data; Mamela never does it",
 			"declare a new VM with the new image, move the workload, then retire the old VM by hand"}
+	case OpChangeVMNetwork:
+		return Decision{Denied, "MAM-POL-0307", "a VM gets its network once, when it is created; changing it in place could cut it off the network, so Mamela never does it",
+			"declare a new VM with the new network and move the workload, or restore the declared network"}
 	case OpChangeForeign:
 		return Decision{Denied, "MAM-POL-0303", "the resource exists but Mamela did not create it (Foreign); Mamela never changes it",
 			"rename the declaration, or adopt the resource by hand"}

@@ -68,7 +68,7 @@ func TestEvalSummary(t *testing.T) {
 	}
 	for _, want := range []string{
 		"3 resources",
-		"sha256:d108bb2c17f95992ec7b6082f65ad9849fc2fd21f39be45b735ce18df41c2ad4",
+		"sha256:106ce1583fdfaf00e799f2ad39ebe7c94932c4856ca0a276c388c3a9a8ddd34c",
 		"evaluated twice, same digest",
 		"emela " + evaluate.PinnedEmela + ", wasmtime " + evaluate.PinnedWasmtime,
 		"VirtualMachine  app-server",

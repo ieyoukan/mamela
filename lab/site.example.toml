@@ -41,6 +41,14 @@ max_vcpu_per_vm = 1
 max_memory_mib_per_vm = 1024
 max_disk_gib_per_vm = 10
 
+[network]
+# How lab VMs may get their IPv4 address. Both are explicit.
+dhcp = true                               # VMs declared with Dhcp get their address from the LAN's DHCP
+# Optional: the range set aside for the lab's static addresses (VMs declared with Static(...)).
+# It must be outside the DHCP server's pool and every address in use on the LAN.
+static_first = "10.0.0.40"
+static_last = "10.0.0.49"
+
 [safety]
 # Host MemAvailable minus the new VM's memory must stay above this.
 min_host_mem_available_mib = 2048

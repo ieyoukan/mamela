@@ -172,7 +172,7 @@ func describe(r graph.Resource) string {
 	switch r.Kind {
 	case graph.KindVirtualMachine:
 		s := r.VirtualMachine
-		return fmt.Sprintf("%d vCPU, %d MiB memory, %d GiB disk, image %s", s.CPU, s.MemoryMiB, s.DiskGiB, s.Image)
+		return fmt.Sprintf("%d vCPU, %d MiB memory, %d GiB disk, image %s, network %s", s.CPU, s.MemoryMiB, s.DiskGiB, s.Image, s.Network)
 	case graph.KindNodePackage:
 		s := r.NodePackage
 		return fmt.Sprintf("package %s present on %s", s.Package, s.Node)

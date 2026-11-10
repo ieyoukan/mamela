@@ -18,8 +18,8 @@ import (
 )
 
 const l2 = `{"schema":"mamela-graph/v1","resources":[
-{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04"}},
-{"kind":"VirtualMachine","name":"db","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04"}},
+{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
+{"kind":"VirtualMachine","name":"db","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
 {"kind":"NodePackage","name":"db/nginx","spec":{"node":"db","package":"nginx","state":"Present"}},
 {"kind":"NodeService","name":"db/nginx","spec":{"node":"db","service":"nginx","enabled":true,"running":true}}]}`
 

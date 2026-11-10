@@ -143,6 +143,8 @@ var CreateParams = map[string][]Need{
 	},
 	"ciuser":  {vm("cloud-init user (Proxmox cloud-init drive)", "VM.Config.Cloudinit")},
 	"sshkeys": {vm("cloud-init SSH keys (Proxmox cloud-init drive)", "VM.Config.Cloudinit")},
+	// PVE/API2/Qemu.pm: nameserver is one of $cloudinitoptions, checked with VM.Config.Cloudinit.
+	"nameserver": {vm("cloud-init name servers of a static network (Proxmox cloud-init drive)", "VM.Config.Cloudinit")},
 	"ipconfig{n}": {{Scope: ScopeVM, Privs: []string{"VM.Config.Cloudinit", "VM.Config.Network"}, Any: true,
 		Why: "cloud-init network (Proxmox cloud-init drive)"}},
 	// Never "tags": at create, Proxmox checks tags on /vms/<vmid> before the VM is in the pool,

@@ -184,7 +184,7 @@ mamelet の安全装置（`internal/mamelet`）:
 `examples/k3s` は、k3s の server 1 台と agent 2 台のクラスタの宣言である（ingress controller と metrics server は外す）。VM 3 台に合計 6 vCPU と 8 GiB を使うので、`site.local.toml` の予算を広げておく（例: `max_vms = 4`、`max_vcpu_per_vm = 2`、`max_memory_mib_per_vm = 4096`、`max_disk_gib_per_vm = 20`）。手順は L2 と同じで、承認が要る。
 
 1. VM の作成（mamelet が入る）
-2. k3s の導入。plan には、版、sha256、取得元、役割、起動の引数が出る。agent は、server の mamelet がアドレスを報告するまで待つ（MAM-PLAN-0109）
+2. k3s の導入。plan には、版、sha256、取得元、役割、起動の引数が出る。server が DHCP なら、agent は server の mamelet がアドレスを報告するまで待つ（MAM-PLAN-0109）。server に固定アドレスを宣言すれば、agent はそのアドレスに参加し、DHCP でアドレスが変わって切れることもない（下の「ネットワーク」）
 3. サービスの有効化と起動
 
 ~~~bash
@@ -197,6 +197,21 @@ mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
 mamela plan --site lab/site.local.toml examples/k3s         # 3. k3s の有効化と起動
 mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
 ~~~
+
+### ネットワーク（DHCP と固定アドレス）
+
+VM の宣言は、`network: Dhcp` か `network: Static(address: ..., gateway: ..., dns: [...])` を必ず書く（既定はない）。lab では `site.local.toml` の `[network]` が、どちらをどこまで許すかを決める。
+
+~~~toml
+[network]
+dhcp = true                  # Dhcp を宣言した VM を許す
+static_first = "10.0.0.40"   # 固定アドレスに使ってよい範囲（両端を含む）
+static_last = "10.0.0.49"
+~~~
+
+- **範囲の決め方:** LAN の DHCP サーバーの払い出し範囲と、使われているアドレスのどちらにも重ならない範囲にする。Mamela はルーターの設定を読めないので、範囲が空いていることは人が確かめる。lab のノードから、範囲内のアドレスに応答がないことを確かめておくとよい。
+- **範囲の外は plan で止める**（LAB-0304）。apply でも、Proxmox に書く前にもう一度確かめる。
+- **公開リポジトリに実アドレスを書かない。** 固定アドレスを使う lab 用の宣言は、gitignore してある `lab/local/` に置く（例: `examples/k3s` を `lab/local/k3s-static` に写し、`Dhcp` を `Static(...)` に変える）。
 
 mamelet の安全装置（k3s）:
 

@@ -54,8 +54,8 @@ func TestCheckRejectsInconsistentManifests(t *testing.T) {
 
 func TestAnalyzeResolvesEachResource(t *testing.T) {
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[
-{"kind":"VirtualMachine","name":"a","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04"}},
-{"kind":"VirtualMachine","name":"b","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04"}},
+{"kind":"VirtualMachine","name":"a","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
+{"kind":"VirtualMachine","name":"b","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
 {"kind":"NodePackage","name":"a/nginx","spec":{"node":"a","package":"nginx","state":"Present"}},
 {"kind":"NodePackage","name":"b/curl","spec":{"node":"b","package":"curl","state":"Present"}}]}`))
 	if err != nil {

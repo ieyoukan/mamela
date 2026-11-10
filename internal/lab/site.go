@@ -8,6 +8,7 @@ package lab
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/ieyoukan/mamela/internal/graph"
 )
 
 // SiteSchema is the only accepted value of `schema`.
@@ -28,6 +31,7 @@ type Site struct {
 	Placement Placement `toml:"placement"`
 	Guest     GuestInit `toml:"guest"`
 	Budget    Budget    `toml:"budget"`
+	Network   Network   `toml:"network"`
 	Safety    Safety    `toml:"safety"`
 	// ControlPlane is optional: without it, VMs get Proxmox's cloud-init drive and no mamelet.
 	ControlPlane ControlPlane `toml:"controlplane"`
@@ -81,6 +85,33 @@ type Placement struct {
 type GuestInit struct {
 	User             string `toml:"user"`
 	SSHPublicKeyFile string `toml:"ssh_public_key_file"` // optional; "~/" is expanded
+}
+
+// Network says how lab VMs may get their addresses. Both are explicit: a site that forgets the
+// section is refused, so that no VM takes an address nobody set aside for the lab.
+type Network struct {
+	// DHCP allows VMs declared with Dhcp (the LAN's DHCP server gives the address).
+	DHCP *bool `toml:"dhcp"`
+	// StaticFirst..StaticLast is the range set aside for the lab's static addresses: outside the
+	// DHCP server's pool and every address in use. Empty: no static addresses.
+	StaticFirst string `toml:"static_first"`
+	StaticLast  string `toml:"static_last"`
+}
+
+// StaticRange is the static range (invalid addresses when there is none).
+func (n Network) StaticRange() (netip.Addr, netip.Addr) {
+	first, _ := netip.ParseAddr(n.StaticFirst)
+	last, _ := netip.ParseAddr(n.StaticLast)
+	return first, last
+}
+
+// Allows says whether lab VM name may use this network, and why not.
+func (s *Site) Allows(name string, n graph.Network) error {
+	first, last := s.Network.StaticRange()
+	if err := n.Allowed(s.Network.DHCP != nil && *s.Network.DHCP, first, last); err != nil {
+		return fmt.Errorf("VM %s: %w", name, err)
+	}
+	return nil
 }
 
 type Budget struct {
@@ -168,6 +199,22 @@ func (s *Site) Validate() error {
 	if bu.MaxVMs < 1 || bu.MaxVMs > 10 || bu.MaxVCPUPerVM < 1 || bu.MaxMemoryMiBPerVM < 256 || bu.MaxDiskGiBPerVM < 1 {
 		bad("budget values must be positive (max_vms 1..10, memory at least 256 MiB)")
 	}
+	if s.Network.DHCP == nil {
+		bad("network.dhcp must be set: true if lab VMs may use the LAN's DHCP, false if not")
+	}
+	if nw := s.Network; nw.StaticFirst != "" || nw.StaticLast != "" {
+		first, last := nw.StaticRange()
+		switch {
+		case !first.Is4() || !last.Is4():
+			bad("network.static_first and static_last must both be IPv4 addresses")
+		case last.Less(first):
+			bad("network.static_last %s is before static_first %s", last, first)
+		case !first.IsPrivate() || !last.IsPrivate():
+			bad("network.static_first..static_last must be private addresses (RFC 1918)")
+		case rangeSize(first, last) > 256:
+			bad("network.static_first..static_last is %d addresses; at most 256", rangeSize(first, last))
+		}
+	}
 	if s.Safety.MinHostMemAvailableMiB < 512 {
 		bad("safety.min_host_mem_available_mib must be at least 512")
 	}
@@ -194,6 +241,13 @@ func (s *Site) Validate() error {
 		return fmt.Errorf("invalid site:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+// rangeSize is the number of IPv4 addresses from first to last.
+func rangeSize(first, last netip.Addr) int {
+	f, l := first.As4(), last.As4()
+	v := func(b [4]byte) int { return int(b[0])<<24 | int(b[1])<<16 | int(b[2])<<8 | int(b[3]) }
+	return v(l) - v(f) + 1
 }
 
 // ExpandHome expands a leading "~/".

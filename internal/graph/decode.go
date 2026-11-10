@@ -31,10 +31,18 @@ type wireResource struct {
 }
 
 type wireVirtualMachine struct {
-	CPU       *int64  `json:"cpu"`
-	MemoryMiB *int64  `json:"memoryMiB"`
-	DiskGiB   *int64  `json:"diskGiB"`
-	Image     *string `json:"image"`
+	CPU       *int64       `json:"cpu"`
+	MemoryMiB *int64       `json:"memoryMiB"`
+	DiskGiB   *int64       `json:"diskGiB"`
+	Image     *string      `json:"image"`
+	Network   *wireNetwork `json:"network"`
+}
+
+type wireNetwork struct {
+	Mode    *string   `json:"mode"`
+	Address *string   `json:"address"`
+	Gateway *string   `json:"gateway"`
+	DNS     *[]string `json:"dns"`
 }
 
 type wireNodePackage struct {
@@ -168,8 +176,37 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		need(s.MemoryMiB != nil, "memoryMiB")
 		need(s.DiskGiB != nil, "diskGiB")
 		need(s.Image != nil, "image")
+		need(s.Network != nil, "network")
+		if s.Network == nil {
+			problems[len(problems)-1].Hint = "a VM says how it gets its address: " + networkHint + " (the Mamela Pome 0.2.0 and later write it)"
+		}
+		var network Network
+		if n := s.Network; n != nil {
+			need(n.Mode != nil, "network.mode")
+			if n.Mode != nil {
+				network.Mode = NetworkMode(*n.Mode)
+			}
+			static := network.Mode == NetworkStatic
+			for _, f := range []struct {
+				name    string
+				present bool
+			}{{"address", n.Address != nil}, {"gateway", n.Gateway != nil}, {"dns", n.DNS != nil}} {
+				if static && !f.present {
+					need(false, "network."+f.name)
+				}
+				if !static && f.present {
+					problems = append(problems, Problem{Code: CodeUnknownField, Path: where + " spec.network." + f.name,
+						Message: fmt.Sprintf("spec.network.%s is only for a static network", f.name),
+						Hint:    "a DHCP network has no address, gateway or name servers of its own"})
+				}
+			}
+			if static && n.Address != nil && n.Gateway != nil && n.DNS != nil {
+				network.Address, network.Gateway, network.DNS = *n.Address, *n.Gateway, *n.DNS
+			}
+		}
 		if len(problems) == 0 {
-			r.VirtualMachine = &VirtualMachineSpec{CPU: *s.CPU, MemoryMiB: *s.MemoryMiB, DiskGiB: *s.DiskGiB, Image: *s.Image}
+			r.VirtualMachine = &VirtualMachineSpec{CPU: *s.CPU, MemoryMiB: *s.MemoryMiB, DiskGiB: *s.DiskGiB, Image: *s.Image,
+				Network: network}
 		}
 	case KindNodePackage:
 		var s wireNodePackage

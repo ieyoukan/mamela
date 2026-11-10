@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -90,7 +91,7 @@ func newEnv(t *testing.T) *env {
 		Config: pve.Config{
 			Node: "n1", Pool: "lab", Tag: "mamela-lab", VMIDMin: 7000, VMIDMax: 7009,
 			DiskStorage: "local-lvm", ImageStorage: "local", Bridge: "vmbr0",
-			MaxVMs: 2, MaxCPU: 2, MaxMemoryMiB: 2048, MaxDiskGiB: 20,
+			MaxVMs: 2, MaxCPU: 2, MaxMemoryMiB: 2048, MaxDiskGiB: 20, AllowDHCP: true, StaticFirst: netip.MustParseAddr("192.0.2.40"), StaticLast: netip.MustParseAddr("192.0.2.49"),
 			User: "mamela", SSHPublicKeys: "ssh-ed25519 AAAAC3Nza+test/key= alice@laptop",
 			Catalog:     map[string]pve.Image{"ubuntu-24.04": testImage()},
 			TaskTimeout: time.Minute,
@@ -102,7 +103,7 @@ func newEnv(t *testing.T) *env {
 
 func vmResource(name string, cpu, mem, disk int64) graph.Resource {
 	return graph.Resource{Kind: graph.KindVirtualMachine, Name: name,
-		VirtualMachine: &graph.VirtualMachineSpec{CPU: cpu, MemoryMiB: mem, DiskGiB: disk, Image: "ubuntu-24.04"}}
+		VirtualMachine: &graph.VirtualMachineSpec{CPU: cpu, MemoryMiB: mem, DiskGiB: disk, Image: "ubuntu-24.04", Network: graph.Network{Mode: graph.NetworkDHCP}}}
 }
 
 func (e *env) apply(op policy.Op, r graph.Resource) error {
@@ -536,11 +537,11 @@ type fakeSeeds struct {
 	reusable string
 }
 
-func (s *fakeSeeds) Reusable(context.Context, string, int) (string, bool, error) {
+func (s *fakeSeeds) Reusable(context.Context, string, int, graph.Network) (string, bool, error) {
 	return s.reusable, s.reusable != "", nil
 }
 
-func (s *fakeSeeds) New(_ context.Context, node string, vmid int) (string, []byte, error) {
+func (s *fakeSeeds) New(_ context.Context, node string, vmid int, _ graph.Network) (string, []byte, error) {
 	name := fmt.Sprintf("mamela-seed-%s-%d-%d.iso", node, vmid, len(s.made))
 	s.made = append(s.made, name)
 	s.reusable = name
@@ -698,7 +699,8 @@ func TestCallsCoverWhatTheProviderSends(t *testing.T) {
 			got = append(got, k)
 		}
 		for _, k := range pve.CreateParamNames(withSeed) {
-			if k != "vmid" && k != "pool" && !slices.Contains(got, k) {
+			// nameserver is sent only for a static network (this VM uses DHCP).
+			if k != "vmid" && k != "pool" && k != "nameserver" && !slices.Contains(got, k) {
 				t.Errorf("CreateParamNames lists %s, which was not sent", k)
 			}
 		}
@@ -828,5 +830,45 @@ func TestDestroyOnlyMamelasVM(t *testing.T) {
 	}
 	if e.fake.destroys != 1 {
 		t.Fatal("destroyed something else")
+	}
+}
+
+// A static network goes to the VM as declared, is recorded in the marker and observed from it; an
+// address outside the site's range, or DHCP where the site forbids it, is refused before any write.
+func TestStaticNetworkWithinTheSiteRange(t *testing.T) {
+	e := newEnv(t)
+	r := vmResource("web", 1, 1024, 10)
+	static := graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.41/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1", "192.0.2.2"}}
+	r.VirtualMachine.Network = static
+	if err := e.apply(policy.OpCreateVM, r); err != nil {
+		t.Fatal(err)
+	}
+	vm := e.fake.vms[7000]
+	if vm.config["ipconfig0"] != "ip=192.0.2.41/24,gw=192.0.2.1" || vm.config["nameserver"] != "192.0.2.1 192.0.2.2" {
+		t.Fatalf("ipconfig0 %q nameserver %q", vm.config["ipconfig0"], vm.config["nameserver"])
+	}
+	snap, err := e.p.Observe(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.VMs["web"].Network; got != static.String() {
+		t.Fatalf("observed network %q, want %q", got, static.String())
+	}
+
+	for _, n := range []graph.Network{
+		{Mode: graph.NetworkStatic, Address: "192.0.2.50/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}},
+		{Mode: graph.NetworkStatic, Address: "192.0.2.39/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}},
+	} {
+		e := newEnv(t)
+		r := vmResource("db", 1, 1024, 10)
+		r.VirtualMachine.Network = n
+		if err := e.apply(policy.OpCreateVM, r); err == nil || !strings.Contains(err.Error(), "outside the site's range") || e.writes() != 0 {
+			t.Fatalf("%s: err %v, %d writes", n, err, e.writes())
+		}
+	}
+	e = newEnv(t)
+	e.p.Config.AllowDHCP = false
+	if err := e.apply(policy.OpCreateVM, vmResource("db", 1, 1024, 10)); err == nil || e.writes() != 0 {
+		t.Fatalf("DHCP where the site forbids it: err %v, %d writes", err, e.writes())
 	}
 }

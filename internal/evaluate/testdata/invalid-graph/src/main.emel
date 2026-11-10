@@ -1,10 +1,17 @@
 # Type-checks, but declares values Mamela refuses: an invalid hostname, zero CPUs and
 # a package name with a shell metacharacter. All three must be reported at once.
 import Std.Console.{SystemConsole}
-import Mamela.{Vm}
+import Mamela.{Vm, Dhcp}
 
 fn main() {
-  web = Vm(name: "Web_Server", cpu: 0, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+  web = Vm(
+    name: "Web_Server",
+    cpu: 0,
+    memory_mib: 1024,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
   with SystemConsole {
     Mamela.empty() |> Mamela.vm(web) |> Mamela.package(web, "nginx;reboot") |> Mamela.print
   }

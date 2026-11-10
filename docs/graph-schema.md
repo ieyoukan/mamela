@@ -8,7 +8,8 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 {
   "resources": [
     {"kind": "VirtualMachine", "name": "app-server",
-     "spec": {"cpu": 1, "diskGiB": 10, "image": "ubuntu-24.04", "memoryMiB": 1024}},
+     "spec": {"cpu": 1, "diskGiB": 10, "image": "ubuntu-24.04", "memoryMiB": 1024,
+              "network": {"mode": "dhcp"}}},
     {"kind": "NodePackage", "name": "app-server/nginx",
      "spec": {"node": "app-server", "package": "nginx", "state": "Present"}},
     {"kind": "NodeService", "name": "app-server/nginx",
@@ -38,6 +39,15 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 | `spec.memoryMiB` | 整数 | 256–1,048,576 |
 | `spec.diskGiB` | 整数 | 1–16,384 |
 | `spec.image` | string | `ubuntu-24.04` のような名前 |
+| `spec.network.mode` | string | `dhcp` か `static`（必須。既定はない） |
+| `spec.network.address` | string | `static` のときだけ。IPv4 とプレフィックス長（`192.0.2.10/24`、/8–/30）。ネットワークアドレスとブロードキャストアドレスは不可 |
+| `spec.network.gateway` | string | `static` のときだけ。`address` と同じサブネットの IPv4 で、VM 自身ではない |
+| `spec.network.dns` | string の配列 | `static` のときだけ。IPv4 を 1–3 個 |
+
+- **ネットワークは作成時に一度だけ与える。** seed の netplan（mamelet がない site では Proxmox の cloud-init drive の `ipconfig0` と `nameserver`）で設定する。作成したときのネットワークは所有マーカー（`mamela-network:`）に記録し、観測はそこから読む。宣言を変えても VM は変えず、plan は差分を示して拒否する（MAM-POL-0307）。マーカーに記録がない VM（ネットワークを宣言できる前に作った VM）は `dhcp` とみなす。
+- **同じ固定アドレスを 2 台に宣言できない**（MAM-GRAPH-0107）。
+- **site の範囲:** lab では、固定アドレスは `site.local.toml` の `network.static_first`–`static_last` の中だけ、DHCP は `network.dhcp = true` のときだけ許す。違反は plan の時点で止め（LAB-0304）、apply でも Proxmox に書く前にもう一度確かめる。
+- **Emela:** `Vm(..., network: Dhcp)` または `Vm(..., network: Static(address: "192.0.2.10/24", gateway: "192.0.2.1", dns: ["192.0.2.1"]))`。`network` がない Graph（Pome 0.1.0 が書くもの）は MAM-GRAPH-0004 で拒否する。
 
 ### NodePackage
 
@@ -79,7 +89,7 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | agent | `k3s agent --server=https://<server のアドレス>:6443 --token-file=/etc/rancher/k3s/cluster-token` |
 
 - **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
-- **server のアドレス:** server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
+- **server のアドレス:** server の VM が固定アドレスを宣言していれば、それを使う（報告を待たず、報告にも従わない）。DHCP なら、server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
 
 ## プロバイダーのリソース（`mamela-graph/v2`）
 

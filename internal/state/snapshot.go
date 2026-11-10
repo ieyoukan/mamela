@@ -75,11 +75,13 @@ func SpecDigest(spec []byte) string {
 type VM struct {
 	// Managed is true only when every ownership marker matches (pool, VMID range, tag, marker).
 	// Anything else is Foreign and is never changed.
-	Managed    bool      `json:"managed"`
-	CPU        int64     `json:"cpu"`
-	MemoryMiB  int64     `json:"memoryMiB"`
-	DiskGiB    int64     `json:"diskGiB"`
-	Image      string    `json:"image"`
+	Managed   bool   `json:"managed"`
+	CPU       int64  `json:"cpu"`
+	MemoryMiB int64  `json:"memoryMiB"`
+	DiskGiB   int64  `json:"diskGiB"`
+	Image     string `json:"image"`
+	// Network is how the VM was given its address at creation (graph.Network.String()).
+	Network    string    `json:"network,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
 }
 

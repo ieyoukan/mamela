@@ -248,9 +248,11 @@ func labVMProvider(site *lab.Site, api pve.API, st *store.Store, imageCache stri
 			MaxVMs: site.Budget.MaxVMs, MaxCPU: int64(site.Budget.MaxVCPUPerVM),
 			MaxMemoryMiB: site.Budget.MaxMemoryMiBPerVM, MaxDiskGiB: site.Budget.MaxDiskGiBPerVM,
 			User: site.Guest.User, SSHPublicKeys: keys,
+			AllowDHCP: site.Network.DHCP != nil && *site.Network.DHCP,
 		},
 		API: api, VMIDs: st, Images: &pve.ImageCache{Dir: imageCache}, Clock: wallClock,
 	}
+	vms.Config.StaticFirst, vms.Config.StaticLast = site.Network.StaticRange()
 	if withSeeds && site.ControlPlane.Enabled() {
 		maker, err := seedMaker(site, st, keys)
 		if err != nil {
