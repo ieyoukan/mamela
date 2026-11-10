@@ -243,3 +243,21 @@ func (s *System) Start(ctx context.Context, name string) error {
 	_, err := s.run(ctx, progSystemctl, []string{"start", "--", name})
 	return err
 }
+
+// Disable disables a service (for the next boot; it does not stop it).
+func (s *System) Disable(ctx context.Context, name string) error {
+	if !noderev.ValidService(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	_, err := s.run(ctx, progSystemctl, []string{"disable", "--", name})
+	return err
+}
+
+// Stop stops a service.
+func (s *System) Stop(ctx context.Context, name string) error {
+	if !noderev.ValidService(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	_, err := s.run(ctx, progSystemctl, []string{"stop", "--", name})
+	return err
+}

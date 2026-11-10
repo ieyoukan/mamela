@@ -73,13 +73,15 @@ type Service struct {
 type Once struct {
 	Operation string `json:"operation"`
 	Attempt   int    `json:"attempt"`
-	Action    string `json:"action"` // "enable" or "start"
+	Action    string `json:"action"` // enable, start, disable or stop
 }
 
 // Service actions mamelet knows. Anything else makes the whole revision invalid.
 const (
-	ActionEnable = "enable"
-	ActionStart  = "start"
+	ActionEnable  = "enable"
+	ActionStart   = "start"
+	ActionDisable = "disable"
+	ActionStop    = "stop"
 )
 
 var (
@@ -159,7 +161,7 @@ func (r *Revision) Check() error {
 			if o.Attempt < 1 {
 				add("service %s: attempt %d is not valid", s.Name, o.Attempt)
 			}
-			if o.Action != ActionEnable && o.Action != ActionStart {
+			if o.Action != ActionEnable && o.Action != ActionStart && o.Action != ActionDisable && o.Action != ActionStop {
 				add("service %s: action %q is not known", s.Name, o.Action)
 			}
 		}

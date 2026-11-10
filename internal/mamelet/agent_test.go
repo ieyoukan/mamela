@@ -86,6 +86,10 @@ func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []strin
 			s.enabled = true
 		case "start":
 			s.running = true
+		case "disable":
+			s.enabled = false
+		case "stop":
+			s.running = false
 		}
 		return nil, nil, 0, nil
 	}
@@ -405,5 +409,29 @@ func TestExpiredCacheIsNotUsed(t *testing.T) {
 	rep, _ := e.a.Round(context.Background())
 	if e.os.services["nginx.service"].running || rep.Serial != 0 {
 		t.Fatalf("acted on an expired revision (serial %d)", rep.Serial)
+	}
+}
+
+// Declaring a service stopped and disabled: one-time, approved stop and disable. Never a standing
+// stop: a service started again by hand is drift for the next plan, not something mamelet fights.
+func TestOneTimeStopAndDisable(t *testing.T) {
+	e := newEnv(t)
+	e.os.installed["nginx"] = "1"
+	e.os.services["nginx.service"] = &fakeService{exists: true, enabled: true, running: true}
+	e.publish(1, nil, []noderev.Service{{Name: "nginx.service", Enabled: false, Running: false}})
+	e.round()
+	if s := e.os.services["nginx.service"]; !s.enabled || !s.running {
+		t.Fatal("stopped or disabled without approval")
+	}
+	e.publish(2, nil, []noderev.Service{{Name: "nginx.service", Enabled: false, Running: false, Once: []noderev.Once{
+		{Operation: op1, Attempt: 1, Action: noderev.ActionDisable}, {Operation: op2, Attempt: 1, Action: noderev.ActionStop}}}})
+	rep := e.round()
+	if s := e.os.services["nginx.service"]; s.enabled || s.running || len(rep.Results) != 2 {
+		t.Fatalf("service %+v results %+v", s, rep.Results)
+	}
+	e.os.services["nginx.service"].running = true
+	e.round()
+	if !e.os.services["nginx.service"].running {
+		t.Fatal("repeated a one-time stop")
 	}
 }

@@ -163,11 +163,8 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest}
 			return nil
 		}
-	case (step.Op == policy.OpEnableService || step.Op == policy.OpStartService) && r.NodeService != nil:
-		action := noderev.ActionEnable
-		if step.Op == policy.OpStartService {
-			action = noderev.ActionStart
-		}
+	case serviceActions[step.Op] != "" && r.NodeService != nil:
+		action := serviceActions[step.Op]
 		node, what = r.NodeService.Node, action+" "+r.NodeService.Service
 		grant = func(rev *noderev.Revision) error {
 			sv := findService(rev, r.NodeService.Service)
@@ -194,6 +191,14 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return fmt.Errorf("%s on %s: %w", what, node, err)
 	}
 	return p.await(ctx, node, what, step.OperationID, attempt)
+}
+
+// serviceActions are the service operations mamelet carries out, as one-time grants.
+var serviceActions = map[policy.Op]string{
+	policy.OpEnableService:  noderev.ActionEnable,
+	policy.OpStartService:   noderev.ActionStart,
+	policy.OpDisableService: noderev.ActionDisable,
+	policy.OpStopService:    noderev.ActionStop,
 }
 
 // approvedChangeSet is the change set digest in the approved change's diffs.

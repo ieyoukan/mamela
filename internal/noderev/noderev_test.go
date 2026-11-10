@@ -95,7 +95,7 @@ func TestContentIsChecked(t *testing.T) {
 		"space in package":    func(r *Revision) { r.Packages[0].Name = "nginx curl" },
 		"path as service":     func(r *Revision) { r.Services[0].Name = "../../etc/x" },
 		"option as service":   func(r *Revision) { r.Services[0].Name = "--now" },
-		"unknown action":      func(r *Revision) { r.Services[0].Once[0].Action = "stop" },
+		"unknown action":      func(r *Revision) { r.Services[0].Once[0].Action = "restart" },
 		"unknown repair":      func(r *Revision) { r.Services[0].Repair = []string{"restart"} },
 		"bad change set":      func(r *Revision) { r.Packages[0].Install.ChangeSet = "anything" },
 		"bad operation":       func(r *Revision) { r.Packages[0].Install.Operation = "x" },
@@ -118,7 +118,7 @@ func TestContentIsChecked(t *testing.T) {
 	// A valid signature over an invalid payload is refused too, as are unknown members.
 	for name, payload := range map[string]string{
 		"unknown member": strings.Replace(string(mustSign(t, k).Payload), `"node":`, `"shell":"rm -rf /","node":`, 1),
-		"invalid":        strings.Replace(string(mustSign(t, k).Payload), `"enable"`, `"stop"`, 1),
+		"invalid":        strings.Replace(string(mustSign(t, k).Payload), `"enable"`, `"mask"`, 1),
 	} {
 		s := Signed{Payload: []byte(payload), Signature: ed25519.Sign(k, []byte(payload))}
 		if _, err := Verify(k.Public().(ed25519.PublicKey), s, expect()); err == nil {

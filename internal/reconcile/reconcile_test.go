@@ -377,3 +377,37 @@ func TestLiveClaimByAnotherWorkerIsRespected(t *testing.T) {
 		t.Fatal("ran an operation another worker holds")
 	}
 }
+
+// Part of an approved change happened already (an earlier run, a lost answer, an agent that acted
+// late): the rest is still within the approval and is carried out; nothing is done twice.
+func TestPartlyDoneChangeIsFinished(t *testing.T) {
+	e := newEnv(t)
+	p1 := e.plan()
+	e.approve(p1)
+	e.apply(p1) // the VM
+	p2 := e.plan()
+	e.approve(p2)
+	e.apply(p2) // the package; the service's unit now exists, disabled and stopped
+	p3 := e.plan()
+	e.approve(p3)
+	e.world.SetService("app-server/nginx", state.Service{Exists: true, Enabled: true, Running: false}) // enabled meanwhile
+	rep := e.apply(p3)
+	got := outcomes(rep)
+	if rep.Stopped != nil || got[policy.OpEnableService] != reconcile.OutcomeAlreadyDone || got[policy.OpStartService] != reconcile.OutcomeDone {
+		t.Fatalf("report %+v", rep)
+	}
+	if e.world.Calls(policy.OpEnableService) != 0 {
+		t.Fatal("enabled again")
+	}
+
+	// An operation the approval did not cover still stops the run: approved "start" only, then
+	// the service is also disabled by hand, so enabling it would be needed as well.
+	e.world.SetService("app-server/nginx", state.Service{Exists: true, Enabled: true, Running: false})
+	p4 := e.plan()
+	e.approve(p4)
+	e.world.SetService("app-server/nginx", state.Service{Exists: true, Enabled: false, Running: false})
+	rep = e.apply(p4)
+	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0002" || e.world.Calls(policy.OpEnableService) != 0 {
+		t.Fatalf("report %+v", rep)
+	}
+}

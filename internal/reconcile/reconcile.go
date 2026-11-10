@@ -160,7 +160,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 			continue
 		}
-		if !found || !sameChange(c, current) {
+		if !found || !partOf(current, c) {
 			rep.Stopped = &Stop{Code: "MAM-REC-0002",
 				Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
 				Hint:    "make a new plan from a fresh observation and review it"}
@@ -170,6 +170,18 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 
 		for _, op := range c.Operations {
 			opID := OperationID(planDigest, id, op.Op)
+			if !slices.ContainsFunc(current.Operations, func(o plan.Operation) bool { return o.Op == op.Op }) {
+				// Part of the approved change is already visible (an earlier run did it, or its
+				// answer was lost): confirm it by observation instead of doing it again.
+				if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
+					return nil, err
+				}
+				if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
+					return nil, err
+				}
+				rep.add(id, op.Op, OutcomeAlreadyDone, "observation shows it is done")
+				continue
+			}
 			o, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op))
 			if err != nil {
 				return nil, err
@@ -247,15 +259,24 @@ func findChange(p *plan.Plan, id string) (plan.Change, bool) {
 	return plan.Change{}, false
 }
 
-// sameChange reports whether the fresh change asks for exactly what the approved one did.
-func sameChange(a, b plan.Change) bool {
-	if a.Status != b.Status || a.Verdict != b.Verdict {
+// partOf reports whether the fresh change asks for what the approved one did, or for part of it:
+// the same status, and every remaining diff and operation (with its verdict) was in the approved
+// change. Anything new or different means the plan must be made again.
+func partOf(fresh, approved plan.Change) bool {
+	if fresh.Status != approved.Status || len(fresh.Operations) == 0 {
 		return false
 	}
-	if !slices.Equal(a.Diffs, b.Diffs) {
-		return false
+	for _, d := range fresh.Diffs {
+		if !slices.Contains(approved.Diffs, d) {
+			return false
+		}
 	}
-	return slices.EqualFunc(a.Operations, b.Operations, func(x, y plan.Operation) bool {
-		return x.Op == y.Op && x.Decision.Verdict == y.Decision.Verdict
-	})
+	for _, o := range fresh.Operations {
+		if !slices.ContainsFunc(approved.Operations, func(x plan.Operation) bool {
+			return x.Op == o.Op && x.Decision.Verdict == o.Decision.Verdict
+		}) {
+			return false
+		}
+	}
+	return true
 }

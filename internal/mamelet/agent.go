@@ -269,6 +269,26 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 				}
 			}
 		}
+		if !s.Enabled && obs.Enabled {
+			if o, ok := a.pendingOnce(s, noderev.ActionDisable, online, st); ok {
+				changed = true
+				if err := a.System.Disable(ctx, s.Name); err != nil {
+					record(o.Operation, o.Attempt, noderev.OutcomeFailed, err.Error())
+				} else {
+					record(o.Operation, o.Attempt, noderev.OutcomeDone, "disabled "+s.Name)
+				}
+			}
+		}
+		if !s.Running && obs.Running {
+			if o, ok := a.pendingOnce(s, noderev.ActionStop, online, st); ok {
+				changed = true
+				if err := a.System.Stop(ctx, s.Name); err != nil {
+					record(o.Operation, o.Attempt, noderev.OutcomeFailed, err.Error())
+				} else {
+					record(o.Operation, o.Attempt, noderev.OutcomeDone, "stopped "+s.Name)
+				}
+			}
+		}
 		if s.Running && !obs.Running {
 			if slices.Contains(s.Repair, noderev.ActionStart) {
 				changed = true
