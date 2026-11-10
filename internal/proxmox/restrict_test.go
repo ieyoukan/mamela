@@ -1,6 +1,7 @@
 package proxmox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -91,5 +92,54 @@ func TestReadOnlySendsNoChange(t *testing.T) {
 	}
 	if *sent != 1 {
 		t.Errorf("%d requests sent, want 1", *sent)
+	}
+}
+
+// A call declared without Params sends no parameter: a forgotten declaration refuses, it never
+// allows everything.
+func TestUndeclaredParamsAreNoParams(t *testing.T) {
+	c, sent := testClient(t)
+	ctx := Restrict(context.Background(), "resize", []Call{{Method: "PUT", Path: "/nodes/{node}/qemu/{vmid}/config"}})
+	refused(t, "config without declared params", c.SetSize(ctx, "n", 7000, 2, 2048, "d"))
+	ctx = Restrict(context.Background(), "start", []Call{{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/start"}})
+	if _, err := c.StartVM(ctx, "n", 7000); err != nil {
+		t.Errorf("a call that sends no parameter: %v", err)
+	}
+	if *sent != 1 {
+		t.Errorf("%d requests sent, want 1", *sent)
+	}
+}
+
+// Multipart fields and query parameters are checked like form parameters.
+func TestMultipartAndQueryParamsAreChecked(t *testing.T) {
+	c, sent := testClient(t)
+	upload := func(params ...string) error {
+		ctx := Restrict(context.Background(), "upload", []Call{{Method: "POST", Path: "/nodes/{node}/storage/{storage}/upload", Params: params}})
+		_, err := c.Upload(ctx, "n", "local", "iso", "seed.iso", "abc", bytes.NewReader([]byte("x")), 1)
+		return err
+	}
+	refused(t, "multipart with only content declared", upload("content"))
+	if err := upload("content", "checksum-algorithm", "checksum", "filename"); err != nil {
+		t.Errorf("multipart with every field declared: %v", err)
+	}
+	next := func(params ...string) error {
+		_, err := c.VMIDFree(Restrict(context.Background(), "observe", []Call{{Method: "GET", Path: "/cluster/nextid", Params: params}}), 7000)
+		return err
+	}
+	refused(t, "query parameter not declared", next())
+	if err := next("vmid"); err != nil {
+		t.Errorf("declared query parameter: %v", err)
+	}
+	delete := func(params ...string) error {
+		ctx := Restrict(context.Background(), "destroy", []Call{{Method: "DELETE", Path: "/nodes/{node}/qemu/{vmid}", Params: params}})
+		_, err := c.WithDestroy().DestroyVM(ctx, "n", 7000)
+		return err
+	}
+	refused(t, "destroy query not declared", delete())
+	if err := delete("destroy-unreferenced-disks"); err != nil {
+		t.Errorf("declared destroy query: %v", err)
+	}
+	if *sent != 3 {
+		t.Errorf("%d requests sent, want 3", *sent)
 	}
 }

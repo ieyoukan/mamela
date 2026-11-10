@@ -365,16 +365,12 @@ func resolve(provider string, n Need, r *graph.Resource, res Resolver) Requireme
 	return q
 }
 
-// Observation is what observing the world needs, by provider (only providers whose kinds appear
-// in the graph observe).
-func (ps Providers) Observation(g *graph.Graph, res Resolver) []Requirement {
+// Observation is what observing the world needs: every provider in use observes on every plan
+// and apply, whatever the declaration contains (it also looks for resources that are no longer
+// declared, which Mamela keeps), so this does not depend on the graph.
+func (ps Providers) Observation(res Resolver) []Requirement {
 	var out []Requirement
 	for _, m := range ps {
-		if !slices.ContainsFunc(g.Resources, func(r graph.Resource) bool {
-			return slices.ContainsFunc(m.Kinds, func(k Kind) bool { return k.Kind == r.Kind })
-		}) {
-			continue
-		}
 		for _, n := range m.Observe {
 			out = append(out, resolve(m.Provider, n, nil, res))
 		}

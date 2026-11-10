@@ -86,7 +86,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		out.Diagnostics = diagnostics(err)
 	} else {
 		out.Graph = res.Digest
-		out.Observation = ps.Observation(res.Graph, site)
+		out.Observation = ps.Observation(site)
 		out.Requirements = ps.Analyze(res.Graph, site)
 	}
 	if !*asJSON {

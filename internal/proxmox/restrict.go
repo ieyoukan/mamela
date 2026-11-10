@@ -15,7 +15,8 @@ import (
 // What a context lets the client send, and what this checks — and does not.
 //
 // Restrict limits a context to the calls an operation declares (its part of the provider
-// manifest), and for calls that list Params, to those parameter names. Values pins parameter
+// manifest) and to the parameter names each declares (none, if it declares none), whether they
+// travel in a form, a multipart body or the query string. Values pins parameter
 // values on a call, and Bind pins the IDs in paths ({node}, {vmid}) and the parameters of the
 // same name. A context made by RestrictOperation is bound to one approved operation: it sends no
 // changing request until every ID its path uses is bound, so an operation can only change the
@@ -63,8 +64,8 @@ func restrictions(ctx context.Context) []restriction {
 	return slices.Clip(r)
 }
 
-// Restrict returns a context in which the client sends only the given calls (and, for calls that
-// list Params, only those parameters). what names the operation in errors. Restrictions add up:
+// Restrict returns a context in which the client sends only the given calls, each with only the
+// parameters it lists (none if it lists none). what names the operation in errors. Restrictions add up:
 // every one must allow a request.
 func Restrict(ctx context.Context, what string, calls []Call) context.Context {
 	return with(ctx, restriction{what: what, calls: calls})
@@ -153,7 +154,9 @@ func allowed(ctx context.Context, ep Endpoint, path string, params url.Values) e
 				return fmt.Errorf("proxmox: %s is not among the calls declared for %s; "+
 					"declare it (with its condition) where the operation's calls are listed, or do not make it: %w", call, r.what, ErrNotSent)
 			}
-			if declared := r.calls[i].Params; len(declared) > 0 && params != nil {
+			// Params lists every parameter the call may send (form, multipart or query); a call
+			// declared without Params sends none. A forgotten declaration refuses, never allows.
+			if declared := r.calls[i].Params; len(params) > 0 {
 				var extra []string
 				for _, name := range slices.Sorted(maps.Keys(params)) {
 					if !slices.Contains(declared, name) {

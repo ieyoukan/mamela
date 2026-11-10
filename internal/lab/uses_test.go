@@ -11,7 +11,9 @@ import (
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/node"
+	"github.com/ieyoukan/mamela/internal/provider/pve"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
+	"github.com/ieyoukan/mamela/internal/proxmox"
 	"github.com/ieyoukan/mamela/internal/state"
 )
 
@@ -119,7 +121,7 @@ func TestPlannedRequirementsAreConcreteAndGranted(t *testing.T) {
 			granted[gr.Path+" "+pr] = true
 		}
 	}
-	for _, q := range append(s.Providers().Observation(g, s), s.PlannedRequirements(p, g, pol)...) {
+	for _, q := range append(s.Providers().Observation(s), s.PlannedRequirements(p, g, pol)...) {
 		if q.Provider == "proxmox" && !granted[q.Target+" "+q.Capability] {
 			t.Errorf("the plan uses %s on %s, which is not granted", q.Capability, q.Target)
 		}
@@ -207,5 +209,29 @@ func TestManifestsDeclareEveryPlannedOperation(t *testing.T) {
 				t.Errorf("%s does not declare %s %s", m.Provider, kind, op)
 			}
 		}
+	}
+}
+
+// Observation does not depend on the declaration: with nothing declared, Mamela still observes
+// the lab (to find VMs it keeps), and needs exactly what the provider's observation calls need.
+func TestObservationIsWhatTheProvidersObserve(t *testing.T) {
+	s := exampleSite(t)
+	empty, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, q := range s.Providers().Observation(s) {
+		got[q.Target+" "+q.Capability] = true
+	}
+	want := map[string]bool{}
+	for _, q := range s.Requirements(proxmox.NeedsFor(pve.ObserveCalls)) {
+		want[q.Target+" "+q.Capability] = true
+	}
+	if len(want) == 0 || !maps.Equal(got, want) {
+		t.Errorf("observation needs %v, the observation calls need %v", got, want)
+	}
+	if reqs := s.Providers().Analyze(empty, s); len(reqs) != 0 {
+		t.Errorf("an empty declaration has operation requirements: %+v", reqs)
 	}
 }

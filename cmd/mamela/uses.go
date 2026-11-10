@@ -159,7 +159,7 @@ func condition(c spec.Condition) string {
 func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, pol policy.Policy) {
 	fmt.Fprintln(w, "\nWhat applying this plan uses (Proxmox privileges of the operating token, `mamela lab permissions` explains them;")
 	fmt.Fprintln(w, "mamelet actions granted in the node's signed revision):")
-	reqs := append(site.Providers().Observation(g, site), site.PlannedRequirements(p, g, pol)...)
+	reqs := append(site.Providers().Observation(site), site.PlannedRequirements(p, g, pol)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases (for example an upload that is already done)")
 	}
@@ -169,7 +169,7 @@ func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, p
 func renderMayNeed(w io.Writer, site *lab.Site, g *graph.Graph) {
 	fmt.Fprintln(w, "\nMay need when applied (every operation each resource can lead to; `mamela plan --site` says what a plan uses):")
 	ps := site.Providers()
-	reqs := append(ps.Observation(g, site), ps.Analyze(g, site)...)
+	reqs := append(ps.Observation(site), ps.Analyze(g, site)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases")
 	}

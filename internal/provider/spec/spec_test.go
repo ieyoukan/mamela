@@ -84,7 +84,7 @@ func TestAnalyzeResolvesEachResource(t *testing.T) {
 			t.Errorf("%s: %+v", id, q)
 		}
 	}
-	if obs := ps.Observation(g, sites{"pool": "/pool/lab"}); len(obs) != 1 || obs[0].Target != "/pool/lab" || !obs[0].Resolved {
+	if obs := ps.Observation(sites{"pool": "/pool/lab"}); len(obs) != 1 || obs[0].Target != "/pool/lab" || !obs[0].Resolved {
 		t.Errorf("observation: %+v", obs)
 	}
 	if q := ps.OperationRequirements(g.Resources[2], policy.OpEnableService, nil); len(q) != 1 || q[0].Support != Unsupported {
