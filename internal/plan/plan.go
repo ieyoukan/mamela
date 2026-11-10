@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -206,8 +207,34 @@ func (b builder) pkg(r graph.Resource) Change {
 	if got.Installed {
 		return b.withOps(c)
 	}
-	c.Diffs = []Diff{{"installed", "false", "true"}}
-	return b.withOps(c, policy.Subject{Op: policy.OpInstallPackage})
+	if got.Error != "" {
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0202",
+			Message: fmt.Sprintf("the agent on %s cannot observe %s: %s", want.Node, want.Package, got.Error),
+			Hint:    "fix the cause on the node (for example apt sources), then plan again"}
+		return c
+	}
+	cs := got.ChangeSet
+	if cs == nil {
+		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0105",
+			Message: fmt.Sprintf("waits for the agent on %s to work out what installing %s would change", want.Node, want.Package)}
+		return c
+	}
+	// The diff names every package apt would touch, and the change set digest: approving the plan
+	// approves exactly this set, and the agent refuses to install anything else.
+	c.Diffs = []Diff{{"installed", "false", "true"}, {"changeSet", "", cs.Digest}}
+	var origins []string
+	for _, ch := range cs.Changes {
+		line := ch.Action + " " + ch.Package
+		if ch.Version != "" {
+			line += " " + ch.Version
+		}
+		if len(ch.Origins) > 0 {
+			line += " (" + strings.Join(ch.Origins, ", ") + ")"
+		}
+		c.Diffs = append(c.Diffs, Diff{"apt", "", line})
+		origins = append(origins, ch.Origins...)
+	}
+	return b.withOps(c, policy.Subject{Op: policy.OpInstallPackage, Removes: cs.Removes(), Origins: origins})
 }
 
 func (b builder) service(r graph.Resource) Change {
@@ -225,6 +252,11 @@ func (b builder) service(r graph.Resource) Change {
 	}
 	if b.stale(got.ObservedAt) {
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
+		return c
+	}
+	if !got.Exists {
+		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0106",
+			Message: fmt.Sprintf("waits for service %s to exist on %s (its package is not installed yet)", want.Service, want.Node)}
 		return c
 	}
 	var subjects []policy.Subject

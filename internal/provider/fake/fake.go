@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/reconcile"
 	"github.com/ieyoukan/mamela/internal/state"
@@ -96,8 +97,15 @@ func (w *World) Observe(ctx context.Context) (state.Snapshot, error) {
 		}
 		p := w.packages[key]
 		p.ObservedAt = now
+		if !p.Installed {
+			// What the agent's apt-get -s would report.
+			cs := noderev.NewChangeSet([]noderev.Change{{Action: noderev.ChangeInstall, Package: pkgOf(key),
+				Version: "1.0-fake", Origins: []string{"Ubuntu:24.04/noble"}}})
+			p.ChangeSet = &cs
+		}
 		snap.Packages[key] = p
 		s := w.services[key]
+		s.Exists = s.Exists || p.Installed // installing the package brings the unit
 		s.ObservedAt = now
 		snap.Services[key] = s
 	}
@@ -170,6 +178,11 @@ func (w *World) change(step reconcile.Step) error {
 		return fmt.Errorf("operation %s is not supported", step.Op)
 	}
 	return nil
+}
+
+func pkgOf(key string) string {
+	_, pkg, _ := strings.Cut(key, "/")
+	return pkg
 }
 
 func nodeOf(key string) string {

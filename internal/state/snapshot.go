@@ -10,6 +10,8 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"time"
+
+	"github.com/ieyoukan/mamela/internal/noderev"
 )
 
 // Snapshot is a time-stamped view of the observed world.
@@ -38,13 +40,19 @@ type VM struct {
 
 // Package is an observed APT package on a node.
 type Package struct {
-	Installed  bool      `json:"installed"`
-	Version    string    `json:"version"`
+	Installed bool   `json:"installed"`
+	Version   string `json:"version"`
+	// ChangeSet is what installing the package would change (apt-get -s on the node), when it is
+	// not installed. Approving an installation approves exactly this set.
+	ChangeSet *noderev.ChangeSet `json:"changeSet,omitempty"`
+	// Error says why the package could not be observed or simulated.
+	Error      string    `json:"error,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
 }
 
 // Service is an observed systemd service on a node.
 type Service struct {
+	Exists     bool      `json:"exists"` // the unit is known to systemd (its package is installed)
 	Enabled    bool      `json:"enabled"`
 	Running    bool      `json:"running"`
 	ObservedAt time.Time `json:"observedAt"`

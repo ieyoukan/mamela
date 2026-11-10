@@ -35,6 +35,9 @@ type Step struct {
 	OperationID string // stable idempotency key: the same plan, resource and operation give the same ID
 	Op          policy.Op
 	Resource    graph.Resource // the desired resource
+	// Approved is the resource's change in the approved plan. A provider acts on what was approved
+	// (for example the exact apt change set), never on a newer observation.
+	Approved plan.Change
 }
 
 // Provider observes and changes the real world.
@@ -186,7 +189,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				return rep, nil
 			}
 			r.event(ctx, planDigest, id, "started", fmt.Sprintf("%s started (operation %s)", op.Op, opID))
-			applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, Op: op.Op, Resource: desired[id]})
+			applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, Op: op.Op, Resource: desired[id], Approved: c})
 			switch {
 			case applyErr == nil:
 				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageSucceeded, ""); err != nil {

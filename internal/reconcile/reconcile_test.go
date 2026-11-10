@@ -116,18 +116,26 @@ func TestConvergesWithApprovals(t *testing.T) {
 		t.Fatalf("approved create: %+v", rep)
 	}
 
-	// Round 2: the agent now reports; install, enable and start need approval.
+	// Round 2: the agent now reports; installing needs approval. The service waits for its unit.
 	p2 := e.plan()
 	e.approve(p2)
 	rep = e.apply(p2)
+	if got := outcomes(rep); got[policy.OpInstallPackage] != reconcile.OutcomeDone || len(got) != 1 {
+		t.Fatalf("round 2: %+v", rep)
+	}
+
+	// Round 3: the unit exists; enable and start need approval.
+	p3 := e.plan()
+	e.approve(p3)
+	rep = e.apply(p3)
 	got := outcomes(rep)
-	for _, op := range []policy.Op{policy.OpInstallPackage, policy.OpEnableService, policy.OpStartService} {
+	for _, op := range []policy.Op{policy.OpEnableService, policy.OpStartService} {
 		if got[op] != reconcile.OutcomeDone {
 			t.Errorf("%s: %s (%+v)", op, got[op], rep)
 		}
 	}
 
-	// Round 3: converged.
+	// Round 4: converged.
 	for _, c := range e.plan().Changes {
 		if c.Status != plan.StatusInSync {
 			t.Errorf("not converged: %s %s", c.ID(), c.Status)

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -65,6 +66,9 @@ type Policy struct {
 	MaxObservationAgeSeconds int64 `json:"maxObservationAgeSeconds"`
 	// AutoStartServices may be started without approval (drift repair), by service name.
 	AutoStartServices []string `json:"autoStartServices"`
+	// AllowedAptOrigins are the APT origins (prefixes, e.g. "Ubuntu:") packages may be installed
+	// from. A change set with any other origin is denied.
+	AllowedAptOrigins []string `json:"allowedAptOrigins"`
 }
 
 // Default is the conservative policy used when nothing else is configured.
@@ -72,6 +76,7 @@ var Default = Policy{
 	Version:                  "default/1",
 	MaxObservationAgeSeconds: 600,
 	AutoStartServices:        nil,
+	AllowedAptOrigins:        []string{"Ubuntu:"},
 }
 
 // MaxObservationAge is MaxObservationAgeSeconds as a duration.
@@ -89,6 +94,9 @@ func (p Policy) Digest() string {
 type Subject struct {
 	Op      Op
 	Service string // for service operations
+	// For install-package: whether the change set removes packages, and its origins.
+	Removes bool
+	Origins []string
 }
 
 // Decide returns the decision for one operation. It is a pure function of the policy and subject.
@@ -102,6 +110,16 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpGrowVMDisk:
 		return Decision{ApprovalRequired, "MAM-POL-0203", "growing a disk uses shared storage and cannot be undone", ""}
 	case OpInstallPackage:
+		if s.Removes {
+			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",
+				"find out why apt wants to remove them, and resolve it by hand"}
+		}
+		for _, o := range s.Origins {
+			if !p.allowedOrigin(o) {
+				return Decision{Denied, "MAM-POL-0305", "a package would come from APT origin " + o + ", which the policy does not allow",
+					"install only from allowed origins (allowedAptOrigins), or add this origin to the policy after review"}
+			}
+		}
 		return Decision{ApprovalRequired, "MAM-POL-0204", "installing a package runs its maintainer scripts as root",
 			"approve after checking the package and its source"}
 	case OpEnableService:
@@ -129,10 +147,20 @@ func (p Policy) Decide(s Subject) Decision {
 	}
 }
 
+func (p Policy) allowedOrigin(o string) bool {
+	for _, a := range p.AllowedAptOrigins {
+		if a != "" && strings.HasPrefix(o, a) {
+			return true
+		}
+	}
+	return false
+}
+
 // Canonical is the deterministic JSON of the policy.
 func (p Policy) Canonical() []byte {
 	q := p
 	q.AutoStartServices = slices.Sorted(slices.Values(p.AutoStartServices))
+	q.AllowedAptOrigins = slices.Sorted(slices.Values(p.AllowedAptOrigins))
 	out, err := json.Marshal(q, json.Deterministic(true))
 	if err != nil {
 		panic("policy: encoding failed: " + err.Error())

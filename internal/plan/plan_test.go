@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
 )
@@ -29,7 +30,7 @@ func converged() state.Snapshot {
 	s := state.Empty(t0)
 	s.VMs["app-server"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: t0}
 	s.Packages["app-server/nginx"] = state.Package{Installed: true, Version: "1.24.0", ObservedAt: t0}
-	s.Services["app-server/nginx"] = state.Service{Enabled: true, Running: true, ObservedAt: t0}
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: true, ObservedAt: t0}
 	return s
 }
 
@@ -101,8 +102,9 @@ func TestDigestCoversInputs(t *testing.T) {
 
 func TestPackageAndServiceDrift(t *testing.T) {
 	s := converged()
-	s.Packages["app-server/nginx"] = state.Package{Installed: false, ObservedAt: t0}
-	s.Services["app-server/nginx"] = state.Service{Enabled: true, Running: false, ObservedAt: t0}
+	cs := nginxChangeSet()
+	s.Packages["app-server/nginx"] = state.Package{Installed: false, ChangeSet: &cs, ObservedAt: t0}
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
 
 	p := Build(desired(t), s, policy.Default)
 	pkg := find(t, p, "NodePackage app-server/nginx")
@@ -207,7 +209,7 @@ func TestRemovedVMIsRetained(t *testing.T) {
 
 func TestRender(t *testing.T) {
 	s := converged()
-	s.Services["app-server/nginx"] = state.Service{Enabled: true, Running: false, ObservedAt: t0}
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
 	s.VMs["old-db"] = state.VM{Managed: true, CPU: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu-24.04", ObservedAt: t0}
 	var buf bytes.Buffer
 	Render(&buf, Build(desired(t), s, policy.Default))
@@ -225,5 +227,60 @@ func TestRender(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("render lacks %q:\n%s", want, out)
 		}
+	}
+}
+
+func nginxChangeSet() noderev.ChangeSet {
+	return noderev.NewChangeSet([]noderev.Change{
+		{Action: noderev.ChangeInstall, Package: "nginx", Version: "1.24.0-2ubuntu7.19", Origins: []string{"Ubuntu:24.04/noble-updates"}},
+		{Action: noderev.ChangeInstall, Package: "nginx-common", Version: "1.24.0-2ubuntu7.19", Origins: []string{"Ubuntu:24.04/noble-updates"}},
+	})
+}
+
+// Approving an installation approves the exact apt change set: it is part of the plan (and its
+// digest). Removals and unknown origins are denied; without a simulation the plan waits.
+func TestInstallPlansTheChangeSet(t *testing.T) {
+	plan := func(p state.Package) Change {
+		s := converged()
+		p.ObservedAt = t0
+		s.Packages["app-server/nginx"] = p
+		return find(t, Build(desired(t), s, policy.Default), "NodePackage app-server/nginx")
+	}
+	cs := nginxChangeSet()
+	c := plan(state.Package{ChangeSet: &cs})
+	if c.Verdict != policy.ApprovalRequired || len(c.Diffs) != 4 || c.Diffs[1].To != cs.Digest ||
+		c.Diffs[2].To != "install nginx 1.24.0-2ubuntu7.19 (Ubuntu:24.04/noble-updates)" {
+		t.Fatalf("install: %+v", c)
+	}
+	other := noderev.NewChangeSet(append(cs.Changes, noderev.Change{Action: noderev.ChangeInstall, Package: "libfoo", Version: "1", Origins: []string{"Ubuntu:24.04/noble"}}))
+	s1, s2 := converged(), converged()
+	s1.Packages["app-server/nginx"] = state.Package{ChangeSet: &cs, ObservedAt: t0}
+	s2.Packages["app-server/nginx"] = state.Package{ChangeSet: &other, ObservedAt: t0}
+	if Build(desired(t), s1, policy.Default).Digest == Build(desired(t), s2, policy.Default).Digest {
+		t.Fatal("a different change set gave the same plan digest")
+	}
+
+	removes := noderev.NewChangeSet(append(cs.Changes, noderev.Change{Action: noderev.ChangeRemove, Package: "apache2", Version: "2.4"}))
+	if c := plan(state.Package{ChangeSet: &removes}); c.Verdict != policy.Denied || c.Operations[0].Decision.Code != "MAM-POL-0304" {
+		t.Fatalf("removal: %+v", c)
+	}
+	ppa := noderev.NewChangeSet([]noderev.Change{{Action: noderev.ChangeInstall, Package: "nginx", Version: "1.27", Origins: []string{"LP-PPA-someone:noble"}}})
+	if c := plan(state.Package{ChangeSet: &ppa}); c.Verdict != policy.Denied || c.Operations[0].Decision.Code != "MAM-POL-0305" {
+		t.Fatalf("origin: %+v", c)
+	}
+	if c := plan(state.Package{}); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0105" {
+		t.Fatalf("no simulation: %+v", c)
+	}
+	if c := plan(state.Package{Error: "E: Unable to locate package nginx"}); c.Status != StatusBlocked || c.Note.Code != "MAM-PLAN-0202" {
+		t.Fatalf("error: %+v", c)
+	}
+}
+
+func TestServiceWaitsForItsUnit(t *testing.T) {
+	s := converged()
+	s.Services["app-server/nginx"] = state.Service{Exists: false, ObservedAt: t0}
+	c := find(t, Build(desired(t), s, policy.Default), "NodeService app-server/nginx")
+	if c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0106" || len(c.Operations) != 0 {
+		t.Fatalf("%+v", c)
 	}
 }
