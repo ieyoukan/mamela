@@ -134,6 +134,38 @@
 - **型付きの条件:** 能力は、付与の期間（once／standing）と型付きの条件を持つ。mamelet の install は、承認した変更集合と違う、削除を含む、別の origin、別のノード、別の操作、期限切れのどれでも条件が成り立たないことを、テストで確かめた。
 - **plan と契約:** plan はプロバイダーの digest を持ち、契約が変われば apply しない（MAM-REC-0007）。
 
+## プロバイダーの契約（段階 2a、2026-11-10）
+
+外部の開発者が書くプロバイダーを、信頼しないコードとして動かす土台。書き方は [provider-authoring.md](provider-authoring.md)。
+
+- **公開パッケージ:**
+  - `provider/protocol`: マニフェスト、JSON-RPC、許可、カタログ。`internal/provider/spec`、`graph.Kind`、`policy.Op` は、この型の別名にした。
+  - `provider/sdk`: Go の SDK。
+  - `provider/providertest`: 適合テスト。
+- **隔離（`internal/provider/host`）:**
+  - WASM（Go の wasip1、WASI 0.3 component）は、固定版の wasmtime で、ディレクトリ・環境変数・ネットワークなしに動かす。import は実行前に許可リストで確かめる。
+  - ネイティブは、`mamela provider trust` で信頼した実行ファイルだけを動かす。
+- **許可（permit）:**
+  - observe と lookup は、宣言した読み取りだけを通す。describe と diff は、要求を一切通さない。
+  - apply は、承認した操作の呼び出し・パラメータ・対象 ID・固定した値・前提条件・期限に合う要求だけを通す。
+- **結果の判定:** host が要求の記録から、done・failed・partly-done・unknown を決める。プロバイダーの答えには頼らない。
+- **確かめたこと:**
+  - host: 違反するプロバイダー（`internal/provider/host/testdata/rogue`）の、それぞれの違反を拒否または検出する。
+  - 適合テスト: 例のプロバイダー（`examples/kv`）をわざと 8 通りに壊し、すべて検出した。最初の版は lookup の誤りを見逃したので、適用の前と収束の後に lookup を確かめる検査を足した。
+    - 宣言から外したものを観測で報告しない
+    - 宣言から外したものを diff で変える
+    - 再開しない
+    - 宣言していないパラメータを送る
+    - 失敗を握りつぶす
+    - lookup が常に done と答える
+    - lookup が常に partly-done と答える
+    - lookup がラベルを見ない
+- **まだしていないこと（段階 2b）:**
+  - plan・approve・apply から使う
+  - 許可の一度きりの、SQLite への記録
+  - policy への組み込み
+  - Proxmox と mamelet の移行
+
 ## テストの優先順位
 
 1. 非許可の操作と任意 shell コマンドを拒否する。

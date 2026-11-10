@@ -1,6 +1,6 @@
 # ADR 0002 — プロバイダーの契約: 信頼境界、承認した 1 操作の許可、能力の宣言、版の指定
 
-- 状態: Proposed（段階 1 は実装済み。段階 2 以降は、この ADR の合意後に実装する）
+- 状態: Accepted（2026-11-10 に合意。段階 1 と段階 2a は実装済み。段階 2b 以降はこれから）
 - 日付: 2026-11-10
 - 対象: Proxmox と mamelet の次に、外部の開発者が書くプロバイダー（AWS など）
 
@@ -27,7 +27,14 @@
 - host の検査
 - 外部の権限の仕組み（Proxmox の ACL、AWS の IAM）
 
-**既定の形式は WASM コンポーネントにする。** Mamela がすでに評価に使っている、固定版の wasmtime で実行する。許す import は `wasi:cli` の stdin・stdout・stderr・exit だけである（評価と同じく、`internal/component` で実行前に確かめる）。ファイル、ネットワーク、環境変数、時計、乱数は与えない。プロバイダーが外と話せる道は、stdin と stdout の JSON-RPC だけになる。外部 API への要求も、この道で host に頼む（`host/request`）。したがって、次のことが成り立つ。
+**既定の形式は WASM にする。** Mamela がすでに評価に使っている、固定版の wasmtime で実行する。ディレクトリ、環境変数、ネットワーク、HTTP は与えない。プロバイダーが外と話せる道は、stdin と stdout の JSON-RPC だけになる。import は実行前に許可リストで確かめる（`internal/provider/host`）。
+
+| 形式 | 許す import |
+|---|---|
+| WASI 0.3 component | `wasi:cli` の stdin・stdout・stderr・exit・types だけ |
+| WASI preview 1 の core module（Go の `GOOS=wasip1`） | stdio、引数と環境変数（どちらも空）、時計、乱数、yield、exit。`path_*`（ファイル）と `sock_*`（ソケット）は拒否する |
+
+preview 1 を受け付けるのは、Go が出せる WASM がこれだけだからである。時計と乱数は Go の実行時が必要とするので与えるが、どちらも外への道ではない。diff が入力だけから決まることは、時計を取り上げることではなく、適合テスト（同じ入力で 2 回 diff して比べる）と、diff の間は要求を一切通さないことで確かめる。外部 API への要求も、この道で host に頼む（`host/request`）。したがって、次のことが成り立つ。
 
 - プロバイダーは、資格情報、使う人のファイル、メタデータのエンドポイントのどれにも届かない。
 - 外への要求は、すべて host を通り、host が検査して記録する。
@@ -50,10 +57,22 @@ host は、承認した plan の操作を 1 つ実行するたびに、その操
 | 対象 ID | パスの ID（Proxmox の node・vmid・storage、AWS のリソース ID や ARN）。作成時に決まる ID は、host が決める（予約）か、作成の応答から host が記録して結びつける |
 | 呼び出し | マニフェストのうち、その操作の呼び出しだけ |
 | パラメータの値 | 承認の意図を担う値（台数、vCPU、メモリ、サイズ、名前、タグ、変更集合の digest）を型付きの条件で固定する |
-| 前提条件 | 対象の観測の版（Proxmox の config digest、AWS のタグや状態）。違えば送らない |
+| 前提条件 | 対象の観測の版（Proxmox の config digest、AWS のタグや状態）。違えば送らない。host が強制するのは、host のカタログがその呼び出しに前提条件のパラメータ（`version`、`digest` など）を書いているときである |
 | 期限と回数 | 期限つきで、一度きり。操作が終わったら無効にする |
 
+許可は、承認した変更（`protocol.Change`）とマニフェストから `protocol.NewPermit` で導く。host は、渡された許可が導いたものと一致することを確かめる。呼び出しを足した許可や、別の対象を書いた許可は、実行の前に拒否する。
+
 `observe` の間は、変更の要求を一切受け付けない（読み取りだけ）。`diff` の間は、外部への要求そのものを受け付けない（`diff` は入力だけから計算する）。許可に合わない要求は送らずに拒否し、記録する。
+
+**段階 2a の外部プロバイダー（`internal/provider/host`）での実装:** 上の表のすべてを、`host/request` ごとに確かめる。
+
+- **確かめないこと:**
+  - 固定していないほかの値
+  - フォーム以外の本文（v1 の `host/request` は、クエリとフォームしか送れない）
+  - 許した要求を受けて、API がカタログの効果以上のことをするかどうか
+  - apply 中の読み取りの対象
+  - カタログが前提条件のパラメータを書いていない呼び出しの前提条件
+- **一度きり:** 段階 2a では、同じセッションの中で確かめる。プロセスをまたぐ記録（SQLite）は段階 2b で加える。
 
 **段階 1 の Proxmox（in-process）での実装:** `proxmox.RestrictOperation`、`Bind`、`Values`、`ReadOnly`。
 
@@ -95,7 +114,11 @@ host は、承認した plan の操作を 1 つ実行するたびに、その操
   | unknown | 結果が分からない |
 
 - **host が変更の要求を記録する。** `host/request` を通るので、どの変更の要求が効いたかは host が知っている。プロバイダーの申告には頼らない。in-process の Proxmox では、`proxmox.Changed` がこの記録を持つ。
-- **partly-done と unknown のとき、次の apply は観測してから動く。** プロバイダーは、`lookup`（冪等キーによる照会）と、途中からの続き（できていることは飛ばす）を実装しなければならない。これは適合テストで確かめる（段階 2）。
+- **結果の判定（段階 2a）:** host は、記録だけから結果を決める。
+  - 分類できない要求と、カタログで読み取りでない要求は、変更として扱う。
+  - 変更の要求が送られて結果が分からない（応答がない、または 5xx）ものが 1 つでもあれば、unknown にする。プロバイダーが成功と答えても同じである。
+  - 許可を越えた要求が 1 つでもあれば、プロバイダーの答えにかかわらず、その apply は失敗として扱う。
+- **partly-done と unknown のとき、次の apply は観測してから動く。** プロバイダーは、`lookup`（変更が効いているかを、読み取りだけで調べる）と、途中からの続き（できていることは飛ばす）を実装しなければならない。これは適合テスト `provider/providertest` で確かめる。
 
 ### 5. 条件は最初から型付きにする
 
@@ -134,7 +157,7 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
 ### 7. 版の指定とプロトコル（段階 2 以降。方向は前の版から変えない）
 
 - **版の指定:** Pome.toml の依存で指定する。Pome.lock と sumdb から、Pome の中の `provider.lock`、そして実行ファイル（WASM またはプラットフォームごとのネイティブ）の sha256 まで、hash の鎖をつなぐ。ただし、この鎖が保証するのは改変されていないことだけである。実行してよいかは、決定 1 の確認で決める。
-- **プロトコル:** stdin と stdout で JSON-RPC 2.0 を話す。メソッドは次のとおり。
+- **プロトコル（`mamela-provider-rpc/v1`、段階 2a で実装）:** stdin と stdout で JSON-RPC 2.0 を話す。1 行に 1 つのメッセージを書く。host は一度に 1 つの要求を送り、その応答を待つ間だけ、プロバイダーからの `host/request` を受け付ける。メソッドは次のとおり。
 
   | メソッド | 内容 |
   |---|---|
@@ -142,7 +165,7 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
   | `observe` | 読み取りの要求だけで実状態を返す |
   | `diff` | 外部への要求なしで差分と操作を返す |
   | `apply` | 許可（permit）とともに 1 操作を実行する |
-  | `lookup` | 冪等キーで結果を調べる |
+  | `lookup` | 変更が効いているかを、読み取りだけで調べる（done・not-done・partly-done） |
   | `host/request` | 外部 API への要求を host に頼む（許可に結びつく） |
 
   資格情報は host だけが持つ。host が、Proxmox のトークンを付けるか、AWS の SigV4 で署名する。AWS では、plan ごとに必要な action・resource・条件だけを許すセッションポリシーを付けた、短期の資格情報を使う。
@@ -156,17 +179,24 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
    - partly-done
    - 型付きの条件（mamelet の許可: ノード・操作・期限・変更集合・削除なし・origin）
    - plan とプロバイダーの digest の結びつき
-2. **段階 2（信頼境界と許可の契約）**
+2. **段階 2a（信頼境界と許可の契約）: 実装済み**
+   - 公開パッケージ `provider/protocol`（マニフェスト、JSON-RPC、許可、カタログ）と、Go の SDK `provider/sdk`
    - WASM のプロバイダーの実行（import の許可リスト、stdio だけ）
-   - JSON-RPC と `host/request` の許可（permit）の検査
-   - host による変更の記録と partly-done
-   - host のカタログによる効果の検証と、それによる policy
-   - ネイティブを信頼するための明示
-   - プロバイダー作者向けの適合テスト（許可を越える要求の拒否、観測中の変更の拒否、`unknown` と `partly-done` からの再開、冪等性）
-   - 今の Proxmox と mamelet を、この契約の上に移す
-3. **段階 3**
+   - `host/request` の許可（permit）の検査
+   - host による変更の記録と、4 つの結果の判定
+   - host のカタログによる効果の検証（`Verified.AutoApprovable`、`MayLoseData`）
+   - ネイティブを信頼するための明示（`mamela provider trust`、`mamela.trust.toml`）
+   - プロバイダー作者向けの適合テスト `provider/providertest`
+   - 例のプロバイダー `examples/kv`
+3. **段階 2b（Mamela の流れにつなぐ）**
+   - plan・approve・apply から外部のプロバイダーを使う。Graph が、知らない種類のリソースを運べるようにする
+   - 許可の一度きりを SQLite に記録する
+   - 効果の検証を policy の判定に組み込む
+   - plan の digest に、プロバイダーの実行ファイルの digest とプロトコルの版を加える
+   - 今の Proxmox と mamelet を、この契約の上に移す。Proxmox のカタログを host のカタログにする
+4. **段階 3**
    - Pome と `provider.lock` による配布と、版の指定
-4. **段階 4**
+5. **段階 4**
    - AWS（EC2 の VM）。ARN と条件キーによる能力と、セッションポリシーによる最小の付与
    - エディタ向けの `mamela lsp`
 
@@ -182,7 +212,8 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
 
 ## 未解決
 
-- WASM のプロバイダーを書く言語と SDK: Go（wasip2）、Rust、Emela の WASM。Emela 0.27 の仕様には stdin を読む標準ライブラリがなく、今は Emela でプロバイダーを書けない。
+- WASM のプロバイダーを書く言語と SDK: 段階 2a では Go（wasip1）の SDK を用意した。Rust（wasip2）は、今の component の許可リストでは std の import（`wasi:filesystem` など）が拒否されるので、許可リストを広げるか、std を使わない書き方を示す必要がある。Emela 0.27 の仕様には stdin を読む標準ライブラリがなく、今は Emela でプロバイダーを書けない。
+- JSON の本文: v1 の `host/request` は、クエリとフォームしか送れない。JSON の本文を送る API のために、本文のどこを「パラメータ」として許可と照合するかを決める。
 - エディタの位置情報: Graph はソースの位置を持たない。Emela が値に位置を付けられるかは、upstream の課題である。
 - AWS の、作成時に決まる ID: 作成前はリクエストタグの条件で絞り、作成後は host が応答から ID を記録して許可に結びつける。
 - 大きな応答や、長く続く操作（待ち）の扱い: `host/request` の上限と、待ちを host 側で行うかどうか。

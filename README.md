@@ -45,3 +45,4 @@ and `scripts/check.sh`.
 
 - [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
+- [Writing a provider](docs/provider-authoring.md) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md)
