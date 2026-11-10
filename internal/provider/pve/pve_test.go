@@ -110,6 +110,14 @@ func (e *env) apply(op policy.Op, r graph.Resource) error {
 	return e.p.Apply(e.ctx, reconcile.Step{OperationID: "op-test", Op: op, Resource: r})
 }
 
+// create creates a VM and starts it, as an apply of a plan that creates it does.
+func (e *env) create(r graph.Resource) error {
+	if err := e.apply(policy.OpCreateVM, r); err != nil {
+		return err
+	}
+	return e.apply(policy.OpStartVM, r)
+}
+
 func (e *env) writes() int {
 	e.fake.mu.Lock()
 	defer e.fake.mu.Unlock()
@@ -119,6 +127,16 @@ func (e *env) writes() int {
 func TestCreatesVMFromImageWithoutTemplate(t *testing.T) {
 	e := newEnv(t)
 	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	// Created stopped: start-vm starts it once every VM of the run is created.
+	if e.fake.starts != 0 || e.fake.vms[7000].status == "running" {
+		t.Fatalf("create started the VM (%d starts)", e.fake.starts)
+	}
+	if snap, _ := e.p.Observe(e.ctx); !snap.VMs["web"].Stopped {
+		t.Fatalf("a created VM is observed running: %+v", snap.VMs["web"])
+	}
+	if err := e.apply(policy.OpStartVM, vmResource("web", 1, 1024, 10)); err != nil {
 		t.Fatal(err)
 	}
 	f := e.fake
@@ -189,7 +207,8 @@ func TestPlanApplyConverges(t *testing.T) {
 		return p, rep
 	}
 	_, rep := run()
-	if rep.Stopped != nil || len(rep.Steps) != 1 || rep.Steps[0].Outcome != reconcile.OutcomeDone {
+	if rep.Stopped != nil || len(rep.Steps) != 2 || rep.Steps[0].Op != policy.OpCreateVM || rep.Steps[1].Op != policy.OpStartVM ||
+		rep.Steps[0].Outcome != reconcile.OutcomeDone || rep.Steps[1].Outcome != reconcile.OutcomeDone {
 		t.Fatalf("first apply: %+v %+v", rep.Steps, rep.Stopped)
 	}
 	p, rep := run()
@@ -208,7 +227,8 @@ func TestLostCreateResponseIsFoundInTheTaskList(t *testing.T) {
 	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
 		t.Fatalf("want the create found and finished, got %v", err)
 	}
-	if e.fake.creates != 1 || len(e.fake.vms) != 1 || e.fake.vms[7000].status != "running" {
+	if e.fake.creates != 1 || len(e.fake.vms) != 1 || e.fake.vms[7000].config["description"] == "" ||
+		!strings.Contains(e.fake.vms[7000].config["description"], "mamela-state: ready") {
 		t.Fatalf("creates %d, VMs %d", e.fake.creates, len(e.fake.vms))
 	}
 }
@@ -258,7 +278,7 @@ func TestCreateStillRunningIsNeverDuplicated(t *testing.T) {
 	e.fake.mu.Lock()
 	e.fake.vms[7000].lock, e.fake.vms[7000].pool = "", "lab"
 	e.fake.mu.Unlock()
-	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+	if err := e.create(vmResource("web", 1, 1024, 10)); err != nil {
 		t.Fatal(err)
 	}
 	if e.fake.creates != 1 || e.fake.vms[7000].status != "running" {
@@ -288,21 +308,11 @@ func TestFailedCreateIsRetriedOnTheSameVMID(t *testing.T) {
 // A failure before the first change is a clean failure; a failure after a change took effect
 // makes the operation partly done (ErrNotSent or a refusal only speaks for that one request).
 func TestFailureAfterAChangeIsPartlyDone(t *testing.T) {
-	site := &lab.Site{Proxmox: lab.Proxmox{Node: "n1"}, Boundary: lab.Boundary{Pool: "lab", VMIDMin: 7000, VMIDMax: 7009, Tag: "mamela-lab"},
-		Placement: lab.Placement{DiskStorage: "local-lvm", ImageStorage: "local", Bridge: "vmbr0", SDNZone: "localnetwork"}}
-	acl := map[string][]string{}
-	for _, g := range site.Grants() {
-		for _, p := range g.Privs {
-			if p != "VM.PowerMgmt" { // the create works; starting the new VM is refused
-				acl[g.Path] = append(acl[g.Path], p)
-			}
-		}
-	}
 	e := newEnv(t)
-	e.fake.acl = acl
+	e.fake.resizeRefused = true // the create works; growing the new VM's disk is refused
 	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
 	if !errors.Is(err, reconcile.ErrPartlyDone) || errors.Is(err, reconcile.ErrUnknownOutcome) ||
-		!strings.Contains(err.Error(), "POST /nodes/n1/qemu") || !strings.Contains(err.Error(), "VM.PowerMgmt") {
+		!strings.Contains(err.Error(), "POST /nodes/n1/qemu") || !strings.Contains(err.Error(), "storage full") {
 		t.Fatalf("want partly done naming the create and the refusal, got %v", err)
 	}
 
@@ -608,7 +618,7 @@ func TestDerivedGrantsAreEnoughAndEachIsNeeded(t *testing.T) {
 			if withSeed {
 				e.p.Seeds = &fakeSeeds{}
 			}
-			if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+			if err := e.create(vmResource("web", 1, 1024, 10)); err != nil {
 				return fmt.Errorf("create: %w", err)
 			}
 			snap, err := e.p.Observe(e.ctx)
@@ -742,7 +752,7 @@ func TestCallsCoverWhatTheProviderSends(t *testing.T) {
 // second resize operation of the same change finds nothing left to do.
 func TestResizeRestartsOnce(t *testing.T) {
 	e := newEnv(t)
-	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+	if err := e.create(vmResource("web", 1, 1024, 10)); err != nil {
 		t.Fatal(err)
 	}
 	for _, op := range []policy.Op{policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
@@ -779,7 +789,7 @@ func TestResizeRestartsOnce(t *testing.T) {
 func TestDestroyOnlyMamelasVM(t *testing.T) {
 	e := newEnv(t)
 	e.p.Seeds = &fakeSeeds{}
-	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+	if err := e.create(vmResource("web", 1, 1024, 10)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.api.DestroyVM(e.ctx, "n1", 7000); err == nil {
@@ -870,5 +880,50 @@ func TestStaticNetworkWithinTheSiteRange(t *testing.T) {
 	e.p.Config.AllowDHCP = false
 	if err := e.apply(policy.OpCreateVM, vmResource("db", 1, 1024, 10)); err == nil || e.writes() != 0 {
 		t.Fatalf("DHCP where the site forbids it: err %v, %d writes", err, e.writes())
+	}
+}
+
+// Reboot restarts only a running VM Mamela created, the one shown, with the calls it declares:
+// by asking the guest, or with --hard by resetting it.
+func TestRebootOnlyMamelasRunningVM(t *testing.T) {
+	e := newEnv(t)
+	if err := e.create(vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := e.p.DestroyTarget(e.ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.fake.requests = nil
+	if err := e.p.Reboot(e.ctx, e.api, target, false); err != nil || e.fake.reboots != 1 || e.fake.resets != 0 {
+		t.Fatalf("reboot: %v, %d reboots %d resets", err, e.fake.reboots, e.fake.resets)
+	}
+	if err := e.p.Reboot(e.ctx, e.api, target, true); err != nil || e.fake.resets != 1 {
+		t.Fatalf("hard reboot: %v, %d resets", err, e.fake.resets)
+	}
+	allowed := map[string]bool{}
+	for _, c := range append(slices.Clone(pve.RebootCalls), pve.ObserveCalls...) {
+		allowed[c.Method+" "+c.Path] = true
+	}
+	for _, r := range e.fake.requests {
+		method, path, _ := strings.Cut(r, " ")
+		ep, ok := proxmox.LookupEndpoint(method, strings.TrimPrefix(path, "/api2/json"))
+		if !ok || !allowed[ep.Method+" "+ep.Path] {
+			t.Errorf("reboot sent %s, which RebootCalls do not list", r)
+		}
+	}
+	// Not the VM that was shown, or not running: nothing is sent.
+	before := e.writes()
+	other := target
+	other.VMID = 7005
+	if err := e.p.Reboot(e.ctx, e.api, other, true); err == nil || e.writes() != before {
+		t.Fatalf("rebooted a VM other than the one shown: %v", err)
+	}
+	e.fake.vms[7000].status = "stopped"
+	if err := e.p.Reboot(e.ctx, e.api, target, true); err == nil || !strings.Contains(err.Error(), "start-vm") || e.writes() != before {
+		t.Fatalf("rebooted a stopped VM: %v", err)
+	}
+	if _, err := e.p.DestroyTarget(e.ctx, "nobody"); err == nil {
+		t.Fatal("found a VM Mamela did not create")
 	}
 }

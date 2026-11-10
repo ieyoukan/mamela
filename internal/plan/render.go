@@ -29,7 +29,8 @@ func Render(w io.Writer, p *Plan) {
 
 	for _, c := range p.Changes {
 		sym := symbols[c.Status]
-		if c.Status == StatusChange && len(c.Diffs) > 0 && allFromEmpty(c.Diffs) {
+		if c.Status == StatusChange && (len(c.Diffs) > 0 && allFromEmpty(c.Diffs) ||
+			slices.ContainsFunc(c.Operations, func(o Operation) bool { return o.Op == policy.OpCreateVM })) {
 			sym = "+"
 		}
 		via := ""

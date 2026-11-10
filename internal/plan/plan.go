@@ -228,8 +228,10 @@ func (b builder) vm(r graph.Resource) Change {
 		c.Diffs = []Diff{
 			{"cpu", "", itoa(want.CPU)}, {"memoryMiB", "", itoa(want.MemoryMiB)},
 			{"diskGiB", "", itoa(want.DiskGiB)}, {"image", "", want.Image}, {"network", "", want.Network.String()},
+			// Created stopped, started after every VM of the run is created.
+			{"running", "false", "true"},
 		}
-		return b.withOps(c, policy.Subject{Op: policy.OpCreateVM})
+		return b.withOps(c, policy.Subject{Op: policy.OpCreateVM}, policy.Subject{Op: policy.OpStartVM})
 	}
 	if !got.Managed {
 		c.Diffs = []Diff{}
@@ -266,6 +268,10 @@ func (b builder) vm(r graph.Resource) Change {
 		c.Diffs = append(c.Diffs, Diff{"network", got.Network, want.Network.String()})
 		subjects = append(subjects, policy.Subject{Op: policy.OpChangeVMNetwork})
 	}
+	if got.Stopped {
+		c.Diffs = append(c.Diffs, Diff{"running", "false", "true"})
+		subjects = append(subjects, policy.Subject{Op: policy.OpStartVM})
+	}
 	return b.withOps(c, subjects...)
 }
 
@@ -279,8 +285,29 @@ func (b builder) nodeReady(node string) (bool, *Note) {
 	case !vm.Managed:
 		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("VM %s is not managed by Mamela (Foreign)", node),
 			Hint: "Mamela does not configure machines it did not create"}
+	case vm.Stopped:
+		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for VM %s to be started", node)}
 	}
 	return true, nil
+}
+
+// SilentAgentAfter is how long a VM may run before Mamela says that its agent has never reported.
+// A first boot with cloud-init takes a few minutes; this is well beyond it.
+const SilentAgentAfter = 15 * time.Minute
+
+// awaitAgent is how a node resource waits for its agent's first report: patiently while the VM is
+// young, but once it has been running long past a first boot, the agent is not coming by itself
+// (the VM may be stuck at boot, for example in emergency mode, or cannot reach the Control
+// Plane), and the plan says so.
+func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
+	vm := b.snap.VMs[node]
+	if up := time.Duration(vm.UptimeSeconds) * time.Second; up < SilentAgentAfter {
+		return StatusWaiting, waiting
+	}
+	return StatusBlocked, &Note{Code: "MAM-PLAN-0110",
+		Message: fmt.Sprintf("VM %s has been running for %s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane",
+			node, (time.Duration(vm.UptimeSeconds) * time.Second).Truncate(time.Minute)),
+		Hint: "look at its console; if it is stuck, restart it with `mamela reboot " + node + "` (add --hard if the guest does not respond)"}
 }
 
 func (b builder) pkg(r graph.Resource) Change {
@@ -292,8 +319,8 @@ func (b builder) pkg(r graph.Resource) Change {
 	}
 	got, observed := b.snap.Packages[r.Name]
 	if !observed {
-		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0103",
-			Message: fmt.Sprintf("waits for the agent on %s to report packages", want.Node)}
+		c.Status, c.Note = b.awaitAgent(want.Node, &Note{Code: "MAM-PLAN-0103",
+			Message: fmt.Sprintf("waits for the agent on %s to report packages", want.Node)})
 		return c
 	}
 	if b.stale(got.ObservedAt) {
@@ -342,8 +369,8 @@ func (b builder) service(r graph.Resource) Change {
 	}
 	got, observed := b.snap.Services[r.Name]
 	if !observed {
-		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0104",
-			Message: fmt.Sprintf("waits for the agent on %s to report services", want.Node)}
+		c.Status, c.Note = b.awaitAgent(want.Node, &Note{Code: "MAM-PLAN-0104",
+			Message: fmt.Sprintf("waits for the agent on %s to report services", want.Node)})
 		return c
 	}
 	if b.stale(got.ObservedAt) {
@@ -386,8 +413,8 @@ func (b builder) k3s(r graph.Resource) Change {
 	got, observed := b.snap.K3s[r.Name]
 	switch {
 	case !observed:
-		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0108",
-			Message: fmt.Sprintf("waits for the agent on %s to report k3s", want.Node)}
+		c.Status, c.Note = b.awaitAgent(want.Node, &Note{Code: "MAM-PLAN-0108",
+			Message: fmt.Sprintf("waits for the agent on %s to report k3s", want.Node)})
 		return c
 	case b.stale(got.ObservedAt):
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)

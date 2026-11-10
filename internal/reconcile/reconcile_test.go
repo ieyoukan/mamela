@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -446,5 +447,41 @@ func TestPlanForOtherProvidersIsNotApplied(t *testing.T) {
 	r.Providers = "sha256:providers-v1"
 	if rep, err := r.Apply(e.ctx, p.Digest); err != nil || rep.Stopped != nil {
 		t.Fatalf("the same providers: %+v %v", rep, err)
+	}
+}
+
+// Every VM of a run is created before any is started: a first boot must not compete with another
+// VM's disk import. A create that fails starts nothing; the next run starts what was created.
+func TestVMsAreStartedAfterEveryCreate(t *testing.T) {
+	e := newEnv(t)
+	vm := func(name string) string {
+		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
+	}
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` + vm("a") + `,` + vm("b") + `,` + vm("c") + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.g = g
+	p := e.plan()
+	e.approve(p)
+	e.world.Inject(policy.OpCreateVM, fake.Fault(0))   // a succeeds
+	e.world.Inject(policy.OpCreateVM, fake.FailBefore) // b fails
+	rep := e.apply(p)
+	if rep.Stopped == nil || strings.Join(e.world.Applied, ",") != "create-vm a,create-vm b" {
+		t.Fatalf("applied %v, stopped %+v", e.world.Applied, rep.Stopped)
+	}
+	snap, _ := e.world.Observe(e.ctx)
+	if !snap.VMs["a"].Stopped {
+		t.Fatal("a VM was started although a create of the run failed")
+	}
+	// The next plan creates b and c and starts all three, creates first.
+	e.world.Applied = nil
+	p = e.plan()
+	e.approve(p)
+	if rep := e.apply(p); rep.Stopped != nil {
+		t.Fatalf("%+v", rep.Stopped)
+	}
+	if got := strings.Join(e.world.Applied, ","); got != "create-vm b,create-vm c,start-vm a,start-vm b,start-vm c" {
+		t.Fatalf("order %s", got)
 	}
 }

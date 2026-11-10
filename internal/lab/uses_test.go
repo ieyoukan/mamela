@@ -58,12 +58,18 @@ func TestPlannedRequirementsAreConcreteAndGranted(t *testing.T) {
 		{"/storage/local-lvm", "Datastore.AllocateSpace", true},
 		{"/storage/local", "Datastore.Audit", true},
 		{"/storage/local", "Datastore.AllocateTemplate", false}, // only if not uploaded yet
-		{"/pool/mamela-lab", "VM.PowerMgmt", false},
 		{"/sdn/zones/localnetwork/vmbr0", "SDN.Use", true},
 	} {
 		if !has(create, want.target, want.capability, want.always) {
 			t.Errorf("create-vm lacks %+v: %+v", want, create)
 		}
+	}
+	// Starting is its own operation, after every create of the run.
+	if has(create, "/pool/mamela-lab", "VM.PowerMgmt", false) || has(create, "/pool/mamela-lab", "VM.PowerMgmt", true) {
+		t.Errorf("create-vm starts the VM: %+v", create)
+	}
+	if start := byOp["VirtualMachine web start-vm"]; !has(start, "/pool/mamela-lab", "VM.PowerMgmt", false) {
+		t.Errorf("start-vm: %+v", start)
 	}
 	grow := byOp["VirtualMachine db grow-vm-disk"]
 	if !has(grow, "/pool/mamela-lab", "VM.Config.Disk", true) || has(grow, "/pool/mamela-lab", "VM.Allocate", true) {

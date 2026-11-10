@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/proxmox"
 )
@@ -131,6 +132,57 @@ func (p *Provider) Destroy(ctx context.Context, d Destroyer, want Target) error 
 	}
 	if !free {
 		return fmt.Errorf("VMID %d is still in use after destroying VM %s", now.VMID, want.Name)
+	}
+	return nil
+}
+
+// Rebooter is the API `mamela reboot` uses: the provider's API plus resetting a VM.
+type Rebooter interface {
+	API
+	ResetVM(ctx context.Context, node string, vmid int) (string, error)
+}
+
+// RebootCalls are the calls of `mamela reboot`, for the permission catalog.
+var RebootCalls = []proxmox.Call{
+	{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/status/current"},
+	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reboot", When: "mamela reboot", Maybe: true},
+	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reset", When: "mamela reboot --hard", Maybe: true},
+	{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status"},
+}
+
+// rebootTimeout bounds a guest's own shutdown: a guest that does not respond (for example one in
+// emergency mode, where nothing handles the ACPI request) needs --hard.
+const rebootTimeout = 5 * time.Minute
+
+// Reboot restarts a running VM Mamela created: by asking the guest (a clean shutdown, then a
+// start), or with hard, by resetting it at once. It looks at the VM again first and refuses if it
+// is not the one shown. A stopped VM is started by plan and apply (start-vm), not here.
+func (p *Provider) Reboot(ctx context.Context, r Rebooter, want Target, hard bool) error {
+	ctx = proxmox.RestrictOperation(ctx, "reboot", append(slices.Clone(ObserveCalls), RebootCalls...))
+	ctx = proxmox.Bind(ctx, map[string]string{"node": p.Config.Node, "vmid": strconv.Itoa(want.VMID)})
+	now, err := p.DestroyTarget(ctx, want.Name)
+	if err != nil {
+		return err
+	}
+	if now.VMID != want.VMID || !slices.Equal(now.Volumes, want.Volumes) {
+		return fmt.Errorf("VM %s changed since it was shown (VMID %d, volumes %v); nothing was done, run reboot again", want.Name, now.VMID, now.Volumes)
+	}
+	if now.Status != "running" {
+		return fmt.Errorf("VM %s is %s, not running; plan and apply start it (start-vm)", want.Name, now.Status)
+	}
+	if hard {
+		upid, err := r.ResetVM(ctx, p.Config.Node, now.VMID)
+		if err != nil {
+			return fmt.Errorf("reset VM %s: %w", want.Name, err)
+		}
+		return p.wait(ctx, upid, rebootTimeout)
+	}
+	upid, err := r.RebootVM(ctx, p.Config.Node, now.VMID)
+	if err != nil {
+		return fmt.Errorf("reboot VM %s: %w", want.Name, err)
+	}
+	if err := p.wait(ctx, upid, rebootTimeout); err != nil {
+		return fmt.Errorf("reboot VM %s: %w (a guest that does not respond needs --hard)", want.Name, err)
 	}
 	return nil
 }

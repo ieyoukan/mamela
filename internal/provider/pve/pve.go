@@ -135,6 +135,8 @@ type lab struct {
 	tagged bool
 	owned  bool // marker, in range, reserved for its name, and tagged unless still creating
 	config proxmox.VMConfig
+	status string // running, stopped (from /cluster/resources)
+	uptime int64  // seconds
 }
 
 // Observe reports the VMs the operating token can see. Packages and services are not observed
@@ -172,7 +174,11 @@ func (p *Provider) observed(v lab, managed bool, now time.Time) state.VM {
 	if cores == 0 {
 		cores = 1
 	}
-	vm := state.VM{Managed: managed, CPU: cores, MemoryMiB: memoryMiB(v.config.String("memory")), ObservedAt: now}
+	vm := state.VM{Managed: managed, CPU: cores, MemoryMiB: memoryMiB(v.config.String("memory")), ObservedAt: now,
+		Stopped: v.status != "running"}
+	if !vm.Stopped {
+		vm.UptimeSeconds = v.uptime
+	}
 	if size, ok := diskBytes(v.config.String("scsi0")); ok {
 		vm.DiskGiB = size >> 30
 	}
@@ -203,7 +209,7 @@ func (p *Provider) scan(ctx context.Context) ([]lab, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read the configuration of VM %d: %w", r.VMID, err)
 		}
-		v := lab{vmid: r.VMID, name: r.Name, config: cfg}
+		v := lab{vmid: r.VMID, name: r.Name, config: cfg, status: r.Status, uptime: r.Uptime}
 		v.marker, v.hasMk = parseMarker(cfg.String("description"))
 		v.tagged = p.tagged(cfg.String("tags"))
 		// A VM being created has no tag yet: Proxmox refuses tags from a pool-scoped token until
@@ -254,6 +260,8 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	switch step.Op {
 	case policy.OpCreateVM:
 		err = p.create(ctx, r.Name, spec, img)
+	case policy.OpStartVM:
+		err = p.start(ctx, r.Name)
 	case policy.OpGrowVMDisk:
 		err = p.grow(ctx, r.Name, spec)
 	case policy.OpResizeVMCPU, policy.OpResizeVMMemory:
@@ -433,15 +441,8 @@ func (p *Provider) finish(ctx context.Context, vmid int, name string, spec graph
 	if err := p.growTo(ctx, vmid, name, spec.DiskGiB); err != nil {
 		return err
 	}
-	if st.Status != "running" {
-		upid, err := p.API.StartVM(ctx, p.Config.Node, vmid)
-		if err != nil {
-			return writeErr(fmt.Sprintf("start VM %s", name), err)
-		}
-		if err := p.wait(ctx, upid, p.taskTimeout()); err != nil {
-			return fmt.Errorf("start VM %s: %w", name, err)
-		}
-	}
+	// The VM stays stopped: start-vm starts it after every VM of the run is created, so that its
+	// first boot does not compete with another VM's disk import for the storage.
 	cfg, err := p.API.VMConfig(ctx, p.Config.Node, vmid)
 	if err != nil {
 		return unknownErr(fmt.Sprintf("read the configuration of VM %s", name), err)
@@ -455,6 +456,33 @@ func (p *Provider) finish(ctx context.Context, vmid int, name string, spec graph
 		if err := p.API.SetMarker(ctx, p.Config.Node, vmid, m.String(), p.Config.Tag, cfg.String("digest")); err != nil {
 			return writeErr(fmt.Sprintf("mark VM %s ready", name), err)
 		}
+	}
+	return nil
+}
+
+// start starts a managed, ready VM that is not running.
+func (p *Provider) start(ctx context.Context, name string) error {
+	v, err := p.managed(ctx, name)
+	if err != nil {
+		return err
+	}
+	ctx = bindVM(ctx, v.vmid)
+	st, err := p.API.VMStatus(ctx, p.Config.Node, v.vmid)
+	if err != nil {
+		return unknownErr(fmt.Sprintf("read the status of VM %s", name), err)
+	}
+	if st.Lock != "" {
+		return fmt.Errorf("VM %s (VMID %d) is locked (%s): an earlier operation is still running: %w", name, v.vmid, st.Lock, reconcile.ErrUnknownOutcome)
+	}
+	if st.Status == "running" {
+		return nil
+	}
+	upid, err := p.API.StartVM(ctx, p.Config.Node, v.vmid)
+	if err != nil {
+		return writeErr(fmt.Sprintf("start VM %s", name), err)
+	}
+	if err := p.wait(ctx, upid, p.taskTimeout()); err != nil {
+		return fmt.Errorf("start VM %s: %w", name, err)
 	}
 	return nil
 }

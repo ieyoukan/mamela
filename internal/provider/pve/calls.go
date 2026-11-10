@@ -29,7 +29,7 @@ func OperationCalls(op policy.Op, withSeed bool) (calls []proxmox.Call, ok bool)
 	finish := []proxmox.Call{
 		{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/status/current"},
 		{Method: "PUT", Path: "/nodes/{node}/qemu/{vmid}/resize", Params: []string{"disk", "size"}, When: "if the disk is smaller than declared", Maybe: true},
-		{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/start", When: "if the VM is not running", Maybe: true},
+		{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/config"},
 		{Method: "PUT", Path: "/nodes/{node}/qemu/{vmid}/config", Params: []string{"description", "tags", "digest"}, When: "to mark it ready"},
 		{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status"},
 	}
@@ -56,6 +56,12 @@ func OperationCalls(op policy.Op, withSeed bool) (calls []proxmox.Call, ok bool)
 			{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reboot", When: "if the VM is running (applies the change)", Maybe: true},
 			{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status", Maybe: true},
 		}, true
+	case policy.OpStartVM:
+		return []proxmox.Call{
+			{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/status/current"},
+			{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/start", When: "if the VM is not running", Maybe: true},
+			{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status", Maybe: true},
+		}, true
 	case policy.OpGrowVMDisk:
 		return []proxmox.Call{
 			{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/config"},
@@ -74,7 +80,7 @@ const Version = "0.1.0"
 func Manifest(withSeed bool) spec.Manifest {
 	m := spec.Manifest{Schema: spec.Schema, Provider: "proxmox", Version: Version, Observe: needs(ObserveCalls)}
 	k := spec.Kind{Kind: graph.KindVirtualMachine}
-	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
+	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpStartVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
 		calls, _ := OperationCalls(op, withSeed)
 		k.Operations = append(k.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: needs(calls)})
 	}
