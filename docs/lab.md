@@ -181,17 +181,17 @@ mamelet の安全装置（`internal/mamelet`）:
 
 ### 4.5 軽量な Kubernetes（k3s）を作る
 
-`examples/k3s` は、VM 1 台に 1 ノードの k3s を置く宣言である（予算の 1 vCPU・1 GiB に収まるよう、ingress controller と metrics server を外す）。手順は L2 と同じで、承認が 3 回要る。
+`examples/k3s` は、k3s の server 1 台と agent 2 台のクラスタの宣言である（ingress controller と metrics server は外す）。VM 3 台に合計 6 vCPU と 8 GiB を使うので、`site.local.toml` の予算を広げておく（例: `max_vms = 4`、`max_vcpu_per_vm = 2`、`max_memory_mib_per_vm = 4096`、`max_disk_gib_per_vm = 20`）。手順は L2 と同じで、承認が要る。
 
 1. VM の作成（mamelet が入る）
-2. k3s の導入。plan には、版、sha256、取得元、起動の引数が出る
+2. k3s の導入。plan には、版、sha256、取得元、役割、起動の引数が出る。agent は、server の mamelet がアドレスを報告するまで待つ（MAM-PLAN-0109）
 3. サービスの有効化と起動
 
 ~~~bash
 mamela serve --site lab/site.local.toml                    # 別の端末で動かしておく
 mamela plan --site lab/site.local.toml examples/k3s         # 1. VM の作成
 mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
-mamela lab tunnel --site lab/site.local.toml k3s-1          # 別の端末で動かしておく
+mamela lab tunnel --site lab/site.local.toml k3s-server     # VM ごとに、別の端末で動かしておく
 mamela plan --site lab/site.local.toml examples/k3s         # 2. k3s の導入（mamelet の報告から）
 mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
 mamela plan --site lab/site.local.toml examples/k3s         # 3. k3s の有効化と起動

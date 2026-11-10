@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/reconcile"
 )
 
@@ -42,21 +44,22 @@ func TestK3sThroughMamelet(t *testing.T) {
 	e := newEnv(t)
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` +
 		`{"kind":"VirtualMachine","name":"app","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
-		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
 		`{"kind":"NodeService","name":"app/k3s","spec":{"enabled":true,"node":"app","running":true,"service":"k3s"}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.g = g
 	e.agent.System = &mamelet.System{Runner: k3sOS{e.os}, AllowedOrigins: []string{"Ubuntu:"}, Root: t.TempDir(),
-		HTTP: srv.Client(), K3sReleases: srv.URL}
+		HTTP: srv.Client(), K3sReleases: srv.URL, Addresses: func() []string { return []string{"192.0.2.10"} }}
 	e.publish()
 	e.round()
 
 	p := e.plan()
 	k := change(t, p, "NodeK3s app/k3s")
 	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || k.Operations[0].Op != policy.OpInstallK3s ||
-		!strings.Contains(k.Diffs[2].To, "v1.37.2%2Bk3s1/k3s") || !strings.Contains(k.Diffs[3].To, "--disable=traefik") {
+		!strings.Contains(k.Diffs[2].To, "v1.37.2%2Bk3s1/k3s") || !strings.Contains(k.Diffs[4].To, "--disable=traefik") ||
+		strings.Contains(fmt.Sprint(k.Diffs), token(t, e)) {
 		t.Fatalf("k3s: %+v", k)
 	}
 	if svc := change(t, p, "NodeService app/k3s"); svc.Status != plan.StatusWaiting {
@@ -87,4 +90,18 @@ func TestK3sThroughMamelet(t *testing.T) {
 	if downloads != 1 {
 		t.Errorf("%d downloads", downloads)
 	}
+
+	// An agent of this server joins it at the address its mamelet reported, with the same token.
+	url, ok, err := node.K3sServerURL(e.ctx, e.st, "app")
+	if err != nil || !ok || url != "https://192.0.2.10:6443" {
+		t.Fatalf("server URL: %q %v %v", url, ok, err)
+	}
+}
+
+func token(t *testing.T, e *env) string {
+	tok, err := e.st.K3sToken(e.ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
 }

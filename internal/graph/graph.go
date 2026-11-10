@@ -90,14 +90,25 @@ type NodePackageSpec struct {
 	State   PackageState
 }
 
-// NodeK3sSpec says a node runs a k3s server (a single-node Kubernetes): this exact k3s release,
-// whose binary for the node's architecture has this sha256. Mamela writes the systemd unit
-// itself; nothing else of the node's configuration comes from the declaration.
+// NodeK3sSpec says a node runs k3s: this exact release, whose binary for the node's architecture
+// has this sha256, as a server or as an agent of the server on another node. Mamela writes the
+// systemd unit itself; the Control Plane gives the cluster's nodes its join token. Nothing else of
+// the node's configuration comes from the declaration.
 type NodeK3sSpec struct {
 	Node    string
+	Role    K3sRole
+	Server  string // for an agent: the VM of its server
 	Version string // "v1.33.5+k3s1"
 	SHA256  string // hex, of the release's binary for the node's architecture
 }
+
+// K3sRole is what a node is in its k3s cluster.
+type K3sRole string
+
+const (
+	K3sServer K3sRole = "server"
+	K3sAgent  K3sRole = "agent"
+)
 
 // NodeServiceSpec is the desired state of a systemd service on a node.
 type NodeServiceSpec struct {

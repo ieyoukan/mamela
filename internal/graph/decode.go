@@ -45,6 +45,8 @@ type wireNodePackage struct {
 
 type wireNodeK3s struct {
 	Node    *string `json:"node"`
+	Role    *string `json:"role"`
+	Server  *string `json:"server"`
 	Version *string `json:"version"`
 	SHA256  *string `json:"sha256"`
 }
@@ -198,10 +200,14 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 			return nil, problemsOf(fromJSONError(err, where+" spec"))
 		}
 		need(s.Node != nil, "node")
+		need(s.Role != nil, "role")
 		need(s.Version != nil, "version")
 		need(s.SHA256 != nil, "sha256")
 		if len(problems) == 0 {
-			r.NodeK3s = &NodeK3sSpec{Node: *s.Node, Version: *s.Version, SHA256: *s.SHA256}
+			r.NodeK3s = &NodeK3sSpec{Node: *s.Node, Role: K3sRole(*s.Role), Version: *s.Version, SHA256: *s.SHA256}
+			if s.Server != nil {
+				r.NodeK3s.Server = *s.Server
+			}
 		}
 	default:
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",

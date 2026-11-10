@@ -25,10 +25,11 @@ pub type Package(node: String, name: String)
 ## A systemd service on a node.
 pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 
-## A k3s server (a single-node Kubernetes) on a node: this exact release, pinned by the sha256 of
-## its binary for the node's architecture (from the release's sha256sum file). Mamela writes the
-## systemd unit itself; start it with `service(graph, node, "k3s", True, True)`.
-pub type K3s(node: String, version: String, sha256: String)
+## k3s (a light Kubernetes) on a node, as a server or as an agent of a server: this exact release,
+## pinned by the sha256 of its binary for the node's architecture (from the release's sha256sum
+## file). Mamela writes the systemd unit itself and gives the cluster's nodes their join token;
+## start it with `service(graph, node, "k3s", True, True)`.
+pub type K3s(node: String, role: String, server: String, version: String, sha256: String)
 
 ## A resource of a provider's kind. A provider's Pome wraps `provided` in typed functions, so
 ## that a declaration writes `Kv.item(...)`, not this.
@@ -71,9 +72,16 @@ pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
 }
 
-## Declares that `node` runs k3s `version`, whose binary has `sha256`.
-pub fn k3s(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
-  k = K3s(node: node.name, version:, sha256:)
+## Declares that `node` runs a k3s server of `version`, whose binary has `sha256`.
+pub fn k3s_server(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
+  k = K3s(node: node.name, role: "server", server: "", version:, sha256:)
+  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
+}
+
+## Declares that `node` runs a k3s agent of `version` that joins the server on `server`. Taking the
+## server's `Vm` keeps the reference from pointing at a node that was never declared.
+pub fn k3s_agent(graph: Graph, node: Vm, server: Vm, version: String, sha256: String) -> Graph {
+  k = K3s(node: node.name, role: "agent", server: server.name, version:, sha256:)
   Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
 }
 
@@ -129,11 +137,14 @@ fn service_json(s: Service) -> Dynamic {
 }
 
 fn k3s_json(k: K3s) -> Dynamic {
-  resource(
-    "NodeK3s",
-    "#{k.node}/k3s",
-    [("node", Text(k.node)), ("version", Text(k.version)), ("sha256", Text(k.sha256))],
-  )
+  fields = [
+    ("node", Text(k.node)),
+    ("role", Text(k.role)),
+    ("version", Text(k.version)),
+    ("sha256", Text(k.sha256)),
+  ]
+  server = if k.server == "" { [] } else { [("server", Text(k.server))] }
+  resource("NodeK3s", "#{k.node}/k3s", List.append(fields, server))
 }
 
 fn provided_json(p: Provided) -> Dynamic {

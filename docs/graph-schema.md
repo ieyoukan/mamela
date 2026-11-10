@@ -60,16 +60,26 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ### NodeK3s
 
-1 ノードの k3s server（軽量な Kubernetes）。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
+k3s（軽量な Kubernetes）の server または agent。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
 | `name` | string | `<node>/k3s` |
 | `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.role` | string | `"server"` か `"agent"` |
+| `spec.server` | string | agent のとき、同じ Graph で k3s server を宣言した VM の名前（server のときは書かない） |
 | `spec.version` | string | k3s のリリース（`v1.37.2+k3s1`） |
 | `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`） |
 
-起動の引数は Mamela が決める（`k3s server --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600`）。宣言からは変えられない。
+起動の引数は Mamela が決める。宣言からは変えられない。
+
+| 役割 | 起動の引数 |
+|---|---|
+| server | `k3s server --token-file=/etc/rancher/k3s/cluster-token --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600` |
+| agent | `k3s agent --server=https://<server のアドレス>:6443 --token-file=/etc/rancher/k3s/cluster-token` |
+
+- **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
+- **server のアドレス:** server の mamelet が報告した IPv4 アドレスを使う。plan はそれを表示し、承認したアドレスと revision のアドレスが違えば導入しない。
 
 ## プロバイダーのリソース（`mamela-graph/v2`）
 

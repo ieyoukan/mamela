@@ -15,7 +15,10 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 )
 
-const k3sVersion = "v1.33.5+k3s1"
+const (
+	k3sVersion = "v1.33.5+k3s1"
+	testToken  = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
 
 // k3sEnv serves a release whose binary is body.
 func k3sEnv(t *testing.T, body string) (*env, *int) {
@@ -59,13 +62,13 @@ func TestK3sIsInstalledOnlyAsApproved(t *testing.T) {
 	e, downloads := k3sEnv(t, binary)
 	root := e.a.System.Root
 
-	e.publishK3s(1, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary)})
+	e.publishK3s(1, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "server", Token: testToken})
 	if rep := e.round(); rep.K3s == nil || rep.K3s.Installed || *downloads != 0 {
 		t.Fatalf("without a grant: %+v, %d downloads", rep.K3s, *downloads)
 	}
 
 	// Another binary than the approved one: nothing is installed.
-	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum("another binary"),
+	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum("another binary"), Role: "server", Token: testToken,
 		Install: &noderev.Once{Operation: k3sOp, Attempt: 1, Action: noderev.ActionInstall}})
 	rep := e.round()
 	if len(rep.Results) != 1 || rep.Results[0].Outcome != noderev.OutcomeFailed || !strings.Contains(rep.Results[0].Detail, "not the approved") {
@@ -75,7 +78,7 @@ func TestK3sIsInstalledOnlyAsApproved(t *testing.T) {
 		t.Fatalf("a binary with another sha256 was installed: %v", err)
 	}
 
-	e.publishK3s(3, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary),
+	e.publishK3s(3, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "server", Token: testToken,
 		Install: &noderev.Once{Operation: k3sOp, Attempt: 2, Action: noderev.ActionInstall}})
 	rep = e.round()
 	if !rep.K3s.Installed || rep.K3s.SHA256 != sum(binary) || rep.Results[0].Outcome != noderev.OutcomeDone {
@@ -87,9 +90,15 @@ func TestK3sIsInstalledOnlyAsApproved(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(root, k3sBinary)); fi == nil || fi.Mode().Perm() != 0o755 {
 		t.Error("the binary is not executable")
 	}
-	if u, _ := os.ReadFile(filepath.Join(root, k3sUnit)); string(u) != K3sUnit() ||
-		!strings.Contains(string(u), "ExecStart=/usr/local/bin/k3s server --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600\n") {
+	if u, _ := os.ReadFile(filepath.Join(root, k3sUnit)); string(u) != K3sUnit("server", "") ||
+		!strings.Contains(string(u), "ExecStart=/usr/local/bin/k3s server --token-file=/etc/rancher/k3s/cluster-token --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600\n") {
 		t.Errorf("unit:\n%s", u)
+	}
+	if tok, _ := os.ReadFile(filepath.Join(root, "etc/rancher/k3s/cluster-token")); string(tok) != testToken+"\n" {
+		t.Errorf("token file: %q", tok)
+	}
+	if fi, _ := os.Stat(filepath.Join(root, "etc/rancher/k3s/cluster-token")); fi == nil || fi.Mode().Perm() != 0o600 {
+		t.Error("the token file is readable by others")
 	}
 	if !strings.Contains(strings.Join(e.os.commands, "\n"), progSystemctl+" daemon-reload") {
 		t.Error("no daemon-reload")
@@ -111,9 +120,9 @@ func TestK3sIsInstalledOnlyAsApproved(t *testing.T) {
 func TestK3sNeedsAFreshRevision(t *testing.T) {
 	binary := "\x7fELF k3s"
 	e, downloads := k3sEnv(t, binary)
-	e.publishK3s(1, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary)})
+	e.publishK3s(1, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "server", Token: testToken})
 	e.round()
-	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary),
+	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "server", Token: testToken,
 		Install: &noderev.Once{Operation: k3sOp, Attempt: 1, Action: noderev.ActionInstall}})
 	signed := e.cp.signed
 	e.cp.err = errors.New("offline")
@@ -122,4 +131,34 @@ func TestK3sNeedsAFreshRevision(t *testing.T) {
 		t.Fatalf("installed offline from a revision it had not fetched")
 	}
 	_ = signed
+}
+
+// An agent joins the server its revision names; when the server's address changes, the installed
+// agent is no longer what the revision says, and a new approved install rewrites only its unit.
+func TestK3sAgentFollowsItsRevision(t *testing.T) {
+	binary := "\x7fELF k3s"
+	e, downloads := k3sEnv(t, binary)
+	e.a.System.Addresses = func() []string { return []string{"192.0.2.20"} }
+	root := e.a.System.Root
+	agent := func(serial int64, server string, attempt int) {
+		e.publishK3s(serial, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "agent", Server: server, Token: testToken,
+			Install: &noderev.Once{Operation: k3sOp, Attempt: attempt, Action: noderev.ActionInstall}})
+	}
+	agent(1, "https://192.0.2.10:6443", 1)
+	rep := e.round()
+	if !rep.K3s.Installed || len(rep.K3s.Addresses) != 1 || rep.K3s.Addresses[0] != "192.0.2.20" {
+		t.Fatalf("agent: %+v", rep.K3s)
+	}
+	if u, _ := os.ReadFile(filepath.Join(root, k3sUnit)); !strings.Contains(string(u),
+		"ExecStart=/usr/local/bin/k3s agent --server=https://192.0.2.10:6443 --token-file=/etc/rancher/k3s/cluster-token\n") {
+		t.Errorf("unit:\n%s", u)
+	}
+	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "agent", Server: "https://192.0.2.11:6443", Token: testToken})
+	if rep := e.round(); rep.K3s.Installed || rep.K3s.Error != "" {
+		t.Fatalf("after the server moved: %+v", rep.K3s)
+	}
+	agent(3, "https://192.0.2.11:6443", 2)
+	if rep := e.round(); !rep.K3s.Installed || *downloads != 1 {
+		t.Fatalf("reinstalled: %+v, %d downloads (the binary in place is kept)", rep.K3s, *downloads)
+	}
 }

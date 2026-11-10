@@ -88,6 +88,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0105 | mamelet が、インストールで何が変わるか（apt-get -s）を報告するのを待つ |
 | MAM-PLAN-0106 | サービスの unit がまだない（それを入れるパッケージや k3s が入っていない）ので待つ |
 | MAM-PLAN-0108 | mamelet からの k3s の報告を待つ |
+| MAM-PLAN-0109 | k3s の agent が、server のアドレスの報告を待つ |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |

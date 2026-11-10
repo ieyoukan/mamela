@@ -37,6 +37,8 @@ type canonNodePackage struct {
 
 type canonNodeK3s struct {
 	Node    string `json:"node"`
+	Role    string `json:"role"`
+	Server  string `json:"server,omitempty"`
 	SHA256  string `json:"sha256"`
 	Version string `json:"version"`
 }
@@ -104,7 +106,7 @@ func (g *Graph) Canonical() []byte {
 			cr.Spec = canonNodePackage{Node: s.Node, Package: s.Package, State: string(s.State)}
 		case KindNodeK3s:
 			s := r.NodeK3s
-			cr.Spec = canonNodeK3s{Node: s.Node, SHA256: s.SHA256, Version: s.Version}
+			cr.Spec = canonNodeK3s{Node: s.Node, Role: string(s.Role), Server: s.Server, SHA256: s.SHA256, Version: s.Version}
 		case KindNodeService:
 			s := r.NodeService
 			cr.Spec = canonNodeService{Enabled: s.Enabled, Node: s.Node, Running: s.Running, Service: s.Service}

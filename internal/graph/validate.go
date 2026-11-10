@@ -47,6 +47,7 @@ func Validate(g *Graph) error {
 
 	seen := map[string]bool{}
 	nodes := map[string]bool{}
+	k3sServers := map[string]bool{}
 	for _, r := range g.Resources {
 		if seen[r.ID()] {
 			add(r, CodeDuplicateResource, "", fmt.Sprintf("%s is declared more than once", r.ID()),
@@ -55,6 +56,9 @@ func Validate(g *Graph) error {
 		seen[r.ID()] = true
 		if r.Kind == KindVirtualMachine {
 			nodes[r.Name] = true
+		}
+		if r.NodeK3s != nil && r.NodeK3s.Role == K3sServer {
+			k3sServers[r.NodeK3s.Node] = true
 		}
 	}
 
@@ -115,6 +119,17 @@ func Validate(g *Graph) error {
 			}
 			if want := s.Node + "/k3s"; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/k3s)", want), "")
+			}
+			switch {
+			case s.Role == K3sServer && s.Server != "":
+				add(r, CodeInvalidValue, "spec.server", "a k3s server has no server", "")
+			case s.Role == K3sAgent && !k3sServers[s.Server]:
+				add(r, CodeDanglingNode, "spec.server", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Server),
+					"declare the server with Mamela.k3s_server on that VM")
+			case s.Role == K3sAgent && s.Server == s.Node:
+				add(r, CodeInvalidValue, "spec.server", "a node cannot be an agent of itself", "")
+			case s.Role != K3sServer && s.Role != K3sAgent:
+				add(r, CodeInvalidValue, "spec.role", fmt.Sprintf("role %q is not server or agent", s.Role), "")
 			}
 		case KindNodeService:
 			s := r.NodeService

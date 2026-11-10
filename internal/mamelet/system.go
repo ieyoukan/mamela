@@ -63,6 +63,8 @@ type System struct {
 	// HTTP downloads k3s (nil: a client with a timeout); K3sReleases overrides where from (tests).
 	HTTP        *http.Client
 	K3sReleases string
+	// Addresses overrides how the node's IPv4 addresses are read (tests).
+	Addresses func() []string
 }
 
 func (s *System) run(ctx context.Context, program string, args []string, env ...string) (string, error) {

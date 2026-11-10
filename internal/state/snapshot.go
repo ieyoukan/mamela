@@ -37,6 +37,7 @@ type K3s struct {
 	Installed  bool      `json:"installed"`
 	SHA256     string    `json:"sha256,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	Addresses  []string  `json:"addresses,omitempty"` // the node's IPv4 addresses, sorted
 	ObservedAt time.Time `json:"observedAt"`
 }
 

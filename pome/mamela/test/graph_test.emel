@@ -66,11 +66,18 @@ fn provided_resources_make_a_v2_graph() {
 }
 
 @test
-fn k3s_server() {
+fn k3s_cluster() {
+  worker = Lib.Vm(name: "worker", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
   g = Lib.empty()
     |> Lib.vm(app())
-    |> Lib.k3s(app(), "v1.33.5+k3s1", "00")
-  assert Lib.to_json(g).contains(
-    "{\"kind\":\"NodeK3s\",\"name\":\"app-server/k3s\",\"spec\":{\"node\":\"app-server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+    |> Lib.vm(worker)
+    |> Lib.k3s_server(app(), "v1.33.5+k3s1", "00")
+    |> Lib.k3s_agent(worker, app(), "v1.33.5+k3s1", "00")
+  json = Lib.to_json(g)
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"app-server/k3s\",\"spec\":{\"node\":\"app-server\",\"role\":\"server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"worker/k3s\",\"spec\":{\"node\":\"worker\",\"role\":\"agent\",\"server\":\"app-server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
   )
 }

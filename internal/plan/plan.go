@@ -395,11 +395,27 @@ func (b builder) k3s(r graph.Resource) Change {
 	case got.Installed && got.SHA256 == want.SHA256:
 		return b.withOps(c)
 	}
+	server := ""
+	if want.Role == graph.K3sAgent {
+		srv := b.snap.K3s[want.Server+"/k3s"]
+		if len(srv.Addresses) == 0 {
+			c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0109",
+				Message: fmt.Sprintf("waits for the k3s server %s to report its address", want.Server)}
+			return c
+		}
+		server = "https://" + srv.Addresses[0] + ":6443"
+	}
 	// The diff says exactly what is approved: the release, the binary's sha256, where it comes
-	// from and how it runs.
+	// from, how it runs and, for an agent, the server it joins. The join token is made by the
+	// Control Plane and given only to the cluster's nodes; it is never shown.
 	c.Diffs = []Diff{{"version", "", want.Version}, {"sha256", got.SHA256, want.SHA256},
 		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
-		{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs, " ")}}
+		{"role", "", string(want.Role)}}
+	if server != "" {
+		c.Diffs = append(c.Diffs, Diff{"server", "", server})
+	}
+	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
+		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
 }
 
