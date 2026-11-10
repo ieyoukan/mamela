@@ -69,6 +69,17 @@
 
 **L2 を実機で実行した (2026-11-10):** `examples/lab-l2` で、seed 付きの VM `mamela-l2` をテンプレートなしで作成した。cloud-init が qemu-guest-agent と mamelet を入れ、mamelet は `mamela lab tunnel`（踏み台ホスト経由の ssh -R）越しに一度きりのトークンで登録し、mTLS で revision を取得した。mamelet が報告した `apt-get -s install nginx` の変更集合（nginx と nginx-common 1.24.0-2ubuntu7.19、Ubuntu の公式 origin）を plan に載せて承認し、mamelet が再シミュレーションと一致を確かめてから一度だけインストールした。Ubuntu の nginx はインストール時に有効化・起動されるので、サービスの宣言もそのまま満たされ、plan は in sync になった。postflight では管理外のゲストに変化がなかった。権限は権限カタログから導いたもの（余分を外した版）で足りた。
 
+**IaC としての検証の続き (2026-11-10):** 同じ VM で次を実機で確かめ、足りなかったものを実装した。
+
+- ドリフトの修復: 手で止めた nginx は、既定の policy では plan に「起動（承認が必要）」が出て、承認後に起動した。`autoStartServices` では mamelet が 26 秒で自分で起動し直した。
+- 止める・無効にする宣言: mamelet に一度きりの stop / disable を追加した。serve が古い版のままだと新しい操作を含む revision を署名前に拒否し（500）、apply は結果不明で止まった。直したあとは、一部済んでいた変更（無効化）を観測で確認し、残り（停止）を実行して完了した（reconcile が承認範囲内の残りを続けるようにした）。
+- VM の大きさの変更: vCPU とメモリの変更を実装した（動いていれば再起動 1 回で反映）。1 vCPU / 1 GiB / 10 GiB から 2 vCPU / 1.5 GiB / 12 GiB にし、VM の中でも反映を確かめた。plan ではディスクの拡張を先にする。
+- Control Plane に届かないとき: トンネルを切っても mamelet は前回の revision で nginx を 20 秒で起動し直した。10 分後、Control Plane の plan はノードのリソースを blocked（観測が古い）にした。
+- 冪等性と再現性: 適用済みの plan をもう一度 apply すると「観測で済みと確認」だけになった。plan の再計算は、作った版と今の版が違うと合わない（MAM-REC-0001）ので、作った版を記録して理由を示すようにした。
+- 後片付け: `mamela destroy` を実装し、mamela-l1（VMID 7000）と mamela-l2（VMID 7001）を、表示・名前の打ち直し・preflight・postflight つきで消した。アップロードした cloud image と seed は `mamela lab cleanup` のスクリプトを確認して root で消した。lab の VM、ディスク、アップロード、DB の予約と登録はすべてなくなった（pool・ロール・Token は次の検証のために残した）。
+
+検証中に、管理外の VM 212 が root@pam によって削除された（Mamela の Token ではない）。postflight は各実行の前後だけを比べるので、実行と実行の間の変化は対象外である。
+
 - まずローカルの QEMU + HVF（Ubuntu arm64 cloud image + NoCloud seed ISO）で開発する。
 - Enrollment 用のワンタイム Token と mTLS。
 - `GET /v1/nodes/{id}/desired`、観測・イベント・Heartbeat。
