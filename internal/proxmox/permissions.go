@@ -103,6 +103,11 @@ var Endpoints = []Endpoint{
 		{Scope: ScopeDiskStorage, Privs: []string{"Datastore.AllocateSpace"}, Why: "grow a disk on the disk storage"}}},
 	{"POST", "/nodes/{node}/qemu/{vmid}/status/start", []Token{Operating}, []Need{vm("start a lab VM", "VM.PowerMgmt")}},
 	{"POST", "/nodes/{node}/qemu/{vmid}/status/reboot", []Token{Operating}, []Need{vm("restart a lab VM to apply a new size", "VM.PowerMgmt")}},
+	// mamela destroy only (a client from WithDestroy). Deleting uploaded files would need
+	// Datastore.Allocate on the whole storage (which also holds other guests' backups and
+	// templates), so Mamela never does it: a person removes them (mamela lab cleanup).
+	{"POST", "/nodes/{node}/qemu/{vmid}/status/stop", []Token{Operating}, []Need{vm("stop a lab VM before destroying it (mamela destroy)", "VM.PowerMgmt")}},
+	{"DELETE", "/nodes/{node}/qemu/{vmid}", []Token{Operating}, []Need{vm("destroy a lab VM and its disks (mamela destroy)", "VM.Allocate")}},
 }
 
 // CreateParams is every parameter Mamela may send to POST /nodes/{node}/qemu ("{n}" stands for

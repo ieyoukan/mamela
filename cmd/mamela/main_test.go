@@ -46,8 +46,11 @@ func TestUsage(t *testing.T) {
 	if code, _, stderr := runCLI(); code != 2 || !strings.Contains(stderr, "Usage") {
 		t.Errorf("no args: code=%d stderr=%q", code, stderr)
 	}
-	if code, _, stderr := runCLI("destroy"); code != 2 || !strings.Contains(stderr, `unknown command "destroy"`) {
+	if code, _, stderr := runCLI("delete"); code != 2 || !strings.Contains(stderr, `unknown command "delete"`) {
 		t.Errorf("unknown command: code=%d stderr=%q", code, stderr)
+	}
+	if code, _, stderr := runCLI("destroy"); code != 2 || !strings.Contains(stderr, "--confirm") {
+		t.Errorf("destroy without a VM: code=%d stderr=%q", code, stderr)
 	}
 	if code, _, _ := runCLI("eval"); code != 2 {
 		t.Errorf("eval without a directory: code=%d", code)

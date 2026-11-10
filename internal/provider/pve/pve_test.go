@@ -686,6 +686,20 @@ func TestCallsCoverWhatTheProviderSends(t *testing.T) {
 		}
 		check("resize", e, declared(append(resize, pve.ObserveCalls...)))
 	}
+	// Destroy too.
+	e := newEnv(t)
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	e.fake.requests = nil
+	target, err := e.p.DestroyTarget(e.ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.p.Destroy(e.ctx, e.api.WithDestroy(), target); err != nil {
+		t.Fatal(err)
+	}
+	check("destroy", e, declared(append(pve.DestroyCalls, pve.ObserveCalls...)))
 	if _, ok := pve.OperationCalls(policy.OpShrinkVMDisk, true); ok {
 		t.Error("claims calls for an operation the provider does not carry out")
 	}
@@ -724,5 +738,64 @@ func TestResizeRestartsOnce(t *testing.T) {
 	before := e.writes()
 	if err := e.apply(policy.OpResizeVMCPU, vmResource("web", 8, 1536, 10)); err == nil || e.writes() != before {
 		t.Fatalf("over budget: %v", err)
+	}
+}
+
+// Destroy removes only a VM Mamela created (pool, range, tag, marker and reservation), shows what
+// it removes first, refuses if that changed, and can only be sent by a destroy client.
+func TestDestroyOnlyMamelasVM(t *testing.T) {
+	e := newEnv(t)
+	e.p.Seeds = &fakeSeeds{}
+	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.api.DestroyVM(e.ctx, "n1", 7000); err == nil {
+		t.Fatal("an ordinary client destroyed a VM")
+	}
+	destroyer := e.api.WithDestroy()
+
+	target, err := e.p.DestroyTarget(e.ctx, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.VMID != 7000 || target.Status != "running" || len(target.Seeds) != 1 || len(target.Volumes) != 2 {
+		t.Fatalf("target %+v", target)
+	}
+	// What was shown changed (a disk was added): nothing is destroyed.
+	e.fake.vms[7000].config["scsi1"] = "local-lvm:vm-7000-disk-1,size=1G"
+	if err := e.p.Destroy(e.ctx, destroyer, target); err == nil || e.fake.destroys != 0 {
+		t.Fatalf("destroyed a VM that changed since it was shown: %v", err)
+	}
+	delete(e.fake.vms[7000].config, "scsi1")
+
+	if err := e.p.Destroy(e.ctx, destroyer, target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.fake.vms[7000]; ok || e.fake.destroys != 1 {
+		t.Fatal("the VM is still there")
+	}
+
+	// Not Mamela's: never.
+	marker := "Managed by Mamela. Do not edit the lines below.\nmamela-name: %s\nmamela-image: ubuntu-24.04\nmamela-state: ready\n"
+	add := func(vmid int, name, tags string) {
+		e.fake.vms[vmid] = &fakeVM{vmid: vmid, pool: "lab", status: "running", config: map[string]string{
+			"name": name, "tags": tags, "description": fmt.Sprintf(marker, name), "scsi0": "local-lvm:vm-x,size=10G"}}
+	}
+	add(7005, "copied", "mamela-lab") // marker, but no reservation
+	add(7006, "untagged", "")         // reserved, but someone removed the tag
+	if _, err := e.store.AllocateVMID(e.ctx, "untagged", 7006, 7006, func(context.Context, int) (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	e.fake.hidden[7007] = true // reserved, but not visible (someone else's, or a create running)
+	if _, err := e.store.AllocateVMID(e.ctx, "invisible", 7007, 7007, func(context.Context, int) (bool, error) { return true, nil }); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"copied", "untagged", "invisible", "nonexistent"} {
+		if _, err := e.p.DestroyTarget(e.ctx, name); err == nil {
+			t.Errorf("%s: offered for destruction", name)
+		}
+	}
+	if e.fake.destroys != 1 {
+		t.Fatal("destroyed something else")
 	}
 }

@@ -41,6 +41,9 @@ func (s *Site) pathOf(scope proxmox.Scope) string {
 	return s.scopePaths()[scope][0]
 }
 
+// Uses renders requirements as uses on the site's paths.
+func (s *Site) Uses(reqs []proxmox.Requirement) []Use { return s.uses(reqs) }
+
 func (s *Site) uses(reqs []proxmox.Requirement) []Use {
 	var out []Use
 	for _, r := range reqs {

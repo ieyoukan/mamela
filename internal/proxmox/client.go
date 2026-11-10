@@ -38,6 +38,16 @@ type Client struct {
 	http    *http.Client
 	timeout time.Duration // per request, except uploads (bounded by the caller's context)
 	maxBody int64
+	// destroy allows DELETE, only for `mamela destroy` (WithDestroy). Every other client, and so the
+	// provider and the reconciler, can never send it.
+	destroy bool
+}
+
+// WithDestroy returns a copy of the client that may also destroy VMs. Only `mamela destroy` uses it.
+func (c *Client) WithDestroy() *Client {
+	d := *c
+	d.destroy = true
+	return &d
 }
 
 // Options configure TLS. Exactly one of Fingerprint and CAFile must be set.
@@ -134,12 +144,12 @@ func Uncertain(err error) bool {
 	return true
 }
 
-// methods is everything this client can send. DELETE is deliberately absent.
+// methods is everything this client can send. DELETE is deliberately absent (see WithDestroy).
 var methods = map[string]bool{http.MethodGet: true, http.MethodPost: true, http.MethodPut: true}
 
 // do sends one request and decodes the "data" member of the response into out (when out is not nil).
 func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, long bool, out any) error {
-	if !methods[method] {
+	if !methods[method] && !(method == http.MethodDelete && c.destroy) {
 		return fmt.Errorf("proxmox: method %s is not allowed", method)
 	}
 	if _, ok := LookupEndpoint(method, path); !ok {
@@ -478,6 +488,23 @@ func (c *Client) SetSize(ctx context.Context, node string, vmid int, cores, memo
 		return err
 	}
 	return c.form(ctx, http.MethodPut, fmt.Sprintf("%s/qemu/%d/config", nodePath(node), vmid), v, nil)
+}
+
+// StopVM stops a VM at once (like pulling the plug; used only before destroying it).
+func (c *Client) StopVM(ctx context.Context, node string, vmid int) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/stop", nodePath(node), vmid), url.Values{}, &upid)
+}
+
+// DestroyVM deletes a VM and its disks (and leftover disks named after its VMID). It does not
+// purge the VM from backup or replication jobs: that would change cluster-wide configuration.
+// Only a client from WithDestroy can send it.
+func (c *Client) DestroyVM(ctx context.Context, node string, vmid int) (string, error) {
+	if !c.destroy {
+		return "", errors.New("proxmox: this client may not destroy VMs")
+	}
+	var upid string
+	return upid, c.do(ctx, http.MethodDelete, fmt.Sprintf("%s/qemu/%d?destroy-unreferenced-disks=1", nodePath(node), vmid), "", nil, false, &upid)
 }
 
 // RebootVM restarts a VM (shutdown, then start), which applies pending changes. Returns the task ID.

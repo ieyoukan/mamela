@@ -168,6 +168,15 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 // labProvider observes and changes the lab: VMs through the Proxmox API (operating token), and
 // what lives in them through mamelet. withSeeds makes new VMs install mamelet (apply only).
 func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string, withSeeds bool) (reconcile.Provider, error) {
+	vms, err := labVMProvider(site, api, st, imageCache, withSeeds)
+	if err != nil {
+		return nil, err
+	}
+	return node.Combined{VMs: vms, Nodes: &node.Provider{Store: st, Clock: wallClock}}, nil
+}
+
+// labVMProvider is the Proxmox provider for the lab's VMs.
+func labVMProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string, withSeeds bool) (*pve.Provider, error) {
 	keys, err := site.SSHPublicKeys()
 	if err != nil {
 		return nil, fmt.Errorf("guest.ssh_public_key_file: %w", err)
@@ -190,7 +199,7 @@ func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string
 		}
 		vms.Seeds = maker
 	}
-	return node.Combined{VMs: vms, Nodes: &node.Provider{Store: st, Clock: wallClock}}, nil
+	return vms, nil
 }
 
 // seedMaker makes cloud-init seeds that install mamelet and point it at this Control Plane.

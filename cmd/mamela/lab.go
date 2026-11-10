@@ -18,6 +18,7 @@ const labUsage = `Usage:
   mamela lab postflight --site <file> --baseline <in>     read-only check that nothing outside the lab changed
   mamela lab tunnel     --site <file> <vm-name>          SSH reverse tunnel so the VM's mamelet reaches mamela serve
   mamela lab permissions --site <file>                   what the operating token needs and why, and what it has (read-only)
+  mamela lab cleanup    --site <file>                    print a root script removing uploads no lab VM uses (read-only)
 
 See docs/lab.md.
 `
@@ -51,6 +52,8 @@ func runLab(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "permissions":
 		return runPermissions(ctx, site, stdout, stderr)
+	case "cleanup":
+		return runCleanup(ctx, site, stdout, stderr)
 	case "preflight", "postflight":
 	default:
 		fmt.Fprintf(stderr, "mamela lab: unknown command %q\n\n%s", sub, labUsage)

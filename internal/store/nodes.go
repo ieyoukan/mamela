@@ -221,3 +221,22 @@ func (s *Store) NodeReportOf(ctx context.Context, node string) (NodeReport, bool
 	nr.Received = time.UnixMilli(at).UTC()
 	return nr, true, nil
 }
+
+// ForgetVM removes everything Mamela recorded for a destroyed VM: its VMID reservation, its
+// agent's enrollment (so the certificate is no longer accepted), revisions, report and tokens.
+func (s *Store) ForgetVM(ctx context.Context, name string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`DELETE FROM vmids WHERE name = ?`, `DELETE FROM agents WHERE node = ?`, `DELETE FROM node_revisions WHERE node = ?`,
+		`DELETE FROM node_reports WHERE node = ?`, `DELETE FROM enroll_tokens WHERE node = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, q, name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

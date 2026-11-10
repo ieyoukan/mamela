@@ -226,14 +226,21 @@ preflight / postflight はどちらも読み取りだけで、一つでも BLOCK
 
 ローカル（macOS の QEMU + HVF、Ubuntu arm64 cloud image + NoCloud seed ISO）でも cloud-init と Agent の多くは試せる。L2 の前にローカルで Agent を固めると、実機での試行回数を減らせる。
 
-## 7. 後片付け
+## 7. 後片付け（`mamela destroy` と `mamela lab cleanup`）
 
-Mamela 本体は削除をしない。検証環境の後片付けは別のツールで行い、次をすべて満たすものだけを対象にする。
+宣言から消しても実物は消さない（plan に削除は現れない）。VM を消すのは、plan / apply とは別の明示的なコマンド `mamela destroy` だけである。
 
-- pool 内、VMID 予約範囲内、Mamela タグと所有マーカーあり。
-- 対象を一覧表示し、人が確認してから実行する。
+~~~bash
+mamela destroy --site lab/site.local.toml mamela-l2                       # 何が消えるかを表示するだけ（変更なし）
+mamela destroy --site lab/site.local.toml --confirm mamela-l2 mamela-l2   # 名前を打ち直したときだけ実行する
+mamela lab cleanup --site lab/site.local.toml > cleanup.sh                 # どの VM も使わないアップロードを消すスクリプト（人が root で実行）
+~~~
 
-権限も pool 内に限られるため、このツールにバグがあっても既存ゲストには届かない。
+- 対象は、pool 内・VMID 予約範囲内・タグと所有マーカーあり・Mamela の DB に予約あり、をすべて満たす VM だけ（作成途中の VM も含む。タグや予約のない VM は消さない）。
+- 消す前に、ディスクと接続中のイメージを表示する。実行時にもう一度観測し、表示したときから変わっていれば何もしない。
+- 動いていれば止めてから、ディスクごと消す（`DELETE /nodes/{node}/qemu/{vmid}?destroy-unreferenced-disks=1`。バックアップやレプリケーションのジョブから外す `purge` はクラスタ全体の設定を変えるので使わない）。消えたことを VMID が空いたことで確かめ、DB の予約と mamelet の登録を消す（その証明書はもう使えない）。前後に preflight / postflight を行う。
+- DELETE を送れるのは `mamela destroy` が作る専用の client だけで、provider と reconciler の client は送れない。権限は `VM.Allocate`（作成と同じ）と `VM.PowerMgmt` で、増えない。
+- アップロードした cloud image と seed ISO は Mamela の権限では消さない。ストレージ上のファイルを消すには、そのストレージ全体への `Datastore.Allocate` が要り、同じストレージにある他のゲストのバックアップやテンプレートまで消せてしまうためである。`mamela lab cleanup` が、名前が `mamela-` で始まり、どの VM も使っていないファイルだけを `pvesm free` するスクリプトを出すので、人が確認して root で実行する。
 
 ## 8. 運用ルール
 

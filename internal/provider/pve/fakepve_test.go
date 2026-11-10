@@ -51,8 +51,8 @@ type fakePVE struct {
 	requests []string // "METHOD /path" of every request, in order
 
 	// Counters.
-	creates, uploads, starts, resizes, reboots int
-	methods                                    map[string]int
+	creates, uploads, starts, resizes, reboots, destroys int
+	methods                                              map[string]int
 }
 
 type taskMeta struct {
@@ -108,8 +108,9 @@ func fail(w http.ResponseWriter, status int, msg string) {
 }
 
 var (
-	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|status/reboot|resize|agent/network-get-interfaces)$`)
+	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|status/stop|status/reboot|resize|agent/network-get-interfaces)$`)
 	tasksPath = "/api2/json/nodes/n1/tasks"
+	vmDelete  = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)$`)
 	taskPath  = regexp.MustCompile(`^/api2/json/nodes/n1/tasks/([^/]+)/status$`)
 	importVol = regexp.MustCompile(`^local-lvm:0,import-from=(local:import/[^,]+),discard=on$`)
 )
@@ -119,7 +120,8 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.methods[r.Method]++
 	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
-	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodPut {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodPut &&
+		!(r.Method == http.MethodDelete && vmDelete.MatchString(r.URL.Path)) {
 		f.t.Errorf("the provider sent %s %s", r.Method, r.URL.Path)
 		fail(w, http.StatusNotImplemented, "not allowed")
 		return
@@ -192,6 +194,23 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, e)
 		}
 		reply(w, out)
+	case r.Method == http.MethodDelete && vmDelete.MatchString(p):
+		id, _ := strconv.Atoi(vmDelete.FindStringSubmatch(p)[1])
+		vm, ok := f.vms[id]
+		if !ok || vm.pool != "lab" {
+			fail(w, http.StatusForbidden, "Permission check failed")
+			return
+		}
+		if !f.checkVM(w, vm, false, "VM.Allocate") {
+			return
+		}
+		if vm.status == "running" {
+			fail(w, http.StatusInternalServerError, fmt.Sprintf("VM %d is running - destroy failed", id))
+			return
+		}
+		f.destroys++
+		delete(f.vms, id)
+		reply(w, f.task(1, "qmdestroy", id))
 	case taskPath.MatchString(p) && r.Method == http.MethodGet && f.taskStatusErrors > 0:
 		f.taskStatusErrors--
 		fail(w, http.StatusServiceUnavailable, "busy")
@@ -349,8 +368,8 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what string) {
 	need := map[string][]string{"config GET": {"VM.Audit"}, "status/current GET": {"VM.Audit"}, "status/start POST": {"VM.PowerMgmt"},
-		"status/reboot POST": {"VM.PowerMgmt"},
-		"resize PUT":         {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
+		"status/reboot POST": {"VM.PowerMgmt"}, "status/stop POST": {"VM.PowerMgmt"},
+		"resize PUT": {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
 	if privs := need[what+" "+r.Method]; privs != nil && !f.checkVM(w, vm, len(privs) > 1, privs...) {
 		return
 	}
@@ -408,6 +427,9 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 		reply(w, nil)
 	case what == "status/current" && r.Method == http.MethodGet:
 		reply(w, map[string]any{"status": vm.status, "lock": vm.lock})
+	case what == "status/stop" && r.Method == http.MethodPost:
+		vm.status = "stopped"
+		reply(w, f.task(1, "qmstop", vm.vmid))
 	case what == "status/reboot" && r.Method == http.MethodPost:
 		f.reboots++
 		for k, v := range vm.pending {

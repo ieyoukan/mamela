@@ -71,7 +71,7 @@ var ToolCalls = []proxmox.Call{
 // AllCalls is every call the operating token may make for this site: observing, each operation
 // the provider carries out, and the tools. The grants are exactly what these need.
 func (s *Site) AllCalls() []proxmox.Call {
-	calls := append(slices.Clone(pve.ObserveCalls), ToolCalls...)
+	calls := append(append(slices.Clone(pve.ObserveCalls), ToolCalls...), pve.DestroyCalls...)
 	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory} {
 		c, _ := pve.OperationCalls(op, s.ControlPlane.Enabled())
 		calls = append(calls, c...)
