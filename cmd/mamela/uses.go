@@ -9,6 +9,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
+	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/proxmox"
 )
@@ -84,8 +85,8 @@ func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
 		if !slices.Contains(caps[k], c) {
 			caps[k] = append(caps[k], c)
 		}
-		for _, n := range []string{q.Limit, standing(q.Standing)} {
-			if n != "" && !slices.Contains(notes[k], n) {
+		for _, n := range grantNotes(q) {
+			if !slices.Contains(notes[k], n) {
 				notes[k] = append(notes[k], n)
 			}
 		}
@@ -111,18 +112,54 @@ func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
 	return maybe
 }
 
-func standing(s string) string {
-	if s == "" {
-		return ""
+// grantNotes renders a requirement's grant and conditions for people, from their fields.
+func grantNotes(q spec.Requirement) []string {
+	var out []string
+	if q.Grant == spec.Standing {
+		out = append(out, "standing grant (not tied to one operation)")
 	}
-	return "standing: " + s
+	if len(q.StandingIf) > 0 {
+		var cs []string
+		for _, c := range q.StandingIf {
+			cs = append(cs, condition(c))
+		}
+		out = append(out, "may be standing if "+strings.Join(cs, " and "))
+	}
+	var cs []string
+	for _, c := range q.Conditions {
+		cs = append(cs, condition(c))
+	}
+	if len(cs) > 0 {
+		out = append(out, "only if "+strings.Join(cs, ", "))
+	}
+	if q.Note != "" {
+		out = append(out, q.Note)
+	}
+	return out
+}
+
+func condition(c spec.Condition) string {
+	vals := strings.Join(c.Values, " | ")
+	switch c.Test {
+	case spec.Equals:
+		return c.Key + " = " + vals
+	case spec.In, spec.Like:
+		return c.Key + " " + string(c.Test) + " [" + vals + "]"
+	case spec.Before:
+		return c.Key + " < " + vals
+	case spec.Contains:
+		return c.Key + " ∋ " + vals
+	case spec.NotPresent:
+		return "no " + c.Key
+	}
+	return c.Key + " " + string(c.Test) + " " + vals
 }
 
 // renderPlanUses says, for each change, what applying the plan would use, concretely for the site.
-func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph) {
+func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, pol policy.Policy) {
 	fmt.Fprintln(w, "\nWhat applying this plan uses (Proxmox privileges of the operating token, `mamela lab permissions` explains them;")
 	fmt.Fprintln(w, "mamelet actions granted in the node's signed revision):")
-	reqs := append(site.Providers().Observation(g, site), site.PlannedRequirements(p, g)...)
+	reqs := append(site.Providers().Observation(g, site), site.PlannedRequirements(p, g, pol)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases (for example an upload that is already done)")
 	}

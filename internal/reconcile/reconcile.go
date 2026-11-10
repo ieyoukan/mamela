@@ -93,12 +93,22 @@ type Reconciler struct {
 	Provider Provider
 	Owner    string        // identity of this worker in the journal
 	Lease    time.Duration // how long a claim lasts without being finished
+	// Providers is the digest of the contracts of the providers this run uses
+	// (spec.Providers.Digest). A plan made for other providers is not applied.
+	Providers string
 }
 
 // OperationID is the idempotency key of one operation of one plan.
 func OperationID(planDigest, resource string, op policy.Op) string {
 	sum := sha256.Sum256([]byte(planDigest + "\x00" + resource + "\x00" + string(op)))
 	return "op-" + hex.EncodeToString(sum[:12])
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none recorded)"
+	}
+	return s
 }
 
 // Apply runs the plan identified by digest as far as it safely can.
@@ -108,6 +118,13 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		return nil, err
 	}
 	rep := &Report{PlanDigest: planDigest}
+	if in.Providers != r.Providers {
+		rep.Stopped = &Stop{Code: "MAM-REC-0007",
+			Message: fmt.Sprintf("the plan was made for providers %s, but this Mamela has %s; its approval does not cover them",
+				orNone(in.Providers), orNone(r.Providers)),
+			Hint: "make the plan again (mamela plan) and review and approve the new one"}
+		return rep, nil
+	}
 	approval, err := r.Store.ValidApproval(ctx, planDigest)
 	if err != nil {
 		return nil, err
@@ -121,7 +138,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		return nil, err
 	}
 	r.event(ctx, planDigest, "", "observed", "observed the world before applying (snapshot "+fresh.Digest()+")")
-	now := plan.Build(in.Revision, fresh, in.Policy)
+	now := plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
 	desired := map[string]graph.Resource{}
 	for _, res := range in.Revision.Resources {
 		desired[res.ID()] = res

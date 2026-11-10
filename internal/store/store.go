@@ -126,6 +126,7 @@ CREATE TABLE node_reports (
 `,
 	// 4: which Mamela made each plan (a plan recomputes only with the planner that made it).
 	`ALTER TABLE plans ADD COLUMN made_by TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE plans ADD COLUMN providers_digest TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
@@ -262,9 +263,10 @@ func (s *Store) SavePlan(ctx context.Context, g *graph.Graph, snap state.Snapsho
 	if _, err := s.PutPolicy(ctx, pol); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms, made_by)
-VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
-		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), s.nowMs(), version.Current())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms, made_by, providers_digest)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
+		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), s.nowMs(), version.Current(),
+		p.Inputs.ProvidersDigest)
 	return err
 }
 
@@ -273,15 +275,17 @@ type PlanInputs struct {
 	Revision *graph.Graph
 	Snapshot state.Snapshot
 	Policy   policy.Policy
+	// Providers is the digest of the providers' contracts the plan was made for.
+	Providers string
 }
 
 // LoadPlan recomputes a stored plan from its stored inputs and verifies that the result has the
 // stored digest. A plan is never trusted as stored text: it is always re-derived.
 func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanInputs, error) {
-	var rev, snapD, polD, madeBy string
+	var rev, snapD, polD, madeBy, providers string
 	var canonical []byte
-	err := s.db.QueryRowContext(ctx, `SELECT revision_digest, snapshot_digest, policy_digest, canonical, made_by FROM plans WHERE digest = ?`, digest).
-		Scan(&rev, &snapD, &polD, &canonical, &madeBy)
+	err := s.db.QueryRowContext(ctx, `SELECT revision_digest, snapshot_digest, policy_digest, canonical, made_by, providers_digest FROM plans WHERE digest = ?`, digest).
+		Scan(&rev, &snapD, &polD, &canonical, &madeBy, &providers)
 	if err != nil {
 		return nil, PlanInputs{}, notFound(err)
 	}
@@ -297,7 +301,7 @@ func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanIn
 	if err != nil {
 		return nil, PlanInputs{}, err
 	}
-	p := plan.Build(g, snap, pol)
+	p := plan.BuildFor(g, snap, pol, providers)
 	if p.Digest != digest || string(p.Canonical()) != string(canonical) {
 		why := "its stored record or inputs were changed"
 		if cur := version.Current(); madeBy != "" && madeBy != cur {
@@ -305,7 +309,7 @@ func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanIn
 		}
 		return nil, PlanInputs{}, fmt.Errorf("%w: plan %s recomputes to %s (%s)", ErrPlanMismatch, digest, p.Digest, why)
 	}
-	return p, PlanInputs{Revision: g, Snapshot: snap, Policy: pol}, nil
+	return p, PlanInputs{Revision: g, Snapshot: snap, Policy: pol, Providers: providers}, nil
 }
 
 // ErrPlanMismatch means a stored plan no longer recomputes to itself (tampering or a planner change).

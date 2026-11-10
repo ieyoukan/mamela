@@ -100,7 +100,8 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return report(stderr, err)
 	}
 	host, _ := os.Hostname()
-	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour}
+	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour,
+		Providers: site.Providers().Digest()}
 	rep, applyErr := rec.Apply(ctx, p.Digest)
 	if rep != nil {
 		printReport(stdout, rep)

@@ -1,6 +1,8 @@
 package node
 
 import (
+	"slices"
+
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
@@ -19,6 +21,30 @@ const (
 	capSystemd    = "systemd."
 )
 
+// Condition keys mamelet checks before it acts (facts it knows from the signed revision, its
+// clock and its own simulation).
+const (
+	KeyNode         = "mamela:node"          // the node the revision is for
+	KeyOperation    = "mamela:operation"     // the approved operation the grant is for
+	KeyNow          = "mamela:now"           // mamelet's clock
+	KeyChangeSet    = "mamela:apt.changeSet" // digest of a fresh apt-get -s simulation
+	KeyAptRemove    = "mamela:apt.remove"    // packages the simulation would remove
+	KeyAptOrigin    = "mamela:apt.origin"    // origins of the packages it would install
+	KeyAutoStart    = "mamela:policy.autoStartServices"
+	FactChangeSet   = "changeSet"      // plan fact: the approved change set digest
+	FactOrigins     = "allowedOrigins" // plan fact: the policy's allowed APT origins (prefixes, "Ubuntu:*")
+	FactAutoStart   = "autoStartServices"
+	FactOperationID = "operationId" // filled when the operation is granted
+	FactExpiresAt   = "expiresAt"   // filled when the revision is signed
+)
+
+// grantConditions bind every one-time grant to its node, its operation and the revision's lifetime.
+var grantConditions = []spec.Condition{
+	{Key: KeyNode, Test: spec.Equals, Values: []string{"{node}"}},
+	{Key: KeyOperation, Test: spec.Equals, Values: []string{"{" + FactOperationID + "}"}},
+	{Key: KeyNow, Test: spec.Before, Values: []string{"{" + FactExpiresAt + "}"}},
+}
+
 // Manifest is the node provider's declaration of itself. The service capabilities are named after
 // the actions mamelet is granted (serviceActions), so they cannot differ from what Apply does.
 func Manifest() spec.Manifest {
@@ -26,8 +52,11 @@ func Manifest() spec.Manifest {
 	pkg := spec.Kind{Kind: graph.KindNodePackage, Operations: []spec.Operation{{
 		Op: policy.OpInstallPackage, Support: spec.Supported, Needs: []spec.Need{{
 			Capability: CapAptInstall, Target: node, Object: "{package}", Always: true,
-			Limit: "only the apt change set approved in the plan, simulated again just before; never a removal, " +
-				"only from allowed APT origins",
+			Conditions: append(slices.Clone(grantConditions),
+				spec.Condition{Key: KeyChangeSet, Test: spec.Equals, Values: []string{"{" + FactChangeSet + "}"}},
+				spec.Condition{Key: KeyAptRemove, Test: spec.NotPresent},
+				spec.Condition{Key: KeyAptOrigin, Test: spec.Like, Values: []string{"{" + FactOrigins + "}"}}),
+			Note:    "mamelet simulates the install again just before and installs only if it is exactly the approved change set",
 			Reasons: []string{"mamelet runs apt-get install once"},
 		}},
 	}}}
@@ -35,9 +64,11 @@ func Manifest() spec.Manifest {
 	for _, op := range []policy.Op{policy.OpEnableService, policy.OpStartService, policy.OpDisableService, policy.OpStopService} {
 		action := serviceActions[op]
 		n := spec.Need{Capability: capSystemd + action, Target: node, Object: "{service}", Always: true,
-			Reasons: []string{"mamelet runs systemctl " + action + " once"}}
+			Conditions: slices.Clone(grantConditions),
+			Reasons:    []string{"mamelet runs systemctl " + action + " once"}}
 		if op == policy.OpStartService {
-			n.Standing = "with the policy autoStartServices, mamelet starts it whenever it finds it stopped"
+			n.StandingIf = []spec.Condition{{Key: KeyAutoStart, Test: spec.Contains, Values: []string{"{service}"}}}
+			n.Note = "a standing grant lets mamelet start it whenever it finds it stopped (drift repair)"
 		}
 		svc.Operations = append(svc.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: []spec.Need{n}})
 	}

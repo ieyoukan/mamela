@@ -1,8 +1,8 @@
 package lab
 
 import (
+	"maps"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +10,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/state"
 )
@@ -37,7 +38,7 @@ func TestPlannedRequirementsAreConcreteAndGranted(t *testing.T) {
 	p := plan.Build(g, snap, pol)
 
 	byOp := map[string][]spec.Requirement{}
-	for _, q := range s.PlannedRequirements(p, g) {
+	for _, q := range s.PlannedRequirements(p, g, pol) {
 		k := q.Resource + " " + string(q.Op)
 		byOp[k] = append(byOp[k], q)
 	}
@@ -75,13 +76,39 @@ func TestPlannedRequirementsAreConcreteAndGranted(t *testing.T) {
 		}
 		return reqs[0]
 	}
-	if q := mamelet("NodePackage db/nginx install-package", "apt.install"); !strings.Contains(q.Limit, cs.Digest) {
-		t.Errorf("install is not limited to the approved change set: %+v", q)
+	// The install's conditions are data that hold exactly for the approved simulation.
+	install := mamelet("NodePackage db/nginx install-package", "apt.install")
+	approved := map[string][]string{
+		node.KeyNode: {"db"}, node.KeyOperation: {"op-1"}, node.KeyNow: {"2026-11-10T01:00:00Z"},
+		node.KeyChangeSet: {cs.Digest}, node.KeyAptOrigin: {"Ubuntu:24.04/noble"},
 	}
-	if q := mamelet("NodeService db/nginx start-service", "systemd.start"); q.Standing == "" {
+	install.Fill(map[string][]string{node.FactOperationID: {"op-1"}, node.FactExpiresAt: {"2026-11-11T00:00:00Z"}})
+	if !holdAll(install.Conditions, approved) {
+		t.Errorf("the approved install does not satisfy its conditions: %+v", install.Conditions)
+	}
+	for name, edit := range map[string]func(map[string][]string){
+		"another change set": func(f map[string][]string) { f[node.KeyChangeSet] = []string{"sha256:other"} },
+		"a removal":          func(f map[string][]string) { f[node.KeyAptRemove] = []string{"libfoo"} },
+		"another origin":     func(f map[string][]string) { f[node.KeyAptOrigin] = []string{"Ubuntu:24.04/noble", "ppa:evil"} },
+		"another node":       func(f map[string][]string) { f[node.KeyNode] = []string{"web"} },
+		"another operation":  func(f map[string][]string) { f[node.KeyOperation] = []string{"op-2"} },
+		"expired":            func(f map[string][]string) { f[node.KeyNow] = []string{"2026-11-12T00:00:00Z"} },
+	} {
+		facts := maps.Clone(approved)
+		edit(facts)
+		if holdAll(install.Conditions, facts) {
+			t.Errorf("%s satisfies the install's conditions", name)
+		}
+	}
+	// Unfilled facts never hold.
+	if raw := mamelet("NodePackage db/nginx install-package", "apt.install"); holdAll(raw.Conditions, approved) {
+		t.Error("conditions with an unfilled operation and expiry hold")
+	}
+	if q := mamelet("NodeService db/nginx start-service", "systemd.start"); q.Grant != spec.Standing ||
+		slices.ContainsFunc(q.Conditions, func(c spec.Condition) bool { return c.Key == node.KeyOperation }) {
 		t.Errorf("auto start is not a standing grant: %+v", q)
 	}
-	if q := mamelet("NodeService db/nginx enable-service", "systemd.enable"); q.Standing != "" {
+	if q := mamelet("NodeService db/nginx enable-service", "systemd.enable"); q.Grant != spec.Once || len(q.StandingIf) != 0 {
 		t.Errorf("enable is standing: %+v", q)
 	}
 
@@ -92,7 +119,7 @@ func TestPlannedRequirementsAreConcreteAndGranted(t *testing.T) {
 			granted[gr.Path+" "+pr] = true
 		}
 	}
-	for _, q := range append(s.Providers().Observation(g, s), s.PlannedRequirements(p, g)...) {
+	for _, q := range append(s.Providers().Observation(g, s), s.PlannedRequirements(p, g, pol)...) {
 		if q.Provider == "proxmox" && !granted[q.Target+" "+q.Capability] {
 			t.Errorf("the plan uses %s on %s, which is not granted", q.Capability, q.Target)
 		}
@@ -107,13 +134,14 @@ func TestStandingOnlyWhenThePolicyDecides(t *testing.T) {
 	snap.VMs["db"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: t0}
 	snap.Packages["db/nginx"] = state.Package{Installed: true, Version: "1", ObservedAt: t0}
 	snap.Services["db/nginx"] = state.Service{Exists: true, Enabled: true, ObservedAt: t0}
-	p := plan.Build(g, snap, policy.Default)
+	pol := policy.Default
+	p := plan.Build(g, snap, pol)
 	var s *Site
 	starts := 0
-	for _, q := range s.PlannedRequirements(p, g) {
+	for _, q := range s.PlannedRequirements(p, g, pol) {
 		if q.Op == policy.OpStartService {
 			starts++
-			if q.Standing != "" {
+			if q.Grant != spec.Once {
 				t.Errorf("standing without the policy: %+v", q)
 			}
 		}

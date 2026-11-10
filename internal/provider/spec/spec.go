@@ -15,6 +15,9 @@
 package spec
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json/v2"
 	"fmt"
 	"slices"
 	"strings"
@@ -71,12 +74,82 @@ type Need struct {
 	Object string `json:"object,omitempty"`
 	// Always is false when the operation needs it only in some cases (Reasons say which).
 	Always bool `json:"always"`
-	// Standing is set when the capability can be granted for good rather than for one approved
-	// operation, and says on what condition.
-	Standing string `json:"standing,omitempty"`
-	// Limit narrows what the capability may do ("only the approved apt change set").
-	Limit   string   `json:"limit,omitempty"`
+	// Grant is how long the capability is given: once (for one approved operation, the default)
+	// or standing (until the declaration changes), the latter only when StandingIf holds.
+	Grant      Grant       `json:"grant,omitempty"`
+	StandingIf []Condition `json:"standingIf,omitempty"`
+	// Conditions must hold for every use of the capability. They are data, checked by whoever
+	// enforces the grant (mamelet for its revision, the host for a provider's requests, IAM for
+	// AWS), and rendered for people from their fields.
+	Conditions []Condition `json:"conditions,omitempty"`
+	// Note explains the need to people. Nothing checks it.
+	Note    string   `json:"note,omitempty"`
 	Reasons []string `json:"reasons,omitempty"`
+}
+
+// Grant is how long a capability is given.
+type Grant string
+
+const (
+	Once     Grant = "once"
+	Standing Grant = "standing"
+)
+
+// Condition is one typed condition on a capability: Key Test Values. Keys are namespaced:
+// "mamela:..." for what Mamela and mamelet check, "aws:..." / "ec2:..." for IAM condition keys.
+// Values are literals or templates: "{field}" of the resource, or a plan fact ("{changeSet}")
+// that is filled in when a plan fixes it.
+type Condition struct {
+	Key    string   `json:"key"`
+	Test   Test     `json:"test"`
+	Values []string `json:"values"`
+}
+
+// Test is how a condition compares (named after the IAM operators where they exist).
+type Test string
+
+const (
+	Equals     Test = "equals"     // the fact is exactly the one value
+	In         Test = "in"         // the fact is one of the values (each fact, for a list of facts)
+	Before     Test = "before"     // the fact (an RFC 3339 time) is before the value
+	Contains   Test = "contains"   // the facts contain the value
+	Like       Test = "like"       // each fact matches one of the values; a trailing "*" matches any rest
+	NotPresent Test = "notPresent" // there is no fact for the key
+)
+
+// Resolved reports whether every value is a literal (no template left).
+func (c Condition) Resolved() bool {
+	return !slices.ContainsFunc(c.Values, func(v string) bool { return strings.Contains(v, "{") })
+}
+
+// Holds checks the condition against facts (key -> values). An unresolved condition never holds.
+func (c Condition) Holds(facts map[string][]string) bool {
+	if !c.Resolved() {
+		return false
+	}
+	got, present := facts[c.Key]
+	switch c.Test {
+	case NotPresent:
+		return !present || len(got) == 0
+	case Equals:
+		return len(c.Values) == 1 && len(got) == 1 && got[0] == c.Values[0]
+	case In:
+		return present && len(got) > 0 && !slices.ContainsFunc(got, func(g string) bool { return !slices.Contains(c.Values, g) })
+	case Contains:
+		return len(c.Values) == 1 && slices.Contains(got, c.Values[0])
+	case Like:
+		return present && len(got) > 0 && !slices.ContainsFunc(got, func(g string) bool {
+			return !slices.ContainsFunc(c.Values, func(p string) bool {
+				if prefix, ok := strings.CutSuffix(p, "*"); ok {
+					return strings.HasPrefix(g, prefix)
+				}
+				return g == p
+			})
+		})
+	case Before:
+		return len(c.Values) == 1 && len(got) == 1 && got[0] < c.Values[0] // RFC 3339 UTC compares as text
+	}
+	return false
 }
 
 // Target is where a capability is held.
@@ -113,6 +186,14 @@ func (m Manifest) Check() error {
 				if n.Capability == "" || n.Target.Type == "" || n.Target.Ref == "" {
 					return fmt.Errorf("manifest %s: %s %s: a need without capability or target", m.Provider, k.Kind, o.Op)
 				}
+				if n.Grant == Standing {
+					return fmt.Errorf("manifest %s: %s %s: a need is never standing by itself; say when with standingIf", m.Provider, k.Kind, o.Op)
+				}
+				for _, c := range append(slices.Clone(n.Conditions), n.StandingIf...) {
+					if c.Key == "" || !slices.Contains([]Test{Equals, In, Like, Before, Contains, NotPresent}, c.Test) {
+						return fmt.Errorf("manifest %s: %s %s: condition %+v has no key or an unknown test", m.Provider, k.Kind, o.Op, c)
+					}
+				}
 			}
 		}
 	}
@@ -135,6 +216,21 @@ func (m Manifest) Operation(kind graph.Kind, op policy.Op) (Operation, bool) {
 
 // Providers is the set of providers in use. Each kind belongs to exactly one.
 type Providers []Manifest
+
+// Digest identifies the contracts: every manifest, in a canonical form. A plan records it, so that
+// a change of any provider's contract (a new version, other operations or capabilities) voids
+// the plan's approval. External providers will add their executable's digest and protocol
+// version to their manifest (ADR 0002).
+func (ps Providers) Digest() string {
+	sorted := slices.Clone(ps)
+	slices.SortFunc(sorted, func(a, b Manifest) int { return strings.Compare(a.Provider, b.Provider) })
+	data, err := json.Marshal(sorted, json.Deterministic(true))
+	if err != nil {
+		panic("spec: encoding manifests: " + err.Error())
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 // For returns the provider of a kind.
 func (ps Providers) For(kind graph.Kind) (Manifest, bool) {
@@ -170,22 +266,52 @@ type Resolver interface {
 }
 
 // Requirement is one resolved need: this resource, through this operation, needs this capability
-// on this target.
+// on this target, given for this long, under these conditions.
 type Requirement struct {
-	Resource   string    `json:"resource,omitempty"` // graph ID; empty for observation
-	Op         policy.Op `json:"op,omitempty"`       // empty for observation
-	Provider   string    `json:"provider"`
-	Support    Support   `json:"support"`
-	Why        string    `json:"why,omitempty"` // for unsupported operations
-	Capability string    `json:"capability,omitempty"`
-	TargetType string    `json:"targetType,omitempty"`
-	Target     string    `json:"target,omitempty"`
-	Resolved   bool      `json:"resolved,omitempty"` // Target is the real name, not a placeholder
-	Object     string    `json:"object,omitempty"`
-	Always     bool      `json:"always,omitempty"`
-	Standing   string    `json:"standing,omitempty"`
-	Limit      string    `json:"limit,omitempty"`
-	Reasons    []string  `json:"reasons,omitempty"`
+	Resource   string      `json:"resource,omitempty"` // graph ID; empty for observation
+	Op         policy.Op   `json:"op,omitempty"`       // empty for observation
+	Provider   string      `json:"provider"`
+	Support    Support     `json:"support"`
+	Why        string      `json:"why,omitempty"` // for unsupported operations
+	Capability string      `json:"capability,omitempty"`
+	TargetType string      `json:"targetType,omitempty"`
+	Target     string      `json:"target,omitempty"`
+	Resolved   bool        `json:"resolved,omitempty"` // Target is the real name, not a placeholder
+	Object     string      `json:"object,omitempty"`
+	Always     bool        `json:"always,omitempty"`
+	Grant      Grant       `json:"grant,omitempty"`
+	StandingIf []Condition `json:"standingIf,omitempty"`
+	Conditions []Condition `json:"conditions,omitempty"`
+	Note       string      `json:"note,omitempty"`
+	Reasons    []string    `json:"reasons,omitempty"`
+}
+
+// Fill replaces facts in the conditions: a value that is exactly "{name}" becomes all the values
+// of that fact (a list, such as the allowed origins); "{name}" inside a value becomes its first.
+func (q *Requirement) Fill(facts map[string][]string) {
+	fill := func(cs []Condition) []Condition {
+		out := slices.Clone(cs)
+		for i := range out {
+			var vals []string
+			for _, v := range out[i].Values {
+				if name, ok := strings.CutPrefix(v, "{"); ok && strings.HasSuffix(name, "}") && !strings.Contains(name[:len(name)-1], "{") {
+					if f, ok := facts[strings.TrimSuffix(name, "}")]; ok {
+						vals = append(vals, f...)
+						continue
+					}
+				}
+				for k, f := range facts {
+					if len(f) > 0 {
+						v = strings.ReplaceAll(v, "{"+k+"}", f[0])
+					}
+				}
+				vals = append(vals, v)
+			}
+			out[i].Values = vals
+		}
+		return out
+	}
+	q.Conditions, q.StandingIf = fill(q.Conditions), fill(q.StandingIf)
 }
 
 // fields are the resource values that templates may use.
@@ -215,8 +341,18 @@ func resolve(provider string, n Need, r *graph.Resource, res Resolver) Requireme
 	if r != nil {
 		f = fields(*r)
 	}
+	grant := n.Grant
+	if grant == "" {
+		grant = Once
+	}
 	q := Requirement{Provider: provider, Support: Supported, Capability: n.Capability, TargetType: n.Target.Type,
-		Object: expand(n.Object, f), Always: n.Always, Standing: n.Standing, Limit: n.Limit, Reasons: n.Reasons}
+		Object: expand(n.Object, f), Always: n.Always, Grant: grant, Note: n.Note, Reasons: n.Reasons}
+	q.StandingIf, q.Conditions = n.StandingIf, n.Conditions
+	facts := map[string][]string{}
+	for k, v := range f {
+		facts[k] = []string{v}
+	}
+	q.Fill(facts)
 	if strings.Contains(n.Target.Ref, "{") {
 		q.Target = expand(n.Target.Ref, f)
 		q.Resolved = !strings.Contains(q.Target, "{")
