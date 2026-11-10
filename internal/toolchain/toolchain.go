@@ -230,7 +230,7 @@ func (l Lock) Locate(cwd string) (Location, error) {
 		d = parent
 	}
 	if bin, _, err := l.UserDirs(); err == nil && exists(filepath.Join(bin, "emela")) {
-		return Location{Dir: bin, Source: "the user toolchain (mamela toolchain install)"}, nil
+		return Location{Dir: bin, Source: "the user toolchain, from mamela toolchain install"}, nil
 	}
 	return Location{}, ErrNotFound
 }
