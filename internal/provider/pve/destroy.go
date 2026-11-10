@@ -99,6 +99,7 @@ func isDrive(k string) bool {
 // caller has had a person confirm the target; Destroy looks at it again first and refuses if it
 // changed in between.
 func (p *Provider) Destroy(ctx context.Context, d Destroyer, want Target) error {
+	ctx = proxmox.Restrict(ctx, "destroy", append(slices.Clone(ObserveCalls), DestroyCalls...))
 	now, err := p.DestroyTarget(ctx, want.Name)
 	if err != nil {
 		return err

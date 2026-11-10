@@ -130,7 +130,7 @@ func (e *APIError) Error() string {
 // may have reached the server, but no definite answer came back (a lost connection, a timeout, or a
 // gateway status from pveproxy). A definite API error means the request was refused or failed.
 func Uncertain(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, ErrNotSent) {
 		return false
 	}
 	var apiErr *APIError
@@ -150,11 +150,15 @@ var methods = map[string]bool{http.MethodGet: true, http.MethodPost: true, http.
 // do sends one request and decodes the "data" member of the response into out (when out is not nil).
 func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, long bool, out any) error {
 	if !methods[method] && !(method == http.MethodDelete && c.destroy) {
-		return fmt.Errorf("proxmox: method %s is not allowed", method)
+		return fmt.Errorf("proxmox: method %s is not allowed: %w", method, ErrNotSent)
 	}
-	if _, ok := LookupEndpoint(method, path); !ok {
+	ep, ok := LookupEndpoint(method, path)
+	if !ok {
 		return fmt.Errorf("proxmox: %s %s is not in Mamela's permission catalog (internal/proxmox/permissions.go); "+
-			"add it with the privileges Proxmox checks before calling it", method, path)
+			"add it with the privileges Proxmox checks before calling it: %w", method, path, ErrNotSent)
+	}
+	if err := allowed(ctx, ep, nil); err != nil {
+		return err
 	}
 	if !long {
 		var cancel context.CancelFunc
@@ -212,6 +216,11 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) form(ctx context.Context, method, path string, values url.Values, out any) error {
+	if ep, ok := LookupEndpoint(method, path); ok {
+		if err := allowed(ctx, ep, values); err != nil {
+			return err
+		}
+	}
 	return c.do(ctx, method, path, "application/x-www-form-urlencoded", strings.NewReader(values.Encode()), false, out)
 }
 

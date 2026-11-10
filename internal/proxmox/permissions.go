@@ -223,8 +223,8 @@ func checkParams(params map[string][]Need, names []string, where string) error {
 	if len(unknown) > 0 {
 		slices.Sort(unknown)
 		return fmt.Errorf("proxmox: %s: parameter(s) %s are not in Mamela's permission catalog "+
-			"(internal/proxmox/permissions.go); add them with the privileges Proxmox checks before sending them",
-			where, strings.Join(unknown, ", "))
+			"(internal/proxmox/permissions.go); add them with the privileges Proxmox checks before sending them: %w",
+			where, strings.Join(unknown, ", "), ErrNotSent)
 	}
 	return nil
 }

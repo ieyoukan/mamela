@@ -136,6 +136,7 @@ type lab struct {
 // Observe reports the VMs the operating token can see. Packages and services are not observed
 // here (that is the agent's job), so they are absent from the snapshot.
 func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
+	ctx = proxmox.Restrict(ctx, "observe", ObserveCalls)
 	now := p.Clock().UTC()
 	snap := state.Empty(now)
 	vms, err := p.scan(ctx)
@@ -233,6 +234,12 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return fmt.Errorf("the Proxmox provider does not handle %s (%s)", r.Kind, step.Op)
 	}
 	spec := *r.VirtualMachine
+	calls, ok := OperationCalls(step.Op, p.Seeds != nil)
+	if !ok {
+		return fmt.Errorf("the Proxmox provider does not implement %s", step.Op)
+	}
+	// The operation sends only the calls its manifest declares (OperationCalls).
+	ctx = proxmox.Restrict(ctx, string(step.Op), append(slices.Clone(ObserveCalls), calls...))
 	img, err := p.checkSpec(r.Name, spec)
 	if err != nil {
 		return err
