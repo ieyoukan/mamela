@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -127,8 +128,15 @@ func TestPlanIsRecomputedOnLoad(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE plans SET canonical = '{}' WHERE digest = ?`, p.Digest); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.LoadPlan(ctx, p.Digest); !errors.Is(err, ErrPlanMismatch) {
+	if _, _, err := s.LoadPlan(ctx, p.Digest); !errors.Is(err, ErrPlanMismatch) || !strings.Contains(err.Error(), "were changed") {
 		t.Fatalf("tampered plan: %v", err)
+	}
+	// Made by another Mamela: the error says so, since a different planner gives a different plan.
+	if _, err := s.db.ExecContext(ctx, `UPDATE plans SET made_by = 'abc123' WHERE digest = ?`, p.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.LoadPlan(ctx, p.Digest); !errors.Is(err, ErrPlanMismatch) || !strings.Contains(err.Error(), "made by Mamela abc123") {
+		t.Fatalf("plan of another version: %v", err)
 	}
 }
 

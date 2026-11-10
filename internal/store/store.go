@@ -18,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/internal/version"
 )
 
 // Clock returns the current time. Tests inject a fake one.
@@ -123,6 +124,8 @@ CREATE TABLE node_reports (
   report      BLOB NOT NULL
 );
 `,
+	// 4: which Mamela made each plan (a plan recomputes only with the planner that made it).
+	`ALTER TABLE plans ADD COLUMN made_by TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
@@ -259,9 +262,9 @@ func (s *Store) SavePlan(ctx context.Context, g *graph.Graph, snap state.Snapsho
 	if _, err := s.PutPolicy(ctx, pol); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms)
-VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
-		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), s.nowMs())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms, made_by)
+VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
+		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), s.nowMs(), version.Current())
 	return err
 }
 
@@ -275,10 +278,10 @@ type PlanInputs struct {
 // LoadPlan recomputes a stored plan from its stored inputs and verifies that the result has the
 // stored digest. A plan is never trusted as stored text: it is always re-derived.
 func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanInputs, error) {
-	var rev, snapD, polD string
+	var rev, snapD, polD, madeBy string
 	var canonical []byte
-	err := s.db.QueryRowContext(ctx, `SELECT revision_digest, snapshot_digest, policy_digest, canonical FROM plans WHERE digest = ?`, digest).
-		Scan(&rev, &snapD, &polD, &canonical)
+	err := s.db.QueryRowContext(ctx, `SELECT revision_digest, snapshot_digest, policy_digest, canonical, made_by FROM plans WHERE digest = ?`, digest).
+		Scan(&rev, &snapD, &polD, &canonical, &madeBy)
 	if err != nil {
 		return nil, PlanInputs{}, notFound(err)
 	}
@@ -296,7 +299,11 @@ func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanIn
 	}
 	p := plan.Build(g, snap, pol)
 	if p.Digest != digest || string(p.Canonical()) != string(canonical) {
-		return nil, PlanInputs{}, fmt.Errorf("%w: plan %s recomputes to %s", ErrPlanMismatch, digest, p.Digest)
+		why := "its stored record or inputs were changed"
+		if cur := version.Current(); madeBy != "" && madeBy != cur {
+			why = fmt.Sprintf("it was made by Mamela %s and this is %s, whose planner differs; make the plan again with this version", madeBy, cur)
+		}
+		return nil, PlanInputs{}, fmt.Errorf("%w: plan %s recomputes to %s (%s)", ErrPlanMismatch, digest, p.Digest, why)
 	}
 	return p, PlanInputs{Revision: g, Snapshot: snap, Policy: pol}, nil
 }
