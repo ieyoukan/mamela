@@ -67,6 +67,8 @@
 
 **実装した (2026-11-10):** Agent の名前は mamelet。`internal/noderev`（署名付き revision と報告の形式）、`internal/mamelet` と `cmd/mamelet`（agent）、`internal/cp`（一回限りのトークンによる登録、自前の CA による mTLS、revision の署名と配信、報告の検証）、`internal/provider/node`（報告を観測にし、承認された操作を一度きりの許可として revision に加え、結果を待つ）、`internal/seed`（NoCloud seed ISO）、`mamela serve`、`mamela lab tunnel`。APT はインストールの変更集合（apt-get -s）を plan に載せて承認の対象にし、mamelet は実行直前の再シミュレーションと一致したときだけ入れる。ローカルの QEMU は使わず、偽の OS と偽の Control Plane で通しのテストをしたうえで、L2 は実機で確かめる。Ubuntu 24.04 の実機で dpkg-query・apt-get -s・systemctl show の出力形式と、seed ISO が `LABEL=CIDATA` として読めることを確かめた。
 
+**L2 を実機で実行した (2026-11-10):** `examples/lab-l2` で、seed 付きの VM `mamela-l2` をテンプレートなしで作成した。cloud-init が qemu-guest-agent と mamelet を入れ、mamelet は `mamela lab tunnel`（踏み台ホスト経由の ssh -R）越しに一度きりのトークンで登録し、mTLS で revision を取得した。mamelet が報告した `apt-get -s install nginx` の変更集合（nginx と nginx-common 1.24.0-2ubuntu7.19、Ubuntu の公式 origin）を plan に載せて承認し、mamelet が再シミュレーションと一致を確かめてから一度だけインストールした。Ubuntu の nginx はインストール時に有効化・起動されるので、サービスの宣言もそのまま満たされ、plan は in sync になった。postflight では管理外のゲストに変化がなかった。権限は権限カタログから導いたもの（余分を外した版）で足りた。
+
 - まずローカルの QEMU + HVF（Ubuntu arm64 cloud image + NoCloud seed ISO）で開発する。
 - Enrollment 用のワンタイム Token と mTLS。
 - `GET /v1/nodes/{id}/desired`、観測・イベント・Heartbeat。
