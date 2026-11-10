@@ -1,0 +1,19 @@
+# Keeps the pinned GitHub Actions and Go modules up to date with weekly pull requests.
+# mise.toml and mise.lock (Go, Node.js, emela, wasmtime), toolchain.lock, the toolchain line of
+# go.mod and the Pome.lock files are updated by hand (see docs/development.md).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-modules:
+        patterns: ["*"]

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ieyoukan/mamela/internal/evaluate"
 )
 
 func toolchainDir(t *testing.T) string {
@@ -67,7 +69,7 @@ func TestEvalSummary(t *testing.T) {
 		"3 resources",
 		"sha256:d108bb2c17f95992ec7b6082f65ad9849fc2fd21f39be45b735ce18df41c2ad4",
 		"evaluated twice, same digest",
-		"emela 0.27.0, wasmtime 49.0.5",
+		"emela " + evaluate.PinnedEmela + ", wasmtime " + evaluate.PinnedWasmtime,
 		"VirtualMachine  app-server",
 		"service nginx enabled, running on app-server",
 	} {
@@ -103,7 +105,78 @@ func TestEvalReportsProblems(t *testing.T) {
 
 func TestEvalMissingToolchain(t *testing.T) {
 	code, _, stderr := runCLI("eval", "--toolchain", t.TempDir(), ".")
-	if code != 1 || !strings.Contains(stderr, "MAM-EVAL-0001") || !strings.Contains(stderr, "install-toolchain.sh") {
+	if code != 1 || !strings.Contains(stderr, "MAM-EVAL-0001") || !strings.Contains(stderr, "mamela toolchain install") ||
+		!strings.Contains(stderr, "install-toolchain.sh") {
+		t.Errorf("code=%d stderr=%s", code, stderr)
+	}
+}
+
+// Without flags or environment, eval finds the repository toolchain and its Pome cache from any
+// directory in the repository.
+func TestEvalFindsRepositoryToolchain(t *testing.T) {
+	toolchainDir(t)
+	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
+	t.Setenv("EMELA_POME_CACHE", "")
+	t.Chdir(filepath.Join("..", "..", "examples", "lab-l2"))
+	code, stdout, stderr := runCLI("eval", ".")
+	if code != 0 || !strings.Contains(stdout, "3 resources") {
+		t.Errorf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	code, stdout, stderr = runCLI("toolchain")
+	if code != 0 || !strings.Contains(stdout, "the repository toolchain in") || !strings.Contains(stdout, "ok: the pinned executables") ||
+		!strings.Contains(stdout, filepath.Join(".tools", "pomes")) {
+		t.Errorf("status: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestEvalWithoutAnyToolchain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
+	t.Setenv("PATH", t.TempDir())
+	t.Chdir(t.TempDir())
+	for _, args := range [][]string{{"eval", "."}, {"toolchain", "status"}} {
+		code, _, stderr := runCLI(args...)
+		if code != 1 || !strings.Contains(stderr, "MAM-EVAL-0001") || !strings.Contains(stderr, "is not installed") ||
+			!strings.Contains(stderr, "mamela toolchain install") {
+			t.Errorf("%v: code=%d stderr=%s", args, code, stderr)
+		}
+	}
+}
+
+// The pinned emela and wasmtime on PATH (as mise installs them) are used when there is no
+// repository toolchain; anything else on PATH is not.
+func TestEvalUsesPinnedToolsOnPath(t *testing.T) {
+	dir := toolchainDir(t)
+	abs, _ := filepath.Abs(dir)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
+	t.Setenv("PATH", abs)
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runCLI("toolchain")
+	if code != 0 || !strings.Contains(stdout, "PATH (the pinned executables") {
+		t.Errorf("pinned tools on PATH: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	other := t.TempDir()
+	for _, name := range []string{"emela", "wasmtime"} {
+		os.WriteFile(filepath.Join(other, name), []byte("#!/bin/sh\necho "+name+" 0.0.0\n"), 0o755)
+	}
+	t.Setenv("PATH", other)
+	if code, _, stderr := runCLI("toolchain"); code != 1 || !strings.Contains(stderr, "is not installed") {
+		t.Errorf("other tools on PATH: code=%d stderr=%s", code, stderr)
+	}
+}
+
+func TestToolchainStatusRefusesOtherBuilds(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"emela", "wasmtime"} {
+		os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\necho "+name+" 0.0.0\n"), 0o755)
+	}
+	code, _, stderr := runCLI("toolchain", "status", "--toolchain", dir)
+	if code != 1 || !strings.Contains(stderr, "is not the pinned emela") {
 		t.Errorf("code=%d stderr=%s", code, stderr)
 	}
 }

@@ -3,8 +3,9 @@ package version
 
 import "runtime/debug"
 
-// Current is the VCS revision this binary was built from ("+dirty" when the tree had changes), or
-// "unknown" when the build has no VCS information (for example in tests).
+// Current is the VCS revision this binary was built from ("+dirty" when the tree had changes); for
+// a binary built by `go install ...@version`, which has no VCS information, the module version; or
+// "unknown" (for example in tests).
 func Current() string {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -20,6 +21,9 @@ func Current() string {
 		}
 	}
 	if rev == "" {
+		if v := info.Main.Version; v != "" && v != "(devel)" {
+			return v
+		}
 		return "unknown"
 	}
 	if len(rev) > 12 {

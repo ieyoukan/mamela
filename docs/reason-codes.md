@@ -6,7 +6,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 
 | コード | 意味 | よくある原因と対処 |
 |---|---|---|
-| MAM-EVAL-0001 | ツールチェーンが見つからない、またはバージョンが違う | `scripts/install-toolchain.sh` を実行する |
+| MAM-EVAL-0001 | ツールチェーンが見つからない、または `toolchain.lock` の実行ファイルと一致しない | `mamela toolchain install`（リポジトリでは `scripts/install-toolchain.sh`）。`mamela toolchain` で、どれを使っているかを確かめる |
 | MAM-EVAL-0101 | ビルドに失敗した | コンパイルエラー、Pome でない、キャッシュにない依存（ネットワークからは取らない） |
 | MAM-EVAL-0102 | ビルドが時間内に終わらなかった | |
 | MAM-EVAL-0103 | キャッシュにある依存が Pome.lock の hash と違う（ビルドしていない） | キャッシュが書き換わった・壊れた。該当する依存をキャッシュから消し、`emela pome install`（`scripts/install-toolchain.sh`）で取り直す |
