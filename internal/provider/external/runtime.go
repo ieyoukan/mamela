@@ -21,6 +21,9 @@ import (
 type Runtime struct {
 	sessions map[string]*host.Session
 	programs []store.Program
+	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
+	// catalog): an approval is for that API only.
+	endpoints map[string]string
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -34,7 +37,7 @@ func Programs(pkgs []Package) []store.Program {
 
 // Start runs each program (WASM, isolated) with its API from the configuration.
 func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime string) (*Runtime, error) {
-	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs}
+	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}}
 	for _, p := range programs {
 		exe, err := host.InspectBytes(p.Source+" ("+p.Provider+")", p.Data)
 		if err != nil {
@@ -45,7 +48,7 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: a provider from a Pome must be WASM", p.Provider)
 		}
-		up, catalog, err := cfg.api(p.Provider)
+		up, catalog, endpoint, err := cfg.api(p.Provider)
 		if err != nil {
 			rt.Close()
 			return nil, err
@@ -86,6 +89,7 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			}
 		}
 		rt.sessions[p.Provider] = s
+		rt.endpoints[p.Provider] = endpoint
 	}
 	return rt, nil
 }
@@ -122,7 +126,8 @@ func (rt *Runtime) Refs() []spec.External {
 	var out []spec.External
 	for _, name := range rt.names() {
 		s := rt.sessions[name]
-		out = append(out, spec.External{Manifest: s.Manifest(), Program: s.Executable().Digest, Protocol: protocol.Version})
+		out = append(out, spec.External{Manifest: s.Manifest(), Program: s.Executable().Digest, Protocol: protocol.Version,
+			Endpoint: rt.endpoints[name]})
 	}
 	return out
 }
@@ -235,6 +240,9 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			}
 			if c.Precondition != "" && c.Precondition != p.Observed.Version {
 				return nil, fmt.Errorf("provider %s: the change of %s is based on version %s, but it observed %s", name, c.Resource, c.Precondition, p.Observed.Version)
+			}
+			if err := s.CheckPreconditions(c, p.Observed.Version); err != nil {
+				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			p.Changes = append(p.Changes, state.ProvidedChange{Change: c, Verified: rt.verify(s, c)})
 			out[c.Resource] = p

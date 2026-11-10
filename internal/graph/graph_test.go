@@ -103,6 +103,8 @@ func TestDecodeRejects(t *testing.T) {
 		{"provider in v1", `{"schema":"mamela-graph/v1","resources":[{"kind":"KVItem","name":"a","provider":"kv","spec":{}}]}`, CodeNeedsV2},
 		{"provider spec not an object", item(`[1]`), CodeWrongType},
 		{"provider spec float", item(`{"n":1.5}`), CodeWrongType},
+		{"provider spec integer beyond 2^53", item(`{"n":9007199254740993}`), CodeWrongType},
+		{"provider spec integer below -2^53", item(`{"n":-9007199254740993}`), CodeWrongType},
 		{"provider spec null", item(`{"n":null}`), CodeWrongType},
 		{"provider spec duplicate", item(`{"n":1,"n":2}`), CodeDuplicateMember},
 		{"provider declares a built-in kind", `{"schema":"mamela-graph/v2","resources":[{"kind":"VirtualMachine","name":"a","provider":"kv","spec":{}}]}`, CodeUnknownKind},

@@ -99,7 +99,8 @@ func (Provider) Observe(ctx context.Context, h *sdk.Host, p protocol.ObservePara
 }
 
 func observed(id, name string, it item, exists bool) protocol.Observed {
-	o := protocol.Observed{ID: id, Kind: Kind, Name: name, Exists: exists, IDs: map[string]string{"item": name}}
+	// Version "0" is the version of an item that does not exist: a create is based on it.
+	o := protocol.Observed{ID: id, Kind: Kind, Name: name, Exists: exists, IDs: map[string]string{"item": name}, Version: "0"}
 	if exists {
 		o.Owned = it.Owner == owner
 		o.Version = strconv.Itoa(it.Version)
@@ -128,9 +129,9 @@ func (Provider) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffR
 		labels := len(want.Labels) > 0 // no labels declared: labels are not managed
 		switch {
 		case !o.Exists:
-			c.Op, c.Reasons = OpCreate, []string{"the item does not exist"}
+			c.Op, c.Reasons, c.Precondition = OpCreate, []string{"the item does not exist"}, o.Version
 			c.Requests = append(c.Requests, protocol.Approved{Method: putItem.Method, Path: putItem.Path,
-				Params: map[string][]string{"value": {want.Value}, "owner": {owner}}})
+				Params: map[string][]string{"value": {want.Value}, "owner": {owner}, "version": {o.Version}}})
 		case !o.Owned:
 			return out, fmt.Errorf("%s: the item exists and Mamela did not create it; Mamela does not take it over", r.ID)
 		default:

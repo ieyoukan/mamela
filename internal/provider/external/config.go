@@ -1,6 +1,8 @@
 package external
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -61,30 +63,31 @@ func LoadConfig(path string) (Config, error) {
 	return c, nil
 }
 
-// api returns the upstream and the catalog of a provider; nil upstream when it is not configured.
-func (c Config) api(name string) (host.Upstream, protocol.Catalog, error) {
+// api returns the upstream and the catalog of a provider, and the endpoint's identity (a digest of
+// the URL, the credential and the catalog); nil upstream when it is not configured.
+func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error) {
 	a, ok := c.Provider[name]
 	if !ok {
-		return nil, protocol.Catalog{}, nil
+		return nil, protocol.Catalog{}, "", nil
 	}
 	var catalog protocol.Catalog
 	if a.Catalog != "" {
 		data, err := os.ReadFile(c.resolve(a.Catalog))
 		if err != nil {
-			return nil, catalog, fmt.Errorf("provider %s: catalog: %w", name, err)
+			return nil, catalog, "", fmt.Errorf("provider %s: catalog: %w", name, err)
 		}
 		if err := json.Unmarshal(data, &catalog, json.RejectUnknownMembers(true)); err != nil {
-			return nil, catalog, fmt.Errorf("provider %s: catalog %s: %w", name, a.Catalog, err)
+			return nil, catalog, "", fmt.Errorf("provider %s: catalog %s: %w", name, a.Catalog, err)
 		}
 		if err := catalog.Check(); err != nil {
-			return nil, catalog, err
+			return nil, catalog, "", err
 		}
 	}
 	var token string
 	if a.TokenFile != "" {
 		data, err := os.ReadFile(c.resolve(a.TokenFile))
 		if err != nil {
-			return nil, catalog, fmt.Errorf("provider %s: token: %w", name, err)
+			return nil, catalog, "", fmt.Errorf("provider %s: token: %w", name, err)
 		}
 		token = strings.TrimSpace(string(data))
 	}
@@ -94,7 +97,24 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, error) {
 				r.Header.Set("Authorization", "Bearer "+token)
 			}
 		}}
-	return up, catalog, nil
+	return up, catalog, endpointID(up.Base, token, catalog), nil
+}
+
+// endpointID identifies an API endpoint: the URL, the credential and the catalog. The credential
+// enters only as a digest; a different account or token is a different endpoint.
+func endpointID(base, token string, catalog protocol.Catalog) string {
+	cred := ""
+	if token != "" {
+		sum := sha256.Sum256([]byte("mamela-credential\x00" + token))
+		cred = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	data, _ := json.Marshal(struct {
+		URL        string           `json:"url"`
+		Credential string           `json:"credential"`
+		Catalog    protocol.Catalog `json:"catalog"`
+	}{base, cred, catalog}, json.Deterministic(true))
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (c Config) resolve(p string) string {

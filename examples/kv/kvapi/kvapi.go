@@ -85,7 +85,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mux.HandleFunc("PUT /items/{item}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("item")
 		it, exists := s.items[name]
-		if v := r.PostFormValue("version"); v != "" && (!exists || strconv.Itoa(it.Version) != v) {
+		// version is the precondition: the current version, or 0 for "must not exist yet".
+		if v := r.PostFormValue("version"); v == "0" && exists || v != "" && v != "0" && (!exists || strconv.Itoa(it.Version) != v) {
 			reply(w, http.StatusConflict, map[string]string{"error": "version mismatch"})
 			return
 		}

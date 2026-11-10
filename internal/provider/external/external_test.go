@@ -128,6 +128,7 @@ func TestObserveChecksTheDiff(t *testing.T) {
 		{"", ""},
 		{"diff-undeclared", "not one of its declared resources"},
 		{"diff-precondition", "based on version 999"},
+		{"diff-no-precondition", "needs a precondition (version)"},
 	} {
 		t.Run(c.mode, func(t *testing.T) {
 			var flags []string

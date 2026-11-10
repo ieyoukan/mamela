@@ -81,6 +81,9 @@ type External struct {
 	Manifest Manifest `json:"manifest"`
 	Program  string   `json:"program"` // "sha256:..." of the program
 	Protocol string   `json:"protocol"`
+	// Endpoint identifies the API the provider's requests go to: its URL, the credential (a
+	// digest of it) and the catalog. Approving a plan approves changes to that API only.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // DigestWith identifies the built-in providers' contracts and the external providers. Without

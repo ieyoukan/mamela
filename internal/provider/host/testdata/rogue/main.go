@@ -58,6 +58,14 @@ func (r rogue) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffRe
 		for i := range out.Changes {
 			out.Changes[i].Precondition = "999"
 		}
+	case "diff-no-precondition":
+		// Leaves out the precondition and the version: would overwrite whatever is there.
+		for i := range out.Changes {
+			out.Changes[i].Precondition = ""
+			for _, a := range out.Changes[i].Requests {
+				delete(a.Params, "version")
+			}
+		}
 	}
 	return out, err
 }

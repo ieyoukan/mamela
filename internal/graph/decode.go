@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -196,6 +197,9 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 	return r, nil
 }
 
+// maxExactInt is the largest integer a JSON number (a double) holds exactly: 2^53 - 1.
+const maxExactInt = 1<<53 - 1
+
 // maxSpecDepth bounds the nesting of a provider's spec.
 const maxSpecDepth = 32
 
@@ -227,6 +231,11 @@ func providedSpec(v jsontext.Value) ([]byte, error) {
 		case '0':
 			if strings.ContainsAny(tok.String(), ".eE") {
 				return nil, fmt.Errorf("the spec has a number %s that is not an integer", tok.String())
+			}
+			// The canonical form (RFC 8785) writes numbers as IEEE 754 doubles: an integer beyond
+			// 2^53 would reach the provider as another number. Refuse it rather than change it.
+			if n, err := strconv.ParseInt(tok.String(), 10, 64); err != nil || n > maxExactInt || n < -maxExactInt {
+				return nil, fmt.Errorf("the spec has an integer %s beyond ±%d, which JSON cannot carry exactly (write it as a string)", tok.String(), maxExactInt)
 			}
 		}
 	}

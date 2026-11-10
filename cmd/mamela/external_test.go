@@ -91,4 +91,34 @@ catalog = "`+catalog+`"
 	if v := api.Items()["web"].Value; v != "someone else's" {
 		t.Errorf("the newer value was overwritten: %q", v)
 	}
+
+	// An approval is for one API: pointing the configuration at another one voids it.
+	api.Put(kvapi.Item{Name: "web", Value: "v0", Owner: "mamela", Labels: []string{"prod"}, Version: 9})
+	digest, _ = plan()
+	mamela("approve", "--db", db, "--by", "tester", digest)
+	other := kvapi.New()
+	srvB := httptest.NewServer(kvapi.RequireToken("s3cret", other))
+	defer srvB.Close()
+	os.WriteFile(config, []byte(`[provider.kv-example]
+api_url = "`+srvB.URL+`"
+token_file = "token"
+catalog = "`+catalog+`"
+`), 0o600)
+	code, out = mamela("apply", "--db", db, "--providers", config, "--toolchain", tools, digest)
+	if code == 0 || !strings.Contains(out, "MAM-REC-0007") || len(other.Items()) != 0 {
+		t.Fatalf("apply to another API: %d, %d items\n%s", code, len(other.Items()), out)
+	}
+	// So does another credential for the same API.
+	os.WriteFile(filepath.Join(dir, "token"), []byte("another\n"), 0o600)
+	os.WriteFile(config, []byte(`[provider.kv-example]
+api_url = "`+srv.URL+`"
+token_file = "token"
+catalog = "`+catalog+`"
+`), 0o600)
+	if code, out := mamela("apply", "--db", db, "--providers", config, "--toolchain", tools, digest); code == 0 || !strings.Contains(out, "MAM-REC-0007") {
+		t.Fatalf("apply with another credential: %d\n%s", code, out)
+	}
+	if v := api.Items()["web"].Value; v != "v0" {
+		t.Errorf("changed with another credential: %q", v)
+	}
 }
