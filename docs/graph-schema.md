@@ -58,6 +58,19 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 | `spec.enabled` | bool | |
 | `spec.running` | bool | |
 
+### NodeK3s
+
+1 ノードの k3s server（軽量な Kubernetes）。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/k3s` |
+| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.version` | string | k3s のリリース（`v1.37.2+k3s1`） |
+| `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`） |
+
+起動の引数は Mamela が決める（`k3s server --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600`）。宣言からは変えられない。
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。
@@ -77,7 +90,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（VirtualMachine → NodePackage → NodeService → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
+- 正規形: リソースを kind の順（VirtualMachine → NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。
 

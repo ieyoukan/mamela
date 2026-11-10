@@ -64,3 +64,13 @@ fn provided_resources_make_a_v2_graph() {
   )
   assert Lib.to_json(g) == expected
 }
+
+@test
+fn k3s_server() {
+  g = Lib.empty()
+    |> Lib.vm(app())
+    |> Lib.k3s(app(), "v1.33.5+k3s1", "00")
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"app-server/k3s\",\"spec\":{\"node\":\"app-server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+}

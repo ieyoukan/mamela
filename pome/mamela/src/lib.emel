@@ -25,6 +25,11 @@ pub type Package(node: String, name: String)
 ## A systemd service on a node.
 pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 
+## A k3s server (a single-node Kubernetes) on a node: this exact release, pinned by the sha256 of
+## its binary for the node's architecture (from the release's sha256sum file). Mamela writes the
+## systemd unit itself; start it with `service(graph, node, "k3s", True, True)`.
+pub type K3s(node: String, version: String, sha256: String)
+
 ## A resource of a provider's kind. A provider's Pome wraps `provided` in typed functions, so
 ## that a declaration writes `Kv.item(...)`, not this.
 pub type Provided(provider: String, kind: String, name: String, spec: List[(String, Dynamic)])
@@ -34,11 +39,12 @@ pub opaque type Graph(
   vms: List[Vm],
   packages: List[Package],
   services: List[Service],
+  k3s_servers: List[K3s],
   by_providers: List[Provided],
 )
 
 pub fn empty() -> Graph {
-  Graph(vms: [], packages: [], services: [], by_providers: [])
+  Graph(vms: [], packages: [], services: [], k3s_servers: [], by_providers: [])
 }
 
 ## Declares a resource of a provider: `kind` is a kind of the provider named `provider`, and
@@ -63,6 +69,12 @@ pub fn vm(graph: Graph, vm: Vm) -> Graph {
 ## keeps the reference from pointing at a node that was never declared by a typo.
 pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
+}
+
+## Declares that `node` runs k3s `version`, whose binary has `sha256`.
+pub fn k3s(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
+  k = K3s(node: node.name, version:, sha256:)
+  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
 }
 
 pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Bool) -> Graph {
@@ -116,6 +128,14 @@ fn service_json(s: Service) -> Dynamic {
   )
 }
 
+fn k3s_json(k: K3s) -> Dynamic {
+  resource(
+    "NodeK3s",
+    "#{k.node}/k3s",
+    [("node", Text(k.node)), ("version", Text(k.version)), ("sha256", Text(k.sha256))],
+  )
+}
+
 fn provided_json(p: Provided) -> Dynamic {
   Dynamic.object(
     [
@@ -132,7 +152,10 @@ fn graph_json(graph: Graph) -> Dynamic {
     graph.vms.map(vm_json),
     List.append(
       graph.packages.map(package_json),
-      List.append(graph.services.map(service_json), graph.by_providers.map(provided_json)),
+      List.append(
+        graph.services.map(service_json),
+        List.append(graph.k3s_servers.map(k3s_json), graph.by_providers.map(provided_json)),
+      ),
     ),
   )
   schema = if List.is_empty(graph.by_providers) { SCHEMA } else { SCHEMA_V2 }

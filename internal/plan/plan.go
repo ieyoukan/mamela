@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -116,6 +117,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.pkg(r))
 		case graph.KindNodeService:
 			p.Changes = append(p.Changes, b.service(r))
+		case graph.KindNodeK3s:
+			p.Changes = append(p.Changes, b.k3s(r))
 		default:
 			if r.Provided != nil {
 				p.Changes = append(p.Changes, b.provided(r))
@@ -344,7 +347,7 @@ func (b builder) service(r graph.Resource) Change {
 	}
 	if !got.Exists {
 		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0106",
-			Message: fmt.Sprintf("waits for service %s to exist on %s (its package is not installed yet)", want.Service, want.Node)}
+			Message: fmt.Sprintf("waits for service %s to exist on %s (what provides it, a package or k3s, is not installed yet)", want.Service, want.Node)}
 		return c
 	}
 	var subjects []policy.Subject
@@ -365,6 +368,39 @@ func (b builder) service(r graph.Resource) Change {
 		subjects = append(subjects, policy.Subject{Op: op, Service: want.Service})
 	}
 	return b.withOps(c, subjects...)
+}
+
+// k3s plans a k3s server on a node from mamelet's report of it.
+func (b builder) k3s(r graph.Resource) Change {
+	want := r.NodeK3s
+	c := newChange(r)
+	if ok, note := b.nodeReady(want.Node); !ok {
+		c.Status, c.Note = StatusWaiting, note
+		return c
+	}
+	got, observed := b.snap.K3s[r.Name]
+	switch {
+	case !observed:
+		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0108",
+			Message: fmt.Sprintf("waits for the agent on %s to report k3s", want.Node)}
+		return c
+	case b.stale(got.ObservedAt):
+		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
+		return c
+	case got.Error != "":
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0204",
+			Message: fmt.Sprintf("the agent on %s cannot observe k3s: %s", want.Node, got.Error),
+			Hint:    "fix it on the node, then plan again"}
+		return c
+	case got.Installed && got.SHA256 == want.SHA256:
+		return b.withOps(c)
+	}
+	// The diff says exactly what is approved: the release, the binary's sha256, where it comes
+	// from and how it runs.
+	c.Diffs = []Diff{{"version", "", want.Version}, {"sha256", got.SHA256, want.SHA256},
+		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
+		{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs, " ")}}
+	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
 }
 
 func newChange(r graph.Resource) Change {

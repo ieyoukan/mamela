@@ -179,6 +179,31 @@ mamelet の安全装置（`internal/mamelet`）:
 - インストールは、承認された apt-get -s の変更集合と、直前の再シミュレーションが一致するときだけ、試行ごとに一度だけ行う。削除を含む集合と、許可していない APT origin のパッケージは、revision が許しても拒否する。
 - Control Plane に届かないときは、まだ有効な前回の revision（既定 24 時間）で、policy が許す起動の修復（`autoStartServices`）だけを行う。一度きりの操作は新しく取得した revision でしか行わない。
 
+### 4.5 軽量な Kubernetes（k3s）を作る
+
+`examples/k3s` は、VM 1 台に 1 ノードの k3s を置く宣言である（予算の 1 vCPU・1 GiB に収まるよう、ingress controller と metrics server を外す）。手順は L2 と同じで、承認が 3 回要る。
+
+1. VM の作成（mamelet が入る）
+2. k3s の導入。plan には、版、sha256、取得元、起動の引数が出る
+3. サービスの有効化と起動
+
+~~~bash
+mamela serve --site lab/site.local.toml                    # 別の端末で動かしておく
+mamela plan --site lab/site.local.toml examples/k3s         # 1. VM の作成
+mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
+mamela lab tunnel --site lab/site.local.toml k3s-1          # 別の端末で動かしておく
+mamela plan --site lab/site.local.toml examples/k3s         # 2. k3s の導入（mamelet の報告から）
+mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
+mamela plan --site lab/site.local.toml examples/k3s         # 3. k3s の有効化と起動
+mamela approve <digest> && mamela apply --site lab/site.local.toml <digest>
+~~~
+
+mamelet の安全装置（k3s）:
+
+- 取得元は `https://github.com/k3s-io/k3s/releases/download/<version>/k3s`（arm64 では `k3s-arm64`）に固定している。revision が渡すのは版と sha256 だけである。
+- sha256 が承認したものと違えば、何も置かない。導入は承認ごとに一度だけ行う。
+- unit の中身は mamelet が決める。手で変えられた unit は観測で報告し、plan は止まる（MAM-PLAN-0204）。
+
 ## 5. preflight / postflight
 
 ~~~bash

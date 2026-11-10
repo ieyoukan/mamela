@@ -146,6 +146,8 @@ func fields(r graph.Resource) map[string]string {
 		f["node"], f["package"] = r.NodePackage.Node, r.NodePackage.Package
 	case r.NodeService != nil:
 		f["node"], f["service"] = r.NodeService.Node, r.NodeService.Service
+	case r.NodeK3s != nil:
+		f["node"], f["version"], f["sha256"] = r.NodeK3s.Node, r.NodeK3s.Version, r.NodeK3s.SHA256
 	}
 	return f
 }

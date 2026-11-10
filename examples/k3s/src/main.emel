@@ -1,0 +1,26 @@
+# A very light Kubernetes: one VM running a single-node k3s server (no ingress controller, no
+# metrics server). mamelet installs the k3s release pinned below only after approval and only if
+# the binary's sha256 matches; starting it is a separate approval.
+#
+# The sha256 is the release's, for linux/amd64 (sha256sum-amd64.txt of the release).
+
+import Std.Console.{SystemConsole}
+import Mamela.{Vm}
+
+const K3S_VERSION = "v1.37.2+k3s1"
+const K3S_SHA256 = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+
+fn infrastructure() -> Mamela.Graph {
+  node = Vm(name: "k3s-1", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+
+  Mamela.empty()
+    |> Mamela.vm(node)
+    |> Mamela.k3s(node, K3S_VERSION, K3S_SHA256)
+    |> Mamela.service(node, "k3s", True, True)
+}
+
+fn main() {
+  with SystemConsole {
+    infrastructure() |> Mamela.print
+  }
+}

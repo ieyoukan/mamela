@@ -25,6 +25,9 @@ var (
 	// An image reference such as "ubuntu-24.04".
 	imageRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
+	// A k3s release ("v1.33.5+k3s1") and a sha256 in hex.
+	K3sVersionRe   = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
+	sha256Re       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
 	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
@@ -98,6 +101,20 @@ func Validate(g *Graph) error {
 			}
 			if want := s.Node + "/" + s.Package; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/package)", want), "")
+			}
+		case KindNodeK3s:
+			s := r.NodeK3s
+			checkNodeRef(add, r, s.Node, nodes)
+			if !K3sVersionRe.MatchString(s.Version) {
+				add(r, CodeInvalidValue, "spec.version", fmt.Sprintf("%q is not a k3s release", s.Version),
+					"write the release tag, such as \"v1.33.5+k3s1\"")
+			}
+			if !sha256Re.MatchString(s.SHA256) {
+				add(r, CodeInvalidValue, "spec.sha256", "sha256 is not 64 lowercase hex digits",
+					"copy it from the release's sha256sum file for the node's architecture")
+			}
+			if want := s.Node + "/k3s"; r.Name != want {
+				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/k3s)", want), "")
 			}
 		case KindNodeService:
 			s := r.NodeService

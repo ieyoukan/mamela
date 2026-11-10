@@ -48,6 +48,12 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			snap.Services[r.Node+"/"+sv.Name] = state.Service{Exists: sv.Exists, Enabled: sv.Enabled, Running: sv.Running,
 				ObservedAt: nr.Received}
 		}
+		if k := r.K3s; k != nil {
+			if snap.K3s == nil {
+				snap.K3s = map[string]state.K3s{}
+			}
+			snap.K3s[r.Node+"/k3s"] = state.K3s{Installed: k.Installed, SHA256: k.SHA256, Error: k.Error, ObservedAt: nr.Received}
+		}
 	}
 	return snap, nil
 }
@@ -60,6 +66,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 	type nodeRes struct {
 		pkgs []graph.NodePackageSpec
 		svcs []graph.NodeServiceSpec
+		k3s  *graph.NodeK3sSpec
 	}
 	nodes := map[string]*nodeRes{}
 	var names []string
@@ -75,6 +82,10 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		case graph.KindNodeService:
 			if n := nodes[r.NodeService.Node]; n != nil {
 				n.svcs = append(n.svcs, *r.NodeService)
+			}
+		case graph.KindNodeK3s:
+			if n := nodes[r.NodeK3s.Node]; n != nil {
+				n.k3s = r.NodeK3s
 			}
 		}
 	}
@@ -109,6 +120,13 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 					}
 				}
 				r.Services = append(r.Services, ns)
+			}
+			if k := n.k3s; k != nil {
+				r.K3s = &noderev.K3s{Version: k.Version, SHA256: k.SHA256}
+				// An approved install stays granted while the same release is declared.
+				if prev != nil && prev.VMID == vmid && prev.K3s != nil && prev.K3s.Version == k.Version && prev.K3s.SHA256 == k.SHA256 {
+					r.K3s.Install = prev.K3s.Install
+				}
 			}
 			return r, nil
 		}); err != nil {
@@ -161,6 +179,17 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 				return fmt.Errorf("package %s is not in the revision of %s (plan again)", r.NodePackage.Package, node)
 			}
 			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest}
+			return nil
+		}
+	case step.Op == policy.OpInstallK3s && r.NodeK3s != nil:
+		node, what = r.NodeK3s.Node, "install k3s "+r.NodeK3s.Version
+		grant = func(rev *noderev.Revision) error {
+			if rev.K3s == nil || rev.K3s.Version != r.NodeK3s.Version || rev.K3s.SHA256 != r.NodeK3s.SHA256 {
+				return fmt.Errorf("k3s %s is not in the revision of %s (plan again)", r.NodeK3s.Version, node)
+			}
+			k := *rev.K3s
+			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall}
+			rev.K3s = &k
 			return nil
 		}
 	case serviceActions[step.Op] != "" && r.NodeService != nil:
@@ -280,7 +309,7 @@ func (c Combined) Observe(ctx context.Context) (state.Snapshot, error) {
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	vms.Packages, vms.Services = nodes.Packages, nodes.Services
+	vms.Packages, vms.Services, vms.K3s = nodes.Packages, nodes.Services, nodes.K3s
 	return vms, nil
 }
 

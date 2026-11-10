@@ -187,6 +187,19 @@
   - Proxmox と mamelet の、この契約への移行
   - `pome/mamela` v0.2.0 と、例の Pome の公開（タグの push）
 
+## 軽量な Kubernetes（k3s、2026-11-10）
+
+Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもない。そのため、パッケージと同じ考え方で、版と sha256 を宣言で固定する組み込みの kind `NodeK3s` を足した。
+
+- **宣言:** `Mamela.k3s(graph, vm, version, sha256)`。例は `examples/k3s`（1 ノード、traefik と metrics-server なし）。
+- **mamelet:**
+  - 承認ごとに一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ置く。
+  - unit は Mamela が決めた中身で書く。手で変えられた unit は報告して、plan を止める。
+  - 起動は、既存の `NodeService` の承認で行う。
+- **確かめたこと:**
+  - テスト: 承認の前は取得しない、別の sha256 なら置かない、同じ試行を繰り返さない、オフラインでは導入しない、承認から起動までの通し。
+  - 検証環境の実機: 1 vCPU・1 GiB の VM 1 台に、3 回の承認（VM の作成、k3s の導入、サービスの有効化と起動）で k3s を入れた。ノードは `Ready` になり、`plan` は in sync になった。毎回の postflight で、lab の外は変わっていない。
+
 ## テストの優先順位
 
 1. 非許可の操作と任意 shell コマンドを拒否する。

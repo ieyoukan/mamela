@@ -23,6 +23,7 @@ const (
 	KindVirtualMachine Kind = "VirtualMachine"
 	KindNodePackage    Kind = "NodePackage"
 	KindNodeService    Kind = "NodeService"
+	KindNodeK3s        Kind = "NodeK3s"
 )
 
 // Builtin reports whether a kind is one of Mamela's own (not a provider's).
@@ -36,6 +37,7 @@ var kindOrder = map[Kind]int{
 	KindVirtualMachine: 0,
 	KindNodePackage:    1,
 	KindNodeService:    2,
+	KindNodeK3s:        3,
 }
 
 // Graph is a decoded and validated desired state.
@@ -51,6 +53,7 @@ type Resource struct {
 	VirtualMachine *VirtualMachineSpec
 	NodePackage    *NodePackageSpec
 	NodeService    *NodeServiceSpec
+	NodeK3s        *NodeK3sSpec
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
@@ -85,6 +88,15 @@ type NodePackageSpec struct {
 	Node    string
 	Package string
 	State   PackageState
+}
+
+// NodeK3sSpec says a node runs a k3s server (a single-node Kubernetes): this exact k3s release,
+// whose binary for the node's architecture has this sha256. Mamela writes the systemd unit
+// itself; nothing else of the node's configuration comes from the declaration.
+type NodeK3sSpec struct {
+	Node    string
+	Version string // "v1.33.5+k3s1"
+	SHA256  string // hex, of the release's binary for the node's architecture
 }
 
 // NodeServiceSpec is the desired state of a systemd service on a node.

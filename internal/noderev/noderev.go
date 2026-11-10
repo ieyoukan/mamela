@@ -38,7 +38,30 @@ type Revision struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 	Packages  []Package `json:"packages"`
 	Services  []Service `json:"services"`
+	// K3s, when set, is the k3s server the node should run: mamelet observes it, and installs it
+	// only with an approved, one-time Install.
+	K3s *K3s `json:"k3s,omitempty"`
 }
+
+// K3s is a k3s release, pinned by the sha256 of its binary for the node's architecture.
+type K3s struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+	// Install is an approved installation of exactly this binary: mamelet downloads the release
+	// asset, and installs it (with Mamela's fixed systemd unit) only if its sha256 matches.
+	Install *Once `json:"install,omitempty"`
+}
+
+// K3sReleases is where k3s releases are downloaded from: <K3sReleases>/<version>/<asset>.
+const K3sReleases = "https://github.com/k3s-io/k3s/releases/download"
+
+// K3sTag is a release version as it appears in the release URL ("v1.33.5%2Bk3s1").
+func K3sTag(version string) string { return strings.ReplaceAll(version, "+", "%2B") }
+
+// K3sArgs are the arguments of the k3s server mamelet runs: a single-node cluster, as light as k3s
+// goes (no ingress controller, no metrics server), its kubeconfig readable by root only. Fixed in
+// Mamela: a declaration cannot change them.
+var K3sArgs = []string{"server", "--disable=traefik", "--disable=metrics-server", "--write-kubeconfig-mode=0600"}
 
 // Package is an APT package that should be installed.
 type Package struct {
@@ -82,6 +105,7 @@ const (
 	ActionStart   = "start"
 	ActionDisable = "disable"
 	ActionStop    = "stop"
+	ActionInstall = "install" // k3s only
 )
 
 var (
@@ -89,6 +113,8 @@ var (
 	packagePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
 	servicePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9@._-]{0,127}$`)
 	operationPattern = regexp.MustCompile(`^op-[0-9a-f]{24}$`)
+	k3sVersion       = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
+	hexSHA256        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
@@ -164,6 +190,14 @@ func (r *Revision) Check() error {
 			if o.Action != ActionEnable && o.Action != ActionStart && o.Action != ActionDisable && o.Action != ActionStop {
 				add("service %s: action %q is not known", s.Name, o.Action)
 			}
+		}
+	}
+	if k := r.K3s; k != nil {
+		if !k3sVersion.MatchString(k.Version) || !hexSHA256.MatchString(k.SHA256) {
+			add("k3s %q / sha256 %q are not valid", k.Version, k.SHA256)
+		}
+		if in := k.Install; in != nil && (!operationPattern.MatchString(in.Operation) || in.Attempt < 1 || in.Action != ActionInstall) {
+			add("k3s: install grant %+v is not valid", *in)
 		}
 	}
 	if len(problems) > 0 {
@@ -275,6 +309,7 @@ type Report struct {
 	Version  string         `json:"version"`
 	Packages []PackageState `json:"packages"`
 	Services []ServiceState `json:"services"`
+	K3s      *K3sState      `json:"k3s,omitempty"`
 	Results  []Result       `json:"results"`
 	// Refused explains why the last revision received was not accepted, if it was not.
 	Refused string `json:"refused,omitempty"`
@@ -288,6 +323,14 @@ type PackageState struct {
 	Version   string     `json:"version,omitempty"`
 	ChangeSet *ChangeSet `json:"changeSet,omitempty"`
 	Error     string     `json:"error,omitempty"` // why it could not be observed or simulated
+}
+
+// K3sState is the observed k3s: whether Mamela's unit and a binary are installed, and the binary's
+// sha256.
+type K3sState struct {
+	Installed bool   `json:"installed"`
+	SHA256    string `json:"sha256,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 // ServiceState is an observed service.
