@@ -93,6 +93,36 @@ CREATE TABLE vmids (
   allocated_ms INTEGER NOT NULL
 );
 `,
+	// 3: mamelet (the node agent): enrollment, revisions and reports.
+	`
+CREATE TABLE enroll_tokens (
+  token_hash TEXT PRIMARY KEY,
+  node       TEXT NOT NULL,
+  vmid       INTEGER NOT NULL,
+  seed       TEXT NOT NULL,
+  created_ms INTEGER NOT NULL,
+  expires_ms INTEGER NOT NULL,
+  used_ms    INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE agents (
+  node        TEXT PRIMARY KEY,
+  vmid        INTEGER NOT NULL,
+  cert_serial TEXT NOT NULL,
+  enrolled_ms INTEGER NOT NULL
+);
+CREATE TABLE node_revisions (
+  node       TEXT NOT NULL,
+  serial     INTEGER NOT NULL,
+  content    BLOB NOT NULL,
+  created_ms INTEGER NOT NULL,
+  PRIMARY KEY (node, serial)
+);
+CREATE TABLE node_reports (
+  node        TEXT PRIMARY KEY,
+  received_ms INTEGER NOT NULL,
+  report      BLOB NOT NULL
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

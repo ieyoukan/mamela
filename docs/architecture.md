@@ -317,7 +317,7 @@ mamela events --node app-server
 mamela reconcile app-server
 ~~~
 
-CLI 名は `mamela`、Node Agent は `mamela-agent`（いずれも未実装）。
+CLI 名は `mamela`（実装中）、Node Agent は `mamelet`（未実装。VM 内で動く小さな Mamela という意味）。
 
 ## 9. Emela / WASM 技術方針
 
@@ -379,7 +379,7 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 mamela/
 ├── cmd/
 │   ├── mamela/           # CLI / Control Plane
-│   └── mamela-agent/     # Pull Node Agent
+│   └── mamelet/          # Pull Node Agent (mamelet)
 ├── internal/
 │   ├── api/
 │   ├── graph/            # mamela-graph/v1 parser, canonicalization, digest
