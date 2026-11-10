@@ -70,12 +70,28 @@ type Operation struct {
 }
 
 // Call is one API call: a method and a path template whose "{name}" segments are IDs ("/items/{item}"),
-// and every parameter it may send (query and form). No parameters means it sends none.
+// and every parameter it may send, by where it sends it: in the query or in the form body. A
+// name is in one place only. No parameters means it sends none.
 type Call struct {
 	Method string   `json:"method"`
 	Path   string   `json:"path"`
-	Params []string `json:"params,omitempty"`
+	Query  []string `json:"query,omitempty"`
+	Form   []string `json:"form,omitempty"`
 }
+
+// In says where the call sends a parameter: "query", "form", or "" when it does not declare it.
+func (c Call) In(param string) string {
+	switch {
+	case slices.Contains(c.Query, param):
+		return "query"
+	case slices.Contains(c.Form, param):
+		return "form"
+	}
+	return ""
+}
+
+// Params are all the parameters the call may send.
+func (c Call) Params() []string { return append(slices.Clone(c.Query), c.Form...) }
 
 // Need is one capability an operation needs.
 type Need struct {
@@ -237,16 +253,30 @@ var Methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 func checkCalls(calls []Call) error {
 	seen := map[string]bool{}
 	for _, c := range calls {
-		if !slices.Contains(Methods, c.Method) {
-			return fmt.Errorf("call %s %s: unknown method", c.Method, c.Path)
-		}
-		if _, err := ParsePath(c.Path); err != nil {
-			return fmt.Errorf("call %s %s: %w", c.Method, c.Path, err)
+		if err := checkCall(c.Method, c.Path, c.Query, c.Form); err != nil {
+			return err
 		}
 		if seen[c.Method+" "+c.Path] {
 			return fmt.Errorf("call %s %s is declared twice", c.Method, c.Path)
 		}
 		seen[c.Method+" "+c.Path] = true
+	}
+	return nil
+}
+
+func checkCall(method, path string, query, form []string) error {
+	if !slices.Contains(Methods, method) {
+		return fmt.Errorf("call %s %s: unknown method", method, path)
+	}
+	if _, err := ParsePath(path); err != nil {
+		return fmt.Errorf("call %s %s: %w", method, path, err)
+	}
+	names := map[string]bool{}
+	for _, n := range append(slices.Clone(query), form...) {
+		if !validName(n) || names[n] {
+			return fmt.Errorf("call %s %s: parameter %q is invalid or declared twice (a name is in the query or the form, not both)", method, path, n)
+		}
+		names[n] = true
 	}
 	return nil
 }

@@ -33,6 +33,7 @@ type Executable struct {
 	Digest  string // "sha256:..." of the file
 	Format  Format
 	Imports []component.Import // for WASM
+	data    []byte             // what was inspected: Start runs these bytes, not the path
 }
 
 // maxExecutable bounds what Inspect reads.
@@ -85,7 +86,7 @@ func Inspect(path string) (Executable, error) {
 		return Executable{}, &Error{Code: CodeExecutable, Message: fmt.Sprintf("%s is larger than %d MiB", path, maxExecutable>>20)}
 	}
 	sum := sha256.Sum256(data)
-	exe := Executable{Path: path, Digest: "sha256:" + hex.EncodeToString(sum[:])}
+	exe := Executable{Path: path, Digest: "sha256:" + hex.EncodeToString(sum[:]), data: data}
 	var policy component.Policy
 	switch {
 	case component.IsCoreModule(data):

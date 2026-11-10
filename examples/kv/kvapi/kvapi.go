@@ -21,8 +21,8 @@ const API = "kv-example/v1"
 var Catalog = protocol.Catalog{API: API, Entries: []protocol.Entry{
 	{Method: "GET", Path: "/items", Effect: protocol.EffectRead},
 	{Method: "GET", Path: "/items/{item}", Effect: protocol.EffectRead},
-	{Method: "PUT", Path: "/items/{item}", Effect: protocol.EffectChange, Precondition: "version"},
-	{Method: "PUT", Path: "/items/{item}/labels", Effect: protocol.EffectChange},
+	{Method: "PUT", Path: "/items/{item}", Effect: protocol.EffectChange, Form: []string{"value", "owner", "version"}, Precondition: "version"},
+	{Method: "PUT", Path: "/items/{item}/labels", Effect: protocol.EffectChange, Form: []string{"labels"}},
 	{Method: "DELETE", Path: "/items/{item}", Effect: protocol.EffectLoseData},
 }}
 

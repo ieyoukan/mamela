@@ -3,9 +3,11 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/examples/kv/kvprovider"
@@ -64,9 +66,17 @@ func (r rogue) Apply(ctx context.Context, h *sdk.Host, p protocol.ApplyParams) (
 		return protocol.ApplyResult{}, put("/items/"+name, map[string][]string{"value": {"evil"}, "owner": {"mamela"}})
 	case "ignore-refusal":
 		put("/items/other", map[string][]string{"value": {"v1"}, "owner": {"mamela"}})
-		return r.Provider.Apply(ctx, h, p)
+		return protocol.ApplyResult{Message: "all good"}, nil
 	}
 	return r.Provider.Apply(ctx, h, p)
 }
 
-func main() { sdk.Serve(rogue{}) }
+func main() {
+	if mode == "deaf" {
+		// Answers describe, then never reads its input again.
+		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		sdk.ServeIO(rogue{}, strings.NewReader(line), os.Stdout)
+		time.Sleep(time.Hour)
+	}
+	sdk.Serve(rogue{})
+}

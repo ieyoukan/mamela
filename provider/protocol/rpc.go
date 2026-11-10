@@ -128,7 +128,8 @@ type DiffResult struct {
 }
 
 // Change is one planned operation on one resource. A person or the policy approves exactly this:
-// the operation, the objects (IDs) and the values (Pins). The host derives the permit from it.
+// the operation, the objects (IDs) and every changing request it sends (Requests). The host
+// derives the permit from it and sends nothing else.
 type Change struct {
 	Resource string       `json:"resource"` // the graph ID
 	Kind     ResourceKind `json:"kind"`
@@ -136,19 +137,20 @@ type Change struct {
 	// IDs bind the operation to its objects: every changing request must name exactly these in
 	// its path and in same-named parameters.
 	IDs map[string]string `json:"ids"`
-	// Values fix the values that carry the intent (sizes, counts, names, tags).
-	Values []Pin `json:"values,omitempty"`
+	// Requests are the changing requests, each with exactly the parameters it sends and their
+	// values: a request that omits, adds or changes a parameter is refused. Each is sent at most
+	// once. Reads are not listed: the operation's declared reads are allowed.
+	Requests []Approved `json:"requests"`
 	// Precondition is the observed Version the change is based on.
 	Precondition string   `json:"precondition,omitempty"`
 	Reasons      []string `json:"reasons,omitempty"`
 }
 
-// Pin fixes a parameter of a call: when the call sends Param, its value is one of Values.
-type Pin struct {
-	Method string   `json:"method"`
-	Path   string   `json:"path"`
-	Param  string   `json:"param"`
-	Values []string `json:"values"`
+// Approved is one approved changing request: a declared call and exactly the parameters it sends.
+type Approved struct {
+	Method string              `json:"method"`
+	Path   string              `json:"path"` // the call's template
+	Params map[string][]string `json:"params,omitempty"`
 }
 
 // ApplyParams is one change to carry out, with its permit and what it was planned from.

@@ -163,8 +163,15 @@ func calls(cs []protocol.Call) string {
 	var out []string
 	for _, c := range cs {
 		s := c.Method + " " + c.Path
-		if len(c.Params) > 0 {
-			s += " (" + strings.Join(c.Params, ", ") + ")"
+		var ps []string
+		if len(c.Query) > 0 {
+			ps = append(ps, "query: "+strings.Join(c.Query, ", "))
+		}
+		if len(c.Form) > 0 {
+			ps = append(ps, "form: "+strings.Join(c.Form, ", "))
+		}
+		if len(ps) > 0 {
+			s += " (" + strings.Join(ps, "; ") + ")"
 		}
 		out = append(out, s)
 	}

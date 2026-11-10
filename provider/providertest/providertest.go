@@ -5,7 +5,8 @@
 //   - observe sends only declared reads, diff sends nothing and gives the same changes for the
 //     same input;
 //   - every change applies within its permit (no request is refused) and the world then matches
-//     the declaration (a second diff is empty);
+//     the declaration (a second diff is empty); a failed, refused or uncertain request is reported
+//     as an error, never as success;
 //   - resources it created stay visible when they are no longer declared, and are not changed;
 //   - lookup says a planned change is not done before it is applied and done once the world
 //     matches; when a change request is not sent, or is sent and its response is lost, lookup
@@ -244,7 +245,11 @@ func (e *env) apply(c protocol.Change, desired []protocol.Resource, observed []p
 			o = &observed[i]
 		}
 	}
-	return e.s.Apply(e.ctx, p, c, d, o)
+	r := e.s.Apply(e.ctx, p, c, d, o)
+	if r.Disbelieved {
+		e.t.Errorf("%s %s: the provider reported success, and the host found otherwise: %v\n  requests:\n%s", c.Op, c.Resource, r.Err, requests(r.Requests))
+	}
+	return r
 }
 
 // converge applies the declaration in rounds; every apply must be done, and the world must match

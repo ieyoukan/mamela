@@ -52,7 +52,10 @@ func (h HTTP) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, erro
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
 		WroteRequest: func(httptrace.WroteRequestInfo) { wrote = true },
 	}))
-	resp, err := h.Client.Do(req)
+	// Never follow a redirect: the host checked this request, not the one a redirect asks for.
+	client := *h.Client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		if !wrote {
 			return 0, nil, fmt.Errorf("%w: %v", ErrNotSent, err)

@@ -56,8 +56,8 @@ type Provider struct{}
 
 var (
 	getItem   = protocol.Call{Method: "GET", Path: "/items/{item}"}
-	putItem   = protocol.Call{Method: "PUT", Path: "/items/{item}", Params: []string{"value", "owner", "version"}}
-	putLabels = protocol.Call{Method: "PUT", Path: "/items/{item}/labels", Params: []string{"labels"}}
+	putItem   = protocol.Call{Method: "PUT", Path: "/items/{item}", Form: []string{"value", "owner", "version"}}
+	putLabels = protocol.Call{Method: "PUT", Path: "/items/{item}/labels", Form: []string{"labels"}}
 	listItems = protocol.Call{Method: "GET", Path: "/items"}
 )
 
@@ -109,7 +109,7 @@ func observed(id, name string, it item, exists bool) protocol.Observed {
 }
 
 // Diff implements sdk.Provider. Only what is declared and differs; nothing for what is not
-// declared.
+// declared. Each change lists exactly the requests it sends: that is what is approved.
 func (Provider) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffResult, error) {
 	obs := map[string]protocol.Observed{}
 	for _, o := range p.Observed {
@@ -125,10 +125,12 @@ func (Provider) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffR
 		}
 		o := obs[r.ID]
 		c := protocol.Change{Resource: r.ID, Kind: Kind, IDs: map[string]string{"item": r.Name}}
+		labels := len(want.Labels) > 0 // no labels declared: labels are not managed
 		switch {
 		case !o.Exists:
 			c.Op, c.Reasons = OpCreate, []string{"the item does not exist"}
-			c.Values = pins(want, true)
+			c.Requests = append(c.Requests, protocol.Approved{Method: putItem.Method, Path: putItem.Path,
+				Params: map[string][]string{"value": {want.Value}, "owner": {owner}}})
 		case !o.Owned:
 			return out, fmt.Errorf("%s: the item exists and Mamela did not create it; Mamela does not take it over", r.ID)
 		default:
@@ -136,48 +138,32 @@ func (Provider) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffR
 			if err != nil {
 				return out, fmt.Errorf("%s: observed state: %w", r.ID, err)
 			}
-			labels := len(want.Labels) > 0 && !slices.Equal(got.Labels, want.Labels) // no labels declared: not managed
+			labels = labels && !slices.Equal(got.Labels, want.Labels)
 			if got.Value == want.Value && !labels {
 				continue
 			}
 			c.Op, c.Precondition = OpUpdate, o.Version
-			c.Values = pins(want, got.Value != want.Value)
 			if got.Value != want.Value {
 				c.Reasons = append(c.Reasons, fmt.Sprintf("value %q -> %q", got.Value, want.Value))
+				c.Requests = append(c.Requests, protocol.Approved{Method: putItem.Method, Path: putItem.Path,
+					Params: map[string][]string{"value": {want.Value}, "version": {o.Version}}})
 			}
 			if labels {
 				c.Reasons = append(c.Reasons, fmt.Sprintf("labels %v -> %v", got.Labels, want.Labels))
 			}
+		}
+		if labels {
+			c.Requests = append(c.Requests, protocol.Approved{Method: putLabels.Method, Path: putLabels.Path,
+				Params: map[string][]string{"labels": want.Labels}})
 		}
 		out.Changes = append(out.Changes, c)
 	}
 	return out, nil
 }
 
-// pins fixes the values the change sends: what a person approves.
-func pins(s Spec, value bool) []protocol.Pin {
-	var out []protocol.Pin
-	if value {
-		out = append(out,
-			protocol.Pin{Method: putItem.Method, Path: putItem.Path, Param: "value", Values: []string{s.Value}},
-			protocol.Pin{Method: putItem.Method, Path: putItem.Path, Param: "owner", Values: []string{owner}})
-	}
-	if len(s.Labels) > 0 {
-		out = append(out, protocol.Pin{Method: putLabels.Method, Path: putLabels.Path, Param: "labels", Values: s.Labels})
-	}
-	return out
-}
-
-// Apply implements sdk.Provider. It reads the item first and does only what is missing, so that
-// an apply after a partial one resumes it.
+// Apply implements sdk.Provider. It sends the approved requests as they are, in order, and skips
+// those already in effect, so that an apply after a partial one resumes it.
 func (Provider) Apply(ctx context.Context, h *sdk.Host, p protocol.ApplyParams) (protocol.ApplyResult, error) {
-	if p.Desired == nil {
-		return protocol.ApplyResult{}, errors.New("no desired state")
-	}
-	want, err := spec(p.Desired.Spec)
-	if err != nil {
-		return protocol.ApplyResult{}, err
-	}
 	name := p.Change.IDs["item"]
 	it, exists, err := get(ctx, h, name)
 	if err != nil {
@@ -186,48 +172,47 @@ func (Provider) Apply(ctx context.Context, h *sdk.Host, p protocol.ApplyParams) 
 	if exists && it.Owner != owner {
 		return protocol.ApplyResult{}, fmt.Errorf("item %s exists and Mamela did not create it", name)
 	}
-	if !exists || it.Value != want.Value {
-		form := map[string][]string{"value": {want.Value}}
-		if exists {
-			form["version"] = []string{strconv.Itoa(it.Version)}
-		} else {
-			form["owner"] = []string{owner}
+	for _, a := range p.Change.Requests {
+		if exists && inEffect(it, a) {
+			continue
 		}
-		if it, err = put(ctx, h, "/items/"+name, form); err != nil {
-			return protocol.ApplyResult{}, err
+		path := "/items/" + name
+		if a.Path == putLabels.Path {
+			path += "/labels"
 		}
-	}
-	if len(want.Labels) > 0 && !slices.Equal(it.Labels, want.Labels) {
-		if _, err := put(ctx, h, "/items/"+name+"/labels", map[string][]string{"labels": want.Labels}); err != nil {
-			return protocol.ApplyResult{}, err
+		if it, err = put(ctx, h, path, a.Params); err != nil {
+			return protocol.ApplyResult{}, err // a refused, failed or uncertain request ends the apply
 		}
+		exists = true
 	}
 	return protocol.ApplyResult{Message: "item " + name + " is as declared"}, nil
 }
 
-// Lookup implements sdk.Provider.
+// inEffect reports whether the item already is what the approved request would make it.
+func inEffect(it item, a protocol.Approved) bool {
+	switch a.Path {
+	case putItem.Path:
+		return slices.Equal(a.Params["value"], []string{it.Value})
+	case putLabels.Path:
+		return slices.Equal(slices.Sorted(slices.Values(a.Params["labels"])), it.Labels)
+	}
+	return false
+}
+
+// Lookup implements sdk.Provider: how many of the approved requests are in effect.
 func (Provider) Lookup(ctx context.Context, h *sdk.Host, p protocol.LookupParams) (protocol.LookupResult, error) {
 	it, exists, err := get(ctx, h, p.Change.IDs["item"])
 	if err != nil {
 		return protocol.LookupResult{}, err
 	}
-	steps, done := 0, 0
-	for _, pin := range p.Change.Values {
-		switch pin.Param {
-		case "value":
-			steps++
-			if exists && slices.Contains(pin.Values, it.Value) {
-				done++
-			}
-		case "labels":
-			steps++
-			if exists && slices.Equal(it.Labels, slices.Sorted(slices.Values(pin.Values))) {
-				done++
-			}
+	done := 0
+	for _, a := range p.Change.Requests {
+		if exists && it.Owner == owner && inEffect(it, a) {
+			done++
 		}
 	}
 	switch {
-	case done == steps:
+	case done == len(p.Change.Requests):
 		return protocol.LookupResult{Status: protocol.LookupDone}, nil
 	case done == 0:
 		return protocol.LookupResult{Status: protocol.LookupNotDone}, nil

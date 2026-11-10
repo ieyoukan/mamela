@@ -1,5 +1,7 @@
 package protocol
 
+import "fmt"
+
 // Effect is what an API call does, as the host knows it from its catalog.
 type Effect string
 
@@ -25,10 +27,40 @@ type Entry struct {
 	Method string `json:"method"`
 	Path   string `json:"path"` // a template, as in Call
 	Effect Effect `json:"effect"`
+	// Query and Form are where the API reads each parameter. The host sends a parameter only
+	// where the API reads it, so that what it checks is what the API acts on.
+	Query []string `json:"query,omitempty"`
+	Form  []string `json:"form,omitempty"`
 	// Precondition names the parameter that makes the API refuse the request when the object's
-	// version differs (Proxmox's "digest"). The host requires it to equal the permit's
-	// Precondition, when there is one.
+	// version differs (Proxmox's "digest"); it is one of Query or Form. The host requires it, in
+	// that place, to equal the permit's Precondition, when there is one.
 	Precondition string `json:"precondition,omitempty"`
+}
+
+// In says where the API reads a parameter of the call: "query", "form", or "".
+func (e Entry) In(param string) string {
+	return Call{Query: e.Query, Form: e.Form}.In(param)
+}
+
+// Check verifies the catalog's own consistency.
+func (c Catalog) Check() error {
+	seen := map[string]bool{}
+	for _, e := range c.Entries {
+		if err := checkCall(e.Method, e.Path, e.Query, e.Form); err != nil {
+			return fmt.Errorf("catalog %s: %w", c.API, err)
+		}
+		if seen[e.Method+" "+e.Path] {
+			return fmt.Errorf("catalog %s: %s %s twice", c.API, e.Method, e.Path)
+		}
+		seen[e.Method+" "+e.Path] = true
+		if !containsEffect([]Effect{EffectRead, EffectCreate, EffectChange, EffectRestart, EffectLoseData}, e.Effect) {
+			return fmt.Errorf("catalog %s: %s %s: effect %q", c.API, e.Method, e.Path, e.Effect)
+		}
+		if e.Precondition != "" && e.In(e.Precondition) == "" {
+			return fmt.Errorf("catalog %s: %s %s: the precondition %s is not one of its parameters", c.API, e.Method, e.Path, e.Precondition)
+		}
+	}
+	return nil
 }
 
 // Lookup returns the entry of a call (method and template, as declared).

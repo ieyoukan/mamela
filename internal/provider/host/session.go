@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"sync"
@@ -78,10 +79,31 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	if o.CallTimeout == 0 {
 		o.CallTimeout = 5 * time.Minute
 	}
+	if err := o.Catalog.Check(); err != nil {
+		return nil, err
+	}
+	// Run exactly what was inspected: a private copy of the inspected bytes, not the path, which
+	// may have been replaced since.
+	if len(exe.data) == 0 {
+		return nil, &Error{Code: CodeExecutable, Message: "the executable was not inspected (use Inspect)"}
+	}
+	dir, err := os.MkdirTemp("", "mamela-provider-") // 0700
+	if err != nil {
+		return nil, err
+	}
+	program := filepath.Join(dir, "provider")
+	if exe.Format != FormatNative {
+		program += ".wasm"
+	}
+	if err := os.WriteFile(program, exe.data, 0o500); err != nil {
+		os.RemoveAll(dir)
+		return nil, err
+	}
 	var cmd *exec.Cmd
 	switch exe.Format {
 	case FormatWASIp1, FormatComponent:
 		if err := checkWasmtime(o.Wasmtime); err != nil {
+			os.RemoveAll(dir)
 			return nil, &Error{Code: CodeExecutable, Message: err.Error(), Hint: "mamela toolchain install"}
 		}
 		args := []string{"run", "-C", "cache=n",
@@ -91,23 +113,21 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 		if exe.Format == FormatComponent {
 			args = append(args, "-S", "p3=y")
 		}
-		cmd = exec.Command(o.Wasmtime, append(args, exe.Path)...)
+		cmd = exec.Command(o.Wasmtime, append(args, program)...)
 		cmd.Env = []string{"LC_ALL=C"}
 	case FormatNative:
 		if !o.Trust.Trusts(o.Source, o.Version, exe.Digest) {
+			os.RemoveAll(dir)
 			return nil, &Error{Code: CodeNotTrusted,
 				Message: fmt.Sprintf("%s is a native provider (%s), and no trust record matches it as source %q version %q", exe.Path, exe.Digest, o.Source, o.Version),
 				Hint: "use the provider's WASM build; or, only if you trust its author and this exact build, " +
 					"mamela provider trust --source <source> --version <version> <program> (a native provider runs outside any sandbox)"}
 		}
-		cmd = exec.Command(exe.Path)
+		cmd = exec.Command(program)
 		cmd.Env = []string{} // nothing of the user's environment; this limits mistakes, not a malicious provider
 	default:
+		os.RemoveAll(dir)
 		return nil, &Error{Code: CodeExecutable, Message: fmt.Sprintf("%s: unknown format %q", exe.Path, exe.Format)}
-	}
-	dir, err := os.MkdirTemp("", "mamela-provider-")
-	if err != nil {
-		return nil, err
 	}
 	cmd.Dir = dir
 	s := &Session{exe: exe, o: o, cmd: cmd, dir: dir, msgs: make(chan read, 1), readDone: make(chan struct{}), quit: make(chan struct{}),
@@ -223,7 +243,11 @@ func (s *Session) catalog() protocol.Catalog {
 func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	return &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now}
+	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now}
+	if permit != nil {
+		g.used = make([]bool, len(permit.Requests))
+	}
+	return g
 }
 
 // Observe asks the provider for the real state. It fails if the provider asked for anything but
@@ -280,6 +304,10 @@ type Result struct {
 	Outcome  Outcome
 	Requests []Request
 	Err      error // why it is not done
+	// Disbelieved is true when the provider reported success and the host did not believe it:
+	// a request was refused, a change did not take effect, or its outcome is unknown. A correct
+	// provider returns the error instead.
+	Disbelieved bool
 }
 
 // Changed lists the changing requests that took effect or may have.
@@ -320,7 +348,7 @@ func (s *Session) Apply(ctx context.Context, p protocol.Permit, c protocol.Chang
 func outcome(record []Request, callErr error) Result {
 	r := Result{Requests: record}
 	var done, maybe bool
-	var refusal *Request
+	var refusal, failed *Request
 	for i, q := range record {
 		switch {
 		case q.Outcome == Refused && refusal == nil:
@@ -329,17 +357,23 @@ func outcome(record []Request, callErr error) Result {
 			done = true
 		case q.Change && q.Outcome == Maybe:
 			maybe = true
+		case q.Change && (q.Outcome == Failed || q.Outcome == NotSent) && failed == nil:
+			failed = &record[i]
 		}
 	}
 	switch {
 	case refusal != nil:
-		r.Err = &Error{Code: CodeRefused, Message: fmt.Sprintf("the provider asked for %s %s, which the permit does not allow: %s", refusal.Method, refusal.Path, refusal.Reason)}
+		e := &Error{Code: CodeRefused, Message: fmt.Sprintf("the provider asked for %s %s, which the permit does not allow: %s", refusal.Method, refusal.Path, refusal.Reason)}
 		if callErr == nil {
-			r.Err.(*Error).Message += "; it then reported success, which the host does not believe"
+			e.Message += "; it then reported success, which the host does not believe"
 		}
+		r.Err = e
 	case callErr != nil:
 		r.Err = callErr
+	case failed != nil:
+		r.Err = &Error{Code: CodeFailed, Message: fmt.Sprintf("the change request %s did not take effect (%s), and the provider reported success, which the host does not believe", failed.String(), failed.Outcome)}
 	}
+	r.Disbelieved = callErr == nil && (r.Err != nil || maybe)
 	switch {
 	case maybe:
 		r.Outcome = OutcomeUnknown
@@ -424,8 +458,8 @@ func (s *Session) call(ctx context.Context, g *gate, method string, params, resu
 	}
 	s.next++
 	id := s.next
-	if err := s.write(protocol.Message{JSONRPC: "2.0", ID: id, Method: method, Params: data}); err != nil {
-		return s.fail("the provider does not read its input", err)
+	if err := s.write(ctx, protocol.Message{JSONRPC: "2.0", ID: id, Method: method, Params: data}); err != nil {
+		return s.fail(fmt.Sprintf("the provider did not read %s within %s", method, s.o.CallTimeout), err)
 	}
 	for {
 		var rd read
@@ -452,8 +486,8 @@ func (s *Session) call(ctx context.Context, g *gate, method string, params, resu
 			} else if reply.Result, err = json.Marshal(resp, json.Deterministic(true)); err != nil {
 				return err
 			}
-			if err := s.write(reply); err != nil {
-				return s.fail("the provider does not read its input", err)
+			if err := s.write(ctx, reply); err != nil {
+				return s.fail(fmt.Sprintf("the provider did not read the answer to its request within %s", s.o.CallTimeout), err)
 			}
 		case m.Method != "":
 			return s.fail("protocol", fmt.Errorf("the provider called %q, which the host does not offer", m.Method))
@@ -470,13 +504,24 @@ func (s *Session) call(ctx context.Context, g *gate, method string, params, resu
 	}
 }
 
-func (s *Session) write(m protocol.Message) error {
+// write sends a message. A provider that does not read its input blocks the write; the
+// deadline still holds: the caller then stops the provider, which ends the write.
+func (s *Session) write(ctx context.Context, m protocol.Message) error {
 	b, err := json.Marshal(m, json.Deterministic(true))
 	if err != nil {
 		return err
 	}
-	_, err = s.stdin.Write(append(b, '\n'))
-	return err
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.stdin.Write(append(b, '\n'))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // fail stops the provider: after a broken conversation nothing it says is believed.

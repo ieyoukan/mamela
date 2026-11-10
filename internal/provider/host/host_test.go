@@ -3,6 +3,9 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -175,6 +178,65 @@ func TestNativeRunsOnlyWhenTrusted(t *testing.T) {
 	}
 }
 
+// What runs is what was inspected and trusted, even if the file is replaced afterwards.
+func TestReplacedExecutableDoesNotRun(t *testing.T) {
+	dir := t.TempDir()
+	program := filepath.Join(dir, "provider")
+	data, err := os.ReadFile(build(t, "./testdata/rogue", true, "-ldflags=-X main.mode=env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(program, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := Inspect(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trust TrustFile
+	trust.Add(Trust{Source: "example.com/kv", Version: "0.1.0", Digest: exe.Digest})
+	marker := filepath.Join(dir, "replacement-ran")
+	if err := os.WriteFile(program, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Start(t.Context(), exe, Options{Source: "example.com/kv", Version: "0.1.0", Trust: trust})
+	if err != nil {
+		t.Fatalf("the inspected provider: %v", err)
+	}
+	defer s.Close()
+	if v := s.Manifest().Version; v != `env-0-""` {
+		t.Errorf("manifest %s: not the inspected build", v)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the replacement ran")
+	}
+}
+
+// A provider that stops reading its input cannot hold the host past the deadline.
+func TestProviderThatDoesNotReadIsStopped(t *testing.T) {
+	program := build(t, "./testdata/rogue", true, "-ldflags=-X main.mode=deaf")
+	exe, err := Inspect(program)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trust TrustFile
+	trust.Add(Trust{Source: "x", Version: "1", Digest: exe.Digest})
+	s, err := Start(t.Context(), exe, Options{Source: "x", Version: "1", Trust: trust, CallTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	big := make([]protocol.Resource, 20000) // far more than a pipe holds
+	for i := range big {
+		big[i] = protocol.Resource{ID: fmt.Sprintf("KVItem/r%d", i), Kind: kvprovider.Kind, Name: fmt.Sprintf("r%d", i), Spec: []byte(`{"value":"0123456789abcdef"}`)}
+	}
+	start := time.Now()
+	_, _, err = s.Observe(t.Context(), big)
+	if code(err) != CodeProvider || !strings.Contains(err.Error(), "did not read") || time.Since(start) > 10*time.Second {
+		t.Errorf("after %s: %v", time.Since(start), err)
+	}
+}
+
 func TestTrustFileRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mamela.trust.toml")
 	f, err := LoadTrust(path)
@@ -221,15 +283,11 @@ func TestApplyStaysWithinThePermit(t *testing.T) {
 			w := must(t, rogue(t, mode))
 			c, p, obs := w.plan(t, "op-1")
 			r := w.s.Apply(t.Context(), p, c, &web, &obs[0])
-			want := OutcomeFailed
-			if mode == "ignore-refusal" {
-				want = OutcomePartly // it went on and created web; the refusal still fails the apply
-				if r.Err == nil || !strings.Contains(r.Err.Error(), "does not believe") {
-					t.Errorf("a provider that reports success after a refusal: %v", r.Err)
-				}
-			}
-			if r.Outcome != want || code(r.Err) != CodeRefused {
+			if r.Outcome != OutcomeFailed || code(r.Err) != CodeRefused {
 				t.Fatalf("%s: %v", r.Outcome, r.Err)
+			}
+			if mode == "ignore-refusal" && !strings.Contains(r.Err.Error(), "does not believe") {
+				t.Errorf("a provider that reports success after a refusal: %v", r.Err)
 			}
 			for name, it := range w.api.Items() {
 				if name != "web" || it.Value != "v1" {
@@ -280,8 +338,10 @@ func TestPreconditionIsTheObservedVersion(t *testing.T) {
 		t.Fatalf("change: %+v", c)
 	}
 	w.api.Put(kvapi.Item{Name: "web", Value: "changed by someone", Owner: "mamela", Version: 2})
+	// The approved request carries version 1; the API refuses it (409). The host refuses one
+	// that carries another version (TestEachPhaseAllowsOnlyItsRequests).
 	r := w.s.Apply(t.Context(), p, c, &web, &obs[0])
-	if code(r.Err) != CodeRefused || !strings.Contains(r.Err.Error(), "observed version 1") {
+	if r.Outcome != OutcomeFailed {
 		t.Fatalf("%s: %v", r.Outcome, r.Err)
 	}
 	if it := w.api.Items()["web"]; it.Value != "changed by someone" {
@@ -307,19 +367,43 @@ func TestBrokenProviderIsStopped(t *testing.T) {
 	}
 }
 
-func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
-	catalog := protocol.Catalog{API: "x", Entries: []protocol.Entry{
-		{Method: "GET", Path: "/vms/{vm}", Effect: protocol.EffectRead},
-		{Method: "POST", Path: "/vms/{vm}/resize", Effect: protocol.EffectChange},
+// A catalog and a permit for one resize of VM 7: cores=2, based on version d1.
+var (
+	testCatalog = protocol.Catalog{API: "x", Entries: []protocol.Entry{
+		{Method: "GET", Path: "/vms/{vm}", Effect: protocol.EffectRead, Query: []string{"full"}},
+		{Method: "POST", Path: "/vms/{vm}/resize", Effect: protocol.EffectChange, Form: []string{"cores", "digest", "vm"}, Precondition: "digest"},
+		{Method: "POST", Path: "/vms/{vm}/tags", Effect: protocol.EffectChange, Form: []string{"tags"}},
+		{Method: "POST", Path: "/vms/{vm}/sneaky", Effect: protocol.EffectChange, Form: []string{"digest"}},
 	}}
-	read := protocol.Call{Method: "GET", Path: "/vms/{vm}"}
-	resize := protocol.Call{Method: "POST", Path: "/vms/{vm}/resize", Params: []string{"cores", "vm"}}
-	unknown := protocol.Call{Method: "POST", Path: "/vms/{vm}/poke"}
-	permit := &protocol.Permit{Op: "resize", Calls: []protocol.Call{read, resize, unknown}, IDs: map[string]string{"vm": "7"},
-		Values:    []protocol.Pin{{Method: "POST", Path: "/vms/{vm}/resize", Param: "cores", Values: []string{"2"}}},
-		ExpiresAt: "2026-11-10T01:00:00Z"}
-	now := func() time.Time { return time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC) }
-	ok := Handler{Handler: kvapi.New()}
+	readVM    = protocol.Call{Method: "GET", Path: "/vms/{vm}", Query: []string{"full"}}
+	resizeVM  = protocol.Call{Method: "POST", Path: "/vms/{vm}/resize", Form: []string{"cores", "digest", "vm"}}
+	tagVM     = protocol.Call{Method: "POST", Path: "/vms/{vm}/tags", Form: []string{"tags"}}
+	pokeVM    = protocol.Call{Method: "POST", Path: "/vms/{vm}/poke"}
+	sneakyVM  = protocol.Call{Method: "POST", Path: "/vms/{vm}/sneaky", Query: []string{"digest"}}
+	testNow   = func() time.Time { return time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC) }
+	resizeTo2 = protocol.Approved{Method: "POST", Path: "/vms/{vm}/resize", Params: map[string][]string{"cores": {"2"}, "digest": {"d1"}}}
+)
+
+func testPermit() *protocol.Permit {
+	return &protocol.Permit{Op: "resize", Calls: []protocol.Call{readVM, resizeVM, tagVM, pokeVM, sneakyVM}, IDs: map[string]string{"vm": "7"},
+		Requests:     []protocol.Approved{resizeTo2, {Method: "POST", Path: "/vms/{vm}/poke"}},
+		Precondition: "d1", ExpiresAt: "2026-11-10T01:00:00Z"}
+}
+
+func form(kv ...string) map[string][]string {
+	out := map[string][]string{}
+	for i := 0; i < len(kv); i += 2 {
+		out[kv[i]] = append(out[kv[i]], kv[i+1])
+	}
+	return out
+}
+
+func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
+	permit := testPermit()
+	apply := gate{phase: phaseApply, calls: permit.Calls, permit: permit}
+	resize := func(f map[string][]string) protocol.HostRequest {
+		return protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: f}
+	}
 	cases := []struct {
 		name    string
 		g       gate
@@ -327,24 +411,36 @@ func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
 		refused string
 	}{
 		{"describe sends nothing", gate{phase: phaseDescribe}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during describe"},
-		{"diff sends nothing", gate{phase: phaseDiff, calls: []protocol.Call{read}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during diff"},
-		{"observe reads", gate{phase: phaseObserve, calls: []protocol.Call{read}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, ""},
-		{"observe changes nothing", gate{phase: phaseObserve, calls: []protocol.Call{resize}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize"}, "only reads"},
-		{"an unclassified call is not a read", gate{phase: phaseLookup, calls: []protocol.Call{unknown}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}, "unclassified"},
-		{"undeclared call", gate{phase: phaseObserve, calls: []protocol.Call{read}}, protocol.HostRequest{Method: "GET", Path: "/vms/7/config"}, "not a declared call"},
-		{"undeclared query", gate{phase: phaseObserve, calls: []protocol.Call{read}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: map[string][]string{"full": {"1"}}}, "not declared"},
-		{"path escape", gate{phase: phaseObserve, calls: []protocol.Call{read}}, protocol.HostRequest{Method: "GET", Path: "/vms/.."}, "path segment"},
-		{"the approved change", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: map[string][]string{"cores": {"2"}}}, ""},
-		{"another object", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/8/resize", Form: map[string][]string{"cores": {"2"}}}, "not the approved"},
-		{"another object in a parameter", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: map[string][]string{"vm": {"8"}}}, "not the approved"},
-		{"an unapproved value", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: map[string][]string{"cores": {"64"}}}, "not an approved value"},
-		{"an unclassified call is bound", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/8/poke"}, "not the approved"},
-		{"reads during apply are not bound", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "GET", Path: "/vms/8"}, ""},
+		{"diff sends nothing", gate{phase: phaseDiff, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during diff"},
+		{"observe reads", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: form("full", "1")}, ""},
+		{"observe changes nothing", gate{phase: phaseObserve, calls: []protocol.Call{resizeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize"}, "only reads"},
+		{"an unclassified call is not a read", gate{phase: phaseLookup, calls: []protocol.Call{pokeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}, "unclassified"},
+		{"undeclared call", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7/config"}, "not a declared call"},
+		{"undeclared query", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: form("all", "1")}, "not declared"},
+		{"a query parameter in the form", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Form: form("full", "1")}, "not declared in the form"},
+		{"path escape", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/.."}, "path segment"},
+		{"the approved change", apply, resize(form("cores", "2", "digest", "d1")), ""},
+		{"an approved request without parameters", apply, protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}, ""},
+		{"another object", apply, protocol.HostRequest{Method: "POST", Path: "/vms/8/resize", Form: form("cores", "2", "digest", "d1")}, "not the approved"},
+		{"another object in a parameter", apply, resize(form("cores", "2", "digest", "d1", "vm", "8")), "not the approved"},
+		{"an unapproved value", apply, resize(form("cores", "64", "digest", "d1")), "not the approved request"},
+		{"an approved value left out", apply, resize(form("digest", "d1")), "not the approved request"},
+		{"a parameter added", apply, resize(form("cores", "2", "digest", "d1", "vm", "7")), "not the approved request"},
+		{"a declared call with no approved request", apply, protocol.HostRequest{Method: "POST", Path: "/vms/7/tags", Form: form("tags", "x")}, "not an approved request"},
+		{"the precondition left out", apply, resize(form("cores", "2")), "observed version d1"},
+		{"the precondition moved to the query", apply, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: form("cores", "2"), Query: form("digest", "d1")}, "not declared in the query"},
+		{"a parameter where the API does not read it", gate{phase: phaseApply, calls: permit.Calls, permit: permit}, protocol.HostRequest{Method: "POST", Path: "/vms/7/sneaky", Query: form("digest", "d1")}, "the API does not read it from the query"},
+		{"in both places", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: form("full", "1"), Form: form("full", "1")}, "both"},
+		{"an unclassified call is bound", apply, protocol.HostRequest{Method: "POST", Path: "/vms/8/poke"}, "not the approved"},
+		{"reads during apply are not bound", apply, protocol.HostRequest{Method: "GET", Path: "/vms/8"}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			g := c.g
-			g.catalog, g.upstream, g.now = catalog, ok, now
+			g.catalog, g.upstream, g.now = testCatalog, Handler{Handler: kvapi.New()}, testNow
+			if g.permit != nil {
+				g.used = make([]bool, len(g.permit.Requests))
+			}
 			_, perr := g.send(context.Background(), c.r)
 			switch {
 			case c.refused == "" && perr != nil:
@@ -355,6 +451,76 @@ func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
 				t.Errorf("record: %v", g.record)
 			}
 		})
+	}
+}
+
+// stub answers every request with a fixed outcome.
+type stub struct {
+	err  error
+	sent int
+}
+
+func (s *stub) Do(context.Context, protocol.HostRequest) (int, []byte, error) {
+	s.sent++
+	if s.err != nil {
+		return 0, nil, s.err
+	}
+	return 200, []byte("{}"), nil
+}
+
+func TestApprovedRequestIsSentOnce(t *testing.T) {
+	permit := testPermit()
+	up := &stub{}
+	g := gate{phase: phaseApply, calls: permit.Calls, permit: permit, catalog: testCatalog, upstream: up, now: testNow, used: make([]bool, 2)}
+	req := protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: form("cores", "2", "digest", "d1")}
+	if _, err := g.send(t.Context(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.send(t.Context(), req); err == nil || !strings.Contains(err.Message, "already sent once") {
+		t.Errorf("the same approved request again: %v", err)
+	}
+	if up.sent != 1 {
+		t.Errorf("%d sent", up.sent)
+	}
+}
+
+// After a change whose outcome is unknown, nothing more changes in the same apply.
+func TestNoChangeAfterAnUnknownOutcome(t *testing.T) {
+	permit := testPermit()
+	up := &stub{err: errors.New("connection lost")}
+	g := gate{phase: phaseApply, calls: permit.Calls, permit: permit, catalog: testCatalog, upstream: up, now: testNow, used: make([]bool, 2)}
+	if _, err := g.send(t.Context(), protocol.HostRequest{Method: "POST", Path: "/vms/7/resize", Form: form("cores", "2", "digest", "d1")}); err == nil || err.Code != protocol.CodeUncertain {
+		t.Fatalf("first: %v", err)
+	}
+	up.err = nil
+	if _, err := g.send(t.Context(), protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}); err == nil || !strings.Contains(err.Message, "unknown") {
+		t.Errorf("a change after an unknown outcome: %v", err)
+	}
+	if _, err := g.send(t.Context(), protocol.HostRequest{Method: "GET", Path: "/vms/7"}); err != nil {
+		t.Errorf("a read after an unknown outcome: %v", err)
+	}
+	if up.sent != 2 {
+		t.Errorf("%d sent, want 2 (the change, then the read)", up.sent)
+	}
+	if r := outcome(g.record, nil); r.Outcome != OutcomeUnknown {
+		t.Errorf("outcome %s", r.Outcome)
+	}
+}
+
+// The HTTP upstream does not follow redirects: the host checked this request, not another.
+func TestHTTPDoesNotFollowRedirects(t *testing.T) {
+	var other int
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/items/web" {
+			http.Redirect(w, r, "/api/items/other", http.StatusTemporaryRedirect)
+			return
+		}
+		other++
+	}))
+	defer srv.Close()
+	status, _, err := HTTP{Base: srv.URL + "/api", Client: srv.Client()}.Do(t.Context(), protocol.HostRequest{Method: "PUT", Path: "/items/web", Form: form("value", "v1")})
+	if err != nil || status != http.StatusTemporaryRedirect || other != 0 {
+		t.Errorf("status %d, err %v, %d requests to the redirect target", status, err, other)
 	}
 }
 
@@ -375,6 +541,9 @@ func TestOutcomeComesFromTheRecord(t *testing.T) {
 		{"maybe", []Request{change(Done), change(Maybe)}, failed, OutcomeUnknown},
 		{"maybe, and the provider says it is fine", []Request{change(Maybe), change(Done)}, nil, OutcomeUnknown},
 		{"refused, and the provider says it is fine", []Request{change(Refused)}, nil, OutcomeFailed},
+		{"the API refused the change, and the provider says it is fine", []Request{read, change(Failed)}, nil, OutcomeFailed},
+		{"not sent, and the provider says it is fine", []Request{change(NotSent)}, nil, OutcomeFailed},
+		{"one change failed after another, and the provider says it is fine", []Request{change(Done), change(Failed)}, nil, OutcomePartly},
 		{"refused after a change", []Request{change(Done), change(Refused)}, nil, OutcomePartly},
 	}
 	for _, c := range cases {
