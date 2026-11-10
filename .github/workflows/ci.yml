@@ -8,20 +8,46 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every version comes from a file in the repository: Go from the toolchain line of go.mod, Node.js
+# from .node-version, emela and wasmtime from toolchain.lock, Go modules from go.sum and Emela
+# dependencies from each Pome.lock. Actions are pinned by commit (Dependabot updates them).
 jobs:
   check:
-    # Emela publishes Linux binaries for x86_64 only.
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # The platforms Emela publishes binaries for (toolchain.lock): Linux x86_64 and macOS arm64.
+        os: [ubuntu-26.04, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local # use exactly the Go that setup-go installed from go.mod
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+          cache-dependency-path: go.sum
       # `emela test` (JS target) runs on Node.js.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
-      - name: Install the pinned toolchain (emela, wasmtime; sha256-verified)
+          node-version-file: .node-version
+      - name: Cache the toolchain archives (checked against toolchain.lock on every install)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .tools/downloads
+          key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchain.lock') }}
+      - name: Go modules match go.sum, and go.mod and go.sum are tidy
+        run: |
+          go mod verify
+          go mod tidy -diff
+      - name: Install the pinned toolchain and the Pome dependencies (fails if a Pome.lock would change)
         run: scripts/install-toolchain.sh
       - name: Check
         run: scripts/check.sh
