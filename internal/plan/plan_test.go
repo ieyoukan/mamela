@@ -367,3 +367,25 @@ func TestStoppedVMAndSilentAgent(t *testing.T) {
 		t.Fatalf("silent agent: %+v", c.Note)
 	}
 }
+
+// A Control Plane never changes its own host (ADR 0003): every change to it, or to what runs on
+// it, is shown and denied. Other VMs are planned as usual.
+func TestControlPlaneHostIsProtected(t *testing.T) {
+	pol := policy.Default
+	pol.ProtectedNodes = []string{"app-server"}
+	s := converged()
+	vm := s.VMs["app-server"]
+	vm.CPU = 2
+	s.VMs["app-server"] = vm
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
+	p := Build(desired(t), s, pol)
+	for _, id := range []string{"VirtualMachine app-server", "NodeService app-server/nginx"} {
+		c := find(t, p, id)
+		if c.Verdict != policy.Denied || len(c.Operations) == 0 || c.Operations[0].Decision.Code != "MAM-POL-0308" {
+			t.Fatalf("%s: %+v", id, c)
+		}
+	}
+	if Build(desired(t), s, pol).Digest == Build(desired(t), s, policy.Default).Digest {
+		t.Fatal("the protection is not part of the plan's inputs")
+	}
+}

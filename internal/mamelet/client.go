@@ -123,6 +123,20 @@ func writeFile(path string, data []byte) error {
 type Client struct {
 	cfg  Config
 	http *http.Client
+	// moved is the URL a revision moved the Control Plane to (ADR 0003); "" when it did not.
+	moved string
+	// active is the URL the last revision came from; reports go there.
+	active string
+}
+
+// MoveTo makes the client try url first, and the configured URL after it.
+func (c *Client) MoveTo(url string) { c.moved = url }
+
+func (c *Client) servers() []string {
+	if c.moved != "" && c.moved != c.cfg.Server {
+		return []string{c.moved, c.cfg.Server}
+	}
+	return []string{c.cfg.Server}
 }
 
 // NewClient loads the client certificate.
@@ -138,14 +152,24 @@ func NewClient(c Config) (*Client, error) {
 	return &Client{cfg: c, http: httpClient(tlsCfg)}, nil
 }
 
-func (c *Client) nodeURL(suffix string) string {
-	return c.cfg.Server + "/v1/nodes/" + url.PathEscape(c.cfg.Node) + suffix
+func (c *Client) nodeURL(server, suffix string) string {
+	return server + "/v1/nodes/" + url.PathEscape(c.cfg.Node) + suffix
 }
 
-// Revision fetches the node's current signed revision.
+// Revision fetches the node's current signed revision: from the URL the Control Plane moved to, or
+// if that does not answer, from the configured one.
 func (c *Client) Revision(ctx context.Context) (noderev.Signed, error) {
-	var s noderev.Signed
-	return s, do(ctx, c.http, http.MethodGet, c.nodeURL("/revision"), nil, &s)
+	var errs []error
+	for _, server := range c.servers() {
+		var s noderev.Signed
+		err := do(ctx, c.http, http.MethodGet, c.nodeURL(server, "/revision"), nil, &s)
+		if err == nil {
+			c.active = server
+			return s, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", server, err))
+	}
+	return noderev.Signed{}, errors.Join(errs...)
 }
 
 // Report sends a report.
@@ -154,7 +178,11 @@ func (c *Client) Report(ctx context.Context, r noderev.Report) error {
 	if err != nil {
 		return err
 	}
-	return do(ctx, c.http, http.MethodPost, c.nodeURL("/report"), body, nil)
+	server := c.active
+	if server == "" {
+		server = c.servers()[0]
+	}
+	return do(ctx, c.http, http.MethodPost, c.nodeURL(server, "/report"), body, nil)
 }
 
 func do(ctx context.Context, client *http.Client, method, u string, body []byte, out any) error {

@@ -82,7 +82,19 @@ type Policy struct {
 	// AutoProviderEffects are the effects (from the host's catalog) that a provider's operation
 	// may have and still run without approval. Empty: every provider operation needs approval.
 	AutoProviderEffects []protocol.Effect `json:"autoProviderEffects,omitempty"`
+	// ProtectedNodes are VMs that this Control Plane never changes: its own host (site
+	// controlplane.host). Every change to them, or to what runs on them, is denied (ADR 0003).
+	ProtectedNodes []string `json:"protectedNodes,omitempty"`
 }
+
+// Protected reports whether node is one the Control Plane never changes.
+func (p Policy) Protected(node string) bool {
+	return node != "" && slices.Contains(p.ProtectedNodes, node)
+}
+
+// ProtectedDecision is the decision for any operation on a protected node.
+var ProtectedDecision = Decision{Denied, "MAM-POL-0308", "this VM is the Control Plane's own host; a Control Plane never changes the host it runs on (it could stop itself in the middle of an apply)",
+	"change it from another Control Plane, or by hand while this one is stopped (ADR 0003)"}
 
 // Default is the conservative policy used when nothing else is configured.
 var Default = Policy{

@@ -141,6 +141,11 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
 		}
 	}
+	if site != nil && site.ControlPlane.Host != "" {
+		// This Control Plane's own host: shown, never changed (ADR 0003). The policy is stored with
+		// the plan, so apply derives the same denial.
+		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
+	}
 	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
 	if err != nil {
 		return report(stderr, err)
@@ -168,7 +173,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *sitePath != "" {
 		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
-		if err := node.Publish(ctx, st, res.Graph, pol); err != nil {
+		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.Advertised()); err != nil {
 			return report(stderr, err)
 		}
 	}

@@ -63,7 +63,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 // and the standing repairs the policy allows without approval (starting a service listed in
 // autoStartServices). One-time grants already in a revision are kept while their package or
 // service is still declared. Nodes without a reserved VMID (not created yet) are skipped.
-func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy) error {
+func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, controlPlane string) error {
 	type nodeRes struct {
 		pkgs []graph.NodePackageSpec
 		svcs []graph.NodeServiceSpec
@@ -111,7 +111,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			}
 		}
 		if _, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
-			r := noderev.Revision{VMID: vmid, Packages: []noderev.Package{}, Services: []noderev.Service{}}
+			r := noderev.Revision{VMID: vmid, Packages: []noderev.Package{}, Services: []noderev.Service{}, ControlPlane: controlPlane}
 			for _, pk := range n.pkgs {
 				np := noderev.Package{Name: pk.Package}
 				if prev != nil && prev.VMID == vmid {

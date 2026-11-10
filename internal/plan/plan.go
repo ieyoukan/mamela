@@ -112,13 +112,13 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		switch r.Kind {
 		case graph.KindVirtualMachine:
 			desiredVMs[r.Name] = true
-			p.Changes = append(p.Changes, b.vm(r))
+			p.Changes = append(p.Changes, b.guard(r.Name, b.vm(r)))
 		case graph.KindNodePackage:
-			p.Changes = append(p.Changes, b.pkg(r))
+			p.Changes = append(p.Changes, b.guard(r.NodePackage.Node, b.pkg(r)))
 		case graph.KindNodeService:
-			p.Changes = append(p.Changes, b.service(r))
+			p.Changes = append(p.Changes, b.guard(r.NodeService.Node, b.service(r)))
 		case graph.KindNodeK3s:
-			p.Changes = append(p.Changes, b.k3s(r))
+			p.Changes = append(p.Changes, b.guard(r.NodeK3s.Node, b.k3s(r)))
 		default:
 			if r.Provided != nil {
 				p.Changes = append(p.Changes, b.provided(r))
@@ -452,6 +452,19 @@ func (b builder) k3s(r graph.Resource) Change {
 	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
 		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
+}
+
+// guard denies every operation of a change on a node the Control Plane must never change: its own
+// host (ADR 0003). The change is still shown.
+func (b builder) guard(node string, c Change) Change {
+	if !b.pol.Protected(node) || c.Status != StatusChange {
+		return c
+	}
+	for i := range c.Operations {
+		c.Operations[i].Decision = policy.ProtectedDecision
+	}
+	c.Verdict = policy.Denied
+	return c
 }
 
 func newChange(r graph.Resource) Change {

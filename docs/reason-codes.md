@@ -77,6 +77,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
 | MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
 | MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある |
+| MAM-POL-0308 | Denied | Control Plane が自分の動くホスト（site の `controlplane.host`）を変える操作（ADR 0003） |
 | MAM-POL-0307 | Denied | VM のネットワークの変更（作成時に一度だけ与える。その場で変えると VM が切り離されうる） |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 

@@ -50,6 +50,20 @@ type ControlPlane struct {
 	MameletBinary string `toml:"mamelet_binary"`
 	// TunnelJump is an optional SSH jump host for `mamela lab tunnel`.
 	TunnelJump string `toml:"tunnel_jump"`
+	// Host is the VM this Control Plane runs on, if it is one in the lab: plans of this Control
+	// Plane never change it (ADR 0003).
+	Host string `toml:"host"`
+	// MoveTo is the URL of the Control Plane mamelet should move to: revisions carry it, and
+	// mamelet uses it from then on (ADR 0003). Empty: revisions carry url.
+	MoveTo string `toml:"move_to"`
+}
+
+// Advertised is the URL revisions tell mamelet to use.
+func (c ControlPlane) Advertised() string {
+	if c.MoveTo != "" {
+		return c.MoveTo
+	}
+	return c.URL
 }
 
 // Enabled reports whether the site has a Control Plane for mamelet.
@@ -222,13 +236,24 @@ func (s *Site) Validate() error {
 		bad("safety.max_thinpool_used_percent must be 1..90")
 	}
 	if cp := s.ControlPlane; cp != (ControlPlane{}) {
-		if u, err := url.Parse(cp.URL); err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" {
+		u, err := url.Parse(cp.URL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.Path != "" {
 			bad("controlplane.url %q must be https://host:port", cp.URL)
 		}
-		if host, _, err := net.SplitHostPort(cp.Listen); err != nil || host == "" {
+		if host, _, err := net.SplitHostPort(cp.Listen); err != nil {
 			bad("controlplane.listen %q must be host:port", cp.Listen)
-		} else if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-			bad("controlplane.listen %q must be a loopback address (mamelet reaches it through the tunnel)", cp.Listen)
+		} else if err == nil && u != nil && isLoopback(u.Hostname()) && !isLoopback(host) {
+			// Through a tunnel, mamelet reaches a loopback address: listening on any other would
+			// expose the Control Plane for nothing.
+			bad("controlplane.listen %q must be a loopback address while controlplane.url is one (mamelet reaches it through the tunnel)", cp.Listen)
+		}
+		if cp.MoveTo != "" {
+			if m, err := url.Parse(cp.MoveTo); err != nil || m.Scheme != "https" || m.Host == "" || m.Path != "" || m.Port() == "" {
+				bad("controlplane.move_to %q must be https://host:port", cp.MoveTo)
+			}
+		}
+		if cp.Host != "" && !nameRe.MatchString(cp.Host) {
+			bad("controlplane.host %q is not a VM name", cp.Host)
 		}
 		if cp.StateDir == "" || cp.MameletBinary == "" {
 			bad("controlplane.state_dir and controlplane.mamelet_binary are required")
@@ -241,6 +266,14 @@ func (s *Site) Validate() error {
 		return fmt.Errorf("invalid site:\n  - %s", strings.Join(errs, "\n  - "))
 	}
 	return nil
+}
+
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // rangeSize is the number of IPv4 addresses from first to last.
