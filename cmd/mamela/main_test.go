@@ -134,6 +134,7 @@ func TestEvalWithoutAnyToolchain(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
+	t.Setenv("PATH", t.TempDir())
 	t.Chdir(t.TempDir())
 	for _, args := range [][]string{{"eval", "."}, {"toolchain", "status"}} {
 		code, _, stderr := runCLI(args...)
@@ -141,6 +142,31 @@ func TestEvalWithoutAnyToolchain(t *testing.T) {
 			!strings.Contains(stderr, "mamela toolchain install") {
 			t.Errorf("%v: code=%d stderr=%s", args, code, stderr)
 		}
+	}
+}
+
+// The pinned emela and wasmtime on PATH (as mise installs them) are used when there is no
+// repository toolchain; anything else on PATH is not.
+func TestEvalUsesPinnedToolsOnPath(t *testing.T) {
+	dir := toolchainDir(t)
+	abs, _ := filepath.Abs(dir)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
+	t.Setenv("PATH", abs)
+	t.Chdir(t.TempDir())
+	code, stdout, stderr := runCLI("toolchain")
+	if code != 0 || !strings.Contains(stdout, "PATH (the pinned executables") {
+		t.Errorf("pinned tools on PATH: code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	other := t.TempDir()
+	for _, name := range []string{"emela", "wasmtime"} {
+		os.WriteFile(filepath.Join(other, name), []byte("#!/bin/sh\necho "+name+" 0.0.0\n"), 0o755)
+	}
+	t.Setenv("PATH", other)
+	if code, _, stderr := runCLI("toolchain"); code != 1 || !strings.Contains(stderr, "is not installed") {
+		t.Errorf("other tools on PATH: code=%d stderr=%s", code, stderr)
 	}
 }
 

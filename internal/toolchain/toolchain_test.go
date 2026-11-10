@@ -258,7 +258,7 @@ func TestLocate(t *testing.T) {
 	repo := t.TempDir()
 	sub := filepath.Join(repo, "examples", "lab-l2")
 	os.MkdirAll(sub, 0o755)
-	if _, err := l.Locate(sub); !errors.Is(err, ErrNotFound) {
+	if _, err := l.Locate(sub, noPath); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("nothing installed: %v", err)
 	}
 
@@ -271,7 +271,7 @@ func TestLocate(t *testing.T) {
 	}
 	os.MkdirAll(userBin, 0o755)
 	os.WriteFile(filepath.Join(userBin, "emela"), nil, 0o755)
-	if loc, err := l.Locate(sub); err != nil || loc.Dir != userBin || loc.PomeCache != "" {
+	if loc, err := l.Locate(sub, noPath); err != nil || loc.Dir != userBin || loc.PomeCache != "" {
 		t.Errorf("user toolchain: %+v, %v", loc, err)
 	}
 
@@ -280,8 +280,63 @@ func TestLocate(t *testing.T) {
 	os.MkdirAll(filepath.Join(repo, ".tools", "bin"), 0o755)
 	os.MkdirAll(filepath.Join(repo, ".tools", "pomes"), 0o755)
 	os.WriteFile(filepath.Join(repo, ".tools", "bin", "emela"), nil, 0o755)
-	loc, err := l.Locate(sub)
+	loc, err := l.Locate(sub, noPath)
 	if err != nil || loc.Dir != filepath.Join(repo, ".tools", "bin") || loc.PomeCache != filepath.Join(repo, ".tools", "pomes") {
 		t.Errorf("repository toolchain: %+v, %v", loc, err)
+	}
+}
+
+func noPath(string) (string, error) { return "", errors.New("not on PATH") }
+
+// pathOf is a fake PATH holding the given files.
+func pathOf(t *testing.T, files map[string][]byte) func(string) (string, error) {
+	dir := t.TempDir()
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return func(name string) (string, error) {
+		p := filepath.Join(dir, name)
+		if _, err := os.Stat(p); err != nil {
+			return "", err
+		}
+		return p, nil
+	}
+}
+
+// Tools that mise installed on PATH are used only when both are exactly the pinned ones.
+func TestOnPathOnlyThePinnedExecutables(t *testing.T) {
+	r := newRelease(t)
+	l := r.lock(t, nil)
+	if e, w, ok := l.OnPath("test/os", pathOf(t, map[string][]byte{"emela": r.emelaBin, "wasmtime": r.wasmBin})); !ok ||
+		filepath.Base(e) != "emela" || filepath.Base(w) != "wasmtime" {
+		t.Errorf("pinned tools on PATH not used: %q %q %v", e, w, ok)
+	}
+	for name, files := range map[string]map[string][]byte{
+		"other wasmtime": {"emela": r.emelaBin, "wasmtime": []byte("wasmtime 0.0.1")},
+		"no wasmtime":    {"emela": r.emelaBin},
+	} {
+		if _, _, ok := l.OnPath("test/os", pathOf(t, files)); ok {
+			t.Errorf("%s: used", name)
+		}
+	}
+}
+
+// Install copies the pinned tools from PATH instead of downloading them, and downloads any that
+// are not the pinned ones.
+func TestInstallCopiesPinnedToolsFromPath(t *testing.T) {
+	r := newRelease(t)
+	l := r.lock(t, nil)
+	o := r.options(t)
+	o.LookPath = pathOf(t, map[string][]byte{"emela": r.emelaBin, "wasmtime": []byte("another wasmtime")})
+	if err := l.Install(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Check(o.Dir, "test/os"); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.requests.Load(); n != 1 {
+		t.Errorf("%d downloads, want 1 (wasmtime only)", n)
 	}
 }

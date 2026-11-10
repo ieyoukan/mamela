@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
@@ -49,11 +50,11 @@ func (f toolFlags) find() (tools, error) {
 		if err != nil {
 			return tools{}, err
 		}
-		if loc, err = l.Locate(cwd); errors.Is(err, toolchain.ErrNotFound) {
+		if loc, err = l.Locate(cwd, exec.LookPath); errors.Is(err, toolchain.ErrNotFound) {
 			return tools{}, &evaluate.Error{Code: evaluate.CodeToolchain, Stage: evaluate.StageToolchain,
 				Message: fmt.Sprintf("the pinned toolchain (emela %s, wasmtime %s) is not installed: there is no .tools/bin "+
-					"in this directory or above it, and no user installation", l.Emela.Version, l.Wasmtime.Version),
-				Hint: "run `mamela toolchain install` (in the Mamela repository: scripts/install-toolchain.sh)"}
+					"in this directory or above it, none on PATH, and no user installation", l.Emela.Version, l.Wasmtime.Version),
+				Hint: "run `mamela toolchain install` (in the Mamela repository: `mise install` or scripts/install-toolchain.sh)"}
 		} else if err != nil {
 			return tools{}, err
 		}
@@ -68,6 +69,11 @@ func (f toolFlags) find() (tools, error) {
 	}
 	if t.pomeCache == "" {
 		t.pomeCache = defaultPomeCache()
+	}
+	if loc.Dir == "" {
+		t.dir = filepath.Dir(loc.Emela)
+		t.toolchain = evaluate.Toolchain{Emela: loc.Emela, Wasmtime: loc.Wasmtime}
+		return t, nil
 	}
 	tc, err := evaluate.ToolchainInDir(loc.Dir)
 	t.toolchain = tc
@@ -124,7 +130,11 @@ func runToolchainStatus(ctx context.Context, args []string, stdout, stderr io.Wr
 		v, toolchain.Platform(), l.Emela.Version, l.Wasmtime.Version)
 	t, err := tf.find()
 	if t.dir != "" {
-		fmt.Fprintf(stdout, "toolchain   %s (%s)\n", t.dir, t.source)
+		if filepath.Dir(t.toolchain.Wasmtime) != t.dir && t.toolchain.Wasmtime != "" {
+			fmt.Fprintf(stdout, "toolchain   %s\n            %s (%s)\n", t.toolchain.Emela, t.toolchain.Wasmtime, t.source)
+		} else {
+			fmt.Fprintf(stdout, "toolchain   %s (%s)\n", t.dir, t.source)
+		}
 	}
 	if err == nil {
 		_, err = t.toolchain.Verify(ctx)
@@ -161,7 +171,8 @@ func runToolchainInstall(ctx context.Context, args []string, stdout, stderr io.W
 		fmt.Fprintf(stderr, "mamela toolchain install: %v\n", userErr)
 		return 1
 	}
-	if err := l.Install(ctx, toolchain.Options{Dir: *dir, Downloads: *downloads, Log: stdout}); err != nil {
+	o := toolchain.Options{Dir: *dir, Downloads: *downloads, Log: stdout, LookPath: exec.LookPath}
+	if err := l.Install(ctx, o); err != nil {
 		fmt.Fprintf(stderr, "mamela toolchain install: %v\n", err)
 		return 1
 	}

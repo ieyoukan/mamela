@@ -201,7 +201,9 @@ func (l Lock) UserDirs() (bin, downloads string, err error) {
 
 // Location is where a toolchain was found.
 type Location struct {
-	Dir       string // holds emela and wasmtime
+	Dir       string // holds emela and wasmtime; empty when they are in different directories
+	Emela     string // set when Dir is empty
+	Wasmtime  string // set when Dir is empty
 	PomeCache string // the Pome cache that belongs to it ("" if none: use Emela's default)
 	Source    string // how it was found, for people
 }
@@ -209,11 +211,38 @@ type Location struct {
 // ErrNotFound means no installed toolchain was found.
 var ErrNotFound = errors.New("no Mamela toolchain found")
 
-// Locate finds the toolchain to use when none is given: the repository toolchain in the nearest
-// .tools/bin at or above cwd (scripts/install-toolchain.sh), with the Pome cache next to it; else
-// the user-wide installation (mamela toolchain install). It only looks for the files; Check says
-// whether they are the pinned ones.
-func (l Lock) Locate(cwd string) (Location, error) {
+// OnPath returns emela and wasmtime from PATH (as installed by mise, for example) if both are
+// exactly the pinned executables for the platform.
+func (l Lock) OnPath(platform string, lookPath func(string) (string, error)) (emela, wasmtime string, ok bool) {
+	var found []string
+	for _, t := range l.Tools() {
+		a, err := t.Asset(platform)
+		if err != nil {
+			return "", "", false
+		}
+		p, err := lookPath(t.Name)
+		if err != nil {
+			return "", "", false
+		}
+		if p, err = filepath.EvalSymlinks(p); err != nil {
+			return "", "", false
+		}
+		if got, err := FileSHA256(p); err != nil || got != a.Bin {
+			return "", "", false
+		}
+		found = append(found, p)
+	}
+	return found[0], found[1], true
+}
+
+// Locate finds the toolchain to use when none is given, in this order:
+//  1. the repository toolchain in the nearest .tools/bin at or above cwd
+//     (scripts/install-toolchain.sh), with the Pome cache next to it;
+//  2. emela and wasmtime on PATH (mise install), only if they are exactly the pinned ones;
+//  3. the user-wide installation (mamela toolchain install).
+//
+// Except for PATH, it only looks for the files; Check says whether they are the pinned ones.
+func (l Lock) Locate(cwd string, lookPath func(string) (string, error)) (Location, error) {
 	for d := cwd; ; {
 		bin := filepath.Join(d, ".tools", "bin")
 		if exists(filepath.Join(bin, "emela")) {
@@ -228,6 +257,9 @@ func (l Lock) Locate(cwd string) (Location, error) {
 			break
 		}
 		d = parent
+	}
+	if emela, wasmtime, ok := l.OnPath(Platform(), lookPath); ok {
+		return Location{Emela: emela, Wasmtime: wasmtime, Source: "PATH (the pinned executables, as mise installs them)"}, nil
 	}
 	if bin, _, err := l.UserDirs(); err == nil && exists(filepath.Join(bin, "emela")) {
 		return Location{Dir: bin, Source: "the user toolchain, from mamela toolchain install"}, nil
@@ -247,6 +279,9 @@ type Options struct {
 	Platform  string       // default: Platform()
 	Client    *http.Client // default: a client with a timeout
 	Log       io.Writer    // progress; default: discarded
+	// LookPath finds a tool already installed elsewhere (mise install puts the pinned ones on PATH);
+	// one with the pinned sha256 is copied instead of downloaded. Nil: never look.
+	LookPath func(string) (string, error)
 }
 
 // Install puts the pinned executables into o.Dir. An executable already there with the pinned
@@ -280,6 +315,19 @@ func (l Lock) Install(ctx context.Context, o Options) error {
 		if got, err := FileSHA256(dest); err == nil && got == a.Bin {
 			fmt.Fprintf(o.Log, "%s %s is already installed\n", t.Name, t.Version)
 			continue
+		}
+		if o.LookPath != nil {
+			if p, err := o.LookPath(t.Name); err == nil {
+				if p, err = filepath.EvalSymlinks(p); err == nil {
+					if got, err := FileSHA256(p); err == nil && got == a.Bin {
+						if err := copyChecked(p, dest, a.Bin); err != nil {
+							return err
+						}
+						fmt.Fprintf(o.Log, "installed %s %s (copied from %s)\n", t.Name, t.Version, p)
+						continue
+					}
+				}
+			}
 		}
 		archive, err := l.fetch(ctx, o, t, a)
 		if err != nil {
@@ -368,4 +416,34 @@ func extract(ctx context.Context, archive string, a Asset, t Tool, dest string) 
 		return err
 	}
 	return os.Rename(got, dest)
+}
+
+// copyChecked copies an executable to dest through a temporary file, and keeps it only if the copy
+// has the pinned sha256.
+func copyChecked(src, dest, want string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".copy-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	h := sha256.New()
+	_, err = io.Copy(io.MultiWriter(tmp, h), in)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != want {
+		return fmt.Errorf("%s changed while it was copied (sha256 %s, want %s); nothing was installed", src, got, want)
+	}
+	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dest)
 }

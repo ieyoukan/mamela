@@ -1,0 +1,21 @@
+# Development tools. `mise install` installs them (checked against mise.lock) and then sets up
+# the repository (scripts/install-toolchain.sh: .tools/bin and the Pome dependencies).
+# CI installs from this file too. Keep in sync (TestMiseMatchesTheLocks checks):
+#   go       = the toolchain line of go.mod
+#   emela    = toolchain.lock
+#   wasmtime = toolchain.lock
+[tools]
+go = "1.27.3"
+node = "26.13.0" # for `emela test` (the JS target)
+"github:emela-lang/emela" = "0.27.0"
+wasmtime = "50.0.1"
+
+[settings]
+lockfile = true
+
+[hooks]
+postinstall = "scripts/install-toolchain.sh"
+
+[tasks.check]
+description = "every check CI runs"
+run = "scripts/check.sh"

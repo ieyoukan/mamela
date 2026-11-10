@@ -21,20 +21,25 @@ emela pome add github.com/ieyoukan/mamela/pome/mamela@v0.1.0
 mamela eval .                    # evaluate it into a Resource Graph (read-only)
 ```
 
-`mamela toolchain` shows which toolchain and Pome cache Mamela uses. Mamela runs only the exact
+If you use mise, `mise use go@1.27.3 github:emela-lang/emela@0.27.0 wasmtime@50.0.1` gives you the
+same emela and wasmtime, and Mamela uses them from PATH. `mamela toolchain` shows which toolchain
+and Pome cache Mamela uses. Mamela runs only the exact
 emela and wasmtime of [`toolchain.lock`](toolchain.lock): another build could turn the same
 declaration into a different graph.
 
 ## Develop
 
-Requires Go (any version that can fetch the one in `go.mod`), Node.js (`.node-version`, for
-`emela test`), git and tar (and xz on Linux).
+With [mise](https://mise.jdx.dev/):
 
 ```sh
-scripts/install-toolchain.sh          # toolchain.lock and every Pome.lock into .tools/ (gitignored)
-scripts/check.sh                      # every check that CI runs
-go run ./cmd/mamela eval examples/homelab   # finds .tools by itself, from anywhere in the repository
+mise trust && mise install      # Go, Node.js, emela, wasmtime (mise.lock), then .tools/ and the Pome dependencies
+mise run check                  # every check that CI runs
+go run ./cmd/mamela eval examples/homelab   # finds the toolchain by itself, from anywhere in the repository
 ```
+
+Without mise: install Go (any version that can fetch the one in `go.mod`), Node.js (the version in
+`mise.toml`, for `emela test`), git and tar (and xz on Linux), then run `scripts/install-toolchain.sh`
+and `scripts/check.sh`.
 
 ## Documents
 

@@ -12,9 +12,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# Every version comes from a file in the repository: Go from the toolchain line of go.mod, Node.js
-# from .node-version, emela and wasmtime from toolchain.lock, Go modules from go.sum and Emela
-# dependencies from each Pome.lock. Actions are pinned by commit (Dependabot updates them).
+# CI sets up exactly as a developer does: `mise install` installs Go, Node.js, emela and wasmtime
+# from mise.toml, checked against mise.lock (MISE_LOCKED: nothing that is not in the lock), and
+# its postinstall hook runs scripts/install-toolchain.sh (toolchain.lock and every Pome.lock).
+# Go modules come from go.sum. Actions are pinned by commit (Dependabot updates them).
 jobs:
   check:
     strategy:
@@ -25,29 +26,33 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
-      GOTOOLCHAIN: local # use exactly the Go that setup-go installed from go.mod
+      GOTOOLCHAIN: local # the Go of mise.toml must be the toolchain of go.mod
+      MISE_LOCKED: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Cache Go modules and builds (keyed by go.sum)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-      # `emela test` (JS target) runs on Node.js.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .node-version
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/Library/Caches/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum') }}
       - name: Cache the toolchain archives (checked against toolchain.lock on every install)
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .tools/downloads
           key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchain.lock') }}
+      - name: mise install (mise.toml, mise.lock)
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      # The postinstall hook already ran it, but mise only warns when a hook fails.
+      - name: Set up the repository (toolchain.lock, Pome.lock; fails if a Pome.lock would change)
+        run: scripts/install-toolchain.sh
       - name: Go modules match go.sum, and go.mod and go.sum are tidy
         run: |
           go mod verify
           go mod tidy -diff
-      - name: Install the pinned toolchain and the Pome dependencies (fails if a Pome.lock would change)
-        run: scripts/install-toolchain.sh
       - name: Check
-        run: scripts/check.sh
+        run: mise run check

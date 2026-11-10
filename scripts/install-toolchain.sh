@@ -5,7 +5,7 @@
 # Every download is verified: the tools against the sha256 of toolchain.lock (archive and
 # executable), the Pomes against the sumdb and the hashes in each Pome.lock.
 #
-# Usage: scripts/install-toolchain.sh
+# Usage: scripts/install-toolchain.sh   (`mise install` runs it after installing the tools of mise.toml)
 # Afterwards, `go run ./cmd/mamela ...` anywhere in the repository finds .tools by itself.
 set -euo pipefail
 
@@ -29,13 +29,14 @@ if [[ "$(uname -s)" == Linux ]]; then
   need xz "tar needs it for the .tar.xz of wasmtime: install xz-utils"
 fi
 if ! command -v node >/dev/null 2>&1; then
-  echo "note: Node.js $(cat .node-version) is not installed; scripts/check.sh needs it for \`emela test\`" >&2
+  echo "note: Node.js (version in mise.toml) is not installed; scripts/check.sh needs it for \`emela test\`" >&2
 fi
 if [[ "$missing" != 0 ]]; then
   exit 1
 fi
 
-# The pinned emela and wasmtime (the same installer as `mamela toolchain install`).
+# The pinned emela and wasmtime (the same installer as `mamela toolchain install`). Copies of the
+# pinned ones on PATH (installed by mise) are taken instead of downloading them again.
 go run ./cmd/mamela toolchain install --dir "$bin" --downloads "$tools/downloads" | grep -E '^(installed|downloading) |already installed'
 
 sha256() {
