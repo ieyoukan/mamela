@@ -9,11 +9,30 @@
 - 決定性と人に優しい出力を、最初の PoC から完了条件に入れる。後付けにしない。
 - 実機 Proxmox は、既存ゲストを壊さない境界（[検証環境](lab.md)）を作り、読み取りだけの L0 から始める。
 
+## 開発環境とバージョンの固定
+
+使う版は、すべてリポジトリのファイルで決まる。CI も手元も同じファイルを読む。
+
+| 対象 | 固定するファイル | 更新 |
+|---|---|---|
+| Go | `go.mod` の `toolchain` 行（古い Go からでも、GOTOOLCHAIN がこの版を取ってくる） | 手で |
+| Go のモジュール | `go.sum`（CI で `go mod verify` と `go mod tidy -diff`） | Dependabot |
+| Node.js（`emela test` 用） | `.node-version` | 手で |
+| emela・wasmtime | `toolchain.lock`（アーカイブと実行ファイルの sha256） | 手で |
+| Emela の依存 | 各 `Pome.lock`（取得時に sumdb、評価前に `emela pome verify`） | `emela pome` |
+| GitHub Actions | `ci.yml` に commit SHA で固定 | Dependabot |
+
+- **`toolchain.lock`:** Mamela は、この lock と sha256 が一致する emela と wasmtime しか実行しない。版の表示ではなく実行ファイルそのものを照合するので、`.tools/bin` が書き換えられていても実行前に止まる（`MAM-EVAL-0001`）。lock は `mamela` のバイナリに埋め込まれる。
+- **入れ方:** リポジトリでは `scripts/install-toolchain.sh` が `.tools/` に入れる。`go install` で入れた利用者は `mamela toolchain install` でユーザーのキャッシュに入れる（版ごとに別のディレクトリ）。どちらも同じ Go の実装で、アーカイブと実行ファイルの両方を lock と照合する。
+- **見つけ方:** `mamela eval` と `plan` は、`--toolchain`、`MAMELA_TOOLCHAIN_DIR`、今いるディレクトリから上にたどった最初の `.tools/bin`、ユーザーのインストールの順に探す。Pome キャッシュも、`--pome-cache`、`EMELA_POME_CACHE`、見つけた `.tools` の隣の `pomes`、`~/.emela/pomes` の順に決まる。`mamela toolchain` で、どれが選ばれたかと照合の結果を確かめられる。
+- **emela・wasmtime の更新:** `toolchain.lock` の版、各プラットフォームの url、アーカイブの sha256（リリースページの digest）、中の実行ファイルの sha256（`bin`）を書き換え、`scripts/install-toolchain.sh && scripts/check.sh` を通す。例の graph digest がテストに固定されているので、評価結果が変わればそこで分かる。
+- **2026-11-10:** Wasmtime を 49.0.5 から 50.0.1 に上げた。全テストが通り、例の graph digest も変わらなかった。Node.js は 26（Active LTS）、CI のランナーは ubuntu-26.04 と macos-26（arm64）にした。
+
 ## ステップ 0: Emela / Wasmtime の PoC（ローカル） — 完了 (2026-11-08)
 
 目的: Emela v0.27 で **副作用なしに、決定的に**構成を評価し、Go で読み取れることを実証する。結果と分かった制約は [emela-wasm.md](emela-wasm.md)。
 
-- `scripts/install-toolchain.sh`: emela v0.27.0 と Wasmtime v49.0.5 を sha256 固定で `.tools/` に導入。
+- `scripts/install-toolchain.sh`: emela v0.27.0 と Wasmtime v49.0.5 を sha256 固定で `.tools/` に導入（のちに `toolchain.lock` へ移した。下の「開発環境」）。
 - `pome/mamela`: Graph を組み立てて `mamela-graph/v1` の JSON を stdout に書く Emela ライブラリ（JS / WASM の両方でテスト）。
 - `examples/homelab`: VM 1 台 + nginx の宣言例。
 - `internal/component`: WASM コンポーネントのトップレベル import を読み、許可リストで検査。

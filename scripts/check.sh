@@ -3,7 +3,7 @@
 # Emela formatting, type checks and tests, and the determinism check of the example.
 # Nothing here touches the network or real infrastructure.
 #
-# Usage: scripts/check.sh   (run scripts/install-toolchain.sh first)
+# Usage: scripts/check.sh   (run scripts/install-toolchain.sh first; needs Node.js, see .node-version)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,6 +14,13 @@ export EMELA_POMEPROXY=off
 export EMELA_POME_CACHE="$root/.tools/pomes"
 
 step() { printf '\n== %s\n' "$*"; }
+
+if [[ ! -x .tools/bin/emela || ! -x .tools/bin/wasmtime ]]; then
+  echo "the toolchain is not installed: run scripts/install-toolchain.sh first" >&2; exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "Node.js is needed for \`emela test\` (version in .node-version)" >&2; exit 1
+fi
 
 step "go: gofmt"
 unformatted="$(gofmt -l . | grep -v '^\.tools/' || true)"

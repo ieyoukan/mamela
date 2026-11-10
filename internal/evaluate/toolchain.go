@@ -9,15 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ieyoukan/mamela/internal/toolchain"
 )
 
-// Pinned toolchain versions. Evaluation refuses other versions, because the graph digest is only
-// reproducible with the same compiler and runtime. Keep in sync with scripts/install-toolchain.sh
-// (a test checks this).
-const (
-	PinnedEmela    = "0.27.0"
-	PinnedWasmtime = "49.0.5"
+// Pinned toolchain versions (toolchain.lock). Evaluation runs only the pinned executables, because
+// the graph digest is only reproducible with the same compiler and runtime.
+var (
+	PinnedEmela    = toolchain.Pinned().Emela.Version
+	PinnedWasmtime = toolchain.Pinned().Wasmtime.Version
 )
+
+// installHint says how to get the pinned toolchain.
+const installHint = "run `mamela toolchain install` (in the Mamela repository: scripts/install-toolchain.sh), " +
+	"or pass --toolchain with the directory that holds the pinned emela and wasmtime"
 
 // Toolchain locates the emela and wasmtime executables.
 type Toolchain struct {
@@ -31,8 +36,8 @@ type Versions struct {
 	Wasmtime string
 }
 
-// ToolchainInDir returns the toolchain installed by scripts/install-toolchain.sh in dir
-// (normally <repo>/.tools/bin).
+// ToolchainInDir returns the toolchain in dir (installed by `mamela toolchain install`, or by
+// scripts/install-toolchain.sh in <repo>/.tools/bin).
 func ToolchainInDir(dir string) (Toolchain, error) {
 	// Absolute paths: the processes run in a temporary working directory.
 	abs, err := filepath.Abs(dir)
@@ -44,14 +49,18 @@ func ToolchainInDir(dir string) (Toolchain, error) {
 		if fi, err := os.Stat(p); err != nil || fi.IsDir() {
 			return Toolchain{}, &Error{Code: CodeToolchain, Stage: StageToolchain,
 				Message: fmt.Sprintf("%s was not found", p),
-				Hint:    "run scripts/install-toolchain.sh, or pass the directory that contains emela and wasmtime"}
+				Hint:    installHint}
 		}
 	}
 	return t, nil
 }
 
-// Verify checks that the toolchain reports the pinned versions.
+// Verify checks that the executables are the pinned ones (by sha256, before running anything) and
+// that they report the pinned versions.
 func (t Toolchain) Verify(ctx context.Context) (Versions, error) {
+	if err := t.checkPinned(); err != nil {
+		return Versions{}, err
+	}
 	emela, err := versionOf(ctx, t.Emela, "emela ")
 	if err != nil {
 		return Versions{}, err
@@ -65,9 +74,38 @@ func (t Toolchain) Verify(ctx context.Context) (Versions, error) {
 		return v, &Error{Code: CodeToolchain, Stage: StageToolchain,
 			Message: fmt.Sprintf("toolchain is emela %s / wasmtime %s, but Mamela is pinned to emela %s / wasmtime %s",
 				v.Emela, v.Wasmtime, PinnedEmela, PinnedWasmtime),
-			Hint: "run scripts/install-toolchain.sh; other versions could produce a different graph from the same source"}
+			Hint: installHint + "; other versions could produce a different graph from the same source"}
 	}
 	return v, nil
+}
+
+// checkPinned compares the executables with toolchain.lock without running them.
+func (t Toolchain) checkPinned() error {
+	l := toolchain.Pinned()
+	var problems []string
+	for _, c := range []struct {
+		tool toolchain.Tool
+		path string
+	}{{l.Emela, t.Emela}, {l.Wasmtime, t.Wasmtime}} {
+		a, err := c.tool.Asset(toolchain.Platform())
+		if err != nil {
+			return &Error{Code: CodeToolchain, Stage: StageToolchain, Message: err.Error(),
+				Hint: "Mamela evaluates only with the pinned toolchain, which exists for the platforms named above"}
+		}
+		got, err := toolchain.FileSHA256(c.path)
+		if err != nil {
+			return &Error{Code: CodeToolchain, Stage: StageToolchain, Message: err.Error(), Hint: installHint}
+		}
+		if got != a.Bin {
+			problems = append(problems, fmt.Sprintf("%s is not the pinned %s %s (sha256 %s, want %s)",
+				c.path, c.tool.Name, c.tool.Version, got, a.Bin))
+		}
+	}
+	if len(problems) > 0 {
+		return &Error{Code: CodeToolchain, Stage: StageToolchain, Message: strings.Join(problems, "\n"),
+			Hint: installHint + "; Mamela runs no other build, because it could turn the same source into a different graph"}
+	}
+	return nil
 }
 
 func versionOf(ctx context.Context, exe, prefix string) (string, error) {

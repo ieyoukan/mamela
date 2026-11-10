@@ -206,8 +206,8 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 		if strings.Contains(detail, "nowhere to get it from") {
 			return "", &Error{Code: CodeBuildFailed, Stage: StageBuild,
 				Message: "a dependency in Pome.lock is not in the Pome cache " + cache + " (nothing is fetched while evaluating)",
-				Hint: "fetch it with `emela pome install` in the Pome (scripts/install-toolchain.sh does this for this " +
-					"repository), and point EMELA_POME_CACHE or --pome-cache at that cache",
+				Hint: fmt.Sprintf("fetch the dependencies into that cache: cd %s && EMELA_POME_CACHE=%s %s pome install "+
+					"(in the Mamela repository, scripts/install-toolchain.sh does this)", abs, cache, e.Toolchain.Emela),
 				Detail: detail}
 		}
 		return "", &Error{Code: CodeBuildFailed, Stage: StageBuild,

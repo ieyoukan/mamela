@@ -30,6 +30,8 @@ Usage:
   mamela destroy --site <file> <vm>   destroy a VM Mamela created (shows it first; needs --confirm <vm>)
   mamela serve --site <file>          serve mamelet (the agent in lab VMs): enrollment, revisions, reports
   mamela lab <bootstrap|preflight|postflight|tunnel>  set up and check the live test lab (docs/lab.md)
+  mamela toolchain [status|install]  check or install the pinned emela and wasmtime
+  mamela version                      print the Mamela version and its pinned toolchain
 
 Run 'mamela <command> -h' for flags.
 `
@@ -60,6 +62,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "destroy":
 		return runDestroy(ctx, args[1:], stdout, stderr)
+	case "toolchain":
+		return runToolchain(ctx, args[1:], stdout, stderr)
+	case "version", "--version":
+		return runVersion(stdout)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
@@ -75,10 +81,7 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	asJSON := fs.Bool("json", false, "print the canonical mamela-graph/v1 JSON instead of a summary")
 	sitePath := fs.String("site", "", "lab site definition, to name the ACL paths in what the declaration may need")
 	twice := fs.Bool("twice", false, "evaluate twice and require the same digest (determinism check)")
-	toolchainDir := fs.String("toolchain", envOr("MAMELA_TOOLCHAIN_DIR", ".tools/bin"),
-		"directory containing the pinned emela and wasmtime (scripts/install-toolchain.sh)")
-	pomeCache := fs.String("pome-cache", defaultPomeCache(),
-		"directory of already fetched Pome dependencies; builds never fetch")
+	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela eval [flags] <pome-dir>\n\n"+
 			"Builds the Pome to WASM, checks its imports, runs it in a sandbox and validates the graph.\n"+
@@ -94,11 +97,11 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	dir := fs.Arg(0)
 
-	tc, err := evaluate.ToolchainInDir(*toolchainDir)
+	t, err := tf.find()
 	if err != nil {
 		return report(stderr, err)
 	}
-	e := &evaluate.Evaluator{Toolchain: tc, Limits: evaluate.DefaultLimits, PomeCache: *pomeCache}
+	e := t.evaluator()
 	var res *evaluate.Result
 	if *twice {
 		res, err = e.EvaluateTwice(ctx, dir)

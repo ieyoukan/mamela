@@ -1,0 +1,40 @@
+# The toolchain Mamela evaluates declarations with. A different compiler or runtime could build a
+# different graph from the same source, so Mamela runs only these exact executables: it checks the
+# sha256 of each executable before running it (MAM-EVAL-0001).
+#
+# `mamela toolchain install` and scripts/install-toolchain.sh download the archives below, check
+# their sha256, and take the executable at `path` inside the archive, whose sha256 must be `bin`.
+#
+# To update a tool: change its version, and for every platform the url, the archive's sha256 (from
+# the release page) and `bin` (sha256 of the executable inside); then run
+# scripts/install-toolchain.sh && scripts/check.sh. Platforms are GOOS/GOARCH.
+
+[emela]
+version = "0.27.0"
+
+[emela.platforms."darwin/arm64"]
+url = "https://github.com/emela-lang/emela/releases/download/v0.27.0/emela-v0.27.0-aarch64-apple-darwin.tar.gz"
+sha256 = "f2075416bc5fc1569ce96e656758cc39c5a29fd121f8ce87a25fe480ce3a3103"
+path = "emela"
+bin = "c4388bdb84fad52e0c5806098ea665307ff588a40696e207c91c6fee28a9986a"
+
+[emela.platforms."linux/amd64"]
+url = "https://github.com/emela-lang/emela/releases/download/v0.27.0/emela-v0.27.0-x86_64-unknown-linux-gnu.tar.gz"
+sha256 = "db25af80d5fcd1ce32f37a1b21fb93cc3dd6650816f660cc526729b27057ea8c"
+path = "emela"
+bin = "7e9742ff7e8f66b518d68fa549495e35ec9e5be0df6f5dd5a51c0008aeb977fa"
+
+[wasmtime]
+version = "50.0.1"
+
+[wasmtime.platforms."darwin/arm64"]
+url = "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/wasmtime-v50.0.1-aarch64-macos.tar.xz"
+sha256 = "960e5216c7ebd7e9b45e6561d15821b8b801b7d54aee28c7b91921aeb30c65c8"
+path = "wasmtime-v50.0.1-aarch64-macos/wasmtime"
+bin = "249ec535c752c84a1a386a31ddfc3c7611f4819363bf5d3840d7dfabd1046534"
+
+[wasmtime.platforms."linux/amd64"]
+url = "https://github.com/bytecodealliance/wasmtime/releases/download/v50.0.1/wasmtime-v50.0.1-x86_64-linux.tar.xz"
+sha256 = "685466455dd42a14774a86c36c8f2e45cbb9bd6d92a850139315df60a75498a5"
+path = "wasmtime-v50.0.1-x86_64-linux/wasmtime"
+bin = "983e57573a320cf44c93ccaa571a25640cf38b15e8e14160aa7bb919336caae8"

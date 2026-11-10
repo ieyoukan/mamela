@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
@@ -38,8 +37,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	snapshotFile := fs.String("snapshot", "", "observed state as a snapshot JSON file (default: an empty world, observed now)")
 	sitePath := fs.String("site", "", "observe the lab Proxmox of this site definition instead (read-only)")
 	replay := fs.String("replay", "", "recompute a stored plan by digest and check that it is unchanged")
-	toolchainDir := fs.String("toolchain", envOr("MAMELA_TOOLCHAIN_DIR", ".tools/bin"), "directory containing the pinned emela and wasmtime")
-	pomeCache := fs.String("pome-cache", defaultPomeCache(), "directory of already fetched Pome dependencies")
+	tf := addToolFlags(fs)
 	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
@@ -81,12 +79,11 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	tc, err := evaluate.ToolchainInDir(*toolchainDir)
+	t, err := tf.find()
 	if err != nil {
 		return report(stderr, err)
 	}
-	e := &evaluate.Evaluator{Toolchain: tc, Limits: evaluate.DefaultLimits, PomeCache: *pomeCache}
-	res, err := e.Evaluate(ctx, fs.Arg(0))
+	res, err := t.evaluator().Evaluate(ctx, fs.Arg(0))
 	if err != nil {
 		return report(stderr, err)
 	}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +217,7 @@ func TestEvaluateRejects(t *testing.T) {
 		graph   graph.Code // set when the failure is in the graph itself
 		detail  string     // a substring the diagnostics must contain, to pin the reason
 		noCache bool       // build with an empty Pome cache instead of the shared one
+		hint    string     // a substring the hint must contain
 	}{
 		{dir: "uses-env", code: CodeImportDenied},
 		{dir: "uses-random", code: CodeImportDenied},
@@ -230,7 +230,7 @@ func TestEvaluateRejects(t *testing.T) {
 		{dir: "compile-error", code: CodeBuildFailed, detail: "undefined_function"},
 		// The dependency is not cached and fetching is off: the build must not reach the network.
 		// Its lock names a dependency that is in no cache: the build must fail, never fetch.
-		{dir: "needs-fetch", code: CodeBuildFailed, detail: "nowhere to get it from", noCache: true},
+		{dir: "needs-fetch", code: CodeBuildFailed, detail: "nowhere to get it from", noCache: true, hint: "/emela pome install"},
 		{dir: "not-json", graph: graph.CodeInvalidJSON},
 		{dir: "two-documents", graph: graph.CodeTrailingData},
 		{dir: "invalid-graph", graph: graph.CodeInvalidName},
@@ -264,6 +264,9 @@ func TestEvaluateRejects(t *testing.T) {
 			if tt.detail != "" && !strings.Contains(ee.Detail, tt.detail) {
 				t.Errorf("diagnostics do not mention %q:\n%s", tt.detail, ee.Detail)
 			}
+			if !strings.Contains(ee.Hint, tt.hint) {
+				t.Errorf("hint does not say %q: %s", tt.hint, ee.Hint)
+			}
 			if elapsed := time.Since(start); elapsed > 30*time.Second {
 				t.Errorf("took %s; limits did not stop it promptly", elapsed)
 			}
@@ -294,25 +297,32 @@ func TestEvaluateNotAPome(t *testing.T) {
 	}
 }
 
-func TestToolchainVersionMismatch(t *testing.T) {
+// A toolchain that is not the pinned build is refused before any of it runs, even when it claims
+// the pinned versions.
+func TestToolchainNotPinnedIsNotRun(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
 	write := func(name, out string) {
-		script := "#!/bin/sh\necho '" + out + "'\n"
+		script := "#!/bin/sh\ntouch '" + ran + "'\necho '" + out + "'\n"
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	write("emela", "emela 0.26.1")
-	write("wasmtime", "wasmtime 49.0.5 (805a0f153 2026-10-29)")
+	write("emela", "emela "+PinnedEmela)
+	write("wasmtime", "wasmtime "+PinnedWasmtime+" (fake)")
 	tc, err := ToolchainInDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = tc.Verify(context.Background())
 	var ee *Error
-	if !errors.As(err, &ee) || ee.Code != CodeToolchain {
-		t.Fatalf("want %s, got %v", CodeToolchain, err)
+	if !errors.As(err, &ee) || ee.Code != CodeToolchain || !strings.Contains(ee.Message, "is not the pinned emela") ||
+		!strings.Contains(ee.Message, "is not the pinned wasmtime") {
+		t.Fatalf("want %s naming both tools, got %v", CodeToolchain, err)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("a toolchain that is not the pinned one was run")
 	}
 }
 
@@ -322,20 +332,6 @@ func TestToolchainMissing(t *testing.T) {
 	var ee *Error
 	if !errors.As(err, &ee) || ee.Code != CodeToolchain {
 		t.Fatalf("want %s, got %v", CodeToolchain, err)
-	}
-}
-
-func TestPinnedVersionsMatchInstallScript(t *testing.T) {
-	t.Parallel()
-	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "install-toolchain.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, want := range map[string]string{"EMELA_VERSION": "v" + PinnedEmela, "WASMTIME_VERSION": "v" + PinnedWasmtime} {
-		m := regexp.MustCompile(name + `="([^"]+)"`).FindSubmatch(script)
-		if m == nil || string(m[1]) != want {
-			t.Errorf("install-toolchain.sh %s = %q, want %q", name, m, want)
-		}
 	}
 }
 
