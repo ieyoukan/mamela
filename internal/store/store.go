@@ -127,6 +127,29 @@ CREATE TABLE node_reports (
 	// 4: which Mamela made each plan (a plan recomputes only with the planner that made it).
 	`ALTER TABLE plans ADD COLUMN made_by TEXT NOT NULL DEFAULT '';`,
 	`ALTER TABLE plans ADD COLUMN providers_digest TEXT NOT NULL DEFAULT '';`,
+	// 6: provider programs (content-addressed), which programs each plan was made with, and the
+	// permits issued (each once).
+	`
+CREATE TABLE provider_programs (
+  digest     TEXT PRIMARY KEY,
+  data       BLOB NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+CREATE TABLE plan_programs (
+  plan_digest    TEXT NOT NULL REFERENCES plans(digest),
+  provider       TEXT NOT NULL,
+  version        TEXT NOT NULL,
+  source         TEXT NOT NULL,
+  program_digest TEXT NOT NULL REFERENCES provider_programs(digest),
+  PRIMARY KEY (plan_digest, provider)
+);
+CREATE TABLE permits (
+  id           TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
+  plan_digest  TEXT NOT NULL,
+  issued_ms    INTEGER NOT NULL
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

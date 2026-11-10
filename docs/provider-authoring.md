@@ -2,7 +2,7 @@
 
 Mamela のプロバイダーは、1 つのプログラムである。Mamela（host）と stdin と stdout で JSON-RPC 2.0（`mamela-provider-rpc/v1`）を話す。実状態を観測し、差分を計算し、承認された変更を 1 つずつ実行する。設計の根拠は [ADR 0002](adr/0002-provider-contract.md) にある。
 
-> 段階 2a の時点では、プロバイダーを書き、host の上で適合テストを通すところまでできる。`mamela plan` と `apply` から外部のプロバイダーを使うのは、段階 2b からである。
+使う人は、プロバイダーの Pome を宣言で import するだけで使える（「配布と使い方」）。
 
 ## 前提: プロバイダーは信頼されない
 
@@ -75,7 +75,7 @@ func main() { sdk.Serve(myprovider.Provider{}) }
   | 要求 | 守ること |
   |---|---|
   | 変更の要求 | 承認した要求（`Change.Requests`）を、そのまま送る。パスには許可の `IDs` を使う |
-  | 前提条件 | カタログが前提条件のパラメータを持つ呼び出しでは、観測した版を送る（diff で承認した要求に入れておく） |
+  | 前提条件 | カタログが前提条件のパラメータを持つ呼び出しでは、観測した版を必ず送る（diff で `Precondition` と承認した要求に入れておく）。ないと plan の時点で拒否される。存在しない対象の版も、API が表せるなら返す（例の API では `0` が「まだない」） |
 
 - **再開:** 先に読んで、できていることは飛ばす。前の apply が途中で止まっていても、続きから終える。
 - **エラーの扱い:** `host.Request` のエラーは、握りつぶさずに返す。
@@ -165,6 +165,61 @@ func TestConformance(t *testing.T) {
 
 カタログは host のものである。Mamela が知っている API のカタログは、Mamela が持つ。新しい API のカタログは、プロバイダーの作者が提案し、Mamela にレビューされて入る。それまでは、変更のたびに人の承認が要る。
 
+## 配布と使い方
+
+### 作者: Pome に入れる
+
+プロバイダーは、Emela の Pome として配る。例は [`examples/kv/pome`](../examples/kv/pome) にある。
+
+| ファイル | 内容 |
+|---|---|
+| `src/lib.emel` | 種類ごとの型と関数。`Mamela.provided(graph, "kv-example", "KVItem", name, spec)` を呼ぶ。使う人は `Kv.item(...)` と書くだけで、型の検査を受けられる |
+| `provider.wasm` | プロバイダーのプログラム（WASM）。再現できる build にする（`go build -trimpath -buildvcs=false`。例では `examples/kv/build.sh`） |
+| `mamela-provider.toml` | `provider`・`version`（マニフェストと同じ）、`program`（Pome の中のパス）、`sha256`（プログラムの） |
+
+Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb の hash で固定される。そのため、プログラムも同じ鎖で固定される。Mamela はさらに、次のことを確かめる。
+
+- `mamela-provider.toml` の sha256
+- プログラムが WASM であること（Pome のネイティブは使わない）
+- マニフェストの名前と版
+
+### 使う人: import して plan・apply する
+
+1. 宣言の `Pome.toml` の `[dependencies]` に、プロバイダーの Pome を足す（`emela pome add <path>@<version>`）。どの版を使うかは、ここで決まる。
+2. 宣言で import して書く。
+
+   ```emela
+   import Mamela
+   import Kv.{Item}
+
+   fn infrastructure() -> Mamela.Graph {
+     Mamela.empty() |> Kv.item(Item(name: "web", value: "v1", labels: ["prod"]))
+   }
+   ```
+
+3. API の場所と資格情報を `mamela.providers.toml` に書く。プロバイダーには渡らない。
+
+   ```toml
+   [provider.kv-example]
+   api_url    = "https://kv.example.com/api"   # http は 127.0.0.1・::1・localhost だけ
+   token_file = "~/.config/kv/token"           # Authorization: Bearer <token>
+   catalog    = "kv-catalog.json"              # API のカタログ（必須。ないと読み取りも変更も許さない）
+   ```
+
+4. `mamela check <pome-dir>` で、各リソースに要る能力を確かめる。
+5. `mamela plan <pome-dir>` を実行する。プロバイダーが観測し、diff を計算する。plan は、変更ごとに対象と、送る要求をすべてパラメータまで表示する。承認するのはこの内容である。
+6. `mamela approve <digest>` で承認し、`mamela apply <digest>` で実行する。
+
+承認は、そのときの API の接続先（URL・資格情報・カタログ）に対するものである。設定でどれかを変えると、承認は効かなくなる（MAM-REC-0007）。
+
+apply は、plan のときに SQLite に保存したプログラムを動かす。キャッシュや Pome が変わっていても、plan と同じバイト列である。apply は次の手順で進む。
+
+1. 観測し直す。
+2. プロバイダーの変更が承認したものと完全に同じであることを確かめる。違えば（たとえば対象の版が変わっていれば）、何もせずに止まる（MAM-REC-0002）。
+3. 変更ごとに許可を発行する。許可は一度だけ使えて、SQLite に記録する。
+
+`examples/kv-demo` で試せる（`go run ./examples/kv/cmd/kv-api` が、ローカルの API になる）。
+
 ## ネイティブのプロバイダー
 
 ネイティブの実行ファイルは、サンドボックスの外で動く。使う人のファイル、環境変数、ネットワーク（クラウドの VM では、メタデータとその資格情報）に届く。そのため、使う人が明示して信頼したときだけ動かす。
@@ -173,4 +228,4 @@ func TestConformance(t *testing.T) {
 mamela provider trust --source example.com/myprovider --version 1.2.0 ./my-provider
 ```
 
-記録は `mamela.trust.toml` に残る。レビューしてコミットする。build が変われば digest が変わり、信頼をやり直す必要がある。できるだけ WASM 版を配布する。
+記録は `mamela.trust.toml` に残る。レビューしてコミットする。build が変われば digest が変わり、信頼をやり直す必要がある。今は `mamela provider inspect` での確認にだけ使える。Pome で配るプロバイダーは WASM でなければならない。

@@ -21,6 +21,7 @@ const (
 	CodeDuplicateMember  Code = "MAM-GRAPH-0008"
 	CodeTrailingData     Code = "MAM-GRAPH-0009"
 	CodeTooManyResources Code = "MAM-GRAPH-0010"
+	CodeNeedsV2          Code = "MAM-GRAPH-0011"
 
 	// Validation (the meaning of a decoded graph).
 	CodeInvalidName       Code = "MAM-GRAPH-0101"

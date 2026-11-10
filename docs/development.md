@@ -162,11 +162,30 @@
     - lookup が常に done と答える
     - lookup が常に partly-done と答える
     - lookup がラベルを見ない
-- **まだしていないこと（段階 2b）:**
-  - plan・approve・apply から使う
-  - 許可の一度きりの、SQLite への記録
-  - policy への組み込み
-  - Proxmox と mamelet の移行
+
+## プロバイダーを plan・apply で使う（段階 2b と配布、2026-11-10）
+
+- **import:** プロバイダーの Pome（Emela の型、WASM のプログラム、`mamela-provider.toml`）を、宣言の依存に足して import する。Mamela は、宣言の `Pome.lock`（Pome のキャッシュ）と `[replace]` から、プロバイダーを見つける（`internal/provider/external`）。
+- **Graph:** `mamela-graph/v2` で、プロバイダーのリソースを運ぶ（`pome/mamela` v0.2.0 の `Mamela.provided`）。
+- **plan:**
+  - プロバイダーが観測と diff をする。Mamela は次のことを確かめる。
+    - 宣言していないリソースを変えない
+    - 前提条件が観測した版である
+    - 1 つのリソースに同じ操作が 2 つない
+  - カタログによる効果の分類とともに、スナップショットに記録する。
+  - plan は、承認する要求をパラメータまで表示する。プログラムを SQLite に保存する。
+- **apply:**
+  - plan と同じプログラムを動かす。
+  - 承認した変更と完全に同じ変更だけを、許可（SQLite に一度だけ記録）のもとで実行する。
+  - site がなくても動く（組み込みの種類の変更がないとき）。
+- **確かめたこと（`cmd/mamela` の通しのテスト）:**
+  - 承認する前は何も変わらない。
+  - 承認すると API にその要求だけが届く。
+  - もう一度 plan すると in sync になる。
+  - plan の後に対象が変わると、MAM-REC-0002 で止まり、新しい値を上書きしない。
+- **まだしていないこと:**
+  - Proxmox と mamelet の、この契約への移行
+  - `pome/mamela` v0.2.0 と、例の Pome の公開（タグの push）
 
 ## テストの優先順位
 

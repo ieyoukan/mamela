@@ -1,0 +1,20 @@
+## Kv: items of the example key-value API, managed by the kv-example provider.
+##
+## Importing this Pome is how a declaration uses the provider: the functions here declare its
+## resources, and the Pome holds the provider's program (provider.wasm, named with its sha256 in
+## mamela-provider.toml), which Mamela runs isolated.
+
+import Mamela
+import Dynamic.{Dynamic, Text, Items}
+
+## The provider, as its manifest names it.
+pub const PROVIDER = "kv-example"
+
+## An item: its value, and labels (none: labels are left as they are).
+pub type Item(name: String, value: String, labels: List[String])
+
+## Declares that the item exists with this value and labels.
+pub fn item(graph: Mamela.Graph, item: Item) -> Mamela.Graph {
+  spec = [("value", Text(item.value)), ("labels", Items(item.labels.map(|l| Text(l))))]
+  Mamela.provided(graph, PROVIDER, "KVItem", item.name, spec)
+}

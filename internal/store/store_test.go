@@ -316,3 +316,32 @@ func TestAllocateVMIDIsStableAndSkipsUsedIDs(t *testing.T) {
 		t.Fatal("found a VMID for an unknown name")
 	}
 }
+
+func TestPlanProgramsAndPermits(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := open(t)
+	g := graphFixture(t)
+	snap := state.Empty(time.Unix(0, 0))
+	p := plan.Build(g, snap, policy.Default)
+	if err := s.SavePlan(ctx, g, snap, policy.Default, p); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("\x00asm program")
+	prog := Program{Provider: "kv", Version: "0.1.0", Source: "example.com/kv", Digest: programDigest(data), Data: data}
+	if err := s.SavePlanPrograms(ctx, p.Digest, []Program{{Provider: "kv", Digest: "sha256:00", Data: data}}); err == nil {
+		t.Error("a program with the wrong digest was stored")
+	}
+	if err := s.SavePlanPrograms(ctx, p.Digest, []Program{prog}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.PlanPrograms(ctx, p.Digest)
+	if err != nil || len(got) != 1 || string(got[0].Data) != string(data) || got[0].Source != prog.Source {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if err := s.UsePermit(ctx, "op-1@1", "op-1", p.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UsePermit(ctx, "op-1@1", "op-1", p.Digest); !errors.Is(err, ErrPermitUsed) {
+		t.Errorf("a permit issued twice: %v", err)
+	}
+}

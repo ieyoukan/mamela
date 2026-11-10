@@ -1,4 +1,5 @@
 import Lib
+import Dynamic
 
 fn app() -> Lib.Vm {
   Lib.Vm(name: "app-server", cpu: 2, memory_mib: 2048, disk_gib: 10, image: "ubuntu-24.04")
@@ -48,4 +49,18 @@ fn text_is_escaped() {
   # Names are validated on the Go side; the JSON must still stay well-formed for any text.
   g = Lib.empty() |> Lib.package(app(), "a\"b\\c\n\u{1}日本語")
   assert Lib.to_json(g).contains("\"package\":\"a\\\"b\\\\c\\n\\u0001日本語\"")
+}
+
+@test
+fn provided_resources_make_a_v2_graph() {
+  g = Lib.empty()
+    |> Lib.provided("kv-example", "KVItem", "web", [("value", Dynamic.Text("v1"))])
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"KVItem\",\"name\":\"web\",\"provider\":\"kv-example\",\"spec\":{\"value\":\"v1\"}}",
+      "],\"schema\":\"mamela-graph/v2\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
 }

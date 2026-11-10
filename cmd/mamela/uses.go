@@ -68,12 +68,12 @@ func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
 		return false
 	}
 	maybe := false
-	type key struct{ provider, target, object string }
+	type key struct{ provider, targetType, target, object string }
 	var keys []key
 	caps := map[key][]string{}
 	notes := map[key][]string{}
 	for _, q := range reqs {
-		k := key{q.Provider, q.Target, q.Object}
+		k := key{q.Provider, q.TargetType, q.Target, q.Object}
 		if _, ok := caps[k]; !ok {
 			keys = append(keys, k)
 		}
@@ -97,7 +97,7 @@ func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
 			what += " " + k.object
 		}
 		on := k.target
-		if t := reqs[0].TargetType; t != "" && !strings.HasPrefix(on, "/") {
+		if t := k.targetType; t != "" && !strings.HasPrefix(on, "/") {
 			on = t + " " + on // "node web"; Proxmox ACL paths speak for themselves
 		}
 		provider := k.provider
@@ -166,9 +166,8 @@ func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, p
 }
 
 // renderMayNeed says what each resource of the declaration may need, whatever the world is.
-func renderMayNeed(w io.Writer, site *lab.Site, g *graph.Graph) {
+func renderMayNeed(w io.Writer, site *lab.Site, ps spec.Providers, g *graph.Graph) {
 	fmt.Fprintln(w, "\nMay need when applied (every operation each resource can lead to; `mamela plan --site` says what a plan uses):")
-	ps := site.Providers()
 	reqs := append(ps.Observation(site), ps.Analyze(g, site)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases")

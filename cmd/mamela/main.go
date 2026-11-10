@@ -129,7 +129,11 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, err)
 		}
 	}
-	renderMayNeed(stdout, site, res.Graph)
+	ps, err := declaredProviders(ctx, site, dir, t)
+	if err != nil {
+		return report(stderr, err)
+	}
+	renderMayNeed(stdout, site, ps, res.Graph)
 	if s := strings.TrimSpace(res.Stderr); s != "" {
 		fmt.Fprintf(stderr, "diagnostics from the declaration:\n%s\n", indent(s, "  "))
 	}
@@ -176,6 +180,9 @@ func describe(r graph.Resource) string {
 		s := r.NodeService
 		return fmt.Sprintf("service %s %s, %s on %s", s.Service,
 			choose(s.Enabled, "enabled", "disabled"), choose(s.Running, "running", "stopped"), s.Node)
+	}
+	if p := r.Provided; p != nil {
+		return fmt.Sprintf("via provider %s: %s", p.Provider, p.Spec)
 	}
 	return ""
 }

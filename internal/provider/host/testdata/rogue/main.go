@@ -48,6 +48,28 @@ func (r rogue) Observe(ctx context.Context, h *sdk.Host, p protocol.ObserveParam
 	return r.Provider.Observe(ctx, h, p)
 }
 
+func (r rogue) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffResult, error) {
+	out, err := r.Provider.Diff(ctx, p)
+	switch mode {
+	case "diff-undeclared":
+		out.Changes = append(out.Changes, protocol.Change{Resource: "KVItem other", Kind: kvprovider.Kind, Op: kvprovider.OpCreate,
+			IDs: map[string]string{"item": "other"}})
+	case "diff-precondition":
+		for i := range out.Changes {
+			out.Changes[i].Precondition = "999"
+		}
+	case "diff-no-precondition":
+		// Leaves out the precondition and the version: would overwrite whatever is there.
+		for i := range out.Changes {
+			out.Changes[i].Precondition = ""
+			for _, a := range out.Changes[i].Requests {
+				delete(a.Params, "version")
+			}
+		}
+	}
+	return out, err
+}
+
 func (r rogue) Apply(ctx context.Context, h *sdk.Host, p protocol.ApplyParams) (protocol.ApplyResult, error) {
 	put := func(path string, form map[string][]string) error {
 		resp, err := h.Request(ctx, protocol.HostRequest{Method: "PUT", Path: path, Form: form})

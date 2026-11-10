@@ -245,6 +245,28 @@ func (s *Session) catalog() protocol.Catalog {
 	return protocol.Catalog{}
 }
 
+// CheckPreconditions checks a change against the host's catalog: every approved request to a call
+// whose catalog entry names a precondition parameter must carry it with the observed version,
+// and the change must be based on that version. Without that, a change made to the object after
+// approval would be overwritten.
+func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
+	cat := s.catalog()
+	for _, a := range c.Requests {
+		e, ok := cat.Lookup(a.Method, a.Path)
+		if !ok || e.Precondition == "" {
+			continue
+		}
+		if observed == "" || c.Precondition != observed {
+			return fmt.Errorf("%s %s needs a precondition (%s): the change must be based on the observed version, and it is based on %q (observed %q)",
+				a.Method, a.Path, e.Precondition, c.Precondition, observed)
+		}
+		if got := a.Params[e.Precondition]; len(got) != 1 || got[0] != observed {
+			return fmt.Errorf("%s %s must send %s=%s (the observed version)", a.Method, a.Path, e.Precondition, observed)
+		}
+	}
+	return nil
+}
+
 // Verify classifies an operation's calls with the host's catalog.
 func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
 

@@ -8,8 +8,12 @@ package graph
 
 import "github.com/ieyoukan/mamela/provider/protocol"
 
-// Schema is the only accepted value of the "schema" member.
+// Schema is the schema of a graph of built-in kinds only.
 const Schema = "mamela-graph/v1"
+
+// SchemaV2 is the schema of a graph that also has resources of providers (Resource.Provided).
+// A v1 graph is a v2 graph without them; Mamela reads both and writes v1 when it can.
+const SchemaV2 = "mamela-graph/v2"
 
 // Kind names a resource type. It is the provider protocol's ResourceKind, so that manifests name
 // kinds with the same type.
@@ -20,6 +24,12 @@ const (
 	KindNodePackage    Kind = "NodePackage"
 	KindNodeService    Kind = "NodeService"
 )
+
+// Builtin reports whether a kind is one of Mamela's own (not a provider's).
+func Builtin(k Kind) bool {
+	_, ok := kindOrder[k]
+	return ok
+}
 
 // kindOrder fixes the canonical order of kinds: nodes before what lives on them.
 var kindOrder = map[Kind]int{
@@ -41,6 +51,17 @@ type Resource struct {
 	VirtualMachine *VirtualMachineSpec
 	NodePackage    *NodePackageSpec
 	NodeService    *NodeServiceSpec
+	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
+	// provider does (its manifest and its diff).
+	Provided *ProvidedSpec
+}
+
+// ProvidedSpec is a resource of a provider's kind.
+type ProvidedSpec struct {
+	Provider string // the provider's name, as in its manifest
+	// Spec is the declared fields, a JSON object in canonical form (RFC 8785): Mamela passes it to
+	// the provider as is.
+	Spec []byte
 }
 
 // ID is the identity of a resource within a graph.

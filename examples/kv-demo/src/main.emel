@@ -1,0 +1,18 @@
+# Items of the example key-value API, through its provider. Importing Kv (examples/kv/pome) is all
+# it takes to use the provider; mamela.providers.toml says where the API is.
+
+import Std.Console.{SystemConsole}
+import Mamela
+import Kv.{Item}
+
+fn infrastructure() -> Mamela.Graph {
+  Mamela.empty()
+    |> Kv.item(Item(name: "web", value: "v1", labels: ["prod"]))
+    |> Kv.item(Item(name: "db", value: "v1", labels: []))
+}
+
+fn main() {
+  with SystemConsole {
+    infrastructure() |> Mamela.print
+  }
+}

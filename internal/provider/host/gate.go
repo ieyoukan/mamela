@@ -89,7 +89,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 		g.used[approved] = true
 	}
 	if g.upstream == nil {
-		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider"
+		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider (its section in mamela.providers.toml)"
 		g.record = append(g.record, rec)
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: rec.Reason}
 	}
@@ -228,7 +228,12 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 			}
 		}
 	}
-	if p.Precondition != "" && entry.Precondition != "" {
+	// A call the catalog gives a precondition always carries the observed version: without it, a
+	// change made after approval would be overwritten.
+	if entry.Precondition != "" {
+		if p.Precondition == "" {
+			return -1, fmt.Sprintf("%s needs a precondition (%s), and the change is based on no observed version", rec.Call, entry.Precondition)
+		}
 		if got := params[entry.Precondition]; len(got) != 1 || got[0] != p.Precondition {
 			return -1, fmt.Sprintf("%s must be the observed version %s (the change is based on it)", entry.Precondition, p.Precondition)
 		}

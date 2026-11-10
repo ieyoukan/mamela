@@ -75,6 +75,36 @@ func (ps Providers) Digest() string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// External identifies a provider that runs as a separate program: its contract, its program and
+// the protocol it speaks. A plan made with one program does not apply with another.
+type External struct {
+	Manifest Manifest `json:"manifest"`
+	Program  string   `json:"program"` // "sha256:..." of the program
+	Protocol string   `json:"protocol"`
+	// Endpoint identifies the API the provider's requests go to: its URL, the credential (a
+	// digest of it) and the catalog. Approving a plan approves changes to that API only.
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+// DigestWith identifies the built-in providers' contracts and the external providers. Without
+// external providers it is Digest.
+func (ps Providers) DigestWith(external []External) string {
+	if len(external) == 0 {
+		return ps.Digest()
+	}
+	ext := slices.Clone(external)
+	slices.SortFunc(ext, func(a, b External) int { return strings.Compare(a.Manifest.Provider, b.Manifest.Provider) })
+	data, err := json.Marshal(struct {
+		Builtin  string     `json:"builtin"`
+		External []External `json:"external"`
+	}{ps.Digest(), ext}, json.Deterministic(true))
+	if err != nil {
+		panic("spec: encoding providers: " + err.Error())
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // For returns the provider of a kind.
 func (ps Providers) For(kind graph.Kind) (Manifest, bool) {
 	for _, m := range ps {

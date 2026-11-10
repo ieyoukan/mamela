@@ -74,13 +74,16 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	out := CheckResult{Schema: CheckSchema, Pome: fs.Arg(0), Diagnostics: []Diagnostic{}}
 	ps := site.Providers()
-	for _, m := range ps {
-		out.Providers = append(out.Providers, ProviderRef{m.Provider, m.Version})
-	}
 	t, err := tf.find()
 	var res *evaluate.Result
 	if err == nil {
 		res, err = t.evaluator().Evaluate(ctx, fs.Arg(0))
+	}
+	if err == nil {
+		ps, err = declaredProviders(ctx, site, fs.Arg(0), t)
+	}
+	for _, m := range ps {
+		out.Providers = append(out.Providers, ProviderRef{m.Provider, m.Version})
 	}
 	if err != nil {
 		out.Diagnostics = diagnostics(err)
@@ -94,7 +97,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return report(stderr, err)
 		}
 		fmt.Fprintf(stdout, "%s: %d resources, graph %s\n", out.Pome, len(res.Graph.Resources), out.Graph)
-		renderMayNeed(stdout, site, res.Graph)
+		renderMayNeed(stdout, site, ps, res.Graph)
 		return 0
 	}
 	data, merr := json.Marshal(out, json.Deterministic(true))

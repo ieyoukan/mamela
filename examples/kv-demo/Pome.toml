@@ -1,0 +1,15 @@
+[pome]
+name = "github.com/ieyoukan/mamela/examples/kv-demo"
+version = "0.1.0"
+emela = "0.27.0"
+
+[build]
+target = "wasm"
+
+[dependencies]
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.2.0"
+"github.com/ieyoukan/mamela/examples/kv/pome" = "v0.1.0"
+
+[replace]
+"github.com/ieyoukan/mamela/pome/mamela" = { path = "../../pome/mamela" }
+"github.com/ieyoukan/mamela/examples/kv/pome" = { path = "../kv/pome" }

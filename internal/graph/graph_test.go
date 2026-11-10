@@ -99,7 +99,18 @@ func TestDecodeRejects(t *testing.T) {
 		{"two documents", homelab + "\n" + homelab, CodeTrailingData},
 		{"trailing garbage", homelab + "x", CodeTrailingData},
 		{"missing schema", `{"resources":[]}`, CodeMissingField},
-		{"unknown schema", `{"schema":"mamela-graph/v2","resources":[]}`, CodeUnknownSchema},
+		{"unknown schema", `{"schema":"mamela-graph/v3","resources":[]}`, CodeUnknownSchema},
+		{"provider in v1", `{"schema":"mamela-graph/v1","resources":[{"kind":"KVItem","name":"a","provider":"kv","spec":{}}]}`, CodeNeedsV2},
+		{"provider spec not an object", item(`[1]`), CodeWrongType},
+		{"provider spec float", item(`{"n":1.5}`), CodeWrongType},
+		{"provider spec integer beyond 2^53", item(`{"n":9007199254740993}`), CodeWrongType},
+		{"provider spec integer below -2^53", item(`{"n":-9007199254740993}`), CodeWrongType},
+		{"provider spec null", item(`{"n":null}`), CodeWrongType},
+		{"provider spec duplicate", item(`{"n":1,"n":2}`), CodeDuplicateMember},
+		{"provider declares a built-in kind", `{"schema":"mamela-graph/v2","resources":[{"kind":"VirtualMachine","name":"a","provider":"kv","spec":{}}]}`, CodeUnknownKind},
+		{"provider kind name", `{"schema":"mamela-graph/v2","resources":[{"kind":"kv item","name":"a","provider":"kv","spec":{}}]}`, CodeInvalidName},
+		{"provider name", `{"schema":"mamela-graph/v2","resources":[{"kind":"KVItem","name":"a","provider":"KV/../x","spec":{}}]}`, CodeInvalidName},
+		{"provided resource name", `{"schema":"mamela-graph/v2","resources":[{"kind":"KVItem","name":"../a","provider":"kv","spec":{}}]}`, CodeInvalidName},
 		{"missing resources", `{"schema":"mamela-graph/v1"}`, CodeMissingField},
 		{"unknown top-level member", `{"schema":"mamela-graph/v1","resources":[],"extra":1}`, CodeUnknownField},
 		{"duplicate top-level member", `{"schema":"mamela-graph/v1","schema":"mamela-graph/v1","resources":[]}`, CodeDuplicateMember},
@@ -122,6 +133,44 @@ func TestDecodeRejects(t *testing.T) {
 			_, err := Decode([]byte(tt.in))
 			assertCode(t, err, tt.code)
 		})
+	}
+}
+
+const providedVM = `{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`
+
+func item(spec string) string {
+	return `{"schema":"mamela-graph/v2","resources":[{"kind":"KVItem","name":"web","provider":"kv-example","spec":` + spec + `}]}`
+}
+
+// A provider's resource keeps its spec as data, in canonical form; the graph is v2.
+func TestProvidedResources(t *testing.T) {
+	a, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"KVItem","name":"web","provider":"kv-example","spec":{"value":"v1","labels":["b","a"],"n":3}},` +
+		`{"kind":"VirtualMachine","name":"vm","spec":` + providedVM + `}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Decode([]byte(`{"resources":[{"spec":` + providedVM + `,"name":"vm","kind":"VirtualMachine"},` +
+		`{"spec":{"n":3,"labels":["b","a"],"value":"v1"},"provider":"kv-example","name":"web","kind":"KVItem"}],"schema":"mamela-graph/v2"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Digest() != b.Digest() {
+		t.Error("member order changed the digest")
+	}
+	want := `{"resources":[{"kind":"VirtualMachine","name":"vm","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
+		`{"kind":"KVItem","name":"web","provider":"kv-example","spec":{"labels":["b","a"],"n":3,"value":"v1"}}],"schema":"mamela-graph/v2"}`
+	if got := string(a.Canonical()); got != want {
+		t.Errorf("canonical:\n got %s\nwant %s", got, want)
+	}
+	again, err := Decode(a.Canonical())
+	if err != nil || again.Digest() != a.Digest() {
+		t.Errorf("the canonical form does not decode to the same graph: %v", err)
+	}
+	other, _ := Decode([]byte(item(`{"value":"v2"}`)))
+	same, _ := Decode([]byte(item(`{"value":"v1"}`)))
+	if other.Digest() == same.Digest() {
+		t.Error("a different spec has the same digest")
 	}
 }
 
