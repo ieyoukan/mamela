@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // Verdict is the outcome of a decision. Ordered from least to most restrictive.
@@ -30,8 +32,9 @@ func Stricter(a, b Verdict) Verdict {
 	return a
 }
 
-// Op is a kind of real-world change.
-type Op string
+// Op is a kind of real-world change. It is the provider protocol's Op, so that manifests name
+// operations with the same type.
+type Op = protocol.Op
 
 const (
 	OpCreateVM       Op = "create-vm"
