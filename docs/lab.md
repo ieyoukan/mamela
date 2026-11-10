@@ -300,7 +300,7 @@ systemctl enable --now mamela-serve
   - systemd unit
   - install.sh
 - **扱い:** バンドルは mode 0600 で書く。秘密を含むので、ホストに SSH でコピーした後に消す。
-- **ホストでの権限:** serve は、権限のない `mamela` ユーザーで動く。書けるのは `/var/lib/mamela` だけである。
+- **ホストでの権限:** serve は、権限のない専用ユーザー `mamela-cp` で動く（lab の VM のログインユーザー `mamela` とは別にする。こちらは sudo できる）。書けるのは `/var/lib/mamela` だけである。
 - **移した後の plan と apply:** ホストの上で実行する（`sudo -u mamela mamela plan --site /etc/mamela/site.toml --db /var/lib/mamela/state.db <宣言>`）。宣言の評価には、ホストにリポジトリとツールチェーン（`scripts/install-toolchain.sh`）が要る。手元から CP に頼む API は、まだない（ADR 0003）。
 
 ## 6.5 再起動（`mamela reboot`）

@@ -236,8 +236,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=mamela
-Group=mamela
+User=mamela-cp
+Group=mamela-cp
 WorkingDirectory=/var/lib/mamela
 ExecStart=/usr/local/bin/mamela serve --site /etc/mamela/site.toml --db /var/lib/mamela/state.db
 Restart=always
@@ -259,22 +259,23 @@ const installScript = `#!/usr/bin/env bash
 set -euo pipefail
 b="${1:?usage: install.sh <extracted bundle directory>}"
 test -x /usr/local/bin/mamela || { echo "put a linux/amd64 mamela at /usr/local/bin/mamela first" >&2; exit 1; }
-id mamela >/dev/null 2>&1 || useradd --system --home-dir /var/lib/mamela --shell /usr/sbin/nologin mamela
-install -d -m 0750 -o root -g mamela /etc/mamela
-install -d -m 0750 -o root -g mamela /etc/mamela/secrets
-install -d -m 0700 -o mamela -g mamela /var/lib/mamela /var/lib/mamela/cp
-for f in "$b"/etc/secrets/*; do install -m 0600 -o mamela -g mamela "$f" /etc/mamela/secrets/; done
-install -m 0640 -o root -g mamela "$b/etc/site.toml" /etc/mamela/site.toml
+# A user of its own, never a login user: the guest login user of lab VMs is often "mamela", and may sudo.
+id mamela-cp >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/mamela --shell /usr/sbin/nologin mamela-cp
+install -d -m 0750 -o root -g mamela-cp /etc/mamela
+install -d -m 0750 -o root -g mamela-cp /etc/mamela/secrets
+install -d -m 0700 -o mamela-cp -g mamela-cp /var/lib/mamela /var/lib/mamela/cp
+for f in "$b"/etc/secrets/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" /etc/mamela/secrets/; done
+install -m 0640 -o root -g mamela-cp "$b/etc/site.toml" /etc/mamela/site.toml
 for f in "$b"/etc/guest-ssh.pub "$b"/etc/proxmox-ca.pem; do
   if test -f "$f"; then install -m 0644 -o root -g root "$f" /etc/mamela/; fi
 done
-for f in "$b"/var/cp/*; do install -m 0600 -o mamela -g mamela "$f" /var/lib/mamela/cp/; done
+for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" /var/lib/mamela/cp/; done
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" /var/lib/mamela/mamelet-linux-amd64
 if test -e /var/lib/mamela/state.db; then
   echo "/var/lib/mamela/state.db exists; not overwriting it (move it away to install this bundle's)" >&2
   exit 1
 fi
-install -m 0600 -o mamela -g mamela "$b/var/state.db" /var/lib/mamela/state.db
+install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" /var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" /etc/systemd/system/mamela-serve.service
 systemctl daemon-reload
 echo "installed; start it with: systemctl enable --now mamela-serve"
