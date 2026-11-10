@@ -37,6 +37,9 @@ type Options struct {
 	Now            func() time.Time
 	MaxMemoryBytes uint64        // per WASM linear memory (default 512 MiB)
 	CallTimeout    time.Duration // per call to the provider, requests included (default 5 minutes)
+	// StartTimeout bounds starting the provider and its describe (wasmtime compiles the program
+	// first; default 2 minutes).
+	StartTimeout time.Duration
 }
 
 // Session is one running provider.
@@ -78,6 +81,9 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	}
 	if o.CallTimeout == 0 {
 		o.CallTimeout = 5 * time.Minute
+	}
+	if o.StartTimeout == 0 {
+		o.StartTimeout = 2 * time.Minute
 	}
 	if err := o.Catalog.Check(); err != nil {
 		return nil, err
@@ -150,7 +156,7 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 
 	var d protocol.DescribeResult
 	g := &gate{phase: phaseDescribe}
-	if err := firstRefusal(g, s.call(ctx, g, protocol.MethodDescribe, protocol.DescribeParams{Protocol: protocol.Version}, &d)); err != nil {
+	if err := firstRefusal(g, s.callWithin(ctx, o.StartTimeout, g, protocol.MethodDescribe, protocol.DescribeParams{Protocol: protocol.Version}, &d)); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -447,10 +453,14 @@ func firstRefusal(g *gate, err error) error {
 
 // call sends one request to the provider and serves its host/request requests until it answers.
 func (s *Session) call(ctx context.Context, g *gate, method string, params, result any) error {
+	return s.callWithin(ctx, s.o.CallTimeout, g, method, params, result)
+}
+
+func (s *Session) callWithin(ctx context.Context, timeout time.Duration, g *gate, method string, params, result any) error {
 	if s.dead != nil {
 		return s.dead
 	}
-	ctx, cancel := context.WithTimeout(ctx, s.o.CallTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	data, err := json.Marshal(params, json.Deterministic(true))
 	if err != nil {
@@ -459,13 +469,13 @@ func (s *Session) call(ctx context.Context, g *gate, method string, params, resu
 	s.next++
 	id := s.next
 	if err := s.write(ctx, protocol.Message{JSONRPC: "2.0", ID: id, Method: method, Params: data}); err != nil {
-		return s.fail(fmt.Sprintf("the provider did not read %s within %s", method, s.o.CallTimeout), err)
+		return s.fail(fmt.Sprintf("the provider did not read %s within %s", method, timeout), err)
 	}
 	for {
 		var rd read
 		select {
 		case <-ctx.Done():
-			return s.fail(fmt.Sprintf("the provider did not answer %s within %s", method, s.o.CallTimeout), ctx.Err())
+			return s.fail(fmt.Sprintf("the provider did not answer %s within %s", method, timeout), ctx.Err())
 		case rd = <-s.msgs:
 		}
 		if errors.Is(rd.err, errNotMessage) {
@@ -487,7 +497,7 @@ func (s *Session) call(ctx context.Context, g *gate, method string, params, resu
 				return err
 			}
 			if err := s.write(ctx, reply); err != nil {
-				return s.fail(fmt.Sprintf("the provider did not read the answer to its request within %s", s.o.CallTimeout), err)
+				return s.fail(fmt.Sprintf("the provider did not read the answer to its request within %s", timeout), err)
 			}
 		case m.Method != "":
 			return s.fail("protocol", fmt.Errorf("the provider called %q, which the host does not offer", m.Method))
