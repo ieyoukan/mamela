@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/pve"
 	"github.com/ieyoukan/mamela/internal/proxmox"
 )
@@ -25,18 +26,10 @@ type Grant struct {
 // grant comes first.
 func (s *Site) Grants() []Grant {
 	pool := "/pool/" + s.Boundary.Pool
-	paths := map[proxmox.Scope][2]string{
-		proxmox.ScopeVM:           {pool, "MamelaLabVM"}, // the pool's ACL reaches its VMs
-		proxmox.ScopePool:         {pool, "MamelaLabVM"},
-		proxmox.ScopeDiskStorage:  {"/storage/" + s.Placement.DiskStorage, "MamelaLabDisk"},
-		proxmox.ScopeImageStorage: {"/storage/" + s.Placement.ImageStorage, "MamelaLabImage"},
-		proxmox.ScopeBridge:       {"/sdn/zones/" + s.Placement.SDNZone + "/" + s.Placement.Bridge, "MamelaLabNet"},
-		proxmox.ScopeNode:         {"/nodes/" + s.Proxmox.Node, "MamelaLabNode"},
-		proxmox.ScopeRoot:         {"/", "MamelaLabRoot"},
-	}
+	paths := s.scopePaths()
 	byPath := map[string]*Grant{}
 	var order []string
-	for _, r := range proxmox.Required(pve.CreateParamNames(s.ControlPlane.Enabled())) {
+	for _, r := range proxmox.NeedsFor(s.AllCalls()) {
 		pr := paths[r.Scope]
 		g := byPath[pr[0]]
 		if g == nil {
@@ -65,6 +58,39 @@ func (s *Site) Grants() []Grant {
 		out = append(out, g)
 	}
 	return out
+}
+
+// ToolCalls are the operating token's calls outside operations: preflight and `mamela lab tunnel`.
+var ToolCalls = []proxmox.Call{
+	{Method: "GET", Path: "/access/permissions", When: "preflight"},
+	{Method: "GET", Path: "/cluster/resources", When: "preflight: what the token can see"},
+	{Method: "GET", Path: "/nodes/{node}/storage", When: "preflight: the image storage accepts imports"},
+	{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces", When: "mamela lab tunnel: the VM's address"},
+}
+
+// AllCalls is every call the operating token may make for this site: observing, each operation
+// the provider carries out, and the tools. The grants are exactly what these need.
+func (s *Site) AllCalls() []proxmox.Call {
+	calls := append(slices.Clone(pve.ObserveCalls), ToolCalls...)
+	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpGrowVMDisk} {
+		c, _ := pve.OperationCalls(op, s.ControlPlane.Enabled())
+		calls = append(calls, c...)
+	}
+	return calls
+}
+
+// scopePaths maps the catalog's scopes to the site's ACL paths and the role used there.
+func (s *Site) scopePaths() map[proxmox.Scope][2]string {
+	pool := "/pool/" + s.Boundary.Pool
+	return map[proxmox.Scope][2]string{
+		proxmox.ScopeVM:           {pool, "MamelaLabVM"}, // the pool's ACL reaches its VMs
+		proxmox.ScopePool:         {pool, "MamelaLabVM"},
+		proxmox.ScopeDiskStorage:  {"/storage/" + s.Placement.DiskStorage, "MamelaLabDisk"},
+		proxmox.ScopeImageStorage: {"/storage/" + s.Placement.ImageStorage, "MamelaLabImage"},
+		proxmox.ScopeBridge:       {"/sdn/zones/" + s.Placement.SDNZone + "/" + s.Placement.Bridge, "MamelaLabNet"},
+		proxmox.ScopeNode:         {"/nodes/" + s.Proxmox.Node, "MamelaLabNode"},
+		proxmox.ScopeRoot:         {"/", "MamelaLabRoot"},
+	}
 }
 
 // BootstrapScript is the setup a person reviews and runs as root on a cluster node. It is

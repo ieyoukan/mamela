@@ -619,3 +619,64 @@ func TestPermissionErrorsAreExplained(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// OperationCalls and ObserveCalls (what the permission catalog is told) must cover every request
+// the provider really sends, including the paths for lost answers and retries.
+func TestCallsCoverWhatTheProviderSends(t *testing.T) {
+	declared := func(calls []proxmox.Call) map[string]bool {
+		out := map[string]bool{}
+		for _, c := range calls {
+			out[c.Method+" "+c.Path] = true
+		}
+		return out
+	}
+	check := func(name string, e *env, allowed map[string]bool) {
+		t.Helper()
+		for _, r := range e.fake.requests {
+			method, path, _ := strings.Cut(r, " ")
+			ep, ok := proxmox.LookupEndpoint(method, strings.TrimPrefix(path, "/api2/json"))
+			if !ok {
+				t.Errorf("%s: %s is not in the catalog", name, r)
+				continue
+			}
+			if !allowed[ep.Method+" "+ep.Path] {
+				t.Errorf("%s: sends %s %s, which OperationCalls/ObserveCalls do not list", name, ep.Method, ep.Path)
+			}
+		}
+	}
+	for _, withSeed := range []bool{true, false} {
+		e := newEnv(t)
+		if withSeed {
+			e.p.Seeds = &fakeSeeds{}
+		}
+		e.fake.loseCreateResponse = true
+		calls, _ := pve.OperationCalls(policy.OpCreateVM, withSeed)
+		allowed := declared(append(calls, pve.ObserveCalls...))
+		if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := e.p.Observe(e.ctx); err != nil {
+			t.Fatal(err)
+		}
+		check(fmt.Sprintf("create (seed %v)", withSeed), e, allowed)
+		got := []string{}
+		for k := range e.fake.vms[7000].config {
+			got = append(got, k)
+		}
+		for _, k := range pve.CreateParamNames(withSeed) {
+			if k != "vmid" && k != "pool" && !slices.Contains(got, k) {
+				t.Errorf("CreateParamNames lists %s, which was not sent", k)
+			}
+		}
+
+		e.fake.requests = nil
+		grow, _ := pve.OperationCalls(policy.OpGrowVMDisk, withSeed)
+		if err := e.apply(policy.OpGrowVMDisk, vmResource("web", 1, 1024, 12)); err != nil {
+			t.Fatal(err)
+		}
+		check("grow", e, declared(append(grow, pve.ObserveCalls...)))
+	}
+	if _, ok := pve.OperationCalls(policy.OpResizeVMCPU, true); ok {
+		t.Error("claims calls for an operation the provider does not carry out")
+	}
+}

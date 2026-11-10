@@ -152,12 +152,15 @@ var ConfigParams = map[string][]Need{
 
 var segment = regexp.MustCompile(`\{[a-z]+\}`)
 
-// LookupEndpoint finds the catalog entry for a request (path without query).
+// LookupEndpoint finds the catalog entry for a request (path without query). When several match,
+// the most specific one (fewest placeholders) is used.
 func LookupEndpoint(method, path string) (Endpoint, bool) {
 	if i := strings.IndexByte(path, '?'); i >= 0 {
 		path = path[:i]
 	}
 	got := strings.Split(path, "/")
+	var best Endpoint
+	found := false
 	for _, e := range Endpoints {
 		if e.Method != method {
 			continue
@@ -179,11 +182,11 @@ func LookupEndpoint(method, path string) (Endpoint, bool) {
 				break
 			}
 		}
-		if match {
-			return e, true
+		if match && (!found || strings.Count(e.Path, "{") < strings.Count(best.Path, "{")) {
+			best, found = e, true
 		}
 	}
-	return Endpoint{}, false
+	return best, found
 }
 
 var digits = regexp.MustCompile(`[0-9]+$`)
@@ -218,11 +221,91 @@ func checkParams(params map[string][]Need, names []string, where string) error {
 	return nil
 }
 
+// Call is one API call an operation makes, with the parameters it sends (create or config) and
+// the condition under which it is made, if any.
+type Call struct {
+	Method string
+	Path   string
+	Params []string
+	When   string
+	Maybe  bool // made only in some cases (When says which)
+}
+
+// NeedsFor lists what a sequence of calls needs, sorted by scope and privilege.
+func NeedsFor(calls []Call) []Requirement {
+	acc := map[[2]string][]string{}
+	always := map[[2]string]bool{}
+	maybe := false
+	add := func(where, when string, n Need) {
+		for _, p := range n.Grant() {
+			k := [2]string{string(n.Scope), p}
+			always[k] = always[k] || !maybe
+			reason := where + ": " + n.Why
+			for _, w := range []string{n.When, when} {
+				if w != "" {
+					reason += " (" + w + ")"
+				}
+			}
+			if !slices.Contains(acc[k], reason) {
+				acc[k] = append(acc[k], reason)
+			}
+		}
+	}
+	for _, c := range calls {
+		e, ok := LookupEndpoint(c.Method, strings.NewReplacer("{node}", "n", "{vmid}", "1", "{storage}", "s", "{upid}", "u").Replace(c.Path))
+		if !ok {
+			panic("proxmox: call not in the catalog: " + c.Method + " " + c.Path)
+		}
+		where := c.Method + " " + c.Path
+		maybe = c.Maybe
+		for _, n := range e.Needs {
+			add(where, c.When, n)
+		}
+		params := map[string][]Need{}
+		switch {
+		case c.Method == "POST" && c.Path == "/nodes/{node}/qemu":
+			params = CreateParams
+		case c.Method == "PUT" && c.Path == "/nodes/{node}/qemu/{vmid}/config":
+			params = ConfigParams
+		}
+		for _, name := range c.Params {
+			k, ok := ParamKey(params, name)
+			if !ok {
+				panic("proxmox: parameter not in the catalog: " + where + " " + name)
+			}
+			for _, n := range params[k] {
+				add(where+" "+name, c.When, n)
+			}
+		}
+	}
+	out := sortRequirements(acc)
+	for i := range out {
+		out[i].Always = always[[2]string{string(out[i].Scope), out[i].Priv}]
+	}
+	return out
+}
+
+func sortRequirements(acc map[[2]string][]string) []Requirement {
+	var out []Requirement
+	for k, reasons := range acc {
+		slices.Sort(reasons)
+		out = append(out, Requirement{Scope: Scope(k[0]), Priv: k[1], Reasons: reasons, Always: true})
+	}
+	slices.SortFunc(out, func(a, b Requirement) int {
+		if c := strings.Compare(string(a.Scope), string(b.Scope)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Priv, b.Priv)
+	})
+	return out
+}
+
 // Requirement is a privilege the operating token needs, with every reason for it.
 type Requirement struct {
 	Scope   Scope
 	Priv    string
 	Reasons []string
+	Always  bool // false: only some calls that may not happen need it (NeedsFor)
 }
 
 // Required lists what the operating token needs for the given create parameters (the ones the
@@ -264,18 +347,7 @@ func Required(createParams []string) []Requirement {
 			add("PUT /nodes/{node}/qemu/{vmid}/config "+name, n)
 		}
 	}
-	var out []Requirement
-	for k, reasons := range acc {
-		slices.Sort(reasons)
-		out = append(out, Requirement{Scope: Scope(k[0]), Priv: k[1], Reasons: reasons})
-	}
-	slices.SortFunc(out, func(a, b Requirement) int {
-		if c := strings.Compare(string(a.Scope), string(b.Scope)); c != 0 {
-			return c
-		}
-		return strings.Compare(a.Priv, b.Priv)
-	})
-	return out
+	return sortRequirements(acc)
 }
 
 var permFailed = regexp.MustCompile(`Permission check failed \(([^,]+), ([A-Za-z.]+)\)`)

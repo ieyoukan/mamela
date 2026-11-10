@@ -16,6 +16,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/lab"
 )
 
 const usage = `mamela - safe, declarative infrastructure (early development)
@@ -69,6 +70,7 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print the canonical mamela-graph/v1 JSON instead of a summary")
+	sitePath := fs.String("site", "", "lab site definition, to name the ACL paths in what the declaration may need")
 	twice := fs.Bool("twice", false, "evaluate twice and require the same digest (determinism check)")
 	toolchainDir := fs.String("toolchain", envOr("MAMELA_TOOLCHAIN_DIR", ".tools/bin"),
 		"directory containing the pinned emela and wasmtime (scripts/install-toolchain.sh)")
@@ -109,6 +111,13 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	printSummary(stdout, dir, res, *twice)
+	var site *lab.Site // nil: placeholder paths
+	if *sitePath != "" {
+		if site, err = lab.LoadSite(*sitePath); err != nil {
+			return report(stderr, err)
+		}
+	}
+	renderMayNeed(stdout, site, res.Graph)
 	if s := strings.TrimSpace(res.Stderr); s != "" {
 		fmt.Fprintf(stderr, "diagnostics from the declaration:\n%s\n", indent(s, "  "))
 	}

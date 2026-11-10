@@ -48,6 +48,8 @@ type fakePVE struct {
 	// Grants on /pool/lab reach the VMs in the pool. nil: everything is allowed.
 	acl map[string][]string
 
+	requests []string // "METHOD /path" of every request, in order
+
 	// Counters.
 	creates, uploads, starts, resizes int
 	methods                           map[string]int
@@ -115,6 +117,7 @@ func (f *fakePVE) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.methods[r.Method]++
+	f.requests = append(f.requests, r.Method+" "+r.URL.Path)
 	if r.Method != http.MethodGet && r.Method != http.MethodPost && r.Method != http.MethodPut {
 		f.t.Errorf("the provider sent %s %s", r.Method, r.URL.Path)
 		fail(w, http.StatusNotImplemented, "not allowed")

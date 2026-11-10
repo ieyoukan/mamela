@@ -96,9 +96,9 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "mamela plan: use either --snapshot or --site, not both")
 		return 2
 	}
+	var site *lab.Site
 	if *sitePath != "" {
-		site, err := lab.LoadSite(*sitePath)
-		if err != nil {
+		if site, err = lab.LoadSite(*sitePath); err != nil {
 			return report(stderr, err)
 		}
 		operating, err := labClient(site, site.Proxmox.TokenID, site.Proxmox.TokenSecretFile)
@@ -143,6 +143,9 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	plan.Render(stdout, p)
+	if site != nil {
+		renderPlanUses(stdout, site, p, res.Graph)
+	}
 	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
 	return 0
 }
