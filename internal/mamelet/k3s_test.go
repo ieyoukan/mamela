@@ -1,6 +1,7 @@
 package mamelet
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -185,5 +186,26 @@ func TestNodeAddresses(t *testing.T) {
 	}
 	if _, ok := DefaultRouteInterface("Iface\tDestination\n"); ok {
 		t.Fatal("a table without a default route has an interface")
+	}
+}
+
+// blockingRunner never finishes a command until its context ends.
+type blockingRunner struct{}
+
+func (blockingRunner) Run(ctx context.Context, _ string, _ []string, _ []string) ([]byte, []byte, int, error) {
+	<-ctx.Done()
+	return nil, nil, -1, ctx.Err()
+}
+
+// A service that does not finish starting (a k3s agent waiting for its server) does not hold
+// mamelet: the start returns at the deadline and says so.
+func TestStartHasADeadline(t *testing.T) {
+	defer func(d time.Duration) { StartTimeout = d }(StartTimeout)
+	StartTimeout = 50 * time.Millisecond
+	s := &System{Runner: blockingRunner{}}
+	start := time.Now()
+	err := s.Start(context.Background(), "k3s")
+	if err == nil || !strings.Contains(err.Error(), "did not finish starting") || time.Since(start) > 5*time.Second {
+		t.Fatalf("start: %v after %s", err, time.Since(start))
 	}
 }

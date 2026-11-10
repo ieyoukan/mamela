@@ -95,6 +95,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0109 | k3s の agent が、server のアドレスの報告を待つ |
 | MAM-PLAN-0110 | VM が初回起動に十分な時間（15 分）を超えて動いているのに、mamelet が一度も報告していない。起動で止まっている（緊急モードなど）か、Control Plane に届かない。コンソールを確かめ、`mamela reboot`（応答しなければ `--hard`）で再起動する |
 | MAM-PLAN-0111 | VM が止まっているので、その上のリソースは起動を待つ |
+| MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |

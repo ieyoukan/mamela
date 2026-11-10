@@ -391,6 +391,17 @@ func (b builder) service(r graph.Resource) Change {
 		}
 		subjects = append(subjects, policy.Subject{Op: op, Service: want.Service})
 	}
+	if got.Running != want.Running && want.Running {
+		// A k3s agent starts only once its server runs: its start waits for the server (Type=notify),
+		// and would hold its mamelet until then.
+		if server := b.k3sServerOf(want.Node, want.Service); server != "" {
+			if srv, ok := b.snap.Services[server+"/k3s"]; !ok || !srv.Running {
+				c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0112",
+					Message: fmt.Sprintf("waits for the k3s server %s to run before starting the agent on %s", server, want.Node)}
+				return c
+			}
+		}
+	}
 	if got.Running != want.Running {
 		c.Diffs = append(c.Diffs, Diff{"running", btoa(got.Running), btoa(want.Running)})
 		op := policy.OpStartService
@@ -452,6 +463,19 @@ func (b builder) k3s(r graph.Resource) Change {
 	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
 		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
+}
+
+// k3sServerOf is the server of node's k3s agent, when service is that agent's k3s service.
+func (b builder) k3sServerOf(node, service string) string {
+	if service != "k3s" || b.g == nil {
+		return ""
+	}
+	for _, r := range b.g.Resources {
+		if r.NodeK3s != nil && r.NodeK3s.Node == node && r.NodeK3s.Role == graph.K3sAgent {
+			return r.NodeK3s.Server
+		}
+	}
+	return ""
 }
 
 // guard denies every operation of a change on a node the Control Plane must never change: its own

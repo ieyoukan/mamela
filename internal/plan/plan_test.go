@@ -389,3 +389,38 @@ func TestControlPlaneHostIsProtected(t *testing.T) {
 		t.Fatal("the protection is not part of the plan's inputs")
 	}
 }
+
+// A k3s agent's service starts only once its server's runs (its start would wait for the server).
+func TestK3sAgentStartsAfterItsServer(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	vm := func(name string) string {
+		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
+	}
+	svc := func(node string) string {
+		return `{"kind":"NodeService","name":"` + node + `/k3s","spec":{"enabled":true,"node":"` + node + `","running":true,"service":"k3s"}}`
+	}
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` + vm("srv") + `,` + vm("ag") + `,` +
+		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3s","name":"ag/k3s","spec":{"node":"ag","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
+		svc("srv") + `,` + svc("ag") + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	for _, n := range []string{"srv", "ag"} {
+		s.VMs[n] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", Network: "dhcp", ObservedAt: t0}
+		s.Services[n+"/k3s"] = state.Service{Exists: true, ObservedAt: t0}
+	}
+	s.K3s = map[string]state.K3s{"srv/k3s": {Installed: true, SHA256: sha, ObservedAt: t0}, "ag/k3s": {Installed: true, SHA256: sha, ObservedAt: t0}}
+	p := Build(g, s, policy.Default)
+	if c := find(t, p, "NodeService ag/k3s"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0112" {
+		t.Fatalf("agent before its server runs: %+v", c)
+	}
+	if c := find(t, p, "NodeService srv/k3s"); c.Status != StatusChange {
+		t.Fatalf("server: %+v", c)
+	}
+	s.Services["srv/k3s"] = state.Service{Exists: true, Enabled: true, Running: true, ObservedAt: t0}
+	if c := find(t, Build(g, s, policy.Default), "NodeService ag/k3s"); c.Status != StatusChange {
+		t.Fatalf("agent once its server runs: %+v", c)
+	}
+}
