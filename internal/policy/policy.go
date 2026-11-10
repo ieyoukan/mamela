@@ -132,7 +132,7 @@ func (p Policy) DecideProvided(v protocol.Verified) Decision {
 func (p Policy) Decide(s Subject) Decision {
 	switch s.Op {
 	case OpInstallK3s:
-		return Decision{ApprovalRequired, "MAM-POL-0210", "installs a Kubernetes server (k3s) downloaded from GitHub, pinned by sha256, which runs as root",
+		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
 			"check the version and sha256 against the k3s release page before approving"}
 	case OpCreateVM:
 		return Decision{ApprovalRequired, "MAM-POL-0201", "creating a VM reserves host CPU, memory and disk",

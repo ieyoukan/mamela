@@ -367,6 +367,8 @@ type K3sState struct {
 	Error     string `json:"error,omitempty"`
 	// Addresses are the node's IPv4 addresses (an agent's revision names its server by one).
 	Addresses []string `json:"addresses,omitempty"`
+	// Server is the server the installed agent's unit joins ("" for a server or when not installed).
+	Server string `json:"server,omitempty"`
 }
 
 // ServiceState is an observed service.

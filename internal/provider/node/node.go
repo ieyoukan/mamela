@@ -52,7 +52,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			if snap.K3s == nil {
 				snap.K3s = map[string]state.K3s{}
 			}
-			snap.K3s[r.Node+"/k3s"] = state.K3s{Installed: k.Installed, SHA256: k.SHA256, Error: k.Error,
+			snap.K3s[r.Node+"/k3s"] = state.K3s{Installed: k.Installed, SHA256: k.SHA256, Error: k.Error, Server: k.Server,
 				Addresses: slices.Sorted(slices.Values(k.Addresses)), ObservedAt: nr.Received}
 		}
 	}

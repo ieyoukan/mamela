@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,12 +154,36 @@ func TestK3sAgentFollowsItsRevision(t *testing.T) {
 		"ExecStart=/usr/local/bin/k3s agent --server=https://192.0.2.10:6443 --token-file=/etc/rancher/k3s/cluster-token\n") {
 		t.Errorf("unit:\n%s", u)
 	}
+	if rep.K3s.Server != "https://192.0.2.10:6443" {
+		t.Errorf("reported server %q", rep.K3s.Server)
+	}
 	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "agent", Server: "https://192.0.2.11:6443", Token: testToken})
-	if rep := e.round(); rep.K3s.Installed || rep.K3s.Error != "" {
+	if rep := e.round(); rep.K3s.Installed || rep.K3s.Error != "" || rep.K3s.Server != "https://192.0.2.10:6443" {
 		t.Fatalf("after the server moved: %+v", rep.K3s)
 	}
 	agent(3, "https://192.0.2.11:6443", 2)
 	if rep := e.round(); !rep.K3s.Installed || *downloads != 1 {
 		t.Fatalf("reinstalled: %+v, %d downloads (the binary in place is kept)", rep.K3s, *downloads)
+	}
+}
+
+// A node reports the address it is reached by: that of the default route's interface, never one
+// k3s adds (flannel.1 and cni0 are in 10.42.0.0/16, and sort before a LAN address).
+func TestNodeAddresses(t *testing.T) {
+	got := NodeAddresses([]net.IP{net.ParseIP("10.42.0.0"), net.ParseIP("10.42.0.1"), net.ParseIP("192.168.0.40"),
+		net.ParseIP("10.43.0.1"), net.ParseIP("127.0.0.1"), net.ParseIP("fe80::1"), net.ParseIP("169.254.1.1"), net.ParseIP("192.168.0.40")})
+	if strings.Join(got, ",") != "192.168.0.40" {
+		t.Fatalf("addresses %v", got)
+	}
+	table := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"cni0\t00002A0A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
+		"wlan0\t00000000\t0100A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n" +
+		"ens18\t00000000\t0100A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n" +
+		"down0\t00000000\t0100A8C0\t0002\t0\t0\t1\t00000000\t0\t0\t0\n"
+	if iface, ok := DefaultRouteInterface(table); !ok || iface != "ens18" {
+		t.Fatalf("default route interface %q %v", iface, ok)
+	}
+	if _, ok := DefaultRouteInterface("Iface\tDestination\n"); ok {
+		t.Fatal("a table without a default route has an interface")
 	}
 }

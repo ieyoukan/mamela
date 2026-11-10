@@ -79,7 +79,7 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | agent | `k3s agent --server=https://<server のアドレス>:6443 --token-file=/etc/rancher/k3s/cluster-token` |
 
 - **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
-- **server のアドレス:** server の mamelet が報告した IPv4 アドレスを使う。plan はそれを表示し、承認したアドレスと revision のアドレスが違えば導入しない。
+- **server のアドレス:** server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
 
 ## プロバイダーのリソース（`mamela-graph/v2`）
 

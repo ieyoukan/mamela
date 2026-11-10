@@ -412,7 +412,7 @@ func (b builder) k3s(r graph.Resource) Change {
 		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
 		{"role", "", string(want.Role)}}
 	if server != "" {
-		c.Diffs = append(c.Diffs, Diff{"server", "", server})
+		c.Diffs = append(c.Diffs, Diff{"server", got.Server, server})
 	}
 	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
 		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})

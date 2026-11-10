@@ -194,7 +194,7 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
 - **宣言:** `Mamela.k3s_server(graph, vm, version, sha256)` と `Mamela.k3s_agent(graph, vm, server, version, sha256)`。例は `examples/k3s`（server 1 台と agent 2 台、traefik と metrics-server なし）。
 - **クラスタ:**
   - 参加のトークンは、Control Plane がクラスタごとに作り、ノードの revision にだけ入れる。
-  - agent の server のアドレスは、server の mamelet の報告から取る。plan に表示し、承認と違えば導入しない。
+  - agent の server のアドレスは、server の mamelet の報告から取る。報告するのは既定経路のインターフェースのアドレスだけで、k3s の範囲（10.42/16、10.43/16）は除く。plan に表示し、承認と違えば導入しない。
 - **mamelet:**
   - 承認ごとに一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ置く。
   - unit は Mamela が決めた中身で書く。手で変えられた unit は報告して、plan を止める。

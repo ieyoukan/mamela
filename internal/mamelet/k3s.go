@@ -108,9 +108,20 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 		st.Error = k3sUnit + " is not a unit mamelet writes (changed by hand?)"
 		return st
 	}
+	st.Server = unitServer(string(unit))
 	token, err := os.ReadFile(s.path(noderev.K3sTokenFile))
 	st.Installed = st.SHA256 != "" && string(unit) == K3sUnit(want.Role, want.Server) && err == nil && string(token) == want.Token+"\n"
 	return st
+}
+
+// unitServer is the --server of an agent's unit, or "".
+func unitServer(unit string) string {
+	_, rest, ok := strings.Cut(unit, "ExecStart="+k3sBinary+" agent --server=")
+	if !ok {
+		return ""
+	}
+	server, _, _ := strings.Cut(rest, " ")
+	return server
 }
 
 // isMameletUnit reports whether a unit is one mamelet writes, for some role.
@@ -124,23 +135,78 @@ func isMameletUnit(unit string) bool {
 		(unit == K3sUnit(noderev.K3sServer, "") || strings.HasPrefix(rest, k3sBinary+" agent --server=https://"))
 }
 
-// addresses are the node's global IPv4 addresses, sorted.
+// addresses are the global IPv4 addresses of the interface that holds the default route, sorted:
+// the address other nodes reach this one by. Addresses of other interfaces are not reported,
+// because k3s itself adds some (flannel.1 and cni0 in 10.42.0.0/16) that sort before a LAN
+// address, and an agent pointed at one of those cannot join after a reboot. Addresses in k3s's
+// own ranges are left out even on that interface.
 func (s *System) addresses() []string {
 	if s.Addresses != nil {
 		return s.Addresses()
 	}
-	addrs, err := net.InterfaceAddrs()
+	b, err := os.ReadFile(s.path("/proc/net/route"))
 	if err != nil {
 		return nil
 	}
-	var out []string
+	iface, ok := DefaultRouteInterface(string(b))
+	if !ok {
+		return nil
+	}
+	ifi, err := net.InterfaceByName(iface)
+	if err != nil {
+		return nil
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return nil
+	}
+	var ips []net.IP
 	for _, a := range addrs {
-		if n, ok := a.(*net.IPNet); ok && n.IP.To4() != nil && n.IP.IsGlobalUnicast() {
-			out = append(out, n.IP.String())
+		if n, ok := a.(*net.IPNet); ok {
+			ips = append(ips, n.IP)
 		}
 	}
+	return NodeAddresses(ips)
+}
+
+// k3sRanges are the default cluster and service ranges of k3s; a node's own address is never in them.
+var k3sRanges = []*net.IPNet{
+	{IP: net.IPv4(10, 42, 0, 0).To4(), Mask: net.CIDRMask(16, 32)},
+	{IP: net.IPv4(10, 43, 0, 0).To4(), Mask: net.CIDRMask(16, 32)},
+}
+
+// NodeAddresses keeps the global unicast IPv4 addresses outside k3s's ranges, sorted.
+func NodeAddresses(ips []net.IP) []string {
+	var out []string
+	for _, ip := range ips {
+		v4 := ip.To4()
+		if v4 == nil || !v4.IsGlobalUnicast() || slices.ContainsFunc(k3sRanges, func(n *net.IPNet) bool { return n.Contains(v4) }) {
+			continue
+		}
+		out = append(out, v4.String())
+	}
 	slices.Sort(out)
-	return out
+	return slices.Compact(out)
+}
+
+// DefaultRouteInterface reads /proc/net/route and returns the interface of the default route with
+// the lowest metric.
+func DefaultRouteInterface(table string) (string, bool) {
+	best, metric := "", -1
+	for i, line := range strings.Split(table, "\n") {
+		f := strings.Fields(line)
+		if i == 0 || len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" {
+			continue
+		}
+		var flags, m int
+		if _, err := fmt.Sscanf(f[3]+" "+f[6], "%x %d", &flags, &m); err != nil || flags&1 == 0 { // RTF_UP
+			continue
+		}
+		if metric < 0 || m < metric {
+			best, metric = f[0], m
+		}
+	}
+	return best, metric >= 0
 }
 
 // InstallK3s installs k3s as the revision says: the release's binary (downloaded unless the one in

@@ -38,6 +38,7 @@ type K3s struct {
 	SHA256     string    `json:"sha256,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Addresses  []string  `json:"addresses,omitempty"` // the node's IPv4 addresses, sorted
+	Server     string    `json:"server,omitempty"`    // the server an installed agent joins
 	ObservedAt time.Time `json:"observedAt"`
 }
 
