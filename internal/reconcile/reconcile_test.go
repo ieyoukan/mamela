@@ -411,3 +411,40 @@ func TestPartlyDoneChangeIsFinished(t *testing.T) {
 		t.Fatalf("report %+v", rep)
 	}
 }
+
+// A plan is bound to the providers' contracts it was made for: after a provider changes, its
+// approval does not cover the new one, and nothing runs.
+func TestPlanForOtherProvidersIsNotApplied(t *testing.T) {
+	e := newEnv(t)
+	snap, err := e.world.Observe(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plan.BuildFor(e.g, snap, e.pol, "sha256:providers-v1")
+	if err := e.store.SavePlan(e.ctx, e.g, snap, e.pol, p); err != nil {
+		t.Fatal(err)
+	}
+	e.approve(p)
+	if again, _, err := e.store.LoadPlan(e.ctx, p.Digest); err != nil || again.Inputs.ProvidersDigest != "sha256:providers-v1" {
+		t.Fatalf("the providers digest is not part of the stored plan: %v", err)
+	}
+	if other := plan.BuildFor(e.g, snap, e.pol, "sha256:providers-v2"); other.Digest == p.Digest {
+		t.Fatal("the providers digest does not change the plan digest")
+	}
+	for _, current := range []string{"sha256:providers-v2", ""} {
+		r := e.reconciler("worker-a")
+		r.Providers = current
+		rep, err := r.Apply(e.ctx, p.Digest)
+		if err != nil || rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0007" || len(rep.Steps) != 0 {
+			t.Fatalf("providers %q: %+v %v", current, rep, err)
+		}
+	}
+	if n := e.world.Calls(policy.OpCreateVM); n != 0 {
+		t.Errorf("create-vm ran %d times", n)
+	}
+	r := e.reconciler("worker-a")
+	r.Providers = "sha256:providers-v1"
+	if rep, err := r.Apply(e.ctx, p.Digest); err != nil || rep.Stopped != nil {
+		t.Fatalf("the same providers: %+v %v", rep, err)
+	}
+}

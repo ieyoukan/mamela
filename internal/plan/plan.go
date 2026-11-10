@@ -33,10 +33,14 @@ const (
 
 // Inputs identify everything the plan was computed from.
 type Inputs struct {
-	RevisionDigest string    `json:"revisionDigest"`
-	SnapshotDigest string    `json:"snapshotDigest"`
-	PolicyDigest   string    `json:"policyDigest"`
-	AsOf           time.Time `json:"asOf"`
+	RevisionDigest string `json:"revisionDigest"`
+	SnapshotDigest string `json:"snapshotDigest"`
+	PolicyDigest   string `json:"policyDigest"`
+	// ProvidersDigest identifies the providers' contracts (spec.Providers.Digest) the plan was made
+	// for. Applying with other providers (an updated Mamela or provider) needs a new plan and a new
+	// approval.
+	ProvidersDigest string    `json:"providersDigest,omitempty"`
+	AsOf            time.Time `json:"asOf"`
 }
 
 // Diff is one field that differs.
@@ -81,14 +85,20 @@ type Plan struct {
 	Digest  string   `json:"-"`
 }
 
-// Build computes the plan.
+// Build computes the plan, for no particular providers.
 func Build(g *graph.Graph, snap state.Snapshot, pol policy.Policy) *Plan {
+	return BuildFor(g, snap, pol, "")
+}
+
+// BuildFor computes the plan for the providers whose contracts have the given digest.
+func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers string) *Plan {
 	b := builder{snap: snap, pol: pol}
 	p := &Plan{Inputs: Inputs{
-		RevisionDigest: g.Digest(),
-		SnapshotDigest: snap.Digest(),
-		PolicyDigest:   pol.Digest(),
-		AsOf:           snap.AsOf.UTC(),
+		RevisionDigest:  g.Digest(),
+		SnapshotDigest:  snap.Digest(),
+		PolicyDigest:    pol.Digest(),
+		ProvidersDigest: providers,
+		AsOf:            snap.AsOf.UTC(),
 	}}
 	desiredVMs := map[string]bool{}
 	for _, r := range g.Sorted() {

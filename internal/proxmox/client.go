@@ -130,7 +130,7 @@ func (e *APIError) Error() string {
 // may have reached the server, but no definite answer came back (a lost connection, a timeout, or a
 // gateway status from pveproxy). A definite API error means the request was refused or failed.
 func Uncertain(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, ErrNotSent) {
 		return false
 	}
 	var apiErr *APIError
@@ -148,13 +148,32 @@ func Uncertain(err error) bool {
 var methods = map[string]bool{http.MethodGet: true, http.MethodPost: true, http.MethodPut: true}
 
 // do sends one request and decodes the "data" member of the response into out (when out is not nil).
-func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, long bool, out any) error {
+// params are the parameters the body carries (form or multipart fields); with the parameters of
+// the query string they are checked against the context's restrictions before anything is sent.
+func (c *Client) do(ctx context.Context, method, path, contentType string, body io.Reader, params url.Values, long bool, out any) error {
 	if !methods[method] && !(method == http.MethodDelete && c.destroy) {
-		return fmt.Errorf("proxmox: method %s is not allowed", method)
+		return fmt.Errorf("proxmox: method %s is not allowed: %w", method, ErrNotSent)
 	}
-	if _, ok := LookupEndpoint(method, path); !ok {
+	ep, ok := LookupEndpoint(method, path)
+	if !ok {
 		return fmt.Errorf("proxmox: %s %s is not in Mamela's permission catalog (internal/proxmox/permissions.go); "+
-			"add it with the privileges Proxmox checks before calling it", method, path)
+			"add it with the privileges Proxmox checks before calling it: %w", method, path, ErrNotSent)
+	}
+	sent := url.Values{}
+	for k, v := range params {
+		sent[k] = v
+	}
+	if _, query, ok := strings.Cut(path, "?"); ok {
+		q, err := url.ParseQuery(query)
+		if err != nil {
+			return fmt.Errorf("proxmox: %s %s: bad query: %v: %w", method, path, err, ErrNotSent)
+		}
+		for k, v := range q {
+			sent[k] = append(sent[k], v...)
+		}
+	}
+	if err := allowed(ctx, ep, path, sent); err != nil {
+		return err
 	}
 	if !long {
 		var cancel context.CancelFunc
@@ -175,6 +194,9 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		if changing(method) {
+			record(ctx, method, path) // it may have taken effect
+		}
 		return fmt.Errorf("proxmox: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
@@ -190,7 +212,14 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 		if m := resp.Status; strings.TrimSpace(msg) == "" || msg == `{"data":null}` {
 			msg = m // pveproxy puts the reason in the status line
 		}
-		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: msg}
+		apiErr := &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: msg}
+		if changing(method) && Uncertain(apiErr) {
+			record(ctx, method, path)
+		}
+		return apiErr
+	}
+	if changing(method) {
+		record(ctx, method, path)
 	}
 	if out == nil {
 		return nil
@@ -208,11 +237,11 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, body 
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	return c.do(ctx, http.MethodGet, path, "", nil, false, out)
+	return c.do(ctx, http.MethodGet, path, "", nil, nil, false, out)
 }
 
 func (c *Client) form(ctx context.Context, method, path string, values url.Values, out any) error {
-	return c.do(ctx, method, path, "application/x-www-form-urlencoded", strings.NewReader(values.Encode()), false, out)
+	return c.do(ctx, method, path, "application/x-www-form-urlencoded", strings.NewReader(values.Encode()), values, false, out)
 }
 
 // ClusterStatusEntry is one entry of GET /cluster/status.
@@ -504,7 +533,7 @@ func (c *Client) DestroyVM(ctx context.Context, node string, vmid int) (string, 
 		return "", errors.New("proxmox: this client may not destroy VMs")
 	}
 	var upid string
-	return upid, c.do(ctx, http.MethodDelete, fmt.Sprintf("%s/qemu/%d?destroy-unreferenced-disks=1", nodePath(node), vmid), "", nil, false, &upid)
+	return upid, c.do(ctx, http.MethodDelete, fmt.Sprintf("%s/qemu/%d?destroy-unreferenced-disks=1", nodePath(node), vmid), "", nil, nil, false, &upid)
 }
 
 // RebootVM restarts a VM (shutdown, then start), which applies pending changes. Returns the task ID.
@@ -519,6 +548,7 @@ func (c *Client) RebootVM(ctx context.Context, node string, vmid int) (string, e
 func (c *Client) Upload(ctx context.Context, node, storage, content, filename, sha256hex string, file io.Reader, size int64) (string, error) {
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
+	fields := url.Values{"content": {content}, "checksum-algorithm": {"sha256"}, "checksum": {sha256hex}, "filename": {filename}}
 	for _, kv := range [][2]string{{"content", content}, {"checksum-algorithm", "sha256"}, {"checksum", sha256hex}} {
 		if err := mw.WriteField(kv[0], kv[1]); err != nil {
 			return "", err
@@ -537,7 +567,7 @@ func (c *Client) Upload(ctx context.Context, node, storage, content, filename, s
 
 	var upid string
 	err := c.do(ctx, http.MethodPost, nodePath(node)+"/storage/"+url.PathEscape(storage)+"/upload",
-		mw.FormDataContentType(), &sizedReader{body, length}, true, &upid)
+		mw.FormDataContentType(), &sizedReader{body, length}, fields, true, &upid)
 	return upid, err
 }
 

@@ -30,6 +30,11 @@ import (
 // effect (a timeout, a lost connection). The reconciler then stops and re-observes next time.
 var ErrUnknownOutcome = errors.New("outcome unknown")
 
+// ErrPartlyDone is returned by a Provider when an operation failed after some of its changes took
+// effect (or may have): neither a clean failure nor unknown as a whole. The reconciler stops, and
+// the next run observes before doing anything, so the operation continues from what is there.
+var ErrPartlyDone = errors.New("partly done")
+
 // Step is one operation handed to a provider.
 type Step struct {
 	OperationID string // stable idempotency key: the same plan, resource and operation give the same ID
@@ -57,6 +62,7 @@ const (
 	OutcomeBusy          Outcome = "busy"           // another worker holds the operation
 	OutcomeFailed        Outcome = "failed"         // executed and known not to have taken effect
 	OutcomeUnknown       Outcome = "unknown"        // executed, outcome unknown
+	OutcomePartial       Outcome = "partly-done"    // failed after some of its changes took effect
 )
 
 // StepReport is one line of a run report.
@@ -87,12 +93,22 @@ type Reconciler struct {
 	Provider Provider
 	Owner    string        // identity of this worker in the journal
 	Lease    time.Duration // how long a claim lasts without being finished
+	// Providers is the digest of the contracts of the providers this run uses
+	// (spec.Providers.Digest). A plan made for other providers is not applied.
+	Providers string
 }
 
 // OperationID is the idempotency key of one operation of one plan.
 func OperationID(planDigest, resource string, op policy.Op) string {
 	sum := sha256.Sum256([]byte(planDigest + "\x00" + resource + "\x00" + string(op)))
 	return "op-" + hex.EncodeToString(sum[:12])
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none recorded)"
+	}
+	return s
 }
 
 // Apply runs the plan identified by digest as far as it safely can.
@@ -102,6 +118,13 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		return nil, err
 	}
 	rep := &Report{PlanDigest: planDigest}
+	if in.Providers != r.Providers {
+		rep.Stopped = &Stop{Code: "MAM-REC-0007",
+			Message: fmt.Sprintf("the plan was made for providers %s, but this Mamela has %s; its approval does not cover them",
+				orNone(in.Providers), orNone(r.Providers)),
+			Hint: "make the plan again (mamela plan) and review and approve the new one"}
+		return rep, nil
+	}
 	approval, err := r.Store.ValidApproval(ctx, planDigest)
 	if err != nil {
 		return nil, err
@@ -115,7 +138,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		return nil, err
 	}
 	r.event(ctx, planDigest, "", "observed", "observed the world before applying (snapshot "+fresh.Digest()+")")
-	now := plan.Build(in.Revision, fresh, in.Policy)
+	now := plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
 	desired := map[string]graph.Resource{}
 	for _, res := range in.Revision.Resources {
 		desired[res.ID()] = res
@@ -209,6 +232,17 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				}
 				rep.add(id, op.Op, OutcomeDone, "")
 				r.event(ctx, planDigest, id, "succeeded", string(op.Op)+" succeeded")
+			case errors.Is(applyErr, ErrPartlyDone):
+				// Recorded like an unknown outcome: it must be observed before it is retried.
+				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
+					return nil, err
+				}
+				rep.add(id, op.Op, OutcomePartial, applyErr.Error())
+				rep.Stopped = &Stop{Code: "MAM-REC-0006",
+					Message: fmt.Sprintf("%s on %s failed after some of its changes took effect: %v", op.Op, id, applyErr),
+					Hint:    "fix the cause, then run apply again: it observes first and continues from what is there"}
+				r.event(ctx, planDigest, id, "partly-done", rep.Stopped.Message)
+				return rep, nil
 			case errors.Is(applyErr, ErrUnknownOutcome):
 				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
 					return nil, err

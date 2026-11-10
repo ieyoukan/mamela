@@ -2,6 +2,12 @@
 
 Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`。
 
+## MAM-CLI — コマンド
+
+| コード | 意味 | よくある原因と対処 |
+|---|---|---|
+| MAM-CLI-0001 | 上のどの分類にも入らない失敗（`mamela check --json` の診断） | メッセージに従う |
+
 ## MAM-EVAL — 評価
 
 | コード | 意味 | よくある原因と対処 |
@@ -88,6 +94,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-REC-0003 | 操作の結果が不明 | もう一度 apply する（観測してから確認か再試行をする） |
 | MAM-REC-0004 | 操作が失敗した | 原因を直して apply する（失敗した操作は再試行される） |
 | MAM-REC-0005 | 別の worker がこの操作を実行中 | 終わるのを待つ |
+| MAM-REC-0006 | 操作の一部が効いたあとで失敗した（部分的な成功） | 原因を直して apply する（観測してから、残りを続ける） |
+| MAM-REC-0007 | plan を作ったときとプロバイダーの契約（マニフェストの digest）が違う。承認はその契約に対するもの | 新しく plan して、レビューと承認をやり直す |
 
 ## LAB — 検証環境
 

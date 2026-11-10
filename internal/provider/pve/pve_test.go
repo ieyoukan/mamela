@@ -269,8 +269,11 @@ func TestFailedCreateIsRetriedOnTheSameVMID(t *testing.T) {
 	e := newEnv(t)
 	e.fake.createTaskFails = true
 	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
-	if err == nil || errors.Is(err, reconcile.ErrUnknownOutcome) || !strings.Contains(err.Error(), "import failed") {
-		t.Fatalf("want a definite failure with Proxmox's reason, got %v", err)
+	// The image upload and the create request took effect before the task failed: partly done,
+	// with Proxmox's reason; not unknown, and not a clean failure.
+	if err == nil || errors.Is(err, reconcile.ErrUnknownOutcome) || !errors.Is(err, reconcile.ErrPartlyDone) ||
+		!strings.Contains(err.Error(), "import failed") || !strings.Contains(err.Error(), "POST /nodes/n1/qemu") {
+		t.Fatalf("want partly done with Proxmox's reason, got %v", err)
 	}
 	e.fake.createTaskFails = false
 	if err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err != nil {
@@ -278,6 +281,34 @@ func TestFailedCreateIsRetriedOnTheSameVMID(t *testing.T) {
 	}
 	if len(e.fake.vms) != 1 || e.fake.vms[7000] == nil {
 		t.Fatalf("VMs: %v", e.fake.sorted())
+	}
+}
+
+// A failure before the first change is a clean failure; a failure after a change took effect
+// makes the operation partly done (ErrNotSent or a refusal only speaks for that one request).
+func TestFailureAfterAChangeIsPartlyDone(t *testing.T) {
+	site := &lab.Site{Proxmox: lab.Proxmox{Node: "n1"}, Boundary: lab.Boundary{Pool: "lab", VMIDMin: 7000, VMIDMax: 7009, Tag: "mamela-lab"},
+		Placement: lab.Placement{DiskStorage: "local-lvm", ImageStorage: "local", Bridge: "vmbr0", SDNZone: "localnetwork"}}
+	acl := map[string][]string{}
+	for _, g := range site.Grants() {
+		for _, p := range g.Privs {
+			if p != "VM.PowerMgmt" { // the create works; starting the new VM is refused
+				acl[g.Path] = append(acl[g.Path], p)
+			}
+		}
+	}
+	e := newEnv(t)
+	e.fake.acl = acl
+	err := e.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10))
+	if !errors.Is(err, reconcile.ErrPartlyDone) || errors.Is(err, reconcile.ErrUnknownOutcome) ||
+		!strings.Contains(err.Error(), "POST /nodes/n1/qemu") || !strings.Contains(err.Error(), "VM.PowerMgmt") {
+		t.Fatalf("want partly done naming the create and the refusal, got %v", err)
+	}
+
+	clean := newEnv(t)
+	clean.fake.acl = map[string][]string{"/pool/lab": {"VM.Audit", "Pool.Audit"}, "/storage/local": {"Datastore.Audit"}}
+	if err := clean.apply(policy.OpCreateVM, vmResource("web", 1, 1024, 10)); err == nil || errors.Is(err, reconcile.ErrPartlyDone) {
+		t.Fatalf("a refusal of the first change is a clean failure, got %v", err)
 	}
 }
 

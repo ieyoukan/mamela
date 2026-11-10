@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/proxmox"
@@ -31,9 +32,9 @@ type Target struct {
 var DestroyCalls = []proxmox.Call{
 	{Method: "GET", Path: "/nodes/{node}/qemu/{vmid}/status/current"},
 	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/stop", When: "mamela destroy, if the VM is running", Maybe: true},
-	{Method: "DELETE", Path: "/nodes/{node}/qemu/{vmid}", When: "mamela destroy"},
+	{Method: "DELETE", Path: "/nodes/{node}/qemu/{vmid}", Params: []string{"destroy-unreferenced-disks"}, When: "mamela destroy"},
 	{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status"},
-	{Method: "GET", Path: "/cluster/nextid", When: "mamela destroy: confirm the VMID is free"},
+	{Method: "GET", Path: "/cluster/nextid", Params: []string{"vmid"}, When: "mamela destroy: confirm the VMID is free"},
 }
 
 // DestroyTarget finds the VM Mamela created for name and describes it. Read-only. Only a VM that
@@ -99,6 +100,8 @@ func isDrive(k string) bool {
 // caller has had a person confirm the target; Destroy looks at it again first and refuses if it
 // changed in between.
 func (p *Provider) Destroy(ctx context.Context, d Destroyer, want Target) error {
+	ctx = proxmox.RestrictOperation(ctx, "destroy", append(slices.Clone(ObserveCalls), DestroyCalls...))
+	ctx = proxmox.Bind(ctx, map[string]string{"node": p.Config.Node, "vmid": strconv.Itoa(want.VMID)})
 	now, err := p.DestroyTarget(ctx, want.Name)
 	if err != nil {
 		return err

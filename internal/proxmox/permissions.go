@@ -223,14 +223,14 @@ func checkParams(params map[string][]Need, names []string, where string) error {
 	if len(unknown) > 0 {
 		slices.Sort(unknown)
 		return fmt.Errorf("proxmox: %s: parameter(s) %s are not in Mamela's permission catalog "+
-			"(internal/proxmox/permissions.go); add them with the privileges Proxmox checks before sending them",
-			where, strings.Join(unknown, ", "))
+			"(internal/proxmox/permissions.go); add them with the privileges Proxmox checks before sending them: %w",
+			where, strings.Join(unknown, ", "), ErrNotSent)
 	}
 	return nil
 }
 
-// Call is one API call an operation makes, with the parameters it sends (create or config) and
-// the condition under which it is made, if any.
+// Call is one API call an operation makes, with every parameter it sends (form, multipart or
+// query; none if Params is empty) and the condition under which it is made, if any.
 type Call struct {
 	Method string
 	Path   string
@@ -269,12 +269,15 @@ func NeedsFor(calls []Call) []Requirement {
 		for _, n := range e.Needs {
 			add(where, c.When, n)
 		}
-		params := map[string][]Need{}
+		var params map[string][]Need // the calls whose parameters Proxmox checks one by one
 		switch {
 		case c.Method == "POST" && c.Path == "/nodes/{node}/qemu":
 			params = CreateParams
 		case c.Method == "PUT" && c.Path == "/nodes/{node}/qemu/{vmid}/config":
 			params = ConfigParams
+		}
+		if params == nil {
+			continue // other calls' parameters need nothing beyond the call itself
 		}
 		for _, name := range c.Params {
 			k, ok := ParamKey(params, name)

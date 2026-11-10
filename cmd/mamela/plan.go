@@ -129,7 +129,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
 		}
 	}
-	p := plan.Build(res.Graph, snap, pol)
+	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().Digest())
 	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
 		return report(stderr, err)
 	}
@@ -141,7 +141,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	plan.Render(stdout, p)
 	if site != nil {
-		renderPlanUses(stdout, site, p, res.Graph)
+		renderPlanUses(stdout, site, p, res.Graph, pol)
 	}
 	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
 	return 0

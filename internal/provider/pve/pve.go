@@ -136,6 +136,7 @@ type lab struct {
 // Observe reports the VMs the operating token can see. Packages and services are not observed
 // here (that is the agent's job), so they are absent from the snapshot.
 func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
+	ctx = proxmox.Restrict(proxmox.ReadOnly(ctx, "observe"), "observe", ObserveCalls)
 	now := p.Clock().UTC()
 	snap := state.Empty(now)
 	vms, err := p.scan(ctx)
@@ -233,20 +234,52 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return fmt.Errorf("the Proxmox provider does not handle %s (%s)", r.Kind, step.Op)
 	}
 	spec := *r.VirtualMachine
+	calls, ok := OperationCalls(step.Op, p.Seeds != nil)
+	if !ok {
+		return fmt.Errorf("the Proxmox provider does not implement %s", step.Op)
+	}
+	// The operation sends only the calls its manifest declares, changes only the VM it is bound
+	// to (bindVM), and only with the approved values.
+	ctx = proxmox.RestrictOperation(ctx, string(step.Op), append(slices.Clone(ObserveCalls), calls...))
+	ctx = proxmox.Bind(ctx, map[string]string{"node": p.Config.Node, "storage": p.Config.ImageStorage})
+	ctx = p.approvedValues(ctx, r.Name, spec)
 	img, err := p.checkSpec(r.Name, spec)
 	if err != nil {
 		return err
 	}
 	switch step.Op {
 	case policy.OpCreateVM:
-		return p.create(ctx, r.Name, spec, img)
+		err = p.create(ctx, r.Name, spec, img)
 	case policy.OpGrowVMDisk:
-		return p.grow(ctx, r.Name, spec)
+		err = p.grow(ctx, r.Name, spec)
 	case policy.OpResizeVMCPU, policy.OpResizeVMMemory:
-		return p.resize(ctx, r.Name, spec)
+		err = p.resize(ctx, r.Name, spec)
 	default:
 		return fmt.Errorf("the Proxmox provider does not implement %s", step.Op)
 	}
+	// A failure after a change took effect is not a clean failure: the operation is partly done.
+	// The reconciler then stops and the next run observes before doing anything. (A refusal before
+	// sending, ErrNotSent, is only about that one request.)
+	if changed := proxmox.Changed(ctx); err != nil && len(changed) > 0 && !errors.Is(err, reconcile.ErrUnknownOutcome) {
+		return fmt.Errorf("%v (already done: %s): %w", err, strings.Join(changed, ", "), reconcile.ErrPartlyDone)
+	}
+	return err
+}
+
+// approvedValues pins the values that carry the approved intent on the requests that send them.
+func (p *Provider) approvedValues(ctx context.Context, name string, spec graph.VirtualMachineSpec) context.Context {
+	cores, memory := strconv.FormatInt(spec.CPU, 10), strconv.FormatInt(spec.MemoryMiB, 10)
+	ctx = proxmox.Values(ctx, "POST", "/nodes/{node}/qemu", url.Values{
+		"name": {name}, "cores": {cores}, "memory": {memory}, "pool": {p.Config.Pool}})
+	ctx = proxmox.Values(ctx, "PUT", "/nodes/{node}/qemu/{vmid}/config", url.Values{
+		"cores": {cores}, "memory": {memory}, "tags": {p.Config.Tag}})
+	return proxmox.Values(ctx, "PUT", "/nodes/{node}/qemu/{vmid}/resize", url.Values{
+		"disk": {"scsi0"}, "size": {fmt.Sprintf("%dG", spec.DiskGiB)}})
+}
+
+// bindVM binds the operation to the VM it acts on: from now on it changes no other VMID.
+func bindVM(ctx context.Context, vmid int) context.Context {
+	return proxmox.Bind(ctx, map[string]string{"vmid": strconv.Itoa(vmid)})
 }
 
 func (p *Provider) catalog() map[string]Image {
@@ -290,7 +323,7 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 					"reservation of VMID %d for it (a different or lost database?); Mamela will not create another one",
 					name, v.vmid, p.Config.Pool, name, v.vmid)
 			}
-			return p.finish(ctx, v.vmid, name, spec) // resume
+			return p.finish(bindVM(ctx, v.vmid), v.vmid, name, spec) // resume
 		}
 		if v.owned {
 			ours++
@@ -304,6 +337,7 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 	if err != nil {
 		return fmt.Errorf("VM %s: reserve a VMID: %w", name, err)
 	}
+	ctx = bindVM(ctx, vmid)
 	free, err := p.API.VMIDFree(ctx, vmid)
 	if err != nil {
 		return fmt.Errorf("VM %s: check VMID %d: %w", name, vmid, err)
@@ -424,7 +458,7 @@ func (p *Provider) grow(ctx context.Context, name string, spec graph.VirtualMach
 	if err != nil {
 		return err
 	}
-	return p.growTo(ctx, v.vmid, name, spec.DiskGiB)
+	return p.growTo(bindVM(ctx, v.vmid), v.vmid, name, spec.DiskGiB)
 }
 
 // managed finds the VM Mamela created for name (ready, owned, its reserved VMID).
@@ -457,6 +491,7 @@ func (p *Provider) resize(ctx context.Context, name string, spec graph.VirtualMa
 	if err != nil {
 		return err
 	}
+	ctx = bindVM(ctx, v.vmid)
 	cores := v.config.Int("cores")
 	if cores == 0 {
 		cores = 1
