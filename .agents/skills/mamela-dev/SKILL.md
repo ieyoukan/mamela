@@ -31,7 +31,7 @@ Mamela is a declarative, continuously reconciled IaC control plane, with Go Cont
 
 ## Safety invariants
 
-- Emela/WASM runs without arbitrary network/host filesystem/infrastructure credentials; `main.wasm` imports are checked against an allowlist (stdout, stderr, exit) before running. Providers run as WASM too, and reach their API only through the host, which checks every request against the catalog and the change's permit.
+- Emela/WASM runs without arbitrary network/host filesystem/infrastructure credentials; `main.wasm` imports are checked against an allowlist (stdout, stderr, exit) before running. Providers run as WASM too, and reach their API only through the host, which checks every request against the catalog and the change's permit. Catalogs are data in the provider's Pome, chosen by the operator (ADR 0008); the core ships none.
 - Evaluation and planning are deterministic: same inputs produce the same graph digest and plan digest.
 - What Mamela did not record creating is `Foreign`: observe only, never change. A provider's marker alone is not ownership.
 - Source removal is **not deletion authorization**. Deleting, restarting or adopting is an explicit operation a person confirms by name (`mamela act --confirm`), never planned.

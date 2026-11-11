@@ -4,6 +4,9 @@
 - 日付: 2026-11-11
 - 対象: `internal/proxmox`、`internal/provider/pve`、組み込み kind `VirtualMachine`、`internal/lab`、`mamela lab`・`destroy`・`reboot`
 
+
+> **後の変更（ADR 0008）:** Mamela 本体はカタログを持たなくなった。カタログはプロバイダーの作者が書き、プロバイダーの Pome に同梱する。運用者は `catalog = "pome:<名前>"` で選ぶ。この ADR の `builtin:` のカタログは、AWS は mamela-aws に、Proxmox は mamela-proxmox に移った。
+
 ## 文脈
 
 Proxmox のプロバイダーは、`github.com/ieyoukan/mamela-proxmox` に出た（ADR 0004）。それでも Mamela 本体には、次の 2 つの形で Proxmox が残っていた。

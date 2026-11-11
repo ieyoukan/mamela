@@ -4,6 +4,9 @@
 - 日付: 2026-11-11
 - 対象: ADR 0002（プロバイダーの契約）と ADR 0004（成果物とノード）の上に、AWS のようなクラウドの API を載せる
 
+
+> **後の変更（ADR 0008）:** Mamela 本体はカタログを持たなくなった。カタログはプロバイダーの作者が書き、プロバイダーの Pome に同梱する。運用者は `catalog = "pome:<名前>"` で選ぶ。この ADR の `builtin:` のカタログは、AWS は mamela-aws に、Proxmox は mamela-proxmox に移った。
+
 ## 文脈
 
 ADR 0004 までの契約は、Proxmox の API を念頭に置いていた。Proxmox の API には、次の特徴がある。

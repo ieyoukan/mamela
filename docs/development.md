@@ -238,7 +238,7 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
 
 - **Pome:** Mamela Pome 0.3.0 は、グラフ、`Node`、`Network`、`package`・`service`、`Ref`・`provided`・`provided_after`、`on_node` だけ。k3s は `pome/k3s`（`K3s.server`・`K3s.agent`）。
 - **依存:** グラフ v2 の `after`（MAM-GRAPH-0103、0108）、待ち（MAM-PLAN-0113）、diff の `Dependencies`。作成が途中で止まった依存先も待つ。
-- **AWS:** JSON の API（`header`・`json`）、profile の一時的な資格情報、1 つのプロバイダーの複数の API、カタログの値の許可リスト（`values`、違反は MAM-PRV-0008）、`builtin:ecs`・`logs`・`ssm`・`iam`。
+- **AWS:** JSON の API（`header`・`json`）、profile の一時的な資格情報、1 つのプロバイダーの複数の API、カタログの値の許可リスト（`values`、違反は MAM-PRV-0008）、AWS のカタログ（ADR 0008 で mamela-aws に移った）。
 - **実機での検証（github.com/ieyoukan/mamela-aws）:** 運用者の AWS ロール（MFA の assume-role）で、次を確かめた。
   - **作ったもの:** 専用の VPC、サブネット、インターネットゲートウェイ、ルートテーブル、セキュリティグループ 2 つ、EC2（t4g.micro、nginx のコンテナー、IAM ロールなし）、ECS のクラスター、タスク定義、Fargate Spot のサービス（タスク数 0）、ロググループ、タスクの実行ロール。
   - **作り方:** 依存の深さに合わせて、plan と apply を 6 回繰り返した。
@@ -251,6 +251,22 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
     - IAM のタグに要る `iam:TagRole`。運用者のロールになく、プロバイダーはロールにタグを付けないことにした
     - インスタンスプロファイルを作れない運用者では、ECS on EC2 にできないこと。プロバイダーに、IAM ロールのないインスタンスを足した。ECS on EC2 は、試験の間だけ `/mamela/` に限った権限を足して確かめ、後で外した
     - RunInstances の固定のパラメータ
+
+## カタログをプロバイダーの Pome に移す（ADR 0008、2026-11-11）
+
+設計は [ADR 0008](adr/0008-catalogs-in-provider-pomes.md)。Mamela 本体は、AWS と Proxmox のカタログを持たなくなった。
+
+- **カタログの形:** `mamela-catalog/v1` の JSON（`protocol.DecodeCatalog`）。
+- **同梱:** プロバイダーの Pome の `mamela-provider.toml` の `[catalogs]` に並べる。Mamela は、プログラムと一緒に plan に保存する（migration 11 `plan_catalogs`）。
+- **選び方:** 運用者は `catalog = "pome:<名前>"` で名指す。`builtin:` は ADR 0008 を示して拒む。
+- **CLI:**
+  - `mamela provider catalog [--json] <pome-dir> [<provider>]` で、同梱するカタログを読める。
+  - `mamela provider inspect` は、プロバイダーの Pome のディレクトリも取る。
+- **試験:** `providertest.Catalog` で、同梱するファイルで試験する。
+- **移したもの:**
+  - `provider/catalogs` の EC2・ECS・Logs・SSM・IAM は mamela-aws の `catalogs` に移した。
+  - Proxmox は mamela-proxmox の `catalogs` に移した。
+  - 例の EC2 のプロバイダーは `examples/ec2/pome/catalogs/ec2.json` を同梱する。
 
 ## テストの優先順位
 

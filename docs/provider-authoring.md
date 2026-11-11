@@ -147,7 +147,7 @@ VM のようなマシンを作るプロバイダーには、大きなファイ�
   - Mamela は、自分が作ろうとして記録した ID と一致するときだけ、それを自分のものとする。
   - 一致しないものは Foreign として、diff には `owned: false` で渡す。
 - **実行しない差分:** 縮小のように決して行わない差分は、マニフェストで `unsupported` とした操作の変更として、`requests` なしで返す。plan が理由とともに拒否する（MAM-POL-0309）。「差分なし」にしてはいけない。
-- **大きさの上限:** マシンの vCPU・メモリ・ディスクのように大きさを決めるパラメータは、Mamela のカタログの `measures` に書く。host は、site の予算（`[budget]`）を plan と apply の両方で確かめる（MAM-SITE-0305）。
+- **大きさの上限:** マシンの vCPU・メモリ・ディスクのように大きさを決めるパラメータは、カタログの `measures` に書く。host は、site の予算（`[budget]`）を plan と apply の両方で確かめる（MAM-SITE-0305）。
 - **ノード:** kind に `node: true` を書くと、そのリソースは mamelet が載るマシンになる。
   - 観測では、存在するリソースについて `node`（`id`、`running`、`uptimeSeconds`）を返す。
   - 宣言では、`Mamela.package(Ec2.node(app), "nginx")`（`examples/homelab`）のように、パッケージやサービスや k3s をその上に書ける。プロバイダーの Pome は、マシンから `Mamela.Node` を返す関数（`Ec2.node`）を用意する。
@@ -206,13 +206,14 @@ Mamela に使わせるユーザー、トークン、権限を作るには、Mame
 
 ```sh
 GOOS=wasip1 GOARCH=wasm go build -o my-provider.wasm ./cmd/my-provider
-mamela provider inspect --catalog my-api-catalog.json my-provider.wasm
-# 複数の API を使うプロバイダーには、API ごとに --catalog を重ねる（カタログの api が API を名指す）
-mamela provider inspect --catalog builtin:ec2 --catalog builtin:ecs --catalog builtin:logs \
-  --catalog builtin:iam --catalog builtin:ssm pome/provider.wasm
+mamela provider inspect pome                 # Pome のプログラムを、Pome が同梱するカタログで分類する
+mamela provider inspect --catalog my-api.json my-provider.wasm   # プログラムと、カタログのファイル
+mamela provider catalog pome                 # 同梱するカタログの中身と sha256
 ```
 
-`--catalog` には、JSON のファイルか、Mamela が持つカタログ（`builtin:<名前>`）を書く。同じ API のカタログを 2 つ書くと止まる。カタログを渡さなかった API は表示し、その呼び出しは分類できないものとして示す。
+- **`inspect` の引数:** プログラムか、プロバイダーの Pome のディレクトリを取る。Pome なら、同梱するカタログをすべて使う。
+- **`--catalog`:** カタログのファイルを足す。API ごとに重ねられ、カタログの `api` が API を名指す。同じ API のカタログを 2 つ渡すと止まる。
+- **カタログのない API:** 表示し、その呼び出しを分類できないものとして示す。
 
 `inspect` は、次のものを表示する。
 
@@ -230,7 +231,7 @@ mamela provider inspect --catalog builtin:ec2 --catalog builtin:ecs --catalog bu
 func TestConformance(t *testing.T) {
 	providertest.Run(t, providertest.Suite{
 		Provider: providertest.BuildWASI(t, "./cmd/my-provider"),
-		Catalog:  myapi.Catalog,                                  // the effect of each call
+		Catalog:  providertest.Catalog(t, "pome/catalogs/myapi.json"), // the catalog the Pome ships
 		NewAPI:   func() http.Handler { return myapi.NewFake() }, // a fresh fake of the API
 		Cases:    []providertest.Case{{Name: "one", Desired: ...}},
 	})
@@ -275,10 +276,28 @@ func TestConformance(t *testing.T) {
 - API が各パラメータを読む場所（`query`、`form`、`header`、`json`）と、同じメソッドとパスの呼び出しを区別する固定のパラメータ（`fixed`）
 - 前提条件のパラメータ
 - `measures`: 大きさを決めるパラメータと、その書式（`count`、`size`、`drive`、`table`、`cpu-units`）。site の予算で確かめる（MAM-SITE-0305）。`cpu-units` は ECS の CPU 単位で、1024 を 1 vCPU とし、切り上げて数える
-- `values`（ADR 0007）: パラメータに許す値の一覧。host は、plan の時点と送る前に、ほかの値を拒む（上限の検査より先）。JSON の文字列のメンバーは、引用符を外した値で比べる。`builtin:iam` は、これでロールの path・信頼ポリシー・付けられるポリシーを限る
+- `values`（ADR 0007）: パラメータに許す値の一覧。host は、plan の時点と送る前に、ほかの値を拒む（上限の検査より先。MAM-PRV-0008）。JSON の文字列のメンバーは、引用符を外した値で比べる。mamela-aws の IAM のカタログは、これでロールの path・信頼ポリシー・付けられるポリシーを限る
 - `bind`: 対象を名指すパラメータ（EC2 の `InstanceId.1`、ECS の `cluster`・`service`）。変更の要求では、許可の同じ名前の ID と同じ値でなければ送らない。そのため、その変更の `IDs` には、同じ名前の ID を入れる。承認した要求を、別の対象に向けられない
 
-カタログは host のものである。Mamela が知っている API のカタログは、Mamela が持つ。新しい API のカタログは、プロバイダーの作者が提案し、Mamela にレビューされて入る。それまでは、変更のたびに人の承認が要る。
+### カタログを書いて同梱する（ADR 0008）
+
+カタログは、その API を知っているプロバイダーの作者が書く。Mamela 本体は、特定の基盤のカタログを持たない（[ADR 0008](adr/0008-catalogs-in-provider-pomes.md)）。
+
+- **形式:** カタログは JSON のデータ（`"schema": "mamela-catalog/v1"`）である。Mamela は、未知のメンバーを拒み、`Check` で確かめて読む（`protocol.DecodeCatalog`）。
+- **同梱:** プロバイダーの Pome に、プログラムとは別のファイルとして入れ、`mamela-provider.toml` の `[catalogs]` に名前とファイルを並べる。
+
+  ```toml
+  [catalogs]
+  ec2 = "catalogs/ec2.json"
+  ```
+
+- **書き方:** Go で書いて JSON に書き出してもよい。mamela-aws と mamela-proxmox は、`catalogs` パッケージを `build.sh` で `pome/catalogs/*.json` に書き出す。同梱する JSON が書き出しと同じことは、試験で確かめる。
+- **試験:** 同梱するファイルで行う（`providertest.Catalog(t, "pome/catalogs/ec2.json")`）。Mamela が分類に使うものと同じである。
+- **使われ方:** カタログは、運用者が `mamela.providers.toml` で名指したときだけ使われる（`catalog = "pome:ec2"`）。運用者は、使う前に `mamela provider catalog <pome-dir>` で読める。
+  - Mamela は、カタログをプログラムと一緒に plan に保存する。apply は、それで分類する。
+  - カタログの中身は、承認の範囲に入る。カタログが変われば、承認し直す。
+- **プログラムとの関係:** プログラムは、カタログを見ることも変えることもできない。host が、プログラムのすべての要求を、運用者が選んだカタログで分類する。プログラムが自分の呼び出しを自己申告で分類することはない。
+- **カタログのない呼び出し:** その呼び出しを送る変更は、毎回、人の承認が要る。
 
 ## 配布と使い方
 
@@ -290,13 +309,15 @@ func TestConformance(t *testing.T) {
 |---|---|
 | `src/lib.emel` | 種類ごとの型と関数。`Mamela.provided(graph, "kv-example", "KVItem", name, spec)` を呼ぶ。使う人は `Kv.item(...)` と書くだけで、型の検査を受けられる |
 | `provider.wasm` | プロバイダーのプログラム（WASM）。再現できる build にする（`go build -trimpath -buildvcs=false`。例では `examples/kv/build.sh`） |
-| `mamela-provider.toml` | `provider`・`version`（マニフェストと同じ）、`program`（Pome の中のパス）、`sha256`（プログラムの） |
+| `mamela-provider.toml` | `provider`・`version`（マニフェストと同じ）、`program`（Pome の中のパス）、`sha256`（プログラムの）、`[catalogs]`（同梱するカタログの名前とファイル） |
+| `catalogs/*.json` | API のカタログ（`mamela-catalog/v1`。上の「カタログを書いて同梱する」） |
 
 Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb の hash で固定される。そのため、プログラムも同じ鎖で固定される。Mamela はさらに、次のことを確かめる。
 
 - `mamela-provider.toml` の sha256
 - プログラムが WASM であること（Pome のネイティブは使わない）
 - マニフェストの名前と版
+- 同梱するカタログが、Pome の中のファイルで、`mamela-catalog/v1` として正しいこと
 
 ### 使う人: import して plan・apply する
 
@@ -318,7 +339,7 @@ Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb 
    [provider.kv-example]
    api_url    = "https://kv.example.com/api"   # http は 127.0.0.1・::1・localhost だけ
    token_file = "~/.config/kv/token"           # Authorization: Bearer <token>
-   catalog    = "kv-catalog.json"              # API のカタログ（必須。ないと読み取りも変更も許さない）
+   catalog    = "kv-catalog.json"              # API のカタログ: Pome が同梱するもの（"pome:<名前>"）か、自分のファイル
 
    [provider.kv-example.guard]                 # guard の設定（秘密は書かない）
    max_items = 5
@@ -345,9 +366,9 @@ apply は、plan のときに SQLite に保存したプログラムを動かす�
 
 `examples/kv-demo` で試せる（`go run ./examples/kv/cmd/kv-api` が、ローカルの API になる）。
 
-### Mamela が持つカタログと、Proxmox
+### Proxmox
 
-Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox`、`builtin:ec2`、`builtin:ecs`、`builtin:logs`、`builtin:ssm`、`builtin:iam` がある（`provider/catalogs`。プロバイダーの試験からも import できる）。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く（値は架空）。
+Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く（値は架空）。カタログは、mamela-proxmox の Pome が同梱するものを名前で選ぶ。
 
 ```toml
 [provider.proxmox]
@@ -358,7 +379,7 @@ token_file       = "~/.config/mamela/pve-token"  # chmod 600 でなければ拒�
 guard_token_id   = "mamela-audit@pve!audit"      # guard だけが使う読み取り専用のトークン
 guard_token_file = "~/.config/mamela/pve-audit-token"
 tls_fingerprint  = "AA:BB:..."                   # サーバー証明書の SHA-256 を固定する
-catalog          = "builtin:proxmox"
+catalog          = "pome:proxmox"                # Pome が同梱するカタログ
 
 [provider.proxmox.guard]
 # guard の設定（境界、しきい値）。中身はプロバイダーが決める（mamela-proxmox の docs/lab.md）
@@ -389,7 +410,7 @@ EC2 のようなクエリ API と SigV4 の API にも、プロバイダーを�
   token_file = "~/.config/mamela/aws-secret"      # シークレット（chmod 600）
   region     = "ap-northeast-1"
   service    = "ec2"
-  catalog    = "builtin:ec2"
+  catalog    = "pome:ec2"                         # Pome が同梱するカタログ（examples/ec2/pome/catalogs/ec2.json）
   ```
 
   `token_id` と `token_file` の代わりに、AWS の profile（一時的な資格情報でもよい）を書ける（下の「複数の API を使うクラウドのプロバイダー」の「設定と資格情報」）。
@@ -404,7 +425,7 @@ EC2 のようなクエリ API と SigV4 の API にも、プロバイダーを�
 AWS のように、サービスごとに API が分かれ、クエリの API（EC2、IAM）と JSON の API（ECS、CloudWatch Logs、SSM）が混ざるクラウドにも、1 つのプロバイダーを書ける。guard と設定は 1 つにまとまる。完全な例は [`github.com/ieyoukan/mamela-aws`](https://github.com/ieyoukan/mamela-aws) にある（VPC、IAM、CloudWatch Logs、ECS on EC2 と Fargate Spot）。
 
 - **依存:** プロバイダーの Pome は、自分の型の値から Mamela の `Ref`（`import Mamela.{Ref}` して `Ref(kind: ..., name: ...)`）を作り、`Mamela.provided_after(graph, provider, kind, name, spec, after)` を呼ぶ。diff では、`Dependencies` にある依存先の ID（security group の ID、cluster の ARN）を変更に書く（上の「Diff」）。依存先として宣言されていないものの ID は推測しない（mamela-aws は、エラーにして `after` に足すよう示す）。1 回の apply では、待たないものだけが変わる。依存の深さだけ plan と apply を繰り返す。
-- **マニフェストの `APIs`:** `API` の代わりに `APIs`（`["ec2", "ecs", "logs", "ssm", "iam"]` など）を書く。呼び出し（`Call.API`）、承認する要求（`Approved.API`）、host への要求（`HostRequest.API`）で、どの API かを名指す。API の名前は、設定の節の名前とカタログの `api` と同じにする（`builtin:ecs` のカタログは `ecs`）。host は、要求をその API のカタログで分類し、その API の接続先に送る。
+- **マニフェストの `APIs`:** `API` の代わりに `APIs`（`["ec2", "ecs", "logs", "ssm", "iam"]` など）を書く。呼び出し（`Call.API`）、承認する要求（`Approved.API`）、host への要求（`HostRequest.API`）で、どの API かを名指す。API の名前は、設定の節の名前とカタログの `api` と同じにする（mamela-aws の `pome:ecs` のカタログは `ecs`）。host は、要求をその API のカタログで分類し、その API の接続先に送る。
 - **JSON の API の呼び出し:** `X-Amz-Target` を固定のヘッダーにし、`JSON` に送ってよい本文のメンバーを並べる。
 
   ```go
@@ -414,11 +435,17 @@ AWS のように、サービスごとに API が分かれ、クエリの API（E
   	JSON:   []string{"clusterName", "tags"}}
   ```
 
-  - `X-Amz-Target` の値は `catalogs.AWSTarget("ecs", "CreateCluster")` でも作れる。`fixed` は JSON のメンバーには書けない。
+  - `fixed` は JSON のメンバーには書けない。
   - 承認する要求の `Params` には、`X-Amz-Target` と、各メンバーの正規形の JSON の文字列を書く（`protocol.JSONParams`。文字列のメンバーは引用符を含めた `"locust"`、数は `1`）。apply では、同じものを `HostRequest.Header` と `HostRequest.JSON` で送る。host はメンバーを正規形にして、承認した値とバイト単位で比べる。
   - `bind`・`values`・`measures`・許可の ID との照合は、メンバーの値に効く。文字列のメンバーは、引用符を外した値で比べる（`protocol.ParamText`）。
   - host は、本文を正規形のメンバーを名前の順に並べたオブジェクトにして、`Content-Type: application/x-amz-json-1.1` で送る。メンバーのない呼び出し（ECS の `ListClusters`）でも `{}` を送る。
-- **カタログ:** `builtin:ec2`・`ecs`・`logs`・`ssm`・`iam` の範囲を越える呼び出しは、変更のたびに人の承認が要る。`builtin:iam` は、`values` でロールとインスタンスプロファイルの path を `/mamela/` に、信頼ポリシーを 2 つ（ECS のタスク、EC2）に、付けられるポリシーを AWS 管理の ECS のポリシー 2 つに限る。ECS の `RunTask`・`UpdateService`・`DeleteService`・`StopTask` は `cluster`（と service や task）を `bind` する。だから、その変更の `IDs` には `cluster` を入れる。足りなければ、カタログの変更を Mamela に提案する。
+- **カタログ:** API ごとに 1 つ同梱する（mamela-aws は `ec2`・`ecs`・`logs`・`ssm`・`iam`）。mamela-aws のカタログの例は次のとおり。
+  - IAM のカタログは、`values` で次のように限る。
+    - ロールとインスタンスプロファイルの path は `/mamela/` だけ。
+    - 信頼ポリシーは 2 つ（ECS のタスク、EC2）だけ。
+    - 付けられるポリシーは、AWS 管理の ECS のポリシー 2 つだけ。
+  - ECS の `RunTask`・`UpdateService`・`DeleteService`・`StopTask` は、`cluster`（と service や task）を `bind` する。そのため、その変更の `IDs` には `cluster` を入れる。
+  - カタログの範囲を越える呼び出しは、変更のたびに人の承認が要る。
 - **設定と資格情報:** `[provider.<name>]` に認証を書き、`[provider.<name>.apis.<api>]` に API ごとの `api_url`・`service`・`catalog` を書く（値は架空）。
 
   ```toml
@@ -430,18 +457,18 @@ AWS のように、サービスごとに API が分かれ、クエリの API（E
   [provider.aws.apis.ec2]
   api_url = "https://ec2.ap-northeast-1.amazonaws.com"
   service = "ec2"
-  catalog = "builtin:ec2"
+  catalog = "pome:ec2"
 
   [provider.aws.apis.ecs]       # logs と ssm も同じ形
   api_url = "https://ecs.ap-northeast-1.amazonaws.com"
   service = "ecs"
-  catalog = "builtin:ecs"
+  catalog = "pome:ecs"
 
   [provider.aws.apis.iam]       # IAM はグローバル。us-east-1 で署名する
   api_url = "https://iam.amazonaws.com"
   service = "iam"
   region  = "us-east-1"
-  catalog = "builtin:iam"
+  catalog = "pome:iam"
 
   [provider.aws.guard]          # guard の設定はプロバイダーに 1 つ（API の節には書けない）
   ```
@@ -454,7 +481,10 @@ AWS のように、サービスごとに API が分かれ、クエリの API（E
   ```go
   providertest.Run(t, providertest.Suite{
   	Provider: providertest.BuildWASI(t, "./cmd/my-provider"),
-  	Catalogs: map[string]protocol.Catalog{"ec2": catalogs.EC2, "ecs": catalogs.ECS, "iam": catalogs.IAM},
+  	Catalogs: map[string]protocol.Catalog{ // as the Pome ships them
+  		"ec2": providertest.Catalog(t, "pome/catalogs/ec2.json"),
+  		"ecs": providertest.Catalog(t, "pome/catalogs/ecs.json"),
+  		"iam": providertest.Catalog(t, "pome/catalogs/iam.json")},
   	NewAPI:   func() http.Handler { return mycloud.NewFake() }, // dispatches on the X-Mamela-Api header
   	Cases:    []providertest.Case{{Name: "one", Desired: ...}},
   })
