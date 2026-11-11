@@ -156,7 +156,7 @@ func Run(t *testing.T, s Suite) {
 					op, _ := e.s.Manifest().Operation(observed[i].Kind, x.Op)
 					switch {
 					case op.Adopts && (!observed[i].Adoptable || observed[i].Owned):
-						t.Fatalf("%s %s: adopts, and the resource is not observed as adoptable (and not owned)", x.Op, x.Resource)
+						t.Fatalf("%s %s: adopts, and the resource is not observed as adoptable (and not owned): %s", x.Op, x.Resource, jsonText(observed[i]))
 					case !op.Adopts && !observed[i].Owned:
 						t.Fatalf("%s %s: not an observed resource Mamela owns", x.Op, x.Resource)
 					}
