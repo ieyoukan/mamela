@@ -11,6 +11,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
@@ -466,5 +467,25 @@ func TestProvidersMachineIsNotForeign(t *testing.T) {
 	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 60, ObservedAt: t0}}
 	if c := find(t, Build(g, s, policy.Default), "NodePackage web/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0103" {
 		t.Fatalf("%+v", c.Note)
+	}
+}
+
+// A provider's machine that is the Control Plane's host is protected like a VirtualMachine: its
+// change is shown and denied, never approvable.
+func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"cp","provider":"proxmox","spec":{"cpu":4}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{"ProxmoxVM cp": {Provider: "proxmox", Kind: "ProxmoxVM", Name: "cp", Declared: true,
+		SpecDigest: state.SpecDigest(g.Resources[0].Provided.Spec), ObservedAt: t0,
+		Observed: protocol.Observed{ID: "ProxmoxVM cp", Kind: "ProxmoxVM", Name: "cp", Exists: true, Owned: true},
+		Changes: []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM cp", Kind: "ProxmoxVM", Op: "resize-vm"}}}}}
+	pol := policy.Default
+	pol.ProtectedNodes = []string{"cp"}
+	c := find(t, Build(g, s, pol), "ProxmoxVM cp")
+	if c.Verdict != policy.Denied || len(c.Operations) != 1 || c.Operations[0].Decision.Code != "MAM-POL-0308" {
+		t.Fatalf("%+v", c)
 	}
 }

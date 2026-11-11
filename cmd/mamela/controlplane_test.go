@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -97,5 +98,45 @@ func TestControlPlaneBundle(t *testing.T) {
 	// Never overwrites an archive.
 	if code, _, _ := runCLI("controlplane", "bundle", "--site", sitePath, "--db", db, "--out", out, "--url", "https://10.0.0.45:8443"); code == 0 {
 		t.Fatal("overwrote an existing bundle")
+	}
+}
+
+// The installer refuses a host that has a Control Plane already, before writing anything: another
+// bundle's keys, tokens or site must never be mixed with the database that is there.
+func TestInstallRefusesAnExistingControlPlane(t *testing.T) {
+	bundle := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bundle, "install.sh"), []byte(installScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, existing := range []string{"var/lib/mamela/state.db", "var/lib/mamela/cp", "etc/mamela/site.toml", "etc/mamela/secrets"} {
+		root := t.TempDir()
+		mustWrite := func(rel string, mode os.FileMode) {
+			p := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("x"), mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mustWrite("usr/local/bin/mamela", 0o755)
+		mustWrite(existing, 0o600)
+		cmd := exec.Command("bash", filepath.Join(bundle, "install.sh"), bundle)
+		cmd.Env = append(os.Environ(), "MAMELA_INSTALL_ROOT="+root)
+		out, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(out), "has a Control Plane already") {
+			t.Fatalf("%s: %v\n%s", existing, err, out)
+		}
+		var files []string
+		filepath.WalkDir(root, func(p string, d os.DirEntry, _ error) error {
+			if !d.IsDir() {
+				rel, _ := filepath.Rel(root, p)
+				files = append(files, rel)
+			}
+			return nil
+		})
+		if len(files) != 2 {
+			t.Fatalf("%s: the installer wrote %v", existing, files)
+		}
 	}
 }

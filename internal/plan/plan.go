@@ -121,7 +121,7 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.guard(r.NodeK3s.Node, b.k3s(r)))
 		default:
 			if r.Provided != nil {
-				p.Changes = append(p.Changes, b.provided(r))
+				p.Changes = append(p.Changes, b.guard(r.Name, b.provided(r)))
 			}
 		}
 	}
