@@ -15,6 +15,7 @@ import (
 // memory (MiB): the site's limits hold for each.
 var ECS = protocol.Catalog{API: "ecs", Entries: []protocol.Entry{
 	ecsCall("CreateCluster", protocol.EffectCreate, "clusterName", "capacityProviders", "defaultCapacityProviderStrategy", "tags", "settings"),
+	ecsCall("ListClusters", protocol.EffectRead, "nextToken", "maxResults"),
 	ecsCall("DescribeClusters", protocol.EffectRead, "clusters", "include"),
 	bind(ecsCall("DeleteCluster", protocol.EffectLoseData, "cluster"), "cluster"),
 	withMeasures(ecsCall("RegisterTaskDefinition", protocol.EffectCreate, "family", "containerDefinitions", "cpu", "memory", "networkMode",
@@ -26,15 +27,18 @@ var ECS = protocol.Catalog{API: "ecs", Entries: []protocol.Entry{
 	bind(ecsCall("DeregisterTaskDefinition", protocol.EffectChange, "taskDefinition"), "taskDefinition"),
 	ecsCall("CreateService", protocol.EffectCreate, "cluster", "serviceName", "taskDefinition", "desiredCount", "launchType",
 		"capacityProviderStrategy", "networkConfiguration", "placementConstraints", "placementStrategy", "schedulingStrategy",
-		"tags", "clientToken", "enableECSManagedTags", "propagateTags"),
-	bind(ecsCall("UpdateService", protocol.EffectChange, "cluster", "service", "desiredCount", "taskDefinition", "forceNewDeployment"), "service"),
+		"deploymentConfiguration", "tags", "clientToken", "enableECSManagedTags", "propagateTags"),
+	ecsCall("ListServices", protocol.EffectRead, "cluster", "launchType", "schedulingStrategy", "nextToken", "maxResults"),
+	bind(ecsCall("UpdateService", protocol.EffectChange, "cluster", "service", "desiredCount", "taskDefinition", "forceNewDeployment"), "cluster", "service"),
 	ecsCall("DescribeServices", protocol.EffectRead, "cluster", "services", "include"),
-	bind(ecsCall("DeleteService", protocol.EffectLoseData, "cluster", "service", "force"), "service"),
-	ecsCall("RunTask", protocol.EffectCreate, "cluster", "taskDefinition", "count", "launchType", "capacityProviderStrategy",
-		"networkConfiguration", "overrides", "startedBy", "clientToken", "tags", "enableECSManagedTags", "propagateTags"),
+	bind(ecsCall("DeleteService", protocol.EffectLoseData, "cluster", "service", "force"), "cluster", "service"),
+	// A task runs in the cluster of the object the change is for (a service whose way of running
+	// it reuses): never in someone else's.
+	bind(ecsCall("RunTask", protocol.EffectCreate, "cluster", "taskDefinition", "count", "launchType", "capacityProviderStrategy",
+		"networkConfiguration", "overrides", "startedBy", "clientToken", "tags", "enableECSManagedTags", "propagateTags"), "cluster"),
 	ecsCall("ListTasks", protocol.EffectRead, "cluster", "startedBy", "family", "desiredStatus", "serviceName", "containerInstance", "nextToken", "maxResults"),
 	ecsCall("DescribeTasks", protocol.EffectRead, "cluster", "tasks", "include"),
-	bind(ecsCall("StopTask", protocol.EffectRestart, "cluster", "task", "reason"), "task"),
+	bind(ecsCall("StopTask", protocol.EffectRestart, "cluster", "task", "reason"), "cluster", "task"),
 	ecsCall("ListContainerInstances", protocol.EffectRead, "cluster", "filter", "status", "nextToken", "maxResults"),
 	ecsCall("DescribeContainerInstances", protocol.EffectRead, "cluster", "containerInstances"),
 }}

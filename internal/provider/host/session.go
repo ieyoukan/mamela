@@ -792,9 +792,15 @@ func (s *Session) fail(what string, err error) error {
 	return s.dead
 }
 
+// validIDs: each ID's name could name a path parameter, and its value is made of path segments
+// (a cloud's names have slashes, and may start with one: a CloudWatch Logs group "/ecs/web").
 func validIDs(ids map[string]string) bool {
 	for k, v := range ids {
-		if _, err := protocol.ParsePath("/{" + k + "}"); err != nil || protocol.CheckPath("/"+v) != nil {
+		path := v
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		if _, err := protocol.ParsePath("/{" + k + "}"); err != nil || path == "/" || protocol.CheckPath(path) != nil {
 			return false
 		}
 	}

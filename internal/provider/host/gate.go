@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -190,6 +191,11 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 		g.record = append(g.record, rec)
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: rec.Reason}
 	}
+	if len(call.JSON) > 0 && r.JSON == nil {
+		// A call of a JSON API sends a JSON object, an empty one when it has no members (ECS
+		// ListClusters): the provider's empty object does not survive the protocol's encoding.
+		r.JSON = map[string]jsontext.Value{}
+	}
 	var status int
 	var body []byte
 	var err error
@@ -312,7 +318,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 			}
 			return -1, protocol.Call{}, fmt.Sprintf("only reads are allowed during %s; %s is %s", g.phase, rec.Call, what)
 		}
-		return -1, protocol.Call{}, ""
+		return -1, call, ""
 	case phaseApply:
 		i, reason := g.checkPermit(rec, call, entry, ids, params, r.Upload)
 		return i, call, reason

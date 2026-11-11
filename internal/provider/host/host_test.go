@@ -687,6 +687,12 @@ func TestJSONCalls(t *testing.T) {
 	if got.Header.Get("X-Amz-Target") != "Svc.DeleteCluster" || got.Header.Get("Content-Type") != "application/x-amz-json-1.1" || string(body) != `{"cluster":"c1","force":true}` {
 		t.Fatalf("sent %v %q", got.Header, body)
 	}
+	// A call with no member (the provider's empty object is lost on the way) still sends one.
+	list := protocol.Call{Method: "POST", Path: "/", Header: []string{"X-Amz-Target"}, JSON: []string{"clusters"}, Fixed: map[string]string{"X-Amz-Target": "Svc.DescribeClusters"}}
+	g := gate{phase: phaseObserve, calls: []protocol.Call{list}, catalog: cat, upstream: h, now: testNow}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{Method: "POST", Path: "/", Header: map[string][]string{"X-Amz-Target": {"Svc.DescribeClusters"}}}); perr != nil || string(body) != "{}" {
+		t.Fatalf("a JSON call with no member: %v, sent %q", perr, body)
+	}
 }
 
 // A provider with several APIs (ADR 0007): each request is classified by its own API's catalog and
@@ -706,5 +712,21 @@ func TestSeveralAPIs(t *testing.T) {
 	}
 	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "c", Method: "GET", Path: "/x"}); perr == nil || !strings.Contains(perr.Message, "not a declared call") {
 		t.Fatalf("an undeclared API: %v", perr)
+	}
+}
+
+// IDs are names a path could carry: a cloud's names with slashes (a log group "/ecs/web") are
+// IDs; empty values, empty or dot segments and other characters are not.
+func TestValidIDs(t *testing.T) {
+	for v, want := range map[string]bool{
+		"vpc-0abc": true, "/mamela/locust/web": true, "family:3": true, "a/b": true,
+		"": false, "/": false, "//x": false, "/a/../b": false, "a b": false, "a?b": false, "x/": false,
+	} {
+		if got := validIDs(map[string]string{"id": v}); got != want {
+			t.Errorf("validIDs(%q) = %t, want %t", v, got, want)
+		}
+	}
+	if validIDs(map[string]string{"bad name": "x"}) {
+		t.Error("an ID name with a space is valid")
 	}
 }
