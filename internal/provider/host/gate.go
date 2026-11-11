@@ -142,6 +142,8 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	var status int
 	var body []byte
 	var err error
+	var statusText string
+	ctx = context.WithValue(ctx, reasonSink{}, &statusText)
 	if r.Upload != "" {
 		up, ok := g.upstream.(Uploader)
 		p := g.ready[r.Upload]
@@ -182,7 +184,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	case err != nil:
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeUncertain, Message: err.Error()}
 	}
-	return protocol.HostResponse{Status: status, Body: string(body)}, nil
+	return protocol.HostResponse{Status: status, Body: string(body), Reason: statusText}, nil
 }
 
 // check returns the index of the approved request a request uses (-1 for none), for an upload the

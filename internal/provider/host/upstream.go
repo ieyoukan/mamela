@@ -13,6 +13,7 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -38,6 +39,9 @@ type File struct {
 type Uploader interface {
 	Upload(ctx context.Context, r protocol.HostRequest, f File) (status int, body []byte, err error)
 }
+
+// reasonSink is a context key: where an Upstream may write the status line's text.
+type reasonSink struct{}
 
 // ErrNotSent marks an error that happened before the request was sent.
 var ErrNotSent = errors.New("not sent")
@@ -99,6 +103,10 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 	}
 	if len(body) > maxResponse {
 		return resp.StatusCode, nil, fmt.Errorf("a response larger than %d MiB", maxResponse>>20)
+	}
+	// Some APIs (Proxmox) say why they refused in the status line, not in the body.
+	if r, ok := ctx.Value(reasonSink{}).(*string); ok && resp.StatusCode >= 400 {
+		*r = strings.TrimSpace(strings.TrimPrefix(resp.Status, strconv.Itoa(resp.StatusCode)))
 	}
 	return resp.StatusCode, body, nil
 }

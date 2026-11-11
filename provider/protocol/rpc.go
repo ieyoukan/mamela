@@ -270,4 +270,6 @@ type HostRequest struct {
 type HostResponse struct {
 	Status int    `json:"status"`
 	Body   string `json:"body"`
+	// Reason is the status line's text when the API puts its error there (Proxmox does).
+	Reason string `json:"reason,omitempty"`
 }

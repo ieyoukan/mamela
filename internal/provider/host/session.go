@@ -262,9 +262,22 @@ func (s *Session) catalog() protocol.Catalog {
 // approval would be overwritten.
 func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 	cat := s.catalog()
+	creates := false // an earlier request of the change creates the object (ADR 0004)
 	for _, a := range c.Requests {
 		e, ok := cat.Lookup(a.Method, a.Path)
+		if ok && e.Effect == protocol.EffectCreate {
+			creates = true
+		}
 		if !ok || e.Precondition == "" {
+			continue
+		}
+		if creates && observed == "" && c.Precondition == "" {
+			// A change to the object the same change creates: it did not exist when observed, so
+			// there is no version to base it on and nobody else's change to lose. The host allows
+			// it only after the create took effect in the same apply.
+			if _, sends := a.Params[e.Precondition]; sends {
+				return fmt.Errorf("%s %s sends %s, and the object it changes does not exist yet", a.Method, a.Path, e.Precondition)
+			}
 			continue
 		}
 		if observed == "" || c.Precondition != observed {
