@@ -207,7 +207,12 @@ Mamela に使わせるユーザー、トークン、権限を作るには、Mame
 ```sh
 GOOS=wasip1 GOARCH=wasm go build -o my-provider.wasm ./cmd/my-provider
 mamela provider inspect --catalog my-api-catalog.json my-provider.wasm
+# 複数の API を使うプロバイダーには、API ごとに --catalog を重ねる（カタログの api が API を名指す）
+mamela provider inspect --catalog builtin:ec2 --catalog builtin:ecs --catalog builtin:logs \
+  --catalog builtin:iam --catalog builtin:ssm pome/provider.wasm
 ```
+
+`--catalog` には、JSON のファイルか、Mamela が持つカタログ（`builtin:<名前>`）を書く。同じ API のカタログを 2 つ書くと止まる。カタログを渡さなかった API は表示し、その呼び出しは分類できないものとして示す。
 
 `inspect` は、次のものを表示する。
 

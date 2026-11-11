@@ -42,3 +42,28 @@ func TestProviderTrustNative(t *testing.T) {
 		t.Fatalf("another build under the trusted name: %d\n%s", code, out)
 	}
 }
+
+// --catalog takes a builtin catalog or a file, and may be given once per API: each catalog's api
+// names the API it classifies.
+func TestProviderInspectCatalogs(t *testing.T) {
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := run(context.Background(), args, &out, &out)
+		return code, out.String()
+	}
+	program := "../../examples/ec2/pome/provider.wasm"
+	code, out := run("provider", "inspect", "--catalog", "builtin:ec2", program)
+	if code != 0 || strings.Contains(out, "unclassified") || !strings.Contains(out, "POST / Action=RunInstances MaxCount=1 MinCount=1") {
+		t.Fatalf("the EC2 example with builtin:ec2: %d\n%s", code, out)
+	}
+	if code, out := run("provider", "inspect", "--catalog", "builtin:ec2", "--catalog", "builtin:ec2", program); code != 1 || !strings.Contains(out, "a second catalog") {
+		t.Fatalf("two catalogs of one api: %d\n%s", code, out)
+	}
+	if code, out := run("provider", "inspect", "--catalog", "builtin:nope", program); code != 1 || !strings.Contains(out, "no catalog") {
+		t.Fatalf("an unknown builtin catalog: %d\n%s", code, out)
+	}
+	// Another API's catalog alone classifies nothing of it.
+	if code, out := run("provider", "inspect", "--catalog", "builtin:ecs", "--catalog", "builtin:iam", program); code != 0 || !strings.Contains(out, "unclassified") {
+		t.Fatalf("catalogs of other apis: %d\n%s", code, out)
+	}
+}

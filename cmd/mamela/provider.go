@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -56,7 +58,9 @@ func runProviderInspect(ctx context.Context, args []string, stdout, stderr io.Wr
 	trustFile := fs.String("trust-file", "mamela.trust.toml", "the record of trusted native providers")
 	source := fs.String("source", "", "the provider's source, for a native provider (as trusted)")
 	ver := fs.String("version", "", "the provider's version, for a native provider (as trusted)")
-	catalogPath := fs.String("catalog", "", "a catalog of the provider's API (JSON) to classify its calls with")
+	var catalogPaths stringList
+	fs.Var(&catalogPaths, "catalog", "a catalog of one of the provider's APIs to classify its calls with: a JSON file, or builtin:<name> "+
+		"(repeat it for a provider with several APIs; each catalog's api names the API)")
 	asJSON := fs.Bool("json", false, "print the manifest and the classification as JSON")
 	tf := addToolFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -70,21 +74,29 @@ func runProviderInspect(ctx context.Context, args []string, stdout, stderr io.Wr
 	if err != nil {
 		return report(stderr, err)
 	}
-	var catalog protocol.Catalog
-	if *catalogPath != "" {
-		data, err := os.ReadFile(*catalogPath)
+	o := host.Options{Source: *source, Version: *ver, APIs: map[string]host.API{}}
+	for _, path := range catalogPaths {
+		catalog, err := loadCatalog(path)
 		if err != nil {
 			return report(stderr, err)
 		}
-		if err := json.Unmarshal(data, &catalog, json.RejectUnknownMembers(true)); err != nil {
-			return report(stderr, fmt.Errorf("%s: %w", *catalogPath, err))
+		if _, dup := o.APIs[catalog.API]; dup {
+			return report(stderr, fmt.Errorf("--catalog %s: a second catalog of api %q", path, catalog.API))
 		}
+		o.APIs[catalog.API] = host.API{Catalog: catalog}
+		o.Catalog = catalog // a provider with one API
+	}
+	if len(catalogPaths) > 1 {
+		if _, unnamed := o.APIs[""]; unnamed {
+			return report(stderr, errors.New("--catalog: with several catalogs, each names its api"))
+		}
+		o.Catalog = protocol.Catalog{}
 	}
 	trust, err := host.LoadTrust(*trustFile)
 	if err != nil {
 		return report(stderr, err)
 	}
-	o := host.Options{Source: *source, Version: *ver, Trust: trust, Catalog: catalog}
+	o.Trust = trust
 	if exe.Format != host.FormatNative {
 		t, err := tf.find()
 		if err != nil {
@@ -134,7 +146,16 @@ func runProviderInspect(ctx context.Context, args []string, stdout, stderr io.Wr
 		fmt.Fprintf(stdout, "%s\n", data)
 		return 0
 	}
-	fmt.Fprintf(stdout, "\n%s %s (api %s)\n", m.Provider, m.Version, orNone(m.API))
+	apis := m.API
+	if len(m.APIs) > 0 {
+		apis = strings.Join(m.APIs, ", ")
+	}
+	fmt.Fprintf(stdout, "\n%s %s (api %s)\n", m.Provider, m.Version, orNone(apis))
+	for _, api := range m.APIs {
+		if _, ok := o.APIs[api]; !ok {
+			fmt.Fprintf(stdout, "  no catalog of api %s was given (--catalog): its calls are unclassified\n", api)
+		}
+	}
 	fmt.Fprintf(stdout, "  observe: %s\n", calls(m.ObserveCalls))
 	for _, k := range m.Kinds {
 		for _, op := range k.Operations {
@@ -170,12 +191,24 @@ func calls(cs []protocol.Call) string {
 	var out []string
 	for _, c := range cs {
 		s := c.Method + " " + c.Path
+		if c.API != "" {
+			s = c.API + " " + s
+		}
+		// What tells the call apart (a query API's Action, an AWS JSON API's X-Amz-Target).
+		for _, k := range slices.Sorted(maps.Keys(c.Fixed)) {
+			if k != "Version" {
+				s += " " + k + "=" + c.Fixed[k]
+			}
+		}
 		var ps []string
 		if len(c.Query) > 0 {
 			ps = append(ps, "query: "+strings.Join(c.Query, ", "))
 		}
 		if len(c.Form) > 0 {
 			ps = append(ps, "form: "+strings.Join(c.Form, ", "))
+		}
+		if len(c.JSON) > 0 {
+			ps = append(ps, "json: "+strings.Join(c.JSON, ", "))
 		}
 		if len(ps) > 0 {
 			s += " (" + strings.Join(ps, "; ") + ")"
@@ -295,4 +328,34 @@ func runProviderScript(ctx context.Context, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stdout)
 	}
 	return 0
+}
+
+// stringList is a flag that may be given several times.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(v string) error {
+	*l = append(*l, v)
+	return nil
+}
+
+// loadCatalog reads a catalog: builtin:<name> (one Mamela ships) or a JSON file.
+func loadCatalog(path string) (protocol.Catalog, error) {
+	if name, ok := strings.CutPrefix(path, "builtin:"); ok {
+		c, found := external.Catalogs[name]
+		if !found {
+			return c, fmt.Errorf("--catalog %s: Mamela ships no catalog %q", path, name)
+		}
+		return c, nil
+	}
+	var c protocol.Catalog
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return c, err
+	}
+	if err := json.Unmarshal(data, &c, json.RejectUnknownMembers(true)); err != nil {
+		return c, fmt.Errorf("%s: %w", path, err)
+	}
+	return c, c.Check()
 }
