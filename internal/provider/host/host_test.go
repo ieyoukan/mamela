@@ -2,8 +2,10 @@ package host
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -625,5 +627,64 @@ func TestOutcomeComesFromTheRecord(t *testing.T) {
 		if got := outcome(c.record, c.err); got.Outcome != c.want || (c.want != OutcomeDone) != (got.Err != nil) {
 			t.Errorf("%s: %s %v, want %s", c.name, got.Outcome, got.Err, c.want)
 		}
+	}
+}
+
+// An AWS JSON API call (ADR 0007): told apart by its X-Amz-Target header, its body's members are
+// its parameters, as canonical JSON. A change is sent only exactly as approved, member by member,
+// and a bound member names the permit's object.
+func TestJSONCalls(t *testing.T) {
+	cat := protocol.Catalog{API: "svc", Entries: []protocol.Entry{
+		{Method: "POST", Path: "/", Effect: protocol.EffectLoseData, Header: []string{"X-Amz-Target"}, JSON: []string{"cluster", "force"},
+			Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteCluster"}, Bind: []string{"cluster"}},
+		{Method: "POST", Path: "/", Effect: protocol.EffectRead, Header: []string{"X-Amz-Target"}, JSON: []string{"clusters"},
+			Fixed: map[string]string{"X-Amz-Target": "Svc.DescribeClusters"}},
+	}}
+	if err := cat.Check(); err != nil {
+		t.Fatal(err)
+	}
+	del := protocol.Call{Method: "POST", Path: "/", Header: []string{"X-Amz-Target"}, JSON: []string{"cluster", "force"}, Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteCluster"}}
+	approved := protocol.Approved{Method: "POST", Path: "/", Params: map[string][]string{"X-Amz-Target": {"Svc.DeleteCluster"}, "cluster": {`"c1"`}, "force": {"true"}}}
+	req := func(members map[string]string, form map[string][]string) protocol.HostRequest {
+		j := map[string]jsontext.Value{}
+		for k, v := range members {
+			j[k] = jsontext.Value(v)
+		}
+		return protocol.HostRequest{Method: "POST", Path: "/", Header: map[string][]string{"X-Amz-Target": {"Svc.DeleteCluster"}}, JSON: j, Form: form}
+	}
+	for _, c := range []struct {
+		name    string
+		r       protocol.HostRequest
+		refused string
+	}{
+		{"exactly as approved", req(map[string]string{"cluster": `"c1"`, "force": ` true `}, nil), ""},
+		{"another value", req(map[string]string{"cluster": `"c1"`, "force": `false`}, nil), "not the approved request"},
+		{"another object", req(map[string]string{"cluster": `"c2"`, "force": `true`}, nil), "not the approved c1"},
+		{"a member not declared", req(map[string]string{"cluster": `"c1"`, "force": `true`, "extra": `1`}, nil), "not declared"},
+		{"a member in the form", req(map[string]string{"force": `true`}, map[string][]string{"cluster": {"c1"}}), "not declared in the form"},
+		{"the string \"true\" for true", req(map[string]string{"cluster": `"c1"`, "force": `"true"`}, nil), "not the approved request"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &protocol.Permit{Op: "delete", Calls: []protocol.Call{del}, IDs: map[string]string{"cluster": "c1"}, Requests: []protocol.Approved{approved}, ExpiresAt: "2026-11-10T01:00:00Z"}
+			g := gate{phase: phaseApply, calls: p.Calls, permit: p, used: make([]bool, 1), catalog: cat, upstream: &stub{}, now: testNow}
+			_, perr := g.send(context.Background(), c.r)
+			switch {
+			case c.refused == "" && perr != nil:
+				t.Errorf("refused: %v", perr)
+			case c.refused != "" && (perr == nil || !strings.Contains(perr.Message, c.refused)):
+				t.Errorf("got %v, want a refusal with %q", perr, c.refused)
+			}
+		})
+	}
+	// What is sent: the target header, the AWS JSON content type, and the members in canonical form.
+	var got *http.Request
+	var body []byte
+	h := Handler{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		body, _ = io.ReadAll(r.Body)
+	})}
+	h.Do(context.Background(), req(map[string]string{"force": ` true`, "cluster": `"c1"`}, nil))
+	if got.Header.Get("X-Amz-Target") != "Svc.DeleteCluster" || got.Header.Get("Content-Type") != "application/x-amz-json-1.1" || string(body) != `{"cluster":"c1","force":true}` {
+		t.Fatalf("sent %v %q", got.Header, body)
 	}
 }

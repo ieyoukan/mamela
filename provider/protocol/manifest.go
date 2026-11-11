@@ -14,6 +14,8 @@
 package protocol
 
 import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"maps"
 	"regexp"
@@ -113,8 +115,14 @@ type Call struct {
 	File string `json:"file,omitempty"`
 	// Fixed are parameters the call always sends with exactly these values, and which tell it
 	// apart from other calls on the same method and path: a query API's "Action=RunInstances"
-	// (ADR 0005). Each is also one of Query or Form, where it is sent.
+	// (ADR 0005), or an AWS JSON API's "X-Amz-Target" header (ADR 0007). Each is also one of
+	// Query, Form or Header, where it is sent.
 	Fixed map[string]string `json:"fixed,omitempty"`
+	// Header are parameters sent as HTTP headers ("X-Amz-Target", ADR 0007).
+	Header []string `json:"header,omitempty"`
+	// JSON are the members of a JSON object the call sends as its body (an AWS JSON API, ADR
+	// 0007). A member's value, as a parameter, is its canonical JSON text ("\"locust\"", "1").
+	JSON []string `json:"json,omitempty"`
 }
 
 // Same reports whether two calls are the same call: method, path and fixed parameters.
@@ -175,17 +183,27 @@ func (o Operation) checkAdopts() error {
 
 // In says where the call sends a parameter: "query", "form", or "" when it does not declare it.
 func (c Call) In(param string) string {
+	return in(param, c.Query, c.Form, c.Header, c.JSON)
+}
+
+func in(param string, query, form, header, json []string) string {
 	switch {
-	case slices.Contains(c.Query, param):
+	case slices.Contains(query, param):
 		return "query"
-	case slices.Contains(c.Form, param):
+	case slices.Contains(form, param):
 		return "form"
+	case slices.Contains(header, param):
+		return "header"
+	case slices.Contains(json, param):
+		return "json"
 	}
 	return ""
 }
 
 // Params are all the parameters the call may send.
-func (c Call) Params() []string { return append(slices.Clone(c.Query), c.Form...) }
+func (c Call) Params() []string {
+	return slices.Concat(c.Query, c.Form, c.Header, c.JSON)
+}
 
 // Need is one capability an operation needs.
 type Need struct {
@@ -373,7 +391,7 @@ func checkCalls(calls []Call) error {
 	seen := map[string]bool{}
 	byPath := map[string][]Call{}
 	for _, c := range calls {
-		if err := checkCall(c.Method, c.Path, c.Query, c.Form); err != nil {
+		if err := checkCall(c.Method, c.Path, c.Query, c.Form, c.Header, c.JSON, c.Fixed); err != nil {
 			return err
 		}
 		if err := checkFixed(c.Method, c.Path, c.Fixed, c.In); err != nil {
@@ -437,7 +455,7 @@ func fixedKey(f map[string]string) string {
 	return strings.Join(parts, "&")
 }
 
-func checkCall(method, path string, query, form []string) error {
+func checkCall(method, path string, query, form, header, json []string, fixed map[string]string) error {
 	if !slices.Contains(Methods, method) {
 		return fmt.Errorf("call %s %s: unknown method", method, path)
 	}
@@ -445,13 +463,48 @@ func checkCall(method, path string, query, form []string) error {
 		return fmt.Errorf("call %s %s: %w", method, path, err)
 	}
 	names := map[string]bool{}
-	for _, n := range append(slices.Clone(query), form...) {
+	for _, n := range slices.Concat(query, form, header, json) {
 		if !validName(n) || names[n] {
-			return fmt.Errorf("call %s %s: parameter %q is invalid or declared twice (a name is in the query or the form, not both)", method, path, n)
+			return fmt.Errorf("call %s %s: parameter %q is invalid or declared twice (a name is in one place only)", method, path, n)
 		}
 		names[n] = true
 	}
+	if len(json) > 0 && len(form) > 0 {
+		return fmt.Errorf("call %s %s: a body is a form or a JSON object, not both", method, path)
+	}
+	for k := range fixed {
+		if slices.Contains(json, k) {
+			return fmt.Errorf("call %s %s: fixed parameter %s is a JSON member; fix a header (X-Amz-Target) instead", method, path, k)
+		}
+	}
 	return nil
+}
+
+// JSONParams are the members of a JSON object as parameters: each one's canonical JSON text
+// (RFC 8785), so that what is approved is exactly what is sent (ADR 0007).
+func JSONParams(members map[string]jsontext.Value) (map[string][]string, error) {
+	out := map[string][]string{}
+	for k, v := range members {
+		c := slices.Clone(v)
+		if err := (*jsontext.Value)(&c).Canonicalize(); err != nil {
+			return nil, fmt.Errorf("JSON member %s: %w", k, err)
+		}
+		out[k] = []string{string(c)}
+	}
+	return out, nil
+}
+
+// ParamText is a parameter's value as text: a JSON member that is a string, without its quotes
+// (to compare with an ID, or to read a measure); anything else as it is.
+func ParamText(where, value string) string {
+	if where != "json" {
+		return value
+	}
+	var s string
+	if json.Unmarshal([]byte(value), &s) == nil {
+		return s
+	}
+	return value
 }
 
 // Operation returns the declaration of an operation on a kind.

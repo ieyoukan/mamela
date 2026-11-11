@@ -379,6 +379,10 @@ type HostRequest struct {
 	Path   string              `json:"path"`
 	Query  map[string][]string `json:"query,omitempty"`
 	Form   map[string][]string `json:"form,omitempty"` // sent as application/x-www-form-urlencoded
+	// Header are parameters sent as headers; JSON is the body, a JSON object, by member (an AWS
+	// JSON API: application/x-amz-json-1.1, ADR 0007).
+	Header map[string][]string       `json:"header,omitempty"`
+	JSON   map[string]jsontext.Value `json:"json,omitempty"`
 	// Upload names an artifact of the change: the host sends the form as multipart/form-data, with
 	// the artifact as the call's File parameter.
 	Upload string `json:"upload,omitempty"`

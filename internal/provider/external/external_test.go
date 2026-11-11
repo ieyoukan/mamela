@@ -308,3 +308,68 @@ func TestAfterWaitsForTheDependency(t *testing.T) {
 		t.Fatalf("db once web is Mamela's: %+v", db)
 	}
 }
+
+// A profile's temporary credentials are read for each request, with their session token, so that
+// renewed credentials are used; the approval's scope names the profile, not the key (ADR 0007).
+func TestSigV4Profile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "credentials")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", file)
+	write := func(key, token string) {
+		os.WriteFile(file, []byte("[other]\naws_access_key_id = AKIAOTHER\naws_secret_access_key = x\n\n[role]\naws_access_key_id = "+key+
+			"\naws_secret_access_key = secret\naws_session_token = "+token+"\n"), 0o600)
+	}
+	now := func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }
+	sign := SigV4Profile("role", "ap-northeast-1", "ecs", now)
+	req := func() *http.Request {
+		r, _ := http.NewRequest("POST", "https://ecs.ap-northeast-1.amazonaws.com/", strings.NewReader(`{}`))
+		return r
+	}
+	write("ASIAFIRST", "token-1")
+	a := req()
+	if err := sign(a); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(a.Header.Get("Authorization"), "Credential=ASIAFIRST/") || a.Header.Get("X-Amz-Security-Token") != "token-1" {
+		t.Fatalf("signed %q with token %q", a.Header.Get("Authorization"), a.Header.Get("X-Amz-Security-Token"))
+	}
+	write("ASIARENEWED", "token-2")
+	b := req()
+	sign(b)
+	if !strings.Contains(b.Header.Get("Authorization"), "Credential=ASIARENEWED/") || b.Header.Get("X-Amz-Security-Token") != "token-2" {
+		t.Fatal("renewed credentials are not used")
+	}
+	if err := SigV4Profile("missing", "ap-northeast-1", "ecs", now)(req()); err == nil || !strings.Contains(err.Error(), "renew") {
+		t.Fatalf("a profile without credentials: %v", err)
+	}
+	cfg := func(profile string) string {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte("[provider.aws]\napi_url = \"https://ecs.ap-northeast-1.amazonaws.com\"\nauth = \"aws-sigv4\"\nprofile = \""+profile+
+			"\"\nregion = \"ap-northeast-1\"\nservice = \"ecs\"\n"), 0o600)
+		return p
+	}
+	c, err := LoadConfig(cfg("role"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, id1, err := c.api("aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("ASIATHIRD", "token-3")
+	_, _, id2, _ := c.api("aws")
+	c2, _ := LoadConfig(cfg("other"))
+	_, _, id3, _ := c2.api("aws")
+	if id1 != id2 || id1 == id3 {
+		t.Fatalf("scope: renewed %v, other profile %v", id1 == id2, id1 == id3)
+	}
+	for _, bad := range []string{
+		"[provider.aws]\napi_url = \"https://x\"\nauth = \"aws-sigv4\"\nprofile = \"role\"\ntoken_id = \"A\"\ntoken_file = \"t\"\nregion = \"r\"\nservice = \"s\"\n",
+		"[provider.kv]\napi_url = \"https://x\"\nprofile = \"role\"\n",
+	} {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(bad), 0o600)
+		if _, err := LoadConfig(p); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}

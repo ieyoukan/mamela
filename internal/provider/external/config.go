@@ -9,13 +9,14 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
 	"github.com/BurntSushi/toml"
 
@@ -56,6 +57,10 @@ type APIConfig struct {
 	TokenID string `toml:"token_id"`
 	Region  string `toml:"region"`
 	Service string `toml:"service"`
+	// Profile is, for aws-sigv4, an AWS profile whose credentials (temporary ones too, with their
+	// session token) are read from the shared credentials file for each request, instead of
+	// TokenID and TokenFile (ADR 0007). The approval's scope names the profile, not the key.
+	Profile string `toml:"profile"`
 	// TLSFingerprint pins the server certificate's SHA-256 ("AA:BB:..."), for an API with a
 	// self-signed certificate. Otherwise the system's CAs verify it.
 	TLSFingerprint string `toml:"tls_fingerprint"`
@@ -94,8 +99,10 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("%s: provider %s: auth %q (bearer, proxmox or aws-sigv4)", path, name, a.Auth)
 		case a.Auth == "proxmox" && (a.TokenID == "" || a.TokenFile == ""):
 			return c, fmt.Errorf("%s: provider %s: auth proxmox needs token_id and token_file", path, name)
-		case a.Auth == "aws-sigv4" && (a.TokenID == "" || a.TokenFile == "" || a.Region == "" || a.Service == ""):
-			return c, fmt.Errorf("%s: provider %s: auth aws-sigv4 needs token_id (the access key ID), token_file (the secret), region and service", path, name)
+		case a.Auth == "aws-sigv4" && ((a.TokenID == "" || a.TokenFile == "") == (a.Profile == "") || a.Region == "" || a.Service == ""):
+			return c, fmt.Errorf("%s: provider %s: auth aws-sigv4 needs region, service, and either profile or token_id (the access key ID) and token_file (the secret)", path, name)
+		case a.Auth != "aws-sigv4" && a.Profile != "":
+			return c, fmt.Errorf("%s: provider %s: profile is for auth aws-sigv4", path, name)
 		case a.Auth != "aws-sigv4" && (a.Region != "" || a.Service != ""):
 			return c, fmt.Errorf("%s: provider %s: region and service are for auth aws-sigv4", path, name)
 		case a.GuardTokenID != "" && a.GuardTokenFile == "":
@@ -217,17 +224,85 @@ func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catal
 			}
 			return nil
 		}}
-	if a.Auth == "aws-sigv4" {
+	credential := a.Auth + "\x00" + a.TokenID + "\x00" + token
+	switch {
+	case a.Auth == "aws-sigv4" && a.Profile != "":
+		up.Authorize = SigV4Profile(a.Profile, a.Region, a.Service, time.Now)
+		credential = a.Auth + "\x00profile\x00" + a.Profile
+	case a.Auth == "aws-sigv4":
 		up.Authorize = SigV4(a.TokenID, token, a.Region, a.Service, time.Now)
 	}
-	return up, catalog, endpointID(up.Base, a.Auth+"\x00"+a.TokenID+"\x00"+token+"\x00"+strings.ToLower(a.TLSFingerprint)+"\x00"+a.Region+"\x00"+a.Service, catalog), nil
+	return up, catalog, endpointID(up.Base, credential+"\x00"+strings.ToLower(a.TLSFingerprint)+"\x00"+a.Region+"\x00"+a.Service, catalog), nil
 }
 
 // SigV4 signs each request with AWS Signature Version 4 (the AWS SDK's signer), over its body.
 func SigV4(accessKeyID, secret, region, service string, now func() time.Time) func(*http.Request) error {
-	signer := v4.NewSigner()
 	creds := aws.Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secret}
+	return sigV4(func() (aws.Credentials, error) { return creds, nil }, region, service, now)
+}
+
+// SigV4Profile signs with the credentials of an AWS profile in the shared credentials file
+// ($AWS_SHARED_CREDENTIALS_FILE, else ~/.aws/credentials), read for each request: temporary
+// credentials (a role's, with a session token) that a person renews are used as they are renewed.
+// A profile without credentials there sends nothing.
+func SigV4Profile(profile, region, service string, now func() time.Time) func(*http.Request) error {
+	return sigV4(func() (aws.Credentials, error) { return ProfileCredentials(profile) }, region, service, now)
+}
+
+// ProfileCredentials reads a profile's keys (and session token) from the shared credentials file.
+func ProfileCredentials(profile string) (aws.Credentials, error) {
+	path := os.Getenv("AWS_SHARED_CREDENTIALS_FILE")
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return aws.Credentials{}, err
+		}
+		path = filepath.Join(home, ".aws", "credentials")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return aws.Credentials{}, fmt.Errorf("AWS profile %s: %w", profile, err)
+	}
+	var creds aws.Credentials
+	section := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		if section != profile {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(k) {
+		case "aws_access_key_id":
+			creds.AccessKeyID = strings.TrimSpace(v)
+		case "aws_secret_access_key":
+			creds.SecretAccessKey = strings.TrimSpace(v)
+		case "aws_session_token":
+			creds.SessionToken = strings.TrimSpace(v)
+		}
+	}
+	if creds.AccessKeyID == "" || creds.SecretAccessKey == "" {
+		return aws.Credentials{}, fmt.Errorf("AWS profile %s has no aws_access_key_id and aws_secret_access_key in %s (renew its credentials)", profile, path)
+	}
+	return creds, nil
+}
+
+func sigV4(credentials func() (aws.Credentials, error), region, service string, now func() time.Time) func(*http.Request) error {
+	signer := v4.NewSigner()
 	return func(r *http.Request) error {
+		creds, err := credentials()
+		if err != nil {
+			return err
+		}
 		body := []byte{}
 		if r.GetBody != nil {
 			rc, err := r.GetBody()

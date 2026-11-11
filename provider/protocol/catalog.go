@@ -44,6 +44,9 @@ type Entry struct {
 	File string `json:"file,omitempty"`
 	// Fixed tells calls on the same method and path apart, as in Call.
 	Fixed map[string]string `json:"fixed,omitempty"`
+	// Header and JSON are where the API reads the other parameters, as in Call (ADR 0007).
+	Header []string `json:"header,omitempty"`
+	JSON   []string `json:"json,omitempty"`
 	// Measures are the parameters that size what the call makes or changes (vCPUs, memory, disk):
 	// the host checks their values against the site's limits, whatever the provider declares.
 	Measures []Measure `json:"measures,omitempty"`
@@ -78,11 +81,13 @@ const (
 	FormatSize  = "size"  // an absolute size: "10G", "512M", "1T" (in GiB, rounded up); "+5G" is refused
 	FormatDrive = "drive" // a new disk "<storage>:<GiB>[,options]" (Proxmox); an import is 0 here, its growth is a size
 	FormatTable = "table" // a name the measure's table gives a number ("t3.small" -> 2 vCPUs)
+	// FormatCPUUnits: ECS CPU units, 1024 to a vCPU ("256" is a quarter: 1 vCPU, rounded up).
+	FormatCPUUnits = "cpu-units"
 )
 
 // In says where the API reads a parameter of the call: "query", "form", or "".
 func (e Entry) In(param string) string {
-	return Call{Query: e.Query, Form: e.Form}.In(param)
+	return in(param, e.Query, e.Form, e.Header, e.JSON)
 }
 
 // Check verifies the catalog's own consistency.
@@ -90,7 +95,7 @@ func (c Catalog) Check() error {
 	seen := map[string]bool{}
 	byPath := map[string][]Call{}
 	for _, e := range c.Entries {
-		if err := checkCall(e.Method, e.Path, e.Query, e.Form); err != nil {
+		if err := checkCall(e.Method, e.Path, e.Query, e.Form, e.Header, e.JSON, e.Fixed); err != nil {
 			return fmt.Errorf("catalog %s: %w", c.API, err)
 		}
 		if err := checkFixed(e.Method, e.Path, e.Fixed, e.In); err != nil {
@@ -107,7 +112,7 @@ func (c Catalog) Check() error {
 		}
 		for _, m := range e.Measures {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
-				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
+				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable, FormatCPUUnits}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
 				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
 			}
 		}
@@ -141,6 +146,12 @@ func (m Measure) Read(value string) (int64, error) {
 // ReadMeasure reads a measure's value.
 func ReadMeasure(format, value string) (int64, error) {
 	switch format {
+	case FormatCPUUnits:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%q is not a number of CPU units", value)
+		}
+		return (n + 1023) / 1024, nil
 	case FormatCount:
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || n < 0 {
@@ -185,6 +196,7 @@ func ReadMeasure(format, value string) (int64, error) {
 func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) error {
 	for _, m := range e.Measures {
 		for _, v := range params[m.Param] {
+			v = ParamText(e.In(m.Param), v)
 			n, err := m.Read(v)
 			if err != nil {
 				return fmt.Errorf("%s %s: %s: %v", e.Method, e.Path, m.Param, err)

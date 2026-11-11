@@ -214,13 +214,17 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	if err := protocol.CheckPath(r.Path); err != nil {
 		return -1, protocol.Call{}, err.Error()
 	}
-	// The call it is: method, path and the fixed parameters it carries ("Action=RunInstances").
-	all := map[string][]string{}
-	for k, v := range r.Query {
-		all[k] = v
+	// The call it is: method, path and the fixed parameters it carries ("Action=RunInstances",
+	// "X-Amz-Target: ...").
+	members, err := protocol.JSONParams(r.JSON)
+	if err != nil {
+		return -1, protocol.Call{}, err.Error()
 	}
-	for k, v := range r.Form {
-		all[k] = append(all[k], v...)
+	all := map[string][]string{}
+	for _, part := range []map[string][]string{r.Query, r.Form, r.Header, members} {
+		for k, v := range part {
+			all[k] = append(all[k], v...)
+		}
 	}
 	call, ids, found := protocol.FindCall(g.calls, r.Method, r.Path, all, true)
 	if !found {
@@ -248,10 +252,10 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	for _, part := range []struct {
 		in   string
 		vals map[string][]string
-	}{{"query", r.Query}, {"form", r.Form}} {
+	}{{"query", r.Query}, {"form", r.Form}, {"header", r.Header}, {"json", members}} {
 		for _, k := range slices.Sorted(maps.Keys(part.vals)) {
 			if _, twice := params[k]; twice {
-				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is sent both in the query and in the form", k)
+				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is sent in two places (both the query and the form, or a header or the body)", k)
 			}
 			if call.In(k) != part.in {
 				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is not declared in the %s of %s", k, part.in, rec.Call)
@@ -312,7 +316,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.IDs)) {
 		for _, v := range params[name] {
-			if v != p.IDs[name] {
+			if protocol.ParamText(call.In(name), v) != p.IDs[name] {
 				return -1, fmt.Sprintf("parameter %s=%s is not the approved %s", name, v, p.IDs[name])
 			}
 		}
@@ -323,7 +327,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 		if !ok {
 			return -1, fmt.Sprintf("%s names the object of %s, and the permit binds no %s", b, rec.Call, b)
 		}
-		if got := params[b]; len(got) != 1 || got[0] != want {
+		if got := params[b]; len(got) != 1 || protocol.ParamText(entry.In(b), got[0]) != want {
 			return -1, fmt.Sprintf("%s=%s is not the approved %s", b, strings.Join(got, ","), want)
 		}
 	}
