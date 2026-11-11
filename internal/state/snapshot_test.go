@@ -44,3 +44,16 @@ func TestDecodeRejects(t *testing.T) {
 		}
 	}
 }
+
+// Every part of a snapshot survives storing and reading it: a plan is recomputed from it.
+func TestNodesRoundTrip(t *testing.T) {
+	s := Empty(time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
+	s.Nodes = map[string]Node{"web": {Provider: "proxmox", Kind: "ProxmoxVM", Managed: true, ID: 7007, Running: true, UptimeSeconds: 60, ObservedAt: s.AsOf}}
+	got, err := Decode(s.Canonical())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Digest() != s.Digest() || got.Nodes["web"].ID != 7007 {
+		t.Fatalf("nodes do not round-trip: %+v", got.Nodes)
+	}
+}

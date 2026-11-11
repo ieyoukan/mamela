@@ -189,6 +189,13 @@ func (s Snapshot) normalized() Snapshot {
 			n.Provided[k] = v
 		}
 	}
+	if len(s.Nodes) > 0 {
+		n.Nodes = map[string]Node{}
+		for k, v := range s.Nodes {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.Nodes[k] = v
+		}
+	}
 	return n
 }
 

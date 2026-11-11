@@ -105,7 +105,27 @@ func main() { sdk.Serve(myprovider.Provider{}) }
 
 - **ファイル・ソケット・HTTP を開くコード:** import の検査で拒否される（MAM-PRV-0001）。`net/http`、`os.ReadFile`、`os.Open` などを使うパッケージを、プロバイダーの import から外す。偽の API のように `net/http` を使うコードは、テストの側に置く（`examples/kv/kvapi` と `kvprovider` の分け方を参照）。
 - **stdout への出力:** stdout には、プロトコルのメッセージしか書けない。診断は stderr に書く（`fmt.Println` は MAM-PRV-0003 になる）。
-- **送れる本文:** v1 で送れるのは、クエリとフォームだけである。
+- **送れる本文:** v1 で送れるのは、クエリとフォームと、host が用意する成果物（下の「ファイルとノード」）だけである。
+
+## ファイルとノード（ADR 0004）
+
+VM のようなマシンを作るプロバイダーには、大きなファイル（イメージ）と、秘密を含むファイル（mamelet の seed）が要る。プロバイダーは、どちらの中身にも触れない。
+
+- **成果物を宣言する:** 変更（Change）の `artifacts` に、必要なファイルを宣言する。
+  - `download`: `url`（https）、`sha256`、`name`（保存する名前）
+  - `seed`: `node`（リソースの名前）、`nodeId`、`network`
+
+  plan はこれを表示し、承認の対象にする。
+- **値として参照する:** 承認する要求の値には、`{artifact:<id>.name}` と `{artifact:<id>.sha256}` を書ける。seed の名前とハッシュは、トークンを含むので apply まで決まらない。host は、成果物を用意したときに値を埋めてから照合する。
+- **apply での手順:**
+  1. `sdk.Host.Artifact(ctx, id)` で用意を頼み、名前・sha256・大きさを受け取る。
+  2. `HostRequest{..., Upload: id}` でアップロードを頼む。host は、宣言したフォームの順にフィールドを書き、カタログが `file` とするパラメータとしてファイルを足して、multipart で送る。pveproxy のように、フィールドの順を決めている API があるので、呼び出しの `Form` は API が読む順に書く。
+- **作ったばかりの対象への変更:** 同じ変更の先の要求が作った対象への変更は、観測した版（前提条件）なしで送れる。plan の時点で存在しないので、上書きしてしまう他人の変更がない。host は、この apply で作成が効いた後だけ認める。
+- **ノード:** kind に `node: true` を書くと、そのリソースは mamelet が載るマシンになる。
+  - 観測では、存在するリソースについて `node`（`id`、`running`、`uptimeSeconds`）を返す。
+  - 宣言では、`Mamela.package_on(Proxmox.node(vm), ...)` のように、パッケージやサービスや k3s をその上に書ける。
+  - Mamela は、観測した `id` で revision と登録トークンを出す。
+  - seed のネットワークは、site の規則（`network.dhcp`、`static_first`–`static_last`）で確かめる（LAB-0304）。
 
 ## ビルドと確認
 
@@ -222,7 +242,7 @@ apply は、plan のときに SQLite に保存したプログラムを動かす�
 
 ### Mamela が持つカタログと、Proxmox
 
-Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox`（`internal/provider/external/catalogs.go`）がある。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く。
+Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox`（`provider/catalogs`。プロバイダーの試験からも import できる）がある。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く。
 
 ```toml
 [provider.pve-vm]
@@ -234,7 +254,13 @@ tls_fingerprint = "AA:BB:..."                   # サーバー証明書の SHA-2
 catalog         = "builtin:proxmox"
 ```
 
-例として、Proxmox の VM（OS を入れない空の VM）を作り、vCPU とメモリを変えるプロバイダーが [`examples/pve`](../examples/pve) にある。偽の Proxmox（`examples/pve/fakepve`）で適合テストを通し、検証環境の実機でも plan・apply した（`docs/development.md`）。
+Proxmox の VM を作り、その上で mamelet を動かすプロバイダーは、[`github.com/ieyoukan/mamela-proxmox`](https://github.com/ieyoukan/mamela-proxmox) にある。使っている仕組みは次のとおり。
+
+- 成果物: 固定したクラウドイメージと seed
+- ノードの kind
+- 同じ変更で作る対象への変更
+
+小さな例として、OS を入れない空の VM を作り、vCPU とメモリを変えるプロバイダーも [`examples/pve`](../examples/pve) にある。偽の Proxmox（`examples/pve/fakepve`）で適合テストを通し、検証環境の実機でも plan・apply した（`docs/development.md`）。
 
 ## ネイティブのプロバイダー
 
