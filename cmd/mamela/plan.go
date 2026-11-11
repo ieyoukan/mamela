@@ -186,7 +186,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	plan.Render(stdout, p)
 	if site != nil {
-		renderPlanUses(stdout, site, p, res.Graph, pol)
+		renderPlanUses(stdout, site, p, res.Graph, pol, rt.Manifests())
 	}
 	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
 	return 0

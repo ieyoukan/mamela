@@ -310,7 +310,8 @@ type Provider struct {
 	Store     *store.Store // records each permit, once
 	Clock     func() time.Time
 	Providers string // the providers digest, written into each permit
-	// PermitTTL bounds each permit (default 10 minutes).
+	// PermitTTL bounds each permit (default 2 hours, the host's limit on one apply: creating a
+	// machine from an image waits for the import). A permit is used once, by one apply.
 	PermitTTL time.Duration
 
 	last state.Snapshot
@@ -355,7 +356,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	now := p.Clock().UTC()
 	ttl := p.PermitTTL
 	if ttl == 0 {
-		ttl = 10 * time.Minute
+		ttl = 2 * time.Hour
 	}
 	id := step.OperationID + "@" + now.Format(time.RFC3339Nano)
 	permit, err := protocol.NewPermit(s.Manifest(), change, id, step.PlanDigest, p.Providers, now.Add(ttl).Format(time.RFC3339))

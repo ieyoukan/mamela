@@ -56,8 +56,8 @@ func (s *Site) Requirements(reqs []proxmox.Requirement) []spec.Requirement {
 // conditions (the approved apt change set, the allowed origins). A grant is standing only where
 // the policy decided the operation automatically and the need's StandingIf conditions hold; a
 // standing grant is tied to the declaration, not to one operation.
-func (s *Site) PlannedRequirements(p *plan.Plan, g *graph.Graph, pol policy.Policy) []spec.Requirement {
-	ps := s.Providers()
+func (s *Site) PlannedRequirements(p *plan.Plan, g *graph.Graph, pol policy.Policy, external ...spec.Manifest) []spec.Requirement {
+	ps := append(s.Providers(), external...)
 	desired := map[string]graph.Resource{}
 	for _, r := range g.Resources {
 		desired[r.ID()] = r
