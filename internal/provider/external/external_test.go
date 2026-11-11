@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -224,5 +226,43 @@ func TestOwnershipNeedsMamelasRecord(t *testing.T) {
 	got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
 	if err != nil || !got["KVItem web"].Observed.Owned || len(got["KVItem web"].Changes) != 1 {
 		t.Fatalf("an item Mamela recorded creating: %+v %v", got["KVItem web"], err)
+	}
+}
+
+// An AWS API's requests are signed with SigV4 over their body, for the configured region and
+// service; the signature changes with the body.
+func TestSigV4(t *testing.T) {
+	now := func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }
+	sign := SigV4("AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "ap-northeast-1", "ec2", now)
+	req := func(body string) *http.Request {
+		r, _ := http.NewRequest("POST", "https://ec2.ap-northeast-1.amazonaws.com/", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	a, b := req("Action=StartInstances&InstanceId.1=i-1"), req("Action=StartInstances&InstanceId.1=i-2")
+	if err := sign(a); err != nil {
+		t.Fatal(err)
+	}
+	sign(b)
+	auth := a.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261111/ap-northeast-1/ec2/aws4_request") ||
+		a.Header.Get("X-Amz-Date") != "20261111T120000Z" || strings.Contains(auth, "wJalr") {
+		t.Fatalf("authorization %q date %q", auth, a.Header.Get("X-Amz-Date"))
+	}
+	if auth == b.Header.Get("Authorization") {
+		t.Fatal("the signature does not cover the body")
+	}
+	if body, _ := io.ReadAll(a.Body); string(body) != "Action=StartInstances&InstanceId.1=i-1" {
+		t.Fatalf("the body was consumed by signing: %q", body)
+	}
+	for _, bad := range []string{
+		"[provider.ec2]\napi_url = \"https://ec2.example\"\nauth = \"aws-sigv4\"\ntoken_id = \"AKID\"\n",
+		"[provider.ec2]\napi_url = \"https://ec2.example\"\nregion = \"us-east-1\"\n",
+	} {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(bad), 0o600)
+		if _, err := LoadConfig(p); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
 	}
 }

@@ -1,12 +1,16 @@
 package external
 
 import (
+	"io"
+
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -45,9 +49,13 @@ type APIConfig struct {
 	APIURL    string `toml:"api_url"`
 	TokenFile string `toml:"token_file"`
 	Catalog   string `toml:"catalog"`
-	// Auth is how the token is sent: "bearer" (the default) or "proxmox" (with TokenID).
+	// Auth is how the token is sent: "bearer" (the default), "proxmox" (with TokenID), or
+	// "aws-sigv4" (TokenID is the access key ID, the token file holds the secret access key; each
+	// request is signed for Region and Service).
 	Auth    string `toml:"auth"`
 	TokenID string `toml:"token_id"`
+	Region  string `toml:"region"`
+	Service string `toml:"service"`
 	// TLSFingerprint pins the server certificate's SHA-256 ("AA:BB:..."), for an API with a
 	// self-signed certificate. Otherwise the system's CAs verify it.
 	TLSFingerprint string `toml:"tls_fingerprint"`
@@ -75,10 +83,14 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("%s: provider %s: %w", path, name, err)
 		}
 		switch {
-		case a.Auth != "" && a.Auth != "bearer" && a.Auth != "proxmox":
-			return c, fmt.Errorf("%s: provider %s: auth %q (bearer or proxmox)", path, name, a.Auth)
+		case a.Auth != "" && a.Auth != "bearer" && a.Auth != "proxmox" && a.Auth != "aws-sigv4":
+			return c, fmt.Errorf("%s: provider %s: auth %q (bearer, proxmox or aws-sigv4)", path, name, a.Auth)
 		case a.Auth == "proxmox" && (a.TokenID == "" || a.TokenFile == ""):
 			return c, fmt.Errorf("%s: provider %s: auth proxmox needs token_id and token_file", path, name)
+		case a.Auth == "aws-sigv4" && (a.TokenID == "" || a.TokenFile == "" || a.Region == "" || a.Service == ""):
+			return c, fmt.Errorf("%s: provider %s: auth aws-sigv4 needs token_id (the access key ID), token_file (the secret), region and service", path, name)
+		case a.Auth != "aws-sigv4" && (a.Region != "" || a.Service != ""):
+			return c, fmt.Errorf("%s: provider %s: region and service are for auth aws-sigv4", path, name)
 		}
 		if a.TLSFingerprint != "" {
 			if _, err := fingerprint(a.TLSFingerprint); err != nil {
@@ -152,12 +164,39 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error
 		authorization = "Bearer " + token
 	}
 	up := host.HTTP{Base: strings.TrimRight(a.APIURL, "/"), Client: client,
-		Authorize: func(r *http.Request) {
+		Authorize: func(r *http.Request) error {
 			if authorization != "" {
 				r.Header.Set("Authorization", authorization)
 			}
+			return nil
 		}}
-	return up, catalog, endpointID(up.Base, a.Auth+"\x00"+a.TokenID+"\x00"+token+"\x00"+strings.ToLower(a.TLSFingerprint), catalog), nil
+	if a.Auth == "aws-sigv4" {
+		up.Authorize = SigV4(a.TokenID, token, a.Region, a.Service, time.Now)
+	}
+	return up, catalog, endpointID(up.Base, a.Auth+"\x00"+a.TokenID+"\x00"+token+"\x00"+strings.ToLower(a.TLSFingerprint)+"\x00"+a.Region+"\x00"+a.Service, catalog), nil
+}
+
+// SigV4 signs each request with AWS Signature Version 4 (the AWS SDK's signer), over its body.
+func SigV4(accessKeyID, secret, region, service string, now func() time.Time) func(*http.Request) error {
+	signer := v4.NewSigner()
+	creds := aws.Credentials{AccessKeyID: accessKeyID, SecretAccessKey: secret}
+	return func(r *http.Request) error {
+		body := []byte{}
+		if r.GetBody != nil {
+			rc, err := r.GetBody()
+			if err != nil {
+				return err
+			}
+			if body, err = io.ReadAll(rc); err != nil {
+				return err
+			}
+			rc.Close()
+		} else if r.Body != nil && r.Body != http.NoBody {
+			return errors.New("aws-sigv4: the request body cannot be read twice to sign it")
+		}
+		sum := sha256.Sum256(body)
+		return signer.SignHTTP(r.Context(), creds, r, hex.EncodeToString(sum[:]), service, region, now().UTC())
+	}
 }
 
 // fingerprint parses "AA:BB:..." (32 bytes) into lowercase hex.

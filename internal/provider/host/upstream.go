@@ -52,9 +52,9 @@ const maxResponse = 8 << 20
 
 // HTTP sends requests to an HTTPS API.
 type HTTP struct {
-	Base      string                // "https://pve.example:8006/api2/json"
-	Client    *http.Client          // with timeouts
-	Authorize func(r *http.Request) // adds the credentials
+	Base      string                      // "https://pve.example:8006/api2/json"
+	Client    *http.Client                // with timeouts
+	Authorize func(r *http.Request) error // adds the credentials (signs the request)
 }
 
 // Do implements Upstream.
@@ -76,7 +76,9 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 		return 0, nil, err
 	}
 	if h.Authorize != nil {
-		h.Authorize(req)
+		if err := h.Authorize(req); err != nil {
+			return 0, nil, fmt.Errorf("%w: authorize: %v", ErrNotSent, err)
+		}
 	}
 	wrote := false
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
