@@ -167,8 +167,9 @@ type Change struct {
 }
 
 // Approved is one approved changing request: a declared call and exactly the parameters it sends.
-// A value may name an artifact's facts, "{artifact:<id>.name}" or "{artifact:<id>.sha256}": the
-// host fills them in when it makes the artifact ready.
+// A value may name an artifact's facts, "{artifact:<id>.name}", ".sha256" or ".node" (a seed's
+// node number): the host fills them in when it makes the artifact ready, and the provider sends
+// them filled. ".base64" (its content) the provider sends as is, and the host fills it in.
 type Approved struct {
 	Method string              `json:"method"`
 	Path   string              `json:"path"` // the call's template

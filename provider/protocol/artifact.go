@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -13,7 +14,7 @@ var (
 	sha256Hex    = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	artifactID   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	artifactName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	placeholder  = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.(name|sha256|base64)\}`)
+	placeholder  = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.(name|sha256|node|base64)\}`)
 	// contentRef is a reference to an artifact's content, which only the host fills, when it sends.
 	contentRef = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.base64\}`)
 )
@@ -97,8 +98,11 @@ func FillArtifacts(params map[string][]string, ready map[string]ArtifactInfo) (m
 					missing = m[1]
 					return ref
 				}
-				if m[2] == "name" {
+				switch m[2] {
+				case "name":
 					return info.Name
+				case "node":
+					return strconv.FormatInt(info.NodeID, 10)
 				}
 				return info.SHA256
 			})

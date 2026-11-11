@@ -54,8 +54,11 @@ type Measure struct {
 	Param string `json:"param"`
 	// Name is what it measures: MeasureCPU, MeasureMemoryMiB or MeasureDiskGiB.
 	Name string `json:"name"`
-	// Format is how its value reads: FormatCount, FormatSize or FormatDrive.
+	// Format is how its value reads: FormatCount, FormatSize, FormatDrive or FormatTable.
 	Format string `json:"format"`
+	// Table is what each value measures, for FormatTable (an EC2 instance type's vCPUs). A value
+	// not in it is refused.
+	Table map[string]int64 `json:"table,omitempty"`
 }
 
 // What a measure measures.
@@ -70,6 +73,7 @@ const (
 	FormatCount = "count" // a whole number: "2", "2048"
 	FormatSize  = "size"  // an absolute size: "10G", "512M", "1T" (in GiB, rounded up); "+5G" is refused
 	FormatDrive = "drive" // a new disk "<storage>:<GiB>[,options]" (Proxmox); an import is 0 here, its growth is a size
+	FormatTable = "table" // a name the measure's table gives a number ("t3.small" -> 2 vCPUs)
 )
 
 // In says where the API reads a parameter of the call: "query", "form", or "".
@@ -99,7 +103,7 @@ func (c Catalog) Check() error {
 		}
 		for _, m := range e.Measures {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
-				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive}, m.Format) {
+				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
 				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
 			}
 		}
@@ -111,6 +115,18 @@ func (c Catalog) Check() error {
 		return fmt.Errorf("catalog %s: %w", c.API, err)
 	}
 	return nil
+}
+
+// Read reads a value of the measure.
+func (m Measure) Read(value string) (int64, error) {
+	if m.Format == FormatTable {
+		n, ok := m.Table[value]
+		if !ok {
+			return 0, fmt.Errorf("%q is not one Mamela knows the %s of", value, m.Name)
+		}
+		return n, nil
+	}
+	return ReadMeasure(m.Format, value)
 }
 
 // ReadMeasure reads a measure's value.
@@ -160,7 +176,7 @@ func ReadMeasure(format, value string) (int64, error) {
 func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) error {
 	for _, m := range e.Measures {
 		for _, v := range params[m.Param] {
-			n, err := ReadMeasure(m.Format, v)
+			n, err := m.Read(v)
 			if err != nil {
 				return fmt.Errorf("%s %s: %s: %v", e.Method, e.Path, m.Param, err)
 			}

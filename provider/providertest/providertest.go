@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -407,7 +408,11 @@ func (fakeArtifacts) Make(_ context.Context, a protocol.Artifact) (host.Prepared
 	info := protocol.ArtifactInfo{Name: a.Name, SHA256: a.SHA256, Size: int64(len(content))}
 	if a.Kind == protocol.ArtifactSeed {
 		sum := sha256.Sum256([]byte(content + a.Node))
-		info.Name, info.SHA256 = fmt.Sprintf("mamela-seed-%s-%d.iso", a.Node, a.NodeID), hex.EncodeToString(sum[:])
+		info.NodeID = a.NodeID
+		if info.NodeID == 0 { // as Mamela does: a number of its own, the same for the same node
+			info.NodeID = 1_000_000_000 + int64(binary.BigEndian.Uint16(sum[:2]))
+		}
+		info.Name, info.SHA256 = fmt.Sprintf("mamela-seed-%s-%d.iso", a.Node, info.NodeID), hex.EncodeToString(sum[:])
 	}
 	return host.Prepared{Info: info, Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(content)), nil }}, nil
 }

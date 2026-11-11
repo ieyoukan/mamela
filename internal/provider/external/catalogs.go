@@ -9,6 +9,7 @@ import (
 // as Mamela knows it, never as a provider says.
 var Catalogs = map[string]protocol.Catalog{
 	"proxmox": ProxmoxCatalog,
+	"ec2":     catalogs.EC2,
 }
 
 // ProxmoxCatalog is Mamela's Proxmox VE catalog (provider/catalogs).

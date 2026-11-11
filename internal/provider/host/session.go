@@ -341,8 +341,10 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 		// any other kind says nothing of the sort.
 		isNode := slices.ContainsFunc(s.manifest.Kinds, func(k protocol.Kind) bool { return k.Kind == o.Kind && k.Node })
 		switch {
-		case isNode && o.Exists && (o.Node == nil || o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
-			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: a node that exists needs node.id (positive) and its state", o.ID)}
+		case isNode && o.Exists && o.Owned && (o.Node == nil || o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: a node it owns needs node.id (positive) and its state", o.ID)}
+		case o.Node != nil && (o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: node.id must be positive", o.ID)}
 		case (!isNode || !o.Exists) && o.Node != nil:
 			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: only an existing resource of a node kind has node", o.ID)}
 		}

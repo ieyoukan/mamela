@@ -268,6 +268,29 @@ Proxmox の VM を作り、その上で mamelet を動かすプロバイダー�
 
 小さな例として、OS を入れない空の VM を作り、vCPU とメモリを変えるプロバイダーも [`examples/pve`](../examples/pve) にある。偽の Proxmox（`examples/pve/fakepve`）で適合テストを通し、検証環境の実機でも plan・apply した（`docs/development.md`）。
 
+### クラウドの API（AWS）
+
+EC2 のようなクエリ API と SigV4 の API にも、プロバイダーを作れる（[ADR 0005](adr/0005-cloud-apis.md)）。小さな例が [`examples/ec2`](../examples/ec2) にある。
+
+- **呼び出しの区別:** 呼び出しが同じ `POST /` を使う API では、`fixed` で区別する（`"Action": "RunInstances"`）。`MaxCount` のように値を決めておきたいものも、`fixed` に入れる。
+- **認証:**
+
+  ```toml
+  [provider.ec2-example]
+  api_url    = "https://ec2.ap-northeast-1.amazonaws.com"
+  auth       = "aws-sigv4"
+  token_id   = "AKIA..."                          # アクセスキー ID
+  token_file = "~/.config/mamela/aws-secret"      # シークレット（chmod 600）
+  region     = "ap-northeast-1"
+  service    = "ec2"
+  catalog    = "builtin:ec2"
+  ```
+
+- **seed:** 成果物 `seed` に `format: "user-data"` を書き、`nodeId` は 0 にする（Mamela が番号を振る）。
+  - 作る要求の値に `{artifact:seed.base64}` を書けば、host が中身を入れて送る。
+  - 番号は `{artifact:seed.node}` でタグに残し、観測で `node.id` として返す。
+- **所有:** 作成は、作る前に決まる ID（クライアントトークン）で記録される。観測では、その ID とインスタンス ID の両方を返す。
+
 ## ネイティブのプロバイダー
 
 ネイティブの実行ファイルは、サンドボックスの外で動く。使う人のファイル、環境変数、ネットワーク（クラウドの VM では、メタデータとその資格情報）に届く。そのため、使う人が明示して信頼したときだけ動かす。
