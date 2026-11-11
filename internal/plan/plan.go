@@ -80,6 +80,8 @@ type Change struct {
 	// ProviderChanges are the provider's changes, one per operation, with exactly the requests
 	// each sends: approving the plan approves these and nothing else.
 	ProviderChanges []protocol.Change `json:"providerChanges,omitempty"`
+	// Creates: a provider's change to an object that does not exist yet.
+	Creates bool `json:"creates,omitempty"`
 }
 
 // ID is the resource identity ("Kind name").
@@ -176,7 +178,7 @@ func (b builder) provided(r graph.Resource) Change {
 	if len(got.Changes) == 0 {
 		return b.withOps(c)
 	}
-	c.Status, c.Verdict = StatusChange, policy.Auto
+	c.Status, c.Verdict, c.Creates = StatusChange, policy.Auto, !got.Observed.Exists
 	for _, pc := range got.Changes {
 		for _, reason := range pc.Change.Reasons {
 			c.Diffs = append(c.Diffs, Diff{Field: string(pc.Change.Op), To: reason})

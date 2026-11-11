@@ -29,8 +29,10 @@ func Render(w io.Writer, p *Plan) {
 
 	for _, c := range p.Changes {
 		sym := symbols[c.Status]
-		if c.Status == StatusChange && (len(c.Diffs) > 0 && allFromEmpty(c.Diffs) ||
-			slices.ContainsFunc(c.Operations, func(o Operation) bool { return o.Op == policy.OpCreateVM })) {
+		// "+" is a create. A provider's diffs are reasons (no "from"): it creates when its object
+		// does not exist yet.
+		creates := c.Creates || slices.ContainsFunc(c.Operations, func(o Operation) bool { return o.Op == policy.OpCreateVM })
+		if c.Status == StatusChange && (creates || c.Provider == "" && len(c.Diffs) > 0 && allFromEmpty(c.Diffs)) {
 			sym = "+"
 		}
 		via := ""
