@@ -64,9 +64,9 @@ func (r Request) String() string {
 
 // gate decides and records the requests of one call to the provider.
 type gate struct {
-	phase    phase
-	calls    []protocol.Call
-	permit   *protocol.Permit
+	phase  phase
+	calls  []protocol.Call
+	permit *protocol.Permit
 	// catalog and upstream serve a provider with one API; apis (when set) serve each API by name,
 	// with defaultAPI the name of a request that names none (ADR 0007).
 	catalog    protocol.Catalog
@@ -75,7 +75,7 @@ type gate struct {
 	defaultAPI string
 	guard      bool // the guard's reads go to each API's GuardUpstream, when it has one
 	now        func() time.Time
-	record   []Request
+	record     []Request
 	// used marks the permit's approved requests already sent (each is sent at most once).
 	used []bool
 	// halt, once set, refuses every further change: after a change whose outcome is unknown,
