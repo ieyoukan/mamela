@@ -59,6 +59,9 @@ type Suite struct {
 	// Catalog is the host's catalog of the API: the effect of each call. For an API Mamela
 	// does not know yet, the one you propose to add to Mamela.
 	Catalog protocol.Catalog
+	// Catalogs are the catalogs of a provider with several APIs (Manifest.APIs), by name. Each
+	// request reaches NewAPI's handler with its API in the header X-Mamela-Api.
+	Catalogs map[string]protocol.Catalog
 	// NewAPI returns a fresh fake of the API, with an empty world.
 	NewAPI func() http.Handler
 	// Cases are declarations to converge to, each from an empty world.
@@ -113,7 +116,14 @@ func Run(t *testing.T, s Suite) {
 	t.Run("describe", func(t *testing.T) {
 		e := s.start(t, -1, "")
 		m := e.s.Manifest()
-		if m.API != s.Catalog.API {
+		switch {
+		case len(m.APIs) > 0:
+			for _, api := range m.APIs {
+				if s.Catalogs[api].API != api {
+					t.Errorf("the manifest's api %q has no catalog in Suite.Catalogs", api)
+				}
+			}
+		case m.API != s.Catalog.API:
 			t.Errorf("the manifest's api is %q, the catalog's %q", m.API, s.Catalog.API)
 		}
 		for _, k := range m.Kinds {
@@ -233,7 +243,7 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := host.Options{Catalog: s.Catalog, Wasmtime: s.Wasmtime, CallTimeout: 2 * time.Minute}
+	o := host.Options{Wasmtime: s.Wasmtime, CallTimeout: 2 * time.Minute}
 	if s.Native {
 		if exe.Format != host.FormatNative {
 			t.Fatalf("Native is set, and %s is %s", s.Provider, exe.Format)
@@ -246,8 +256,16 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 			t.Fatalf("no wasmtime to run the provider with: %v", err)
 		}
 	}
-	up := &faulty{api: s.NewAPI(), catalog: s.Catalog, at: at, kind: kind}
-	o.Upstream, o.Artifacts = up, fakeArtifacts{}
+	catalogs := s.Catalogs
+	if len(catalogs) == 0 {
+		catalogs = map[string]protocol.Catalog{"": s.Catalog}
+	}
+	up := &faulty{api: s.NewAPI(), catalogs: catalogs, at: at, kind: kind}
+	o.APIs = map[string]host.API{}
+	for name, c := range catalogs {
+		o.APIs[name] = host.API{Catalog: c, Upstream: up}
+	}
+	o.Artifacts = fakeArtifacts{}
 	ctx := t.Context()
 	sess, err := host.Start(ctx, exe, o)
 	if err != nil {
@@ -319,7 +337,7 @@ func (e *env) explicit(c Case, x Explicit, fault string) bool {
 		e.created[x.Resource] = append(e.created[x.Resource], change.IDs)
 		e.converge(c.Desired, 2)
 	case slices.ContainsFunc(change.Requests, func(a protocol.Approved) bool {
-		en, _ := e.up.catalog.LookupApproved(a)
+		en, _ := e.up.catalogFor(a.API).LookupApproved(a)
 		return en.Effect == protocol.EffectLoseData
 	}):
 		delete(e.created, x.Resource)
@@ -553,8 +571,8 @@ func (e *env) recoverRound(desired []protocol.Resource) {
 
 // faulty sends requests to the fake API, and injects one fault at the at-th change request.
 type faulty struct {
-	api     http.Handler
-	catalog protocol.Catalog
+	api      http.Handler
+	catalogs map[string]protocol.Catalog // by API ("" for a provider with one)
 	at      int
 	kind    string
 	changes int
@@ -570,15 +588,25 @@ func (f *faulty) Upload(ctx context.Context, r protocol.HostRequest, file host.F
 	return f.send(ctx, r, &file)
 }
 
+func (f *faulty) catalogFor(api string) protocol.Catalog {
+	if c, ok := f.catalogs[api]; ok {
+		return c
+	}
+	return f.catalogs[""]
+}
+
 func (f *faulty) send(ctx context.Context, r protocol.HostRequest, file *host.File) (int, []byte, error) {
-	h := host.Handler{Handler: f.api}
+	h := host.Handler{Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		req.Header.Set("X-Mamela-Api", r.API) // which of the provider's APIs (ADR 0007)
+		f.api.ServeHTTP(w, req)
+	})}
 	do := func() (int, []byte, error) {
 		if file != nil {
 			return h.Upload(ctx, r, *file)
 		}
 		return h.Do(ctx, r)
 	}
-	if isChange(f.catalog, r) {
+	if isChange(f.catalogFor(r.API), r) {
 		i := f.changes
 		f.changes++
 		if i == f.at {
@@ -612,18 +640,28 @@ func (fakeArtifacts) Make(_ context.Context, a protocol.Artifact) (host.Prepared
 }
 
 // isChange: anything the catalog does not classify as a read.
+// isChange says whether the catalog classifies a request as anything but a read: its method,
+// path and fixed parameters (a query API's Action, an AWS JSON API's X-Amz-Target) find its entry.
 func isChange(c protocol.Catalog, r protocol.HostRequest) bool {
-	for _, e := range c.Entries {
-		if e.Method != r.Method {
-			continue
-		}
-		if p, err := protocol.ParsePath(e.Path); err == nil {
-			if _, ok := p.Match(r.Path); ok {
-				return e.Effect != protocol.EffectRead
-			}
+	params, err := protocol.JSONParams(r.JSON)
+	if err != nil {
+		return true
+	}
+	for _, part := range []map[string][]string{r.Query, r.Form, r.Header} {
+		for k, v := range part {
+			params[k] = append(params[k], v...)
 		}
 	}
-	return true
+	var calls []protocol.Call
+	for _, e := range c.Entries {
+		calls = append(calls, protocol.Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
+	}
+	call, _, ok := protocol.FindCall(calls, "", r.Method, r.Path, params, true)
+	if !ok {
+		return true
+	}
+	e, _ := c.LookupCall(call)
+	return e.Effect != protocol.EffectRead
 }
 
 func hasOwned(observed []protocol.Observed, r protocol.Resource) bool {

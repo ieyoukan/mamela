@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ type Entry struct {
 	// Measures are the parameters that size what the call makes or changes (vCPUs, memory, disk):
 	// the host checks their values against the site's limits, whatever the provider declares.
 	Measures []Measure `json:"measures,omitempty"`
+	// Values allow, for a parameter, only these values (as its text: a JSON string member without
+	// its quotes): IAM's AttachRolePolicy may attach only the policies Mamela knows (ADR 0007).
+	// The host refuses any other value, at plan and before sending.
+	Values map[string][]string `json:"values,omitempty"`
 	// Bind are the parameters that name the object a change acts on (EC2's "InstanceId.1"), when
 	// the path does not. In a change, each must be one of the permit's IDs, by the same name and
 	// with the same value: a provider cannot point an approved request at another object.
@@ -114,6 +119,11 @@ func (c Catalog) Check() error {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
 				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable, FormatCPUUnits}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
 				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
+			}
+		}
+		for p, vs := range e.Values {
+			if e.In(p) == "" || len(vs) == 0 {
+				return fmt.Errorf("catalog %s: %s %s: values for %s, which is not one of its parameters", c.API, e.Method, e.Path, p)
 			}
 		}
 		for _, b := range e.Bind {
@@ -194,6 +204,13 @@ func ReadMeasure(format, value string) (int64, error) {
 // CheckLimits checks the measured parameters of a request to a call against limits (by measure
 // name; absent or 0: no limit). A measured value that does not read is refused, limit or not.
 func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) error {
+	for _, p := range slices.Sorted(maps.Keys(e.Values)) {
+		for _, v := range params[p] {
+			if !slices.Contains(e.Values[p], ParamText(e.In(p), v)) {
+				return fmt.Errorf("%s %s: %s=%s is not one of the values Mamela allows (%s)", e.Method, e.Path, p, v, strings.Join(e.Values[p], ", "))
+			}
+		}
+	}
 	for _, m := range e.Measures {
 		for _, v := range params[m.Param] {
 			v = ParamText(e.In(m.Param), v)

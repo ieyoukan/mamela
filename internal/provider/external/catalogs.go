@@ -10,6 +10,10 @@ import (
 var Catalogs = map[string]protocol.Catalog{
 	"proxmox": ProxmoxCatalog,
 	"ec2":     catalogs.EC2,
+	"ecs":     catalogs.ECS,
+	"logs":    catalogs.Logs,
+	"ssm":     catalogs.SSM,
+	"iam":     catalogs.IAM,
 }
 
 // ProxmoxCatalog is Mamela's Proxmox VE catalog (provider/catalogs).
