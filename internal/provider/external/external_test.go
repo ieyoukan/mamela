@@ -175,12 +175,48 @@ func TestObserveChecksTheDiff(t *testing.T) {
 	}
 }
 
-// The catalogs Mamela ships are consistent.
-func TestBuiltinCatalogs(t *testing.T) {
-	for name, c := range Catalogs {
-		if err := c.Check(); err != nil || c.API != name {
-			t.Errorf("%s: %v (api %q)", name, err, c.API)
+// A provider's Pome ships the catalogs of its APIs (ADR 0008): files inside the Pome, each a valid
+// mamela-catalog/v1. Mamela ships none: builtin: names are refused with a hint.
+func TestShippedCatalogs(t *testing.T) {
+	pkg, err := LoadPackage("../../../examples/ec2/pome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := protocol.DecodeCatalog(pkg.Catalogs["ec2"]); err != nil || c.API != "ec2" || len(pkg.Catalogs) != 1 {
+		t.Fatalf("the EC2 example's catalogs: %v %v", pkg.Catalogs, err)
+	}
+	program, _ := os.ReadFile("../../../examples/ec2/pome/provider.wasm")
+	sum := sha256.Sum256(program)
+	pome := func(catalogs, file, content string) error {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "provider.wasm"), program, 0o644)
+		os.MkdirAll(filepath.Join(dir, "catalogs"), 0o755)
+		os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644)
+		os.WriteFile(filepath.Join(dir, ProviderFile), []byte("provider = \"ec2-example\"\nversion = \"0.1.0\"\nprogram = \"provider.wasm\"\nsha256 = \""+
+			hex.EncodeToString(sum[:])+"\"\n\n[catalogs]\n"+catalogs), 0o644)
+		_, err := LoadPackage(dir)
+		return err
+	}
+	good := `{"schema":"mamela-catalog/v1","api":"x","entries":[{"method":"GET","path":"/x","effect":"read"}]}`
+	if err := pome(`x = "catalogs/x.json"`, "catalogs/x.json", good); err != nil {
+		t.Fatalf("a good catalog: %v", err)
+	}
+	for name, c := range map[string][3]string{
+		"outside the Pome":  {`x = "../x.json"`, "catalogs/x.json", good},
+		"not clean":         {`x = "catalogs/../catalogs/x.json"`, "catalogs/x.json", good},
+		"no schema":         {`x = "catalogs/x.json"`, "catalogs/x.json", `{"api":"x","entries":[]}`},
+		"an unknown member": {`x = "catalogs/x.json"`, "catalogs/x.json", `{"schema":"mamela-catalog/v1","api":"x","entries":[],"trust":"me"}`},
+		"a bad entry":       {`x = "catalogs/x.json"`, "catalogs/x.json", `{"schema":"mamela-catalog/v1","api":"x","entries":[{"method":"GET","path":"x","effect":"read"}]}`},
+		"a bad name":        {`"x y" = "catalogs/x.json"`, "catalogs/x.json", good},
+		"a missing file":    {`x = "catalogs/y.json"`, "catalogs/x.json", good},
+	} {
+		if err := pome(c[0], c[1], c[2]); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
+	}
+	cfg := Config{Provider: map[string]APIConfig{"p": {APIURL: "https://api.example", Catalog: "builtin:ec2"}}}
+	if _, _, err := cfg.apis("p"); err == nil || !strings.Contains(err.Error(), "pome:<name>") {
+		t.Errorf("a builtin catalog: %v", err)
 	}
 }
 
@@ -388,11 +424,19 @@ func TestSeveralAPIsConfig(t *testing.T) {
 		return LoadConfig(p)
 	}
 	good := "[provider.aws]\nauth = \"aws-sigv4\"\nprofile = \"role\"\nregion = \"ap-northeast-1\"\n\n" +
-		"[provider.aws.apis.ec2]\napi_url = \"https://ec2.ap-northeast-1.amazonaws.com\"\nservice = \"ec2\"\ncatalog = \"builtin:ec2\"\n"
+		"[provider.aws.apis.ec2]\napi_url = \"https://ec2.ap-northeast-1.amazonaws.com\"\nservice = \"ec2\"\ncatalog = \"pome:ec2\"\n"
 	c, err := load(good)
 	if err != nil {
 		t.Fatal(err)
 	}
+	ec2, err := os.ReadFile("../../../examples/ec2/pome/catalogs/ec2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.apis("aws"); err == nil || !strings.Contains(err.Error(), "ships no catalog \"ec2\"") {
+		t.Errorf("a catalog the provider's Pome does not ship: %v", err)
+	}
+	c = c.withShipped("aws", map[string][]byte{"ec2": ec2})
 	apis, id, err := c.apis("aws")
 	if err != nil || apis["ec2"].Upstream == nil || apis["ec2"].Catalog.API != "ec2" || id == "" {
 		t.Fatalf("%+v %q %v", apis, id, err)

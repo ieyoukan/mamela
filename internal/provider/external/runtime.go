@@ -33,7 +33,8 @@ type Runtime struct {
 func Programs(pkgs []Package) []store.Program {
 	var out []store.Program
 	for _, p := range pkgs {
-		out = append(out, store.Program{Provider: p.Provider, Version: p.ProviderVersion, Source: p.Source, Digest: p.Digest, Data: p.Program})
+		out = append(out, store.Program{Provider: p.Provider, Version: p.ProviderVersion, Source: p.Source, Digest: p.Digest, Data: p.Program,
+			Catalogs: p.Catalogs})
 	}
 	return out
 }
@@ -51,12 +52,13 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: a provider from a Pome must be WASM", p.Provider)
 		}
-		apis, endpoint, err := cfg.apis(p.Provider)
+		pc := cfg.withShipped(p.Provider, p.Catalogs)
+		apis, endpoint, err := pc.apis(p.Provider)
 		if err != nil {
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
-		_, settings, err := cfg.guard(p.Provider)
+		_, settings, err := pc.guard(p.Provider)
 		if err != nil {
 			rt.Close()
 			return nil, err

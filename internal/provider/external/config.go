@@ -41,10 +41,19 @@ import (
 //	token_id        = "mamela@pve!lab"
 //	token_file      = "~/.config/mamela/pve-token"
 //	tls_fingerprint = "AA:BB:..."        # pin the server certificate (SHA-256)
-//	catalog         = "builtin:proxmox"  # a catalog Mamela ships
+//	catalog         = "pome:proxmox"     # a catalog the provider's Pome ships (ADR 0008)
 type Config struct {
 	Provider map[string]APIConfig `toml:"provider"`
 	dir      string
+	// shipped are the catalogs each provider's Pome ships (ADR 0008), by provider and name:
+	// catalog = "pome:<name>" names one.
+	shipped map[string]map[string][]byte
+}
+
+// withShipped is the configuration with the catalogs a provider's Pome ships.
+func (c Config) withShipped(provider string, catalogs map[string][]byte) Config {
+	c.shipped = map[string]map[string][]byte{provider: catalogs}
+	return c
 }
 
 // APIConfig is one provider's API.
@@ -247,24 +256,9 @@ func (c Config) guard(name string) (host.Upstream, []byte, error) {
 }
 
 func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catalog, string, error) {
-	var catalog protocol.Catalog
-	if name, ok := strings.CutPrefix(a.Catalog, "builtin:"); ok {
-		c, found := Catalogs[name]
-		if !found {
-			return nil, catalog, "", fmt.Errorf("provider %s: Mamela has no catalog %q", name, a.Catalog)
-		}
-		catalog = c
-	} else if a.Catalog != "" {
-		data, err := os.ReadFile(c.resolve(a.Catalog))
-		if err != nil {
-			return nil, catalog, "", fmt.Errorf("provider %s: catalog: %w", name, err)
-		}
-		if err := json.Unmarshal(data, &catalog, json.RejectUnknownMembers(true)); err != nil {
-			return nil, catalog, "", fmt.Errorf("provider %s: catalog %s: %w", name, a.Catalog, err)
-		}
-		if err := catalog.Check(); err != nil {
-			return nil, catalog, "", err
-		}
+	catalog, err := c.catalog(name, a.Catalog)
+	if err != nil {
+		return nil, catalog, "", err
 	}
 	var token string
 	if a.TokenFile != "" {
@@ -442,4 +436,43 @@ func (c Config) resolve(p string) string {
 		return p
 	}
 	return filepath.Join(c.dir, p)
+}
+
+// catalog reads the catalog an API's section names (ADR 0008): "pome:<name>", one the provider's
+// Pome ships (its mamela-provider.toml lists them), or a file of the operator's own. None: every
+// call is unclassified.
+func (c Config) catalog(provider, ref string) (protocol.Catalog, error) {
+	var data []byte
+	switch {
+	case ref == "":
+		return protocol.Catalog{}, nil
+	case strings.HasPrefix(ref, "builtin:"):
+		return protocol.Catalog{}, fmt.Errorf("provider %s: catalog %q: Mamela ships no catalogs since ADR 0008; name one the provider's Pome ships "+
+			"(catalog = \"pome:<name>\"; mamela provider catalog <pome-dir> lists them) or a file of your own", provider, ref)
+	case strings.HasPrefix(ref, "pome:"):
+		name := strings.TrimPrefix(ref, "pome:")
+		shipped := c.shipped[provider]
+		var ok bool
+		if data, ok = shipped[name]; !ok {
+			return protocol.Catalog{}, fmt.Errorf("provider %s: its Pome ships no catalog %q (it ships: %s)", provider, name,
+				orNone(strings.Join(slices.Sorted(maps.Keys(shipped)), ", ")))
+		}
+	default:
+		var err error
+		if data, err = os.ReadFile(c.resolve(ref)); err != nil {
+			return protocol.Catalog{}, fmt.Errorf("provider %s: catalog: %w", provider, err)
+		}
+	}
+	cat, err := protocol.DecodeCatalog(data)
+	if err != nil {
+		return cat, fmt.Errorf("provider %s: catalog %s: %w", provider, ref, err)
+	}
+	return cat, nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

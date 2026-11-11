@@ -294,7 +294,8 @@ func TestPlanProgramsAndPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("\x00asm program")
-	prog := Program{Provider: "kv", Version: "0.1.0", Source: "example.com/kv", Digest: programDigest(data), Data: data}
+	prog := Program{Provider: "kv", Version: "0.1.0", Source: "example.com/kv", Digest: programDigest(data), Data: data,
+		Catalogs: map[string][]byte{"kv": []byte(`{"schema":"mamela-catalog/v1","api":"kv","entries":[]}`)}}
 	if err := s.SavePlanPrograms(ctx, p.Digest, []Program{{Provider: "kv", Digest: "sha256:00", Data: data}}); err == nil {
 		t.Error("a program with the wrong digest was stored")
 	}
@@ -302,7 +303,8 @@ func TestPlanProgramsAndPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.PlanPrograms(ctx, p.Digest)
-	if err != nil || len(got) != 1 || string(got[0].Data) != string(data) || got[0].Source != prog.Source {
+	if err != nil || len(got) != 1 || string(got[0].Data) != string(data) || got[0].Source != prog.Source ||
+		string(got[0].Catalogs["kv"]) != string(prog.Catalogs["kv"]) || len(got[0].Catalogs) != 1 {
 		t.Fatalf("%+v %v", got, err)
 	}
 	if err := s.UsePermit(ctx, "op-1@1", "op-1", p.Digest); err != nil {

@@ -22,5 +22,10 @@ provider = "ec2-example"
 version = "0.1.0"
 program = "provider.wasm"
 sha256 = "$sum"
+
+# The catalogs of the APIs the provider calls (ADR 0008): the operator names one in
+# mamela.providers.toml (catalog = "pome:ec2") for Mamela to classify the provider's requests with.
+[catalogs]
+ec2 = "catalogs/ec2.json"
 TOML
 echo "$out $sum"

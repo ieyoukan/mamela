@@ -197,6 +197,17 @@ CREATE TABLE explicit_operations (
   finished_ms  INTEGER
 );
 `,
+	// 11: the catalogs each plan's providers shipped in their Pomes (ADR 0008), content-addressed
+	// like the programs: applying the plan classifies requests with exactly these.
+	`
+CREATE TABLE plan_catalogs (
+  plan_digest    TEXT NOT NULL REFERENCES plans(digest),
+  provider       TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  catalog_digest TEXT NOT NULL REFERENCES provider_programs(digest),
+  PRIMARY KEY (plan_digest, provider, name)
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

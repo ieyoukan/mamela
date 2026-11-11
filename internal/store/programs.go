@@ -8,6 +8,8 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -18,6 +20,8 @@ type Program struct {
 	Source   string // where it came from (the Pome's source path)
 	Digest   string // "sha256:..." of the program
 	Data     []byte
+	// Catalogs are the catalog files its Pome ships, by name (ADR 0008).
+	Catalogs map[string][]byte
 }
 
 // SavePlanPrograms stores the provider programs of a plan, content-addressed. Applying the plan
@@ -39,6 +43,19 @@ func (s *Store) SavePlanPrograms(ctx context.Context, planDigest string, program
 		if _, err := tx.ExecContext(ctx, `INSERT INTO plan_programs(plan_digest, provider, version, source, program_digest) VALUES(?, ?, ?, ?, ?)
 ON CONFLICT(plan_digest, provider) DO NOTHING`, planDigest, p.Provider, p.Version, p.Source, p.Digest); err != nil {
 			return err
+		}
+		for _, name := range slices.Sorted(maps.Keys(p.Catalogs)) {
+			// Catalogs are stored as the programs are: by their digest.
+			data := p.Catalogs[name]
+			d := programDigest(data)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO provider_programs(digest, data, created_ms) VALUES(?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
+				d, data, s.nowMs()); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO plan_catalogs(plan_digest, provider, name, catalog_digest) VALUES(?, ?, ?, ?)
+ON CONFLICT(plan_digest, provider, name) DO NOTHING`, planDigest, p.Provider, name, d); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -62,6 +79,37 @@ FROM plan_programs pp JOIN provider_programs p ON p.digest = pp.program_digest W
 			return nil, fmt.Errorf("store: the stored program of %s is %s, not %s", p.Provider, got, p.Digest)
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if out[i].Catalogs, err = s.planCatalogs(ctx, planDigest, out[i].Provider); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) planCatalogs(ctx context.Context, planDigest, provider string) (map[string][]byte, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT pc.name, pc.catalog_digest, p.data FROM plan_catalogs pc
+JOIN provider_programs p ON p.digest = pc.catalog_digest WHERE pc.plan_digest = ? AND pc.provider = ? ORDER BY pc.name`, planDigest, provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]byte{}
+	for rows.Next() {
+		var name, digest string
+		var data []byte
+		if err := rows.Scan(&name, &digest, &data); err != nil {
+			return nil, err
+		}
+		if got := programDigest(data); got != digest {
+			return nil, fmt.Errorf("store: the stored catalog %s of %s is %s, not %s", name, provider, got, digest)
+		}
+		out[name] = data
 	}
 	return out, rows.Err()
 }

@@ -95,6 +95,21 @@ type Explicit struct {
 	Resource string // the graph ID
 }
 
+// Catalog reads a catalog file the provider's Pome ships (ADR 0008), as Mamela reads it: test
+// with the catalog you ship, never with one of your own making.
+func Catalog(t testing.TB, path string) protocol.Catalog {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := protocol.DecodeCatalog(data)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return c
+}
+
 // BuildWASI builds a Go provider for WASI (GOOS=wasip1 GOARCH=wasm) and returns the program.
 func BuildWASI(t testing.TB, pkg string) string {
 	t.Helper()

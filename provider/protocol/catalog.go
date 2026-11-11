@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,13 +21,42 @@ const (
 	EffectLoseData Effect = "lose-data" // can destroy data (delete, shrink, overwrite)
 )
 
-// Catalog is what the host knows about an API: the effect of each call. It belongs to the host
-// (Mamela ships the catalogs of the APIs it knows), never to a provider: a provider's own word on
-// what its calls do is not used for safety. A call that is not in the catalog is unclassified:
-// an operation that sends one always needs a person's approval.
+// Catalog is what the host knows about an API: the effect of each call, what a call's parameters
+// must name (bind) or be (values), and how big what it makes is (measures). It is data
+// (mamela-catalog/v1, ADR 0008): the provider's author writes it and ships it in the provider's
+// Pome next to the program, and Mamela uses it only when the operator names it
+// (mamela.providers.toml: catalog = "pome:<name>", or a file of their own). The program never sees
+// or changes it: the host classifies every request the program sends with it. A call that is not
+// in the catalog is unclassified: an operation that sends one always needs a person's approval.
 type Catalog struct {
+	Schema  string  `json:"schema,omitempty"` // CatalogSchema, in a catalog file
 	API     string  `json:"api"`
 	Entries []Entry `json:"entries"`
+}
+
+// CatalogSchema is the schema of a catalog file.
+const CatalogSchema = "mamela-catalog/v1"
+
+// maxCatalog bounds a catalog file.
+const maxCatalog = 4 << 20
+
+// DecodeCatalog reads a catalog file: JSON of CatalogSchema, with no unknown member, that Check
+// accepts.
+func DecodeCatalog(data []byte) (Catalog, error) {
+	var c Catalog
+	if len(data) > maxCatalog {
+		return c, fmt.Errorf("a catalog is at most %d MiB", maxCatalog>>20)
+	}
+	if err := json.Unmarshal(data, &c, json.RejectUnknownMembers(true)); err != nil {
+		return c, err
+	}
+	if c.Schema != CatalogSchema {
+		return c, fmt.Errorf("schema %q is not %s", c.Schema, CatalogSchema)
+	}
+	if c.API == "" {
+		return c, errors.New("a catalog names its api")
+	}
+	return c, c.Check()
 }
 
 // Entry is one call of an API and its effect.

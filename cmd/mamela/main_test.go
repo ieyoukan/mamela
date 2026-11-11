@@ -199,7 +199,7 @@ token_id = "AKIAFAKE"
 token_file = "`+filepath.Join(dir, "secret")+`"
 region = "ap-northeast-1"
 service = "ec2"
-catalog = "builtin:ec2"
+catalog = "pome:ec2"
 `), 0o600)
 	return config
 }

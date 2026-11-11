@@ -118,7 +118,9 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 				add("etc/secrets/"+f.dest, 0o600, []byte(secret+"\n"))
 				*f.path = cpSecrets + "/" + f.dest
 			}
-			if a.Catalog != "" && !strings.HasPrefix(a.Catalog, "builtin:") {
+			// A catalog of the provider's Pome comes with the plan (ADR 0008); a file of the
+			// operator's own goes into the bundle.
+			if a.Catalog != "" && !strings.HasPrefix(a.Catalog, "pome:") {
 				b, err := read(a.Catalog)
 				if err != nil {
 					return report(stderr, fmt.Errorf("provider %s: catalog: %w", name, err))

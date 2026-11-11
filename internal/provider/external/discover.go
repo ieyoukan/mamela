@@ -22,6 +22,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ieyoukan/mamela/internal/component"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // ProviderFile is the file in a Pome that names its provider program.
@@ -36,6 +37,9 @@ type providerFile struct {
 	Version  string `toml:"version"`  // as in its manifest
 	Program  string `toml:"program"`  // the WASM program, relative to the Pome
 	SHA256   string `toml:"sha256"`   // of the program, in hex
+	// Catalogs are the catalogs of the APIs the provider calls (ADR 0008), by name, each a file
+	// relative to the Pome. Mamela uses one only when the operator names it (catalog = "pome:<name>").
+	Catalogs map[string]string `toml:"catalogs"`
 }
 
 // Package is a provider found in a declaration's dependencies.
@@ -48,6 +52,8 @@ type Package struct {
 	ProviderVersion string
 	Program         []byte
 	Digest          string // "sha256:..." of Program
+	// Catalogs are the catalog files the Pome ships, by name (ADR 0008), each one checked.
+	Catalogs map[string][]byte
 }
 
 type pomeToml struct {
@@ -113,6 +119,15 @@ func Discover(dir, pomeCache string) ([]Package, error) {
 	return out, nil
 }
 
+// LoadPackage reads the provider Pome in dir: its program and the catalogs it ships.
+func LoadPackage(dir string) (Package, error) {
+	pkg, ok, err := load(dir)
+	if err == nil && !ok {
+		err = fmt.Errorf("%s has no %s: not a provider's Pome", dir, ProviderFile)
+	}
+	return pkg, err
+}
+
 func load(dir string) (Package, bool, error) {
 	data, err := os.ReadFile(filepath.Join(dir, ProviderFile))
 	if errors.Is(err, os.ErrNotExist) {
@@ -151,8 +166,36 @@ func load(dir string) (Package, bool, error) {
 	if !component.IsCoreModule(program) && !component.IsComponent(program) {
 		return Package{}, false, fmt.Errorf("%s is not a WASM program; a provider in a Pome must be WASM (it runs isolated)", f.Program)
 	}
+	catalogs := map[string][]byte{}
+	for _, name := range slices.Sorted(maps.Keys(f.Catalogs)) {
+		file := f.Catalogs[name]
+		clean := path.Clean(file)
+		if !validCatalogName(name) || clean != file || path.IsAbs(clean) || strings.HasPrefix(clean, "..") {
+			return Package{}, false, fmt.Errorf("%s: catalog %q: a name of letters, digits, - and _, and a file inside the Pome", ProviderFile, name)
+		}
+		fi, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(clean)))
+		if err != nil {
+			return Package{}, false, fmt.Errorf("catalog %s: %w", name, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return Package{}, false, fmt.Errorf("catalog %s: %s is not a regular file", name, file)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(clean)))
+		if err != nil {
+			return Package{}, false, fmt.Errorf("catalog %s: %w", name, err)
+		}
+		if _, err := protocol.DecodeCatalog(data); err != nil {
+			return Package{}, false, fmt.Errorf("catalog %s (%s): %w", name, file, err)
+		}
+		catalogs[name] = data
+	}
 	return Package{Dir: dir, Provider: f.Provider, ProviderVersion: f.Version, Program: program,
-		Digest: "sha256:" + hex.EncodeToString(sum[:])}, true, nil
+		Digest: "sha256:" + hex.EncodeToString(sum[:]), Catalogs: catalogs}, true, nil
+}
+
+// validCatalogName: a catalog's name is letters, digits, - and _ ("ec2", "proxmox").
+func validCatalogName(n string) bool {
+	return n != "" && len(n) <= 64 && strings.Trim(n, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") == ""
 }
 
 // escape writes a source path as the Pome cache does: an uppercase letter becomes "!" and the

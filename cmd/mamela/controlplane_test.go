@@ -50,7 +50,7 @@ api_url = "https://pve.example:8006/api2/json"
 auth = "proxmox"
 token_id = "mamela@pve!lab"
 token_file = "`+lt+`"
-catalog = "builtin:proxmox"
+catalog = "pome:proxmox"
 guard_token_id = "mamela-audit@pve!audit"
 guard_token_file = "`+at+`"
 

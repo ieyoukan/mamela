@@ -2,11 +2,11 @@ package host
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/ieyoukan/mamela/provider/catalogs"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -15,9 +15,10 @@ import (
 // was approved.
 func TestLimitsOnMeasuredParameters(t *testing.T) {
 	limits := map[string]int64{protocol.MeasureCPU: 2, protocol.MeasureMemoryMiB: 4096, protocol.MeasureDiskGiB: 20}
-	create, _ := catalogs.Proxmox.Lookup("POST", "/nodes/{node}/qemu")
-	resize, _ := catalogs.Proxmox.Lookup("PUT", "/nodes/{node}/qemu/{vmid}/resize")
-	config, _ := catalogs.Proxmox.Lookup("PUT", "/nodes/{node}/qemu/{vmid}/config")
+	proxmox := readCatalog(t, "testdata/proxmox-catalog.json")
+	create, _ := proxmox.Lookup("POST", "/nodes/{node}/qemu")
+	resize, _ := proxmox.Lookup("PUT", "/nodes/{node}/qemu/{vmid}/resize")
+	config, _ := proxmox.Lookup("PUT", "/nodes/{node}/qemu/{vmid}/config")
 	for _, c := range []struct {
 		name   string
 		e      protocol.Entry
@@ -51,10 +52,24 @@ func TestLimitsOnMeasuredParameters(t *testing.T) {
 		t.Fatal(err)
 	}
 	api := &recorder{files: map[string]string{}}
-	g := gate{phase: phaseApply, calls: p.Calls, permit: &p, catalog: catalogs.Proxmox, upstream: Handler{Handler: api}, now: testNow,
+	g := gate{phase: phaseApply, calls: p.Calls, permit: &p, catalog: proxmox, upstream: Handler{Handler: api}, now: testNow,
 		used: make([]bool, 1), limits: limits}
 	_, perr := g.send(context.Background(), protocol.HostRequest{Method: "PUT", Path: "/nodes/n1/qemu/7/config", Form: map[string][]string{"cores": {"8"}, "digest": {"d1"}}})
 	if perr == nil || !strings.Contains(perr.Message, "over the site's limit") || len(api.got) != 0 {
 		t.Fatalf("an approved request over the limit: %v, sent %v", perr, api.got)
 	}
+}
+
+// readCatalog reads a catalog file (a copy of the Proxmox provider's).
+func readCatalog(t *testing.T, path string) protocol.Catalog {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := protocol.DecodeCatalog(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }

@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/ieyoukan/mamela/examples/ec2/fakeec2"
-	"github.com/ieyoukan/mamela/provider/catalogs"
 	"github.com/ieyoukan/mamela/provider/protocol"
 	"github.com/ieyoukan/mamela/provider/providertest"
 )
@@ -29,7 +28,7 @@ const web = `{"imageId":"ami-0123456789abcdef0","instanceType":"t3.small","subne
 func TestConformance(t *testing.T) {
 	providertest.Run(t, providertest.Suite{
 		Provider: providertest.BuildWASI(t, "./cmd/ec2-provider"),
-		Catalog:  catalogs.EC2,
+		Catalog:  providertest.Catalog(t, "pome/catalogs/ec2.json"), // as the Pome ships it
 		NewAPI:   func() http.Handler { return fakeec2.New() },
 		Cases: []providertest.Case{
 			{Name: "one-instance", Desired: []protocol.Resource{instance("web", web)}},

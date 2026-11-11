@@ -43,27 +43,42 @@ func TestProviderTrustNative(t *testing.T) {
 	}
 }
 
-// --catalog takes a builtin catalog or a file, and may be given once per API: each catalog's api
-// names the API it classifies.
+// inspect classifies a provider's calls with the catalogs its Pome ships (ADR 0008), and with
+// --catalog files; catalog shows them, for the operator to review before naming one.
 func TestProviderInspectCatalogs(t *testing.T) {
 	run := func(args ...string) (int, string) {
 		var out bytes.Buffer
 		code := run(context.Background(), args, &out, &out)
 		return code, out.String()
 	}
-	program := "../../examples/ec2/pome/provider.wasm"
-	code, out := run("provider", "inspect", "--catalog", "builtin:ec2", program)
+	pome := "../../examples/ec2/pome"
+	code, out := run("provider", "inspect", pome)
 	if code != 0 || strings.Contains(out, "unclassified") || !strings.Contains(out, "POST / Action=RunInstances MaxCount=1 MinCount=1") {
-		t.Fatalf("the EC2 example with builtin:ec2: %d\n%s", code, out)
+		t.Fatalf("the EC2 example's Pome: %d\n%s", code, out)
 	}
-	if code, out := run("provider", "inspect", "--catalog", "builtin:ec2", "--catalog", "builtin:ec2", program); code != 1 || !strings.Contains(out, "a second catalog") {
+	if code, out := run("provider", "inspect", "--catalog", "pome/catalogs/ec2.json", "../../examples/ec2/pome/provider.wasm"); code != 1 {
+		t.Fatalf("a missing catalog file: %d\n%s", code, out)
+	}
+	if code, out := run("provider", "inspect", "--catalog", "../../examples/ec2/pome/catalogs/ec2.json", pome); code != 1 || !strings.Contains(out, "a second catalog") {
 		t.Fatalf("two catalogs of one api: %d\n%s", code, out)
 	}
-	if code, out := run("provider", "inspect", "--catalog", "builtin:nope", program); code != 1 || !strings.Contains(out, "no catalog") {
-		t.Fatalf("an unknown builtin catalog: %d\n%s", code, out)
+	if code, out := run("provider", "inspect", "--catalog", "builtin:ec2", "../../examples/ec2/pome/provider.wasm"); code != 1 || !strings.Contains(out, "ADR 0008") {
+		t.Fatalf("a builtin catalog: %d\n%s", code, out)
 	}
-	// Another API's catalog alone classifies nothing of it.
-	if code, out := run("provider", "inspect", "--catalog", "builtin:ecs", "--catalog", "builtin:iam", program); code != 0 || !strings.Contains(out, "unclassified") {
-		t.Fatalf("catalogs of other apis: %d\n%s", code, out)
+	// The program alone classifies nothing.
+	if code, out := run("provider", "inspect", "../../examples/ec2/pome/provider.wasm"); code != 0 || !strings.Contains(out, "unclassified") {
+		t.Fatalf("the program alone: %d\n%s", code, out)
+	}
+	code, out = run("provider", "catalog", pome)
+	if code != 0 || !strings.Contains(out, `catalog = "pome:ec2"  api ec2`) || !strings.Contains(out, "lose-data POST / Action=TerminateInstances  bind InstanceId.1") ||
+		!strings.Contains(out, "measures cpu by InstanceType (table)") {
+		t.Fatalf("catalog: %d\n%s", code, out)
+	}
+	if code, out := run("provider", "catalog", "--json", pome); code != 0 || !strings.HasPrefix(out, `{`) || !strings.Contains(out, `"schema": "mamela-catalog/v1"`) {
+		t.Fatalf("catalog --json: %d\n%s", code, out)
+	}
+	// A declaration's providers.
+	if code, out := run("provider", "catalog", "../../examples/homelab", "ec2-example"); code != 0 || !strings.Contains(out, "provider ec2-example 0.1.0") {
+		t.Fatalf("catalog of a declaration: %d\n%s", code, out)
 	}
 }
