@@ -73,8 +73,14 @@ type Case struct {
 	Name    string
 	Desired []protocol.Resource
 	// Explicit are explicit operations (ADR 0006) to carry out, in order, once the declaration has
-	// converged: each must be done, and lookup must say so.
+	// converged: each must be done, and lookup must say so. An operation that adopts acts on an
+	// object observed as adoptable; once it is done, Mamela records the object as its own, and the
+	// declaration must converge again. A delete removes Mamela's record.
 	Explicit []Explicit
+	// World, when set, puts objects into the fresh fake API before anything runs: objects that
+	// exist before Mamela (one to adopt, someone else's). A case with a world runs only its
+	// converge with the guard, and its explicit operations.
+	World func(api http.Handler)
 }
 
 // Explicit is one explicit operation on one declared resource.
@@ -122,6 +128,15 @@ func Run(t *testing.T, s Suite) {
 		}
 	})
 	for _, c := range s.Cases {
+		s := s
+		if c.World != nil {
+			newAPI := s.NewAPI
+			s.NewAPI = func() http.Handler {
+				api := newAPI()
+				c.World(api)
+				return api
+			}
+		}
 		t.Run(c.Name+"/converges", func(t *testing.T) {
 			e := s.start(t, -1, "")
 			before := e.guard(protocol.GuardBefore, nil, s.GuardSettings)
@@ -135,7 +150,14 @@ func Run(t *testing.T, s Suite) {
 				for _, x := range c.Explicit {
 					observed := e.observe(c.Desired)
 					i := slices.IndexFunc(observed, func(o protocol.Observed) bool { return o.ID == x.Resource })
-					if i < 0 || !observed[i].Owned {
+					if i < 0 {
+						t.Fatalf("%s %s: not observed", x.Op, x.Resource)
+					}
+					op, _ := e.s.Manifest().Operation(observed[i].Kind, x.Op)
+					switch {
+					case op.Adopts && (!observed[i].Adoptable || observed[i].Owned):
+						t.Fatalf("%s %s: adopts, and the resource is not observed as adoptable (and not owned)", x.Op, x.Resource)
+					case !op.Adopts && !observed[i].Owned:
 						t.Fatalf("%s %s: not an observed resource Mamela owns", x.Op, x.Resource)
 					}
 					var d *protocol.Resource
@@ -154,8 +176,21 @@ func Run(t *testing.T, s Suite) {
 					if status := e.lookup(change); status != protocol.LookupDone {
 						t.Errorf("%s %s: done, and lookup says %s", x.Op, x.Resource, status)
 					}
+					switch {
+					case op.Adopts:
+						e.created[x.Resource] = append(e.created[x.Resource], change.IDs)
+						e.converge(c.Desired, 2)
+					case op.Explicit && slices.ContainsFunc(change.Requests, func(a protocol.Approved) bool {
+						en, _ := e.up.catalog.LookupApproved(a)
+						return en.Effect == protocol.EffectLoseData
+					}):
+						delete(e.created, x.Resource)
+					}
 				}
 			})
+		}
+		if c.World != nil {
+			continue
 		}
 		t.Run(c.Name+"/keeps-undeclared", func(t *testing.T) {
 			e := s.start(t, -1, "")
