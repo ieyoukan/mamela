@@ -42,8 +42,8 @@ func Validate(g *Graph) error {
 	addresses := map[string]string{} // static address -> machine
 	for _, r := range g.Resources {
 		if seen[r.ID()] {
-			add(r, CodeDuplicateResource, "", fmt.Sprintf("%s is declared more than once", r.ID()),
-				"remove one of the declarations or give them different names")
+			add(r, CodeDuplicateResource, "", fmt.Sprintf("%s is declared more than once, differently", r.ID()),
+				"declare it once, or the same way each time (a resource declared twice the same way is one), or give them different names")
 		}
 		seen[r.ID()] = true
 		// A node is a resource of a provider whose kind is a node kind (the provider says which;

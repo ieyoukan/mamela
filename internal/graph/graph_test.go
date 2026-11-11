@@ -253,7 +253,7 @@ func TestValidateRejects(t *testing.T) {
 		in   string
 		code Code
 	}{
-		{"duplicate machine", doc(good, good), CodeDuplicateResource},
+		{"a machine declared twice differently", doc(good, machine("app", `{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`)), CodeDuplicateResource},
 		{"dangling package node", doc(good, pkg("other/nginx", "other", "nginx", "Present")), CodeDanglingNode},
 		{"package removal", doc(good, pkg("app/nginx", "app", "nginx", "Absent")), CodeInvalidValue},
 		{"bad package name", doc(good, pkg("app/nginx;rm", "app", "nginx;rm", "Present")), CodeInvalidValue},
@@ -428,5 +428,19 @@ func TestAfter(t *testing.T) {
 			_, err := Decode([]byte(c.in))
 			assertCode(t, err, c.code)
 		})
+	}
+}
+
+// A resource declared twice the same way is one resource (a provider's Pome declares, with each VM,
+// the template it is cloned from); declared twice differently, it is refused.
+func TestSameDeclarationTwiceIsOne(t *testing.T) {
+	m := machine("app", `{"mode":"dhcp"}`)
+	g, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + m + `]}`))
+	if err != nil || len(g.Resources) != 1 {
+		t.Fatalf("the same declaration twice: %v %v", g, err)
+	}
+	other := machine("app", `{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`)
+	if _, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + other + `]}`)); err == nil || !strings.Contains(err.Error(), "MAM-GRAPH-0102") {
+		t.Fatalf("two different declarations: %v", err)
 	}
 }

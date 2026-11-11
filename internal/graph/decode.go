@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -98,7 +99,7 @@ func Decode(data []byte) (*Graph, error) {
 		}
 		r, ps := decodeResource(i, wr)
 		problems = append(problems, ps...)
-		if r != nil {
+		if r != nil && !g.declares(*r) {
 			g.Resources = append(g.Resources, *r)
 		}
 	}
@@ -338,4 +339,17 @@ func trimFinalNewline(b []byte) []byte {
 		return b[:n-1]
 	}
 	return b
+}
+
+// declares says whether the graph already has exactly this resource: a resource declared twice
+// the same way (a provider's Pome declaring, for each VM, the template it is cloned from) is one
+// resource. Declared twice differently, it is a problem (MAM-GRAPH-0102).
+func (g *Graph) declares(r Resource) bool {
+	for _, d := range g.Resources {
+		if d.ID() == r.ID() {
+			one, other := (&Graph{Resources: []Resource{d}}).Canonical(), (&Graph{Resources: []Resource{r}}).Canonical()
+			return bytes.Equal(one, other)
+		}
+	}
+	return false
 }
