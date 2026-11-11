@@ -43,6 +43,11 @@ func ec2Call(action string, effect protocol.Effect, fixed map[string]string, for
 	return protocol.Entry{Method: "POST", Path: "/", Effect: effect, Form: append([]string{"Action", "Version"}, form...), Fixed: f}
 }
 
+func bind(e protocol.Entry, params ...string) protocol.Entry {
+	e.Bind = params
+	return e
+}
+
 func withMeasures(e protocol.Entry, ms ...protocol.Measure) protocol.Entry {
 	e.Measures = ms
 	return e

@@ -43,6 +43,15 @@ func (r rogue) Script(_ context.Context, p protocol.ScriptParams) (protocol.Scri
 	return protocol.ScriptResult{Text: fmt.Sprintf("# %s for %s\necho %s\n", p.Name, p.Credentials.TokenID, p.Settings)}, nil
 }
 
+// Prepare: mode prepare-other answers a delete of one item with the IDs of another.
+func (r rogue) Prepare(ctx context.Context, p protocol.PrepareParams) (protocol.PrepareResult, error) {
+	res, err := r.Provider.Prepare(ctx, p)
+	if mode == "prepare-other" {
+		res.Change.IDs = map[string]string{"item": "other"}
+	}
+	return res, err
+}
+
 func (r rogue) Observe(ctx context.Context, h *sdk.Host, p protocol.ObserveParams) (protocol.ObserveResult, error) {
 	switch mode {
 	case "observe-change":

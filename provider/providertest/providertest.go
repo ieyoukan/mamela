@@ -152,50 +152,24 @@ func Run(t *testing.T, s Suite) {
 			e.guard(protocol.GuardAfter, before, s.GuardSettings)
 		})
 		if len(c.Explicit) > 0 {
-			t.Run(c.Name+"/explicit", func(t *testing.T) {
-				e := s.start(t, -1, "")
-				e.converge(c.Desired, 1)
-				for _, x := range c.Explicit {
-					observed := e.observe(c.Desired)
-					i := slices.IndexFunc(observed, func(o protocol.Observed) bool { return o.ID == x.Resource })
-					if i < 0 {
-						t.Fatalf("%s %s: not observed", x.Op, x.Resource)
-					}
-					op, _ := e.s.Manifest().Operation(observed[i].Kind, x.Op)
-					switch {
-					case op.Adopts && (!observed[i].Adoptable || observed[i].Owned):
-						t.Fatalf("%s %s: adopts, and the resource is not observed as adoptable (and not owned): %s", x.Op, x.Resource, jsonText(observed[i]))
-					case !op.Adopts && !observed[i].Owned:
-						t.Fatalf("%s %s: not an observed resource Mamela owns", x.Op, x.Resource)
-					}
-					var d *protocol.Resource
-					for j := range c.Desired {
-						if c.Desired[j].ID == x.Resource {
-							d = &c.Desired[j]
+			// Each explicit operation as it should go, then with its first change not sent, then
+			// with the answer to it lost: lookup must never take for done what was not done, nor
+			// for not done what took effect.
+			for _, fault := range []string{"", faultNotSent, faultLost} {
+				name := c.Name + "/explicit"
+				if fault != "" {
+					name += "-" + fault
+				}
+				t.Run(name, func(t *testing.T) {
+					e := s.start(t, -1, "")
+					e.converge(c.Desired, 1)
+					for _, x := range c.Explicit {
+						if !e.explicit(c, x, fault) {
+							return
 						}
 					}
-					change, err := e.s.Prepare(e.ctx, x.Op, d, observed[i])
-					if err != nil {
-						t.Fatalf("prepare %s %s: %v", x.Op, x.Resource, err)
-					}
-					if r := e.apply(change, c.Desired, observed); r.Outcome != host.OutcomeDone {
-						t.Fatalf("%s %s: %s: %v\n  requests:\n%s", x.Op, x.Resource, r.Outcome, r.Err, requests(r.Requests))
-					}
-					if status := e.lookup(change); status != protocol.LookupDone {
-						t.Errorf("%s %s: done, and lookup says %s", x.Op, x.Resource, status)
-					}
-					switch {
-					case op.Adopts:
-						e.created[x.Resource] = append(e.created[x.Resource], change.IDs)
-						e.converge(c.Desired, 2)
-					case op.Explicit && slices.ContainsFunc(change.Requests, func(a protocol.Approved) bool {
-						en, _ := e.up.catalog.LookupApproved(a)
-						return en.Effect == protocol.EffectLoseData
-					}):
-						delete(e.created, x.Resource)
-					}
-				}
-			})
+				})
+			}
 		}
 		if c.World != nil {
 			continue
@@ -286,6 +260,71 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		sess.Close()
 	})
 	return &env{t: t, ctx: ctx, s: sess, up: up, created: map[string][]map[string]string{}}
+}
+
+// explicit carries out one explicit operation, with the fault on its first change, and checks
+// what lookup says. It reports whether the sequence can go on (the operation is known done).
+func (e *env) explicit(c Case, x Explicit, fault string) bool {
+	t := e.t
+	t.Helper()
+	observed := e.observe(c.Desired)
+	i := slices.IndexFunc(observed, func(o protocol.Observed) bool { return o.ID == x.Resource })
+	if i < 0 {
+		t.Fatalf("%s %s: not observed", x.Op, x.Resource)
+	}
+	op, _ := e.s.Manifest().Operation(observed[i].Kind, x.Op)
+	switch {
+	case op.Adopts && (!observed[i].Adoptable || observed[i].Owned):
+		t.Fatalf("%s %s: adopts, and the resource is not observed as adoptable (and not owned): %s", x.Op, x.Resource, jsonText(observed[i]))
+	case !op.Adopts && !observed[i].Owned:
+		t.Fatalf("%s %s: not an observed resource Mamela owns", x.Op, x.Resource)
+	}
+	var d *protocol.Resource
+	for j := range c.Desired {
+		if c.Desired[j].ID == x.Resource {
+			d = &c.Desired[j]
+		}
+	}
+	change, err := e.s.Prepare(e.ctx, x.Op, d, observed[i])
+	if err != nil {
+		t.Fatalf("prepare %s %s: %v", x.Op, x.Resource, err)
+	}
+	if status := e.lookup(change); status == protocol.LookupDone {
+		t.Errorf("%s %s: lookup says done before anything was sent", x.Op, x.Resource)
+	}
+	if fault != "" {
+		e.up.at, e.up.kind, e.up.hit = e.up.changes, fault, false
+	}
+	r := e.apply(change, c.Desired, observed)
+	e.up.at = -1
+	status := e.lookup(change)
+	switch {
+	case fault == "" && r.Outcome != host.OutcomeDone:
+		t.Fatalf("%s %s: %s: %v\n  requests:\n%s", x.Op, x.Resource, r.Outcome, r.Err, requests(r.Requests))
+	case fault == "" && status != protocol.LookupDone && status != protocol.LookupUnknown:
+		t.Errorf("%s %s: done, and lookup says %s", x.Op, x.Resource, status)
+	case fault == faultNotSent && status == protocol.LookupDone:
+		t.Errorf("%s %s: nothing was sent, and lookup says done", x.Op, x.Resource)
+	case fault == faultLost && e.up.hit && status == protocol.LookupNotDone:
+		t.Errorf("%s %s: the change took effect (its answer was lost), and lookup says not done", x.Op, x.Resource)
+	}
+	if fault != "" && r.Outcome == host.OutcomeDone && e.up.hit {
+		t.Errorf("%s %s: a change failed, and the apply is done", x.Op, x.Resource)
+	}
+	if r.Outcome != host.OutcomeDone && status != protocol.LookupDone {
+		return false // not known done: nothing more can be built on it
+	}
+	switch {
+	case op.Adopts:
+		e.created[x.Resource] = append(e.created[x.Resource], change.IDs)
+		e.converge(c.Desired, 2)
+	case slices.ContainsFunc(change.Requests, func(a protocol.Approved) bool {
+		en, _ := e.up.catalog.LookupApproved(a)
+		return en.Effect == protocol.EffectLoseData
+	}):
+		delete(e.created, x.Resource)
+	}
+	return true
 }
 
 // guard runs the provider's safety check (if it has one): it must not fail, and on a fake API

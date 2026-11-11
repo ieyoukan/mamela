@@ -47,6 +47,10 @@ type Entry struct {
 	// Measures are the parameters that size what the call makes or changes (vCPUs, memory, disk):
 	// the host checks their values against the site's limits, whatever the provider declares.
 	Measures []Measure `json:"measures,omitempty"`
+	// Bind are the parameters that name the object a change acts on (EC2's "InstanceId.1"), when
+	// the path does not. In a change, each must be one of the permit's IDs, by the same name and
+	// with the same value: a provider cannot point an approved request at another object.
+	Bind []string `json:"bind,omitempty"`
 }
 
 // Measure is one parameter that sizes something.
@@ -105,6 +109,11 @@ func (c Catalog) Check() error {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
 				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
 				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
+			}
+		}
+		for _, b := range e.Bind {
+			if e.In(b) == "" || e.Effect == EffectRead {
+				return fmt.Errorf("catalog %s: %s %s: bind %s must be a parameter of a call that changes something", c.API, e.Method, e.Path, b)
 			}
 		}
 		if e.Precondition != "" && e.In(e.Precondition) == "" {

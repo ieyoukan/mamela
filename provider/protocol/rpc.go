@@ -356,6 +356,9 @@ const (
 	LookupDone    LookupStatus = "done"        // the change is in effect
 	LookupNotDone LookupStatus = "not-done"    // nothing of it is in effect
 	LookupPartly  LookupStatus = "partly-done" // some of it is
+	// LookupUnknown: the provider cannot tell (a restart leaves no trace it can tie to this
+	// change). Mamela then keeps the outcome unknown; it never takes it for done.
+	LookupUnknown LookupStatus = "unknown"
 )
 
 // LookupResult is what a lookup found.

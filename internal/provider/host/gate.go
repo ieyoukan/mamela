@@ -317,6 +317,16 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 			}
 		}
 	}
+	// A parameter the catalog says names the object is bound like a path's: one of the permit's IDs.
+	for _, b := range entry.Bind {
+		want, ok := p.IDs[b]
+		if !ok {
+			return -1, fmt.Sprintf("%s names the object of %s, and the permit binds no %s", b, rec.Call, b)
+		}
+		if got := params[b]; len(got) != 1 || got[0] != want {
+			return -1, fmt.Sprintf("%s=%s is not the approved %s", b, strings.Join(got, ","), want)
+		}
+	}
 	// A call the catalog gives a precondition always carries the observed version: without it, a
 	// change made after approval would be overwritten. The one exception is an object this apply
 	// created (the change was planned when it did not exist): nobody else's change can be lost.

@@ -358,6 +358,9 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			} else {
 				seen[key] = true
 			}
+			if p.Observed.Exists && !protocol.Targets(p.Observed.IDs, c.IDs) {
+				return nil, fmt.Errorf("provider %s: the change of %s names objects %v, not the observed %v", name, c.Resource, c.IDs, p.Observed.IDs)
+			}
 			if c.Precondition != "" && c.Precondition != p.Observed.Version {
 				return nil, fmt.Errorf("provider %s: the change of %s is based on version %s, but it observed %s", name, c.Resource, c.Precondition, p.Observed.Version)
 			}

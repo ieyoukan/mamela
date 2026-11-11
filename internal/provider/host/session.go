@@ -428,6 +428,9 @@ func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol
 	if c.Resource != observed.ID || c.Op != op || c.Kind != observed.Kind {
 		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s returned %s of %s", op, observed.ID, c.Op, c.Resource)}
 	}
+	if !protocol.Targets(observed.IDs, c.IDs) {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s names objects %v, not the observed %v: an explicit operation acts on the object Mamela observed, and nothing else", op, observed.ID, c.IDs, observed.IDs)}
+	}
 	if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
 		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s: %v", op, observed.ID, err)}
 	}
@@ -580,7 +583,7 @@ func (s *Session) Lookup(ctx context.Context, c protocol.Change) (protocol.Looku
 		return "", g.record, err
 	}
 	switch out.Status {
-	case protocol.LookupDone, protocol.LookupNotDone, protocol.LookupPartly:
+	case protocol.LookupDone, protocol.LookupNotDone, protocol.LookupPartly, protocol.LookupUnknown:
 		return out.Status, g.record, nil
 	}
 	return "", g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("lookup status %q", out.Status)}

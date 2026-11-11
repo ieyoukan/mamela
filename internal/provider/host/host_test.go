@@ -295,6 +295,57 @@ func TestScript(t *testing.T) {
 	}
 }
 
+// A parameter the catalog says names the object is bound to the permit's IDs, by the same name:
+// an approved-looking request cannot name another object, nor one the permit does not bind.
+func TestBoundParameters(t *testing.T) {
+	terminate := protocol.Call{Method: "POST", Path: "/", Form: []string{"Action", "InstanceId.1"}, Fixed: map[string]string{"Action": "Terminate"}}
+	req := func(id string) protocol.HostRequest {
+		return protocol.HostRequest{Method: "POST", Path: "/", Form: form("Action", "Terminate", "InstanceId.1", id)}
+	}
+	approve := func(id string) protocol.Approved {
+		return protocol.Approved{Method: "POST", Path: "/", Params: map[string][]string{"Action": {"Terminate"}, "InstanceId.1": {id}}}
+	}
+	for _, c := range []struct {
+		name    string
+		ids     map[string]string
+		approve string
+		send    string
+		refused string
+	}{
+		{"the bound object", map[string]string{"InstanceId.1": "i-1"}, "i-1", "i-1", ""},
+		{"another object, approved", map[string]string{"InstanceId.1": "i-1"}, "i-2", "i-2", "is not the approved i-1"},
+		{"an object the permit does not bind", map[string]string{"ClientToken": "t"}, "i-2", "i-2", "binds no InstanceId.1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &protocol.Permit{Op: "delete", Calls: []protocol.Call{terminate}, IDs: c.ids, Requests: []protocol.Approved{approve(c.approve)}, ExpiresAt: "2026-11-10T01:00:00Z"}
+			g := gate{phase: phaseApply, calls: p.Calls, permit: p, used: make([]bool, 1), catalog: testCatalog,
+				upstream: &stub{}, now: testNow}
+			_, perr := g.send(context.Background(), req(c.send))
+			switch {
+			case c.refused == "" && perr != nil:
+				t.Errorf("refused: %v", perr)
+			case c.refused != "" && (perr == nil || !strings.Contains(perr.Message, c.refused)):
+				t.Errorf("got %v, want a refusal with %q", perr, c.refused)
+			}
+		})
+	}
+}
+
+// The change of an explicit operation acts on the object Mamela observed, and nothing else: a
+// provider that answers with another object's IDs is refused before any permit exists.
+func TestPrepareActsOnTheObservedObject(t *testing.T) {
+	w := must(t, rogue(t, "prepare-other"))
+	obs := protocol.Observed{ID: "KVItem/web", Kind: "KVItem", Name: "web", Exists: true, Owned: true, Version: "1", IDs: map[string]string{"item": "web"}}
+	if _, err := w.s.Prepare(t.Context(), "delete-item", nil, obs); code(err) != CodeProtocol || !strings.Contains(err.Error(), "not the observed") {
+		t.Fatalf("prepare naming another object: %v", err)
+	}
+	good := must(t, rogue(t, "none"))
+	c, err := good.s.Prepare(t.Context(), "delete-item", nil, obs)
+	if err != nil || c.IDs["item"] != "web" {
+		t.Fatalf("prepare: %+v %v", c, err)
+	}
+}
+
 func TestApplyStaysWithinThePermit(t *testing.T) {
 	for _, mode := range []string{"other-object", "extra-param", "unapproved-value", "ignore-refusal"} {
 		t.Run(mode, func(t *testing.T) {
@@ -392,6 +443,7 @@ var (
 		{Method: "POST", Path: "/vms/{vm}/resize", Effect: protocol.EffectChange, Form: []string{"cores", "digest", "vm"}, Precondition: "digest"},
 		{Method: "POST", Path: "/vms/{vm}/tags", Effect: protocol.EffectChange, Form: []string{"tags"}},
 		{Method: "POST", Path: "/vms/{vm}/sneaky", Effect: protocol.EffectChange, Form: []string{"digest"}},
+		{Method: "POST", Path: "/", Effect: protocol.EffectLoseData, Form: []string{"Action", "InstanceId.1"}, Fixed: map[string]string{"Action": "Terminate"}, Bind: []string{"InstanceId.1"}},
 	}}
 	readVM    = protocol.Call{Method: "GET", Path: "/vms/{vm}", Query: []string{"full"}}
 	resizeVM  = protocol.Call{Method: "POST", Path: "/vms/{vm}/resize", Form: []string{"cores", "digest", "vm"}}
