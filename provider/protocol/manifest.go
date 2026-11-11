@@ -48,6 +48,9 @@ type Manifest struct {
 type Kind struct {
 	Kind       ResourceKind `json:"kind"`
 	Operations []Operation  `json:"operations"`
+	// Node: resources of this kind are machines mamelet runs on (ADR 0004). Their observation
+	// reports Observed.Node, and node resources (packages, services, k3s) may be declared on them.
+	Node bool `json:"node,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -77,6 +80,8 @@ type Call struct {
 	Path   string   `json:"path"`
 	Query  []string `json:"query,omitempty"`
 	Form   []string `json:"form,omitempty"`
+	// File is the form parameter that carries an uploaded artifact (multipart), for an upload call.
+	File string `json:"file,omitempty"`
 }
 
 // In says where the call sends a parameter: "query", "form", or "" when it does not declare it.
@@ -195,6 +200,11 @@ func (m Manifest) Check() error {
 	if m.Schema != Schema || m.Provider == "" || m.Version == "" {
 		return fmt.Errorf("manifest %q: schema %q, provider and version are required", m.Provider, Schema)
 	}
+	for _, c := range m.ObserveCalls {
+		if c.File != "" {
+			return fmt.Errorf("manifest %s: observe call %s %s uploads a file", m.Provider, c.Method, c.Path)
+		}
+	}
 	if err := checkCalls(m.ObserveCalls); err != nil {
 		return fmt.Errorf("manifest %s: observe: %w", m.Provider, err)
 	}
@@ -255,6 +265,9 @@ func checkCalls(calls []Call) error {
 	for _, c := range calls {
 		if err := checkCall(c.Method, c.Path, c.Query, c.Form); err != nil {
 			return err
+		}
+		if c.File != "" && (!validName(c.File) || c.In(c.File) != "" || c.Method != "POST") {
+			return fmt.Errorf("call %s %s: file %q must be a POST parameter of its own", c.Method, c.Path, c.File)
 		}
 		if seen[c.Method+" "+c.Path] {
 			return fmt.Errorf("call %s %s is declared twice", c.Method, c.Path)

@@ -153,35 +153,47 @@ type Host struct {
 
 // Request asks the host to send an API request and returns the API's response, whatever its
 // status. The error is a *protocol.Error when the host did not send it (Refused, NotSent) or
-// does not know whether it took effect (Uncertain); see the helpers below.
+// does not know whether it took effect (Uncertain); see the helpers below. An upload (Upload set)
+// sends that artifact of the change as the call's file; ask for it with Artifact first.
 func (h *Host) Request(ctx context.Context, r protocol.HostRequest) (protocol.HostResponse, error) {
+	var resp protocol.HostResponse
+	return resp, h.roundTrip(protocol.MethodHostRequest, r, &resp)
+}
+
+// Artifact has the host make one of the change's artifacts ready (during apply) and returns its
+// name, sha256 and size. The provider never gets its content: the host sends it in an upload.
+func (h *Host) Artifact(ctx context.Context, id string) (protocol.ArtifactInfo, error) {
+	var info protocol.ArtifactInfo
+	return info, h.roundTrip(protocol.MethodHostArtifact, protocol.HostArtifact{ID: id}, &info)
+}
+
+func (h *Host) roundTrip(method string, in, out any) error {
 	if h == nil || h.c == nil {
-		return protocol.HostResponse{}, errors.New("sdk: the Host is used outside the call it was given to")
+		return errors.New("sdk: the Host is used outside the call it was given to")
 	}
-	params, err := encode(r)
+	params, err := encode(in)
 	if err != nil {
-		return protocol.HostResponse{}, err
+		return err
 	}
 	h.c.next++
 	id := h.c.next
-	if err := h.c.write(protocol.Message{JSONRPC: "2.0", ID: id, Method: protocol.MethodHostRequest, Params: params}); err != nil {
-		return protocol.HostResponse{}, err
+	if err := h.c.write(protocol.Message{JSONRPC: "2.0", ID: id, Method: method, Params: params}); err != nil {
+		return err
 	}
 	m, err := h.c.read()
 	if err != nil {
-		return protocol.HostResponse{}, fmt.Errorf("sdk: waiting for the host: %w", err)
+		return fmt.Errorf("sdk: waiting for the host: %w", err)
 	}
 	if m.Method != "" || m.ID != id {
-		return protocol.HostResponse{}, fmt.Errorf("sdk: the host sent %q (id %d) instead of the response to request %d", m.Method, m.ID, id)
+		return fmt.Errorf("sdk: the host sent %q (id %d) instead of the response to request %d", m.Method, m.ID, id)
 	}
 	if m.Error != nil {
-		return protocol.HostResponse{}, m.Error
+		return m.Error
 	}
-	var resp protocol.HostResponse
-	if err := json.Unmarshal(m.Result, &resp); err != nil {
-		return protocol.HostResponse{}, fmt.Errorf("sdk: the host's response: %w", err)
+	if err := json.Unmarshal(m.Result, out); err != nil {
+		return fmt.Errorf("sdk: the host's response: %w", err)
 	}
-	return resp, nil
+	return nil
 }
 
 // Refused reports whether the host refused the request (outside the permit, a change while

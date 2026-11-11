@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -21,6 +24,19 @@ type Upstream interface {
 	// Do sends the request. An error wrapping ErrNotSent guarantees it was not sent; any other
 	// error means it may have taken effect.
 	Do(ctx context.Context, r protocol.HostRequest) (status int, body []byte, err error)
+}
+
+// File is an artifact sent as the file parameter of a multipart request (ADR 0004).
+type File struct {
+	Field string // the form parameter (the catalog's File)
+	Name  string // the file name sent with it
+	Size  int64
+	Open  func() (io.ReadCloser, error)
+}
+
+// Uploader is an Upstream that can also send a file. An Upstream without it cannot upload.
+type Uploader interface {
+	Upload(ctx context.Context, r protocol.HostRequest, f File) (status int, body []byte, err error)
 }
 
 // ErrNotSent marks an error that happened before the request was sent.
@@ -38,10 +54,19 @@ type HTTP struct {
 
 // Do implements Upstream.
 func (h HTTP) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
+	return h.send(ctx, r, nil)
+}
+
+// Upload implements Uploader.
+func (h HTTP) Upload(ctx context.Context, r protocol.HostRequest, f File) (int, []byte, error) {
+	return h.send(ctx, r, &f)
+}
+
+func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, []byte, error) {
 	if err := CheckBase(h.Base); err != nil {
 		return 0, nil, fmt.Errorf("%w: %v", ErrNotSent, err)
 	}
-	req, err := newRequest(ctx, h.Base, r)
+	req, err := newRequest(ctx, h.Base, r, f)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -89,10 +114,13 @@ func CheckBase(base string) error {
 	return fmt.Errorf("API base %q must be https (http only on 127.0.0.1, ::1 or localhost)", base)
 }
 
-func newRequest(ctx context.Context, base string, r protocol.HostRequest) (*http.Request, error) {
+func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *File) (*http.Request, error) {
 	u := base + r.Path
 	if len(r.Query) > 0 {
 		u += "?" + url.Values(r.Query).Encode()
+	}
+	if f != nil {
+		return multipartRequest(ctx, u, r, *f)
 	}
 	var body io.Reader
 	if len(r.Form) > 0 {
@@ -108,6 +136,40 @@ func newRequest(ctx context.Context, base string, r protocol.HostRequest) (*http
 	return req, nil
 }
 
+// multipartRequest streams the form fields, then the file, with its exact length (pveproxy and
+// other APIs reject chunked uploads).
+func multipartRequest(ctx context.Context, u string, r protocol.HostRequest, f File) (*http.Request, error) {
+	var head bytes.Buffer
+	mw := multipart.NewWriter(&head)
+	for _, k := range slices.Sorted(maps.Keys(r.Form)) {
+		for _, v := range r.Form[k] {
+			if err := mw.WriteField(k, v); err != nil {
+				return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+			}
+		}
+	}
+	if _, err := mw.CreateFormFile(f.Field, f.Name); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+	}
+	tail := "\r\n--" + mw.Boundary() + "--\r\n"
+	content, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("%w: open artifact %s: %v", ErrNotSent, f.Name, err)
+	}
+	body := io.MultiReader(bytes.NewReader(head.Bytes()), content, strings.NewReader(tail))
+	req, err := http.NewRequestWithContext(ctx, r.Method, u, struct {
+		io.Reader
+		io.Closer
+	}{body, content})
+	if err != nil {
+		content.Close()
+		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+	}
+	req.ContentLength = int64(head.Len()) + f.Size + int64(len(tail))
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	return req, nil
+}
+
 // Handler sends requests to an http.Handler in the same process: a fake API in tests.
 type Handler struct {
 	Handler http.Handler
@@ -115,7 +177,16 @@ type Handler struct {
 
 // Do implements Upstream.
 func (h Handler) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
-	req, err := newRequest(ctx, "http://api.test", r)
+	return h.send(ctx, r, nil)
+}
+
+// Upload implements Uploader.
+func (h Handler) Upload(ctx context.Context, r protocol.HostRequest, f File) (int, []byte, error) {
+	return h.send(ctx, r, &f)
+}
+
+func (h Handler) send(ctx context.Context, r protocol.HostRequest, f *File) (int, []byte, error) {
+	req, err := newRequest(ctx, "http://api.test", r, f)
 	if err != nil {
 		return 0, nil, err
 	}

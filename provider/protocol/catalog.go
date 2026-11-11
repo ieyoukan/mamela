@@ -35,6 +35,8 @@ type Entry struct {
 	// version differs (Proxmox's "digest"); it is one of Query or Form. The host requires it, in
 	// that place, to equal the permit's Precondition, when there is one.
 	Precondition string `json:"precondition,omitempty"`
+	// File is the multipart parameter in which the API reads an uploaded file.
+	File string `json:"file,omitempty"`
 }
 
 // In says where the API reads a parameter of the call: "query", "form", or "".

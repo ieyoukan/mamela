@@ -29,7 +29,9 @@ type Permit struct {
 	Requests []Approved `json:"requests"`
 	// Precondition is enforced on the calls whose catalog entry names a precondition parameter.
 	Precondition string `json:"precondition,omitempty"`
-	ExpiresAt    string `json:"expiresAt"` // RFC 3339, UTC
+	// Artifacts are the files the host makes ready for this change, and only these (ADR 0004).
+	Artifacts []Artifact `json:"artifacts,omitempty"`
+	ExpiresAt string     `json:"expiresAt"` // RFC 3339, UTC
 }
 
 // NewPermit derives the permit of an approved change from the manifest. It fails when the change
@@ -47,10 +49,19 @@ func NewPermit(m Manifest, c Change, operationID, planDigest, providersDigest, e
 			return Permit{}, fmt.Errorf("ID name %q", k)
 		}
 	}
+	if err := CheckArtifacts(c); err != nil {
+		return Permit{}, err
+	}
 	for _, a := range c.Requests {
 		i := slices.IndexFunc(o.Calls, func(call Call) bool { return call.Method == a.Method && call.Path == a.Path })
 		if i < 0 {
 			return Permit{}, fmt.Errorf("request %s %s is not a call of %s %s", a.Method, a.Path, c.Kind, c.Op)
+		}
+		if (a.Upload != "") != (o.Calls[i].File != "") {
+			return Permit{}, fmt.Errorf("request %s %s: an upload call sends exactly one artifact, and only an upload call sends one", a.Method, a.Path)
+		}
+		if _, ok := a.Params[o.Calls[i].File]; ok && o.Calls[i].File != "" {
+			return Permit{}, fmt.Errorf("request %s %s: the file parameter %s is the host's to fill", a.Method, a.Path, o.Calls[i].File)
 		}
 		for name, vals := range a.Params {
 			if o.Calls[i].In(name) == "" || len(vals) == 0 {
@@ -60,5 +71,5 @@ func NewPermit(m Manifest, c Change, operationID, planDigest, providersDigest, e
 	}
 	return Permit{Schema: PermitSchema, OperationID: operationID, PlanDigest: planDigest, ProvidersDigest: providersDigest,
 		Provider: m.Provider, Resource: c.Resource, Op: c.Op, Calls: slices.Clone(o.Calls), IDs: c.IDs,
-		Requests: slices.Clone(c.Requests), Precondition: c.Precondition, ExpiresAt: expiresAt}, nil
+		Requests: slices.Clone(c.Requests), Precondition: c.Precondition, Artifacts: slices.Clone(c.Artifacts), ExpiresAt: expiresAt}, nil
 }

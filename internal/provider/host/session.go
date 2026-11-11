@@ -33,6 +33,8 @@ type Options struct {
 	Catalog protocol.Catalog
 	// Upstream sends the allowed requests (nil: none can be sent).
 	Upstream Upstream
+	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
+	Artifacts ArtifactMaker
 	// Now is the clock for permit expiry (default time.Now).
 	Now            func() time.Time
 	MaxMemoryBytes uint64        // per WASM linear memory (default 512 MiB)
@@ -271,7 +273,7 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now}
+	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts}
 	if permit != nil {
 		g.used = make([]bool, len(permit.Requests))
 	}
@@ -293,6 +295,15 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 		}
 		if o.ID == "" || !validIDs(o.IDs) {
 			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %+v: an ID and valid ID names are required", o)}
+		}
+		// A node kind says, for each machine that exists, what Mamela needs to run mamelet on it;
+		// any other kind says nothing of the sort.
+		isNode := slices.ContainsFunc(s.manifest.Kinds, func(k protocol.Kind) bool { return k.Kind == o.Kind && k.Node })
+		switch {
+		case isNode && o.Exists && (o.Node == nil || o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: a node that exists needs node.id (positive) and its state", o.ID)}
+		case (!isNode || !o.Exists) && o.Node != nil:
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: only an existing resource of a node kind has node", o.ID)}
 		}
 	}
 	return out.Resources, g.record, nil
@@ -508,6 +519,19 @@ func (s *Session) callWithin(ctx context.Context, timeout time.Duration, g *gate
 		}
 		m := rd.msg
 		switch {
+		case m.Method == protocol.MethodHostArtifact:
+			reply := protocol.Message{JSONRPC: "2.0", ID: m.ID}
+			var ha protocol.HostArtifact
+			if err := json.Unmarshal(m.Params, &ha, json.RejectUnknownMembers(true)); err != nil {
+				reply.Error = &protocol.Error{Code: protocol.CodeInvalidParams, Message: err.Error()}
+			} else if info, perr := g.artifact(ctx, ha.ID); perr != nil {
+				reply.Error = perr
+			} else if reply.Result, err = json.Marshal(info, json.Deterministic(true)); err != nil {
+				return err
+			}
+			if err := s.write(ctx, reply); err != nil {
+				return s.fail(fmt.Sprintf("the provider did not read the answer to its request within %s", timeout), err)
+			}
 		case m.Method == protocol.MethodHostRequest:
 			reply := protocol.Message{JSONRPC: "2.0", ID: m.ID}
 			var hr protocol.HostRequest
