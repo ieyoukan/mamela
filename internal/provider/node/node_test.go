@@ -287,3 +287,27 @@ func TestSilentMameletIsAnUnknownOutcome(t *testing.T) {
 		t.Fatalf("installs %d", e.os.installs)
 	}
 }
+
+// A provider's machine gets a revision with what is declared on it, by its observed ID, though its
+// kind sorts after the node resources.
+func TestPublishOnAProvidersMachine(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "s.db"), func() time.Time { return time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"ProxmoxVM","name":"ext","provider":"proxmox","spec":{"cpu":1}},` +
+		`{"kind":"NodePackage","name":"ext/nginx","spec":{"node":"ext","package":"nginx","state":"Present"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Publish(ctx, st, g, policy.Default, "", map[string]int64{"ext": 7007}); err != nil {
+		t.Fatal(err)
+	}
+	rev, err := st.NodeRevision(ctx, "ext")
+	if err != nil || rev == nil || rev.VMID != 7007 || len(rev.Packages) != 1 || rev.Packages[0].Name != "nginx" {
+		t.Fatalf("revision %+v %v", rev, err)
+	}
+}

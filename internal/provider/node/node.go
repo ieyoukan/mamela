@@ -73,16 +73,16 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 	}
 	nodes := map[string]*nodeRes{}
 	var names []string
+	// The nodes first (a provider's kind sorts after the node resources), then what is on them.
 	for _, r := range g.Sorted() {
-		switch r.Kind {
-		case graph.KindVirtualMachine:
+		_, providersNode := nodeIDs[r.Name]
+		if r.Kind == graph.KindVirtualMachine || providersNode && r.Provided != nil {
 			nodes[r.Name] = &nodeRes{}
 			names = append(names, r.Name)
-		default:
-			if _, isNode := nodeIDs[r.Name]; isNode && r.Provided != nil {
-				nodes[r.Name] = &nodeRes{}
-				names = append(names, r.Name)
-			}
+		}
+	}
+	for _, r := range g.Sorted() {
+		switch r.Kind {
 		case graph.KindNodePackage:
 			if n := nodes[r.NodePackage.Node]; n != nil {
 				n.pkgs = append(n.pkgs, *r.NodePackage)
