@@ -16,6 +16,7 @@ package protocol
 import (
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -47,6 +48,17 @@ type Manifest struct {
 	// 0006): the reads it makes. Mamela runs it before applying (a block finding stops the apply)
 	// and after (comparing with what it found before).
 	Guard *Guard `json:"guard,omitempty"`
+	// Scripts are the setup and maintenance scripts the provider writes for a person to review and
+	// run with privileges Mamela never holds (ADR 0006): creating the identities and grants Mamela
+	// uses, removing what Mamela can no longer remove. The provider writes them from the settings
+	// alone (method script), so everyone needs only Mamela and the pinned provider to get them.
+	Scripts []Script `json:"scripts,omitempty"`
+}
+
+// Script is one script a provider writes.
+type Script struct {
+	Name        string `json:"name"`        // "bootstrap"
+	Description string `json:"description"` // what it does, and where and as whom it runs
 }
 
 // Guard declares a provider's safety check.
@@ -298,6 +310,13 @@ func (m Manifest) Check() error {
 			}
 		}
 	}
+	seenScripts := map[string]bool{}
+	for _, sc := range m.Scripts {
+		if !scriptNameRe.MatchString(sc.Name) || sc.Description == "" || seenScripts[sc.Name] {
+			return fmt.Errorf("manifest %s: script %q: a unique name (lowercase letters, digits, '-') and a description are required", m.Provider, sc.Name)
+		}
+		seenScripts[sc.Name] = true
+	}
 	if len(m.ObserveCalls) > 0 && m.API == "" {
 		return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 	}
@@ -497,3 +516,5 @@ func (q *Requirement) Fill(facts map[string][]string) {
 	}
 	q.Conditions, q.StandingIf = fill(q.Conditions), fill(q.StandingIf)
 }
+
+var scriptNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)

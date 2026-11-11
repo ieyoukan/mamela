@@ -13,8 +13,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ieyoukan/mamela/internal/toolchain"
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -430,6 +432,38 @@ func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol
 		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s: %v", op, observed.ID, err)}
 	}
 	return c, nil
+}
+
+// MaxScriptBytes bounds a script's text.
+const MaxScriptBytes = 1 << 20
+
+// Script asks the provider for one of its declared scripts. It may send no request; the text is
+// for a person to review before running it.
+func (s *Session) Script(ctx context.Context, p protocol.ScriptParams) (string, error) {
+	if !slices.ContainsFunc(s.manifest.Scripts, func(sc protocol.Script) bool { return sc.Name == p.Name }) {
+		var names []string
+		for _, sc := range s.manifest.Scripts {
+			names = append(names, sc.Name)
+		}
+		return "", &Error{Code: CodePermit, Message: fmt.Sprintf("provider %s writes no script %q (it writes: %s)", s.manifest.Provider, p.Name, orNone(names))}
+	}
+	g := s.gate(phaseScript, nil, nil)
+	var out protocol.ScriptResult
+	err := s.call(ctx, g, protocol.MethodScript, p, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return "", err
+	}
+	if out.Text == "" || len(out.Text) > MaxScriptBytes || !utf8.ValidString(out.Text) {
+		return "", &Error{Code: CodeProtocol, Message: fmt.Sprintf("script %s: the text must be UTF-8, 1 byte to %d bytes", p.Name, MaxScriptBytes)}
+	}
+	return out.Text, nil
+}
+
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // Outcome is what an apply did, as the host knows it from the requests it sent.

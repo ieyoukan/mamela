@@ -120,6 +120,20 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error
 	return c.apiWith(name, a)
 }
 
+// ScriptInput is what a provider's scripts are written from (protocol.ScriptParams): the guard's
+// settings and the credentials' IDs and secret files, never a secret.
+func (c Config) ScriptInput(name string) ([]byte, protocol.ScriptCredentials, error) {
+	a := c.Provider[name]
+	var settings []byte
+	if a.Guard != nil {
+		var err error
+		if settings, err = json.Marshal(a.Guard, json.Deterministic(true)); err != nil {
+			return nil, protocol.ScriptCredentials{}, err
+		}
+	}
+	return settings, protocol.ScriptCredentials{TokenID: a.TokenID, TokenFile: a.TokenFile, GuardTokenID: a.GuardTokenID, GuardTokenFile: a.GuardTokenFile}, nil
+}
+
 // guard returns the upstream of a provider's guard (its own credentials, or nil for the API's)
 // and its settings as JSON.
 func (c Config) guard(name string) (host.Upstream, []byte, error) {

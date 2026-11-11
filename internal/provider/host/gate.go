@@ -25,6 +25,7 @@ const (
 	phaseLookup   phase = "lookup"
 	phaseGuard    phase = "guard"
 	phasePrepare  phase = "prepare"
+	phaseScript   phase = "script"
 )
 
 // RequestOutcome is what became of one request the provider asked for.
@@ -204,7 +205,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 // it matched, and why it is not allowed ("" when it is).
 func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, string) {
 	switch g.phase {
-	case phaseDescribe, phaseDiff, phasePrepare:
+	case phaseDescribe, phaseDiff, phasePrepare, phaseScript:
 		return -1, protocol.Call{}, fmt.Sprintf("no request is allowed during %s (it computes from its parameters alone)", g.phase)
 	}
 	if !slices.Contains(protocol.Methods, r.Method) {

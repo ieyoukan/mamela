@@ -66,6 +66,9 @@ type Suite struct {
 	// GuardSettings are the guard's settings (mamela.providers.toml [provider.<name>.guard]), for a
 	// provider with a guard: it runs before and after each converge, and must find nothing to block.
 	GuardSettings []byte
+	// ScriptCredentials are the credentials' IDs and files the provider's scripts are written with
+	// (with GuardSettings): each declared script must be written.
+	ScriptCredentials protocol.ScriptCredentials
 }
 
 // Case is one declaration.
@@ -124,6 +127,11 @@ func Run(t *testing.T, s Suite) {
 				if v := e.s.Verify(o); len(v.Unclassified) > 0 {
 					t.Logf("%s %s: calls the catalog does not classify (always need a person's approval): %v", k.Kind, o.Op, v.Unclassified)
 				}
+			}
+		}
+		for _, sc := range m.Scripts {
+			if _, err := e.s.Script(e.ctx, protocol.ScriptParams{Name: sc.Name, Settings: s.GuardSettings, Credentials: s.ScriptCredentials}); err != nil {
+				t.Errorf("script %s: %v", sc.Name, err)
 			}
 		}
 	})

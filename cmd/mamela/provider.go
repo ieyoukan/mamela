@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
+	"time"
 
+	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/provider/host"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
@@ -17,6 +20,8 @@ const providerUsage = `Usage:
   mamela provider inspect [flags] <program>   check a provider program and show what it declares
   mamela provider trust --source <s> --version <v> <program>
                                               trust one native provider build (it runs outside any sandbox)
+  mamela provider script [--providers <file>] <pome-dir> <provider> [<script>]
+                                              print a setup script the provider writes (list them without <script>)
 
 A provider is untrusted code. A WASM provider (GOOS=wasip1, or a WASI 0.3 component) runs isolated
 in the pinned wasmtime: no files, environment or network; its API requests go through Mamela, which
@@ -34,6 +39,8 @@ func runProvider(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return runProviderInspect(ctx, args[1:], stdout, stderr)
 	case "trust":
 		return runProviderTrust(args[1:], stdout, stderr)
+	case "script":
+		return runProviderScript(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, providerUsage)
 		return 0
@@ -215,5 +222,77 @@ func runProviderTrust(args []string, stdout, stderr io.Writer) int {
 		return report(stderr, err)
 	}
 	fmt.Fprintf(stdout, "%s\n\ntrusted %s %s, %s\nrecorded in %s; review it like code\n", host.TrustWarning, *source, *ver, exe.Digest, *trustFile)
+	return 0
+}
+
+// runProviderScript prints one of the scripts a provider of the declaration writes (ADR 0006): for
+// a person to review and run with privileges Mamela never holds. The provider is the one the
+// declaration's Pome.lock pins; it runs isolated, sends no request, and sees no secret.
+func runProviderScript(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mamela provider script", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	providersFile := addProvidersFlag(fs)
+	tf := addToolFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 2 && fs.NArg() != 3 {
+		fmt.Fprint(stderr, providerUsage)
+		return 2
+	}
+	dir, name := fs.Arg(0), fs.Arg(1)
+	t, err := tf.find()
+	if err != nil {
+		return report(stderr, err)
+	}
+	pkgs, err := external.Discover(dir, t.pomeCache)
+	if err != nil {
+		return report(stderr, err)
+	}
+	i := slices.IndexFunc(pkgs, func(p external.Package) bool { return p.Provider == name })
+	if i < 0 {
+		return report(stderr, fmt.Errorf("no dependency of %s provides %q (add the provider's Pome to Pome.toml)", dir, name))
+	}
+	pkg := pkgs[i]
+	exe, err := host.InspectBytes(pkg.Source+" ("+pkg.Provider+")", pkg.Program)
+	if err != nil {
+		return report(stderr, err)
+	}
+	if exe.Format == host.FormatNative {
+		return report(stderr, fmt.Errorf("provider %s: a provider from a Pome must be WASM", name))
+	}
+	s, err := host.Start(ctx, exe, host.Options{Wasmtime: t.toolchain.Wasmtime, CallTimeout: time.Minute})
+	if err != nil {
+		return report(stderr, err)
+	}
+	defer s.Close()
+	m := s.Manifest()
+	if fs.NArg() == 2 {
+		if len(m.Scripts) == 0 {
+			fmt.Fprintf(stdout, "provider %s writes no scripts\n", name)
+		}
+		for _, sc := range m.Scripts {
+			fmt.Fprintf(stdout, "%-12s %s\n", sc.Name, sc.Description)
+		}
+		return 0
+	}
+	cfg, err := external.LoadConfig(*providersFile)
+	if err != nil {
+		return report(stderr, err)
+	}
+	settings, creds, err := cfg.ScriptInput(name)
+	if err != nil {
+		return report(stderr, err)
+	}
+	text, err := s.Script(ctx, protocol.ScriptParams{Name: fs.Arg(2), Settings: settings, Credentials: creds})
+	if err != nil {
+		return report(stderr, err)
+	}
+	fmt.Fprintf(stderr, "script %s of provider %s %s (%s, %s@%s), from %s: review every line before running it\n",
+		fs.Arg(2), name, m.Version, pkg.Digest, pkg.Source, pkg.Version, *providersFile)
+	fmt.Fprint(stdout, text)
+	if !strings.HasSuffix(text, "\n") {
+		fmt.Fprintln(stdout)
+	}
 	return 0
 }

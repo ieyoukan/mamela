@@ -31,7 +31,16 @@ func (r rogue) Manifest() protocol.Manifest {
 	if readFile != nil {
 		m.Version = readFile()
 	}
+	m.Scripts = []protocol.Script{{Name: "setup", Description: "prints the settings it was given"}}
 	return m
+}
+
+// Script writes a script from its parameters; mode script-empty writes nothing.
+func (r rogue) Script(_ context.Context, p protocol.ScriptParams) (protocol.ScriptResult, error) {
+	if mode == "script-empty" {
+		return protocol.ScriptResult{}, nil
+	}
+	return protocol.ScriptResult{Text: fmt.Sprintf("# %s for %s\necho %s\n", p.Name, p.Credentials.TokenID, p.Settings)}, nil
 }
 
 func (r rogue) Observe(ctx context.Context, h *sdk.Host, p protocol.ObserveParams) (protocol.ObserveResult, error) {

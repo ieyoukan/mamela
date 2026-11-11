@@ -33,7 +33,32 @@ const (
 	// MethodPrepare makes the change of an explicit operation (deleting, rebooting) on one observed
 	// resource, from its parameters alone: no host/request, like diff.
 	MethodPrepare = "prepare"
+	// MethodScript writes one of the provider's scripts (Manifest.Scripts) from the settings alone:
+	// no host/request.
+	MethodScript = "script"
 )
+
+// ScriptParams ask for a script. They hold what the user configured for the provider in
+// mamela.providers.toml, without any secret: the guard's settings, and the credentials' IDs and
+// where their secrets are kept.
+type ScriptParams struct {
+	Name        string            `json:"name"`
+	Settings    jsontext.Value    `json:"settings,omitempty"` // [provider.<name>.guard]
+	Credentials ScriptCredentials `json:"credentials"`
+}
+
+// ScriptCredentials name the provider's credentials; their secrets are never sent.
+type ScriptCredentials struct {
+	TokenID        string `json:"tokenId,omitempty"`
+	TokenFile      string `json:"tokenFile,omitempty"`
+	GuardTokenID   string `json:"guardTokenId,omitempty"`
+	GuardTokenFile string `json:"guardTokenFile,omitempty"`
+}
+
+// ScriptResult is the script's text.
+type ScriptResult struct {
+	Text string `json:"text"`
+}
 
 // GuardParams ask for a safety check.
 type GuardParams struct {

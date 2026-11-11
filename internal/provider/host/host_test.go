@@ -277,6 +277,24 @@ func TestObserveSendsOnlyDeclaredReads(t *testing.T) {
 	}
 }
 
+// A provider writes only the scripts it declares, from the settings it is given, and a script has
+// text.
+func TestScript(t *testing.T) {
+	w := must(t, rogue(t, "none"))
+	text, err := w.s.Script(t.Context(), protocol.ScriptParams{Name: "setup", Settings: []byte(`{"pool":"lab"}`),
+		Credentials: protocol.ScriptCredentials{TokenID: "mamela@pve!lab"}})
+	if err != nil || !strings.Contains(text, "mamela@pve!lab") || !strings.Contains(text, `{"pool":"lab"}`) {
+		t.Errorf("script: %q %v", text, err)
+	}
+	if _, err := w.s.Script(t.Context(), protocol.ScriptParams{Name: "teardown"}); code(err) != CodePermit {
+		t.Errorf("an undeclared script: %v", err)
+	}
+	empty := must(t, rogue(t, "script-empty"))
+	if _, err := empty.s.Script(t.Context(), protocol.ScriptParams{Name: "setup"}); code(err) != CodeProtocol {
+		t.Errorf("an empty script: %v", err)
+	}
+}
+
 func TestApplyStaysWithinThePermit(t *testing.T) {
 	for _, mode := range []string{"other-object", "extra-param", "unapproved-value", "ignore-refusal"} {
 		t.Run(mode, func(t *testing.T) {
@@ -412,6 +430,8 @@ func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
 	}{
 		{"describe sends nothing", gate{phase: phaseDescribe}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during describe"},
 		{"diff sends nothing", gate{phase: phaseDiff, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during diff"},
+		{"prepare sends nothing", gate{phase: phasePrepare, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during prepare"},
+		{"a script sends nothing", gate{phase: phaseScript, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during script"},
 		{"observe reads", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: form("full", "1")}, ""},
 		{"observe changes nothing", gate{phase: phaseObserve, calls: []protocol.Call{resizeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize"}, "only reads"},
 		{"an unclassified call is not a read", gate{phase: phaseLookup, calls: []protocol.Call{pokeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}, "unclassified"},

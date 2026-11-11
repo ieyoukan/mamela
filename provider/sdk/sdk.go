@@ -50,6 +50,12 @@ type Preparer interface {
 	Prepare(ctx context.Context, p protocol.PrepareParams) (protocol.PrepareResult, error)
 }
 
+// Scripter is a provider that writes setup and maintenance scripts (Manifest.Scripts) from its
+// parameters alone (it has no Host).
+type Scripter interface {
+	Script(ctx context.Context, p protocol.ScriptParams) (protocol.ScriptResult, error)
+}
+
 // Serve speaks the protocol on standard input and output until the host closes standard input.
 // It exits the program with status 1 if the conversation breaks.
 func Serve(p Provider) {
@@ -152,6 +158,16 @@ func dispatch(p Provider, c *conn, m protocol.Message) (jsontext.Value, error) {
 			return nil, err
 		}
 		return call(pr.Prepare(ctx, in))
+	case protocol.MethodScript:
+		sc, ok := p.(Scripter)
+		if !ok {
+			return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "this provider writes no scripts"}
+		}
+		var in protocol.ScriptParams
+		if err := decode(m.Params, &in); err != nil {
+			return nil, err
+		}
+		return call(sc.Script(ctx, in))
 	default:
 		return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "unknown method " + m.Method}
 	}
