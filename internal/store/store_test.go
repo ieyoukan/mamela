@@ -327,3 +327,50 @@ func TestNodeNumbers(t *testing.T) {
 		t.Fatalf("db %d, web again %d", b, again)
 	}
 }
+
+// An explicit operation is recorded before it is sent and finished once; deleting forgets the
+// creation records of the resource, and never frees a node's number for another machine.
+func TestExplicitOperationsAndForgetting(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := open(t)
+	if err := st.StartExplicit(ctx, "act-1", "proxmox", "ProxmoxVM web", "delete-vm", []byte(`{}`), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartExplicit(ctx, "act-1", "proxmox", "ProxmoxVM web", "delete-vm", []byte(`{}`), "alice"); err == nil {
+		t.Fatal("the same operation was started twice")
+	}
+	if o, err := st.ExplicitOutcome(ctx, "act-1"); err != nil || o != "started" {
+		t.Fatalf("outcome %q %v", o, err)
+	}
+	if err := st.FinishExplicit(ctx, "act-1", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishExplicit(ctx, "act-1", "failed", "again"); err == nil {
+		t.Fatal("finished twice")
+	}
+	if o, _ := st.ExplicitOutcome(ctx, "act-1"); o != "done" {
+		t.Fatalf("outcome %q", o)
+	}
+	if _, err := st.ExplicitOutcome(ctx, "act-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown operation: %v", err)
+	}
+
+	st.RecordCreation(ctx, "proxmox", "ProxmoxVM web", map[string]string{"vmid": "7001"}, "p", "o")
+	st.RecordCreation(ctx, "proxmox", "ProxmoxVM db", map[string]string{"vmid": "7002"}, "p", "o")
+	n, _ := st.NodeNumber(ctx, "web")
+	if err := st.ForgetCreations(ctx, "proxmox", "ProxmoxVM web"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Creations(ctx, "proxmox", "ProxmoxVM web"); len(got) != 0 {
+		t.Fatalf("still recorded: %v", got)
+	}
+	if got, _ := st.Creations(ctx, "proxmox", "ProxmoxVM db"); len(got) != 1 {
+		t.Fatalf("another resource's record was forgotten: %v", got)
+	}
+	if other, _ := st.NodeNumber(ctx, "db"); other == n {
+		t.Fatalf("number %d was given to another node", n)
+	}
+	if again, _ := st.NodeNumber(ctx, "web"); again != n {
+		t.Fatalf("web made again got %d, not its number %d", again, n)
+	}
+}

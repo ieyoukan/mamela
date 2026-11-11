@@ -197,7 +197,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			err = st.RecordCreation(ctx, pr.Provider, obs.ID, change.IDs, "act:"+id, id)
 		case slices.Contains(v.Effects, protocol.EffectLoseData):
 			// Deleted: Mamela forgets it.
-			err = st.ForgetCreations(ctx, pr.Provider, obs.ID, pr.Name)
+			err = st.ForgetCreations(ctx, pr.Provider, obs.ID)
 		}
 		if err != nil {
 			return report(stderr, err)

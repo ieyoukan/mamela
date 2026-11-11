@@ -175,21 +175,11 @@ func (s *Store) ExplicitOutcome(ctx context.Context, id string) (string, error) 
 	return outcome, notFound(err)
 }
 
-// ForgetCreations removes Mamela's records of a resource of a provider once its object is deleted
-// (ADR 0006), and the number of the node of that name, if Mamela gave it one.
-func (s *Store) ForgetCreations(ctx context.Context, provider, resource, node string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource); err != nil {
-		return err
-	}
-	if node != "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM node_numbers WHERE node = ?`, node); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+// ForgetCreations removes Mamela's records of creating a resource of a provider once its object is
+// deleted (ADR 0006): what remains with that resource's IDs is no longer Mamela's. A node's number
+// is kept, so that no number is ever given to two machines (a machine of the same name made again
+// gets its number back).
+func (s *Store) ForgetCreations(ctx context.Context, provider, resource string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource)
+	return err
 }
