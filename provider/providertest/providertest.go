@@ -27,9 +27,12 @@ package providertest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -182,7 +185,7 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		}
 	}
 	up := &faulty{api: s.NewAPI(), catalog: s.Catalog, at: at, kind: kind}
-	o.Upstream = up
+	o.Upstream, o.Artifacts = up, fakeArtifacts{}
 	ctx := t.Context()
 	sess, err := host.Start(ctx, exe, o)
 	if err != nil {
@@ -353,6 +356,22 @@ type faulty struct {
 }
 
 func (f *faulty) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
+	return f.send(ctx, r, nil)
+}
+
+// Upload implements host.Uploader.
+func (f *faulty) Upload(ctx context.Context, r protocol.HostRequest, file host.File) (int, []byte, error) {
+	return f.send(ctx, r, &file)
+}
+
+func (f *faulty) send(ctx context.Context, r protocol.HostRequest, file *host.File) (int, []byte, error) {
+	h := host.Handler{Handler: f.api}
+	do := func() (int, []byte, error) {
+		if file != nil {
+			return h.Upload(ctx, r, *file)
+		}
+		return h.Do(ctx, r)
+	}
 	if isChange(f.catalog, r) {
 		i := f.changes
 		f.changes++
@@ -361,11 +380,25 @@ func (f *faulty) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, e
 			if f.kind == faultNotSent {
 				return 0, nil, fmt.Errorf("%w: injected: connection refused", host.ErrNotSent)
 			}
-			host.Handler{Handler: f.api}.Do(ctx, r)
+			do()
 			return 0, nil, errors.New("injected: the connection was lost after the request was sent")
 		}
 	}
-	return host.Handler{Handler: f.api}.Do(ctx, r)
+	return do()
+}
+
+// fakeArtifacts makes artifacts of fake content: a download claims its declared sha256 (the fake
+// API does not check it), a seed gets a name and a sha256 of its own.
+type fakeArtifacts struct{}
+
+func (fakeArtifacts) Make(_ context.Context, a protocol.Artifact) (host.Prepared, error) {
+	content := "fake " + string(a.Kind) + " " + a.ID
+	info := protocol.ArtifactInfo{Name: a.Name, SHA256: a.SHA256, Size: int64(len(content))}
+	if a.Kind == protocol.ArtifactSeed {
+		sum := sha256.Sum256([]byte(content + a.Node))
+		info.Name, info.SHA256 = fmt.Sprintf("mamela-seed-%s-%d.iso", a.Node, a.NodeID), hex.EncodeToString(sum[:])
+	}
+	return host.Prepared{Info: info, Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(content)), nil }}, nil
 }
 
 // isChange: anything the catalog does not classify as a read.

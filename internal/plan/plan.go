@@ -303,11 +303,17 @@ type machine struct {
 }
 
 func (b builder) machine(node string) (machine, bool) {
-	if vm, ok := b.snap.VMs[node]; ok {
-		return machine{managed: vm.Managed, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
+	vm, isVM := b.snap.VMs[node]
+	if isVM && vm.Managed {
+		return machine{managed: true, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
 	}
+	// A provider's machine is, to the built-in Proxmox observation, a VM it did not create
+	// (Foreign): the provider's word on its own machine comes first.
 	if n, ok := b.snap.Nodes[node]; ok {
 		return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
+	}
+	if isVM {
+		return machine{managed: false, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
 	}
 	return machine{}, false
 }

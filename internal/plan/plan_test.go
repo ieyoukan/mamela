@@ -451,3 +451,20 @@ func TestNodeResourcesOnAProvidersMachine(t *testing.T) {
 		t.Fatalf("someone else's machine: %+v", c.Note)
 	}
 }
+
+// The built-in observation sees a provider's machine as a Foreign VM of the same name; the
+// provider's word on its machine comes first.
+func TestProvidersMachineIsNotForeign(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
+		`{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.VMs["web"] = state.VM{Managed: false, ObservedAt: t0}
+	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 60, ObservedAt: t0}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage web/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0103" {
+		t.Fatalf("%+v", c.Note)
+	}
+}
