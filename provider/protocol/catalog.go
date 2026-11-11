@@ -42,6 +42,8 @@ type Entry struct {
 	Precondition string `json:"precondition,omitempty"`
 	// File is the multipart parameter in which the API reads an uploaded file.
 	File string `json:"file,omitempty"`
+	// Fixed tells calls on the same method and path apart, as in Call.
+	Fixed map[string]string `json:"fixed,omitempty"`
 	// Measures are the parameters that size what the call makes or changes (vCPUs, memory, disk):
 	// the host checks their values against the site's limits, whatever the provider declares.
 	Measures []Measure `json:"measures,omitempty"`
@@ -78,14 +80,20 @@ func (e Entry) In(param string) string {
 // Check verifies the catalog's own consistency.
 func (c Catalog) Check() error {
 	seen := map[string]bool{}
+	byPath := map[string][]Call{}
 	for _, e := range c.Entries {
 		if err := checkCall(e.Method, e.Path, e.Query, e.Form); err != nil {
 			return fmt.Errorf("catalog %s: %w", c.API, err)
 		}
-		if seen[e.Method+" "+e.Path] {
-			return fmt.Errorf("catalog %s: %s %s twice", c.API, e.Method, e.Path)
+		if err := checkFixed(e.Method, e.Path, e.Fixed, e.In); err != nil {
+			return fmt.Errorf("catalog %s: %w", c.API, err)
 		}
-		seen[e.Method+" "+e.Path] = true
+		key := e.Method + " " + e.Path + " " + fixedKey(e.Fixed)
+		if seen[key] {
+			return fmt.Errorf("catalog %s: %s twice", c.API, key)
+		}
+		seen[key] = true
+		byPath[e.Method+" "+e.Path] = append(byPath[e.Method+" "+e.Path], Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
 		if !containsEffect([]Effect{EffectRead, EffectCreate, EffectChange, EffectRestart, EffectLoseData}, e.Effect) {
 			return fmt.Errorf("catalog %s: %s %s: effect %q", c.API, e.Method, e.Path, e.Effect)
 		}
@@ -98,6 +106,9 @@ func (c Catalog) Check() error {
 		if e.Precondition != "" && e.In(e.Precondition) == "" {
 			return fmt.Errorf("catalog %s: %s %s: the precondition %s is not one of its parameters", c.API, e.Method, e.Path, e.Precondition)
 		}
+	}
+	if err := checkDistinct(byPath); err != nil {
+		return fmt.Errorf("catalog %s: %w", c.API, err)
 	}
 	return nil
 }
@@ -161,14 +172,33 @@ func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) 
 	return nil
 }
 
-// Lookup returns the entry of a call (method and template, as declared).
+// Lookup returns the entry of a call without fixed parameters (method and template).
 func (c Catalog) Lookup(method, path string) (Entry, bool) {
+	return c.LookupCall(Call{Method: method, Path: path})
+}
+
+// LookupCall returns the entry of a declared call: the same method, path and fixed parameters.
+func (c Catalog) LookupCall(call Call) (Entry, bool) {
 	for _, e := range c.Entries {
-		if e.Method == method && e.Path == path {
+		if (Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed}).Same(call) {
 			return e, true
 		}
 	}
 	return Entry{}, false
+}
+
+// LookupApproved returns the entry of an approved request: its method and template, and the fixed
+// parameters it carries.
+func (c Catalog) LookupApproved(a Approved) (Entry, bool) {
+	var calls []Call
+	for _, e := range c.Entries {
+		calls = append(calls, Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
+	}
+	call, _, ok := FindCall(calls, a.Method, a.Path, a.Params, false)
+	if !ok {
+		return Entry{}, false
+	}
+	return c.LookupCall(call)
 }
 
 // Verified is what the host can tell about an operation's effects from its catalog.
@@ -182,7 +212,7 @@ func (c Catalog) Verify(o Operation) Verified {
 	var v Verified
 	seen := map[Effect]bool{}
 	for _, call := range o.Calls {
-		e, ok := c.Lookup(call.Method, call.Path)
+		e, ok := c.LookupCall(call)
 		if !ok || c.API == "" {
 			v.Unclassified = append(v.Unclassified, call)
 			continue

@@ -53,18 +53,18 @@ func NewPermit(m Manifest, c Change, operationID, planDigest, providersDigest, e
 		return Permit{}, err
 	}
 	for _, a := range c.Requests {
-		i := slices.IndexFunc(o.Calls, func(call Call) bool { return call.Method == a.Method && call.Path == a.Path })
-		if i < 0 {
-			return Permit{}, fmt.Errorf("request %s %s is not a call of %s %s", a.Method, a.Path, c.Kind, c.Op)
+		call, _, ok := FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		if !ok {
+			return Permit{}, fmt.Errorf("request %s %s is not a call of %s %s (or fits more than one)", a.Method, a.Path, c.Kind, c.Op)
 		}
-		if (a.Upload != "") != (o.Calls[i].File != "") {
+		if (a.Upload != "") != (call.File != "") {
 			return Permit{}, fmt.Errorf("request %s %s: an upload call sends exactly one artifact, and only an upload call sends one", a.Method, a.Path)
 		}
-		if _, ok := a.Params[o.Calls[i].File]; ok && o.Calls[i].File != "" {
-			return Permit{}, fmt.Errorf("request %s %s: the file parameter %s is the host's to fill", a.Method, a.Path, o.Calls[i].File)
+		if _, ok := a.Params[call.File]; ok && call.File != "" {
+			return Permit{}, fmt.Errorf("request %s %s: the file parameter %s is the host's to fill", a.Method, a.Path, call.File)
 		}
 		for name, vals := range a.Params {
-			if o.Calls[i].In(name) == "" || len(vals) == 0 {
+			if call.In(name) == "" || len(vals) == 0 {
 				return Permit{}, fmt.Errorf("request %s %s: parameter %s is not declared for the call, or has no value", a.Method, a.Path, name)
 			}
 		}

@@ -202,24 +202,23 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	if err := protocol.CheckPath(r.Path); err != nil {
 		return -1, protocol.Call{}, err.Error()
 	}
-	var call protocol.Call
-	var ids map[string]string
-	found := false
-	for _, c := range g.calls {
-		p, err := protocol.ParsePath(c.Path)
-		if err != nil || c.Method != r.Method {
-			continue
-		}
-		if m, ok := p.Match(r.Path); ok {
-			call, ids, found = c, m, true
-			break
-		}
+	// The call it is: method, path and the fixed parameters it carries ("Action=RunInstances").
+	all := map[string][]string{}
+	for k, v := range r.Query {
+		all[k] = v
 	}
+	for k, v := range r.Form {
+		all[k] = append(all[k], v...)
+	}
+	call, ids, found := protocol.FindCall(g.calls, r.Method, r.Path, all, true)
 	if !found {
 		return -1, protocol.Call{}, fmt.Sprintf("%s %s is not a declared call of this %s", r.Method, r.Path, g.what())
 	}
 	rec.Call = call.Method + " " + call.Path
-	entry, classified := g.catalog.Lookup(call.Method, call.Path)
+	if len(call.Fixed) > 0 {
+		rec.Call += " " + fixedText(call.Fixed)
+	}
+	entry, classified := g.catalog.LookupCall(call)
 	if classified {
 		rec.Effect, rec.Change = entry.Effect, entry.Effect != protocol.EffectRead
 	}
@@ -337,7 +336,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	// the facts of the ready artifacts filled in), and the same upload.
 	var near []string
 	for i, a := range p.Requests {
-		if a.Method != call.Method || a.Path != call.Path {
+		if c, _, ok := protocol.FindCall(p.Calls, a.Method, a.Path, a.Params, false); !ok || !c.Same(call) {
 			continue
 		}
 		if g.used[i] {
@@ -390,4 +389,12 @@ func formatParams(ps map[string][]string) string {
 		out = append(out, k+"="+strings.Join(ps[k], ","))
 	}
 	return strings.Join(out, " ")
+}
+
+func fixedText(f map[string]string) string {
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(f)) {
+		parts = append(parts, k+"="+f[k])
+	}
+	return strings.Join(parts, "&")
 }

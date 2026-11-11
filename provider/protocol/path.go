@@ -15,12 +15,16 @@ type Segment struct {
 	ID      string
 }
 
-// ParsePath parses a path template such as "/items/{item}". Every segment is non-empty; an ID
-// segment is the whole segment; an ID appears once.
+// ParsePath parses a path template such as "/items/{item}", or "/" (a query API's one endpoint,
+// whose calls fixed parameters tell apart). Every segment is non-empty; an ID segment is the whole
+// segment; an ID appears once.
 func ParsePath(tmpl string) (Path, error) {
+	if tmpl == "/" {
+		return Path{}, nil
+	}
 	rest, ok := strings.CutPrefix(tmpl, "/")
 	if !ok || rest == "" {
-		return nil, errors.New("a path starts with / and has a segment")
+		return nil, errors.New("a path starts with / and has a segment, or is /")
 	}
 	var p Path
 	seen := map[string]bool{}
@@ -44,6 +48,9 @@ func ParsePath(tmpl string) (Path, error) {
 
 // Match matches a concrete path against the template and returns the IDs.
 func (p Path) Match(path string) (map[string]string, bool) {
+	if len(p) == 0 {
+		return map[string]string{}, path == "/"
+	}
 	rest, ok := strings.CutPrefix(path, "/")
 	if !ok {
 		return nil, false
@@ -81,9 +88,12 @@ func (p Path) IDs() []string {
 // task ID is "UPID:node:...:user@realm!token:"), none of
 // them "." or "..". Escapes, queries and fragments are not paths.
 func CheckPath(path string) error {
+	if path == "/" {
+		return nil
+	}
 	rest, ok := strings.CutPrefix(path, "/")
 	if !ok || rest == "" {
-		return errors.New("a path starts with / and has a segment")
+		return errors.New("a path starts with / and has a segment, or is /")
 	}
 	for s := range strings.SplitSeq(rest, "/") {
 		if err := checkSegment(s); err != nil {
@@ -110,7 +120,8 @@ func validName(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '-') {
+		// "." for indexed names of query APIs ("Filter.1.Name", "InstanceId.1").
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '_' || c == '-' || c == '.') {
 			return false
 		}
 	}

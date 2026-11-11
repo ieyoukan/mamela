@@ -337,10 +337,9 @@ func (rt *Runtime) verify(s *host.Session, c protocol.Change) protocol.Verified 
 	o, _ := s.Manifest().Operation(c.Kind, c.Op)
 	var calls []protocol.Call
 	for _, a := range c.Requests {
-		for _, call := range o.Calls {
-			if call.Method == a.Method && call.Path == a.Path && !slices.ContainsFunc(calls, func(x protocol.Call) bool { return x.Method == call.Method && x.Path == call.Path }) {
-				calls = append(calls, call)
-			}
+		call, _, ok := protocol.FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		if ok && !slices.ContainsFunc(calls, call.Same) {
+			calls = append(calls, call)
 		}
 	}
 	return s.Verify(protocol.Operation{Op: c.Op, Support: protocol.Supported, Calls: calls})

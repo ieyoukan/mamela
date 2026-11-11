@@ -252,7 +252,7 @@ func (s *Session) SetLimits(l map[string]int64) { s.o.Limits = l }
 func (s *Session) CheckLimits(c protocol.Change) error {
 	cat := s.catalog()
 	for _, a := range c.Requests {
-		if e, ok := cat.Lookup(a.Method, a.Path); ok {
+		if e, ok := cat.LookupApproved(a); ok {
 			if err := e.CheckLimits(a.Params, s.o.Limits); err != nil {
 				return err
 			}
@@ -283,7 +283,7 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 	cat := s.catalog()
 	creates := false // an earlier request of the change creates the object (ADR 0004)
 	for _, a := range c.Requests {
-		e, ok := cat.Lookup(a.Method, a.Path)
+		e, ok := cat.LookupApproved(a)
 		if ok && e.Effect == protocol.EffectCreate {
 			creates = true
 		}
