@@ -573,10 +573,10 @@ func (e *env) recoverRound(desired []protocol.Resource) {
 type faulty struct {
 	api      http.Handler
 	catalogs map[string]protocol.Catalog // by API ("" for a provider with one)
-	at      int
-	kind    string
-	changes int
-	hit     bool
+	at       int
+	kind     string
+	changes  int
+	hit      bool
 }
 
 func (f *faulty) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
