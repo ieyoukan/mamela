@@ -33,6 +33,9 @@ type Options struct {
 	Catalog protocol.Catalog
 	// Upstream sends the allowed requests (nil: none can be sent).
 	Upstream Upstream
+	// GuardUpstream sends the guard's reads, with the guard's own (read-only) credentials; nil:
+	// Upstream (ADR 0006).
+	GuardUpstream Upstream
 	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
 	Artifacts ArtifactMaker
 	// Limits bound the measured parameters of every change (the catalog's Measures), by measure:
@@ -364,6 +367,10 @@ func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observe
 		if c.Resource == "" {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change %+v has no resource", c)}
 		}
+		// An explicit operation is never planned: a person asks for it (mamela act).
+		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Explicit {
+			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is an explicit operation, which diff never returns", c.Resource, c.Op)}
+		}
 		// A difference the provider never acts on is reported as a change of an operation it
 		// declares unsupported, with nothing to send: the plan shows it and denies it.
 		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
@@ -377,6 +384,52 @@ func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observe
 		}
 	}
 	return out.Changes, nil
+}
+
+// Guard runs the provider's safety check (ADR 0006): reads only, the manifest's guard calls, with
+// the guard's credentials. A provider without a guard has nothing to check (ok, no findings).
+func (s *Session) Guard(ctx context.Context, p protocol.GuardParams) (protocol.GuardResult, []Request, error) {
+	if s.manifest.Guard == nil {
+		return protocol.GuardResult{}, nil, nil
+	}
+	g := s.gate(phaseGuard, s.manifest.Guard.Calls, nil)
+	if s.o.GuardUpstream != nil {
+		g.upstream = s.o.GuardUpstream
+	}
+	var out protocol.GuardResult
+	err := s.call(ctx, g, protocol.MethodGuard, p, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return protocol.GuardResult{}, g.record, err
+	}
+	for _, f := range out.Findings {
+		if f.Code == "" || f.Message == "" || !slices.Contains([]string{protocol.SeverityOK, protocol.SeverityWarn, protocol.SeverityBlock}, f.Severity) {
+			return protocol.GuardResult{}, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("guard finding %+v: a code, a severity (ok, warn, block) and a message are required", f)}
+		}
+	}
+	return out, g.record, nil
+}
+
+// Prepare asks for the change of an explicit operation on an observed resource (ADR 0006). The
+// provider may send no request. The change must be that operation, on that resource.
+func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol.Resource, observed protocol.Observed) (protocol.Change, error) {
+	o, ok := s.manifest.Operation(observed.Kind, op)
+	if !ok || !o.Explicit || o.Support != protocol.Supported {
+		return protocol.Change{}, &Error{Code: CodePermit, Message: fmt.Sprintf("%s is not an explicit operation of %s %s", op, s.manifest.Provider, observed.Kind)}
+	}
+	g := s.gate(phasePrepare, nil, nil)
+	var out protocol.PrepareResult
+	err := s.call(ctx, g, protocol.MethodPrepare, protocol.PrepareParams{Op: op, Desired: desired, Observed: observed}, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return protocol.Change{}, err
+	}
+	c := out.Change
+	if c.Resource != observed.ID || c.Op != op || c.Kind != observed.Kind {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s returned %s of %s", op, observed.ID, c.Op, c.Resource)}
+	}
+	if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s: %v", op, observed.ID, err)}
+	}
+	return c, nil
 }
 
 // Outcome is what an apply did, as the host knows it from the requests it sent.

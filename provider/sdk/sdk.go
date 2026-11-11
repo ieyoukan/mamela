@@ -39,6 +39,17 @@ type Provider interface {
 	Lookup(ctx context.Context, h *Host, p protocol.LookupParams) (protocol.LookupResult, error)
 }
 
+// Guarder is a provider with a safety check around applies (ADR 0006): reads only.
+type Guarder interface {
+	Guard(ctx context.Context, h *Host, p protocol.GuardParams) (protocol.GuardResult, error)
+}
+
+// Preparer is a provider with explicit operations (deleting, rebooting): it makes their change
+// from its parameters alone (it has no Host), as Diff does.
+type Preparer interface {
+	Prepare(ctx context.Context, p protocol.PrepareParams) (protocol.PrepareResult, error)
+}
+
 // Serve speaks the protocol on standard input and output until the host closes standard input.
 // It exits the program with status 1 if the conversation breaks.
 func Serve(p Provider) {
@@ -121,6 +132,26 @@ func dispatch(p Provider, c *conn, m protocol.Message) (jsontext.Value, error) {
 			return nil, err
 		}
 		return call(p.Lookup(ctx, h, in))
+	case protocol.MethodGuard:
+		g, ok := p.(Guarder)
+		if !ok {
+			return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "this provider has no guard"}
+		}
+		var in protocol.GuardParams
+		if err := decode(m.Params, &in); err != nil {
+			return nil, err
+		}
+		return call(g.Guard(ctx, h, in))
+	case protocol.MethodPrepare:
+		pr, ok := p.(Preparer)
+		if !ok {
+			return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "this provider has no explicit operations"}
+		}
+		var in protocol.PrepareParams
+		if err := decode(m.Params, &in); err != nil {
+			return nil, err
+		}
+		return call(pr.Prepare(ctx, in))
 	default:
 		return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "unknown method " + m.Method}
 	}

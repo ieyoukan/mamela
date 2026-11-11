@@ -25,6 +25,8 @@ type Runtime struct {
 	// catalog): an approval is for that API only.
 	endpoints map[string]string
 	creations Creations
+	// guardSettings are each provider's guard settings (mamela.providers.toml).
+	guardSettings map[string][]byte
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -38,7 +40,7 @@ func Programs(pkgs []Package) []store.Program {
 
 // Start runs each program (WASM, isolated) with its API from the configuration.
 func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime string) (*Runtime, error) {
-	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}}
+	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}, guardSettings: map[string][]byte{}}
 	for _, p := range programs {
 		exe, err := host.InspectBytes(p.Source+" ("+p.Provider+")", p.Data)
 		if err != nil {
@@ -54,7 +56,13 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			rt.Close()
 			return nil, err
 		}
-		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, Catalog: catalog, Upstream: up})
+		guardUp, settings, err := cfg.guard(p.Provider)
+		if err != nil {
+			rt.Close()
+			return nil, err
+		}
+		rt.guardSettings[p.Provider] = settings
+		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, Catalog: catalog, Upstream: up, GuardUpstream: guardUp})
 		if err != nil {
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
@@ -129,6 +137,37 @@ func (rt *Runtime) SetArtifacts(m host.ArtifactMaker) {
 		s.SetArtifacts(m)
 	}
 }
+
+// GuardReport is one provider's safety check.
+type GuardReport struct {
+	Provider string
+	Result   protocol.GuardResult
+	Err      error
+}
+
+// Blocked reports whether a check stops the apply: a block finding, or a check that failed.
+func (g GuardReport) Blocked() bool {
+	return g.Err != nil || slices.ContainsFunc(g.Result.Findings, func(f protocol.Finding) bool { return f.Severity == protocol.SeverityBlock })
+}
+
+// Guard runs the safety check of each provider with a guard (ADR 0006), with the changes of it
+// an apply carries out, and before's baselines for after.
+func (rt *Runtime) Guard(ctx context.Context, stage string, changes map[string][]protocol.Change, baselines map[string][]byte) []GuardReport {
+	var out []GuardReport
+	for _, name := range rt.names() {
+		s := rt.sessions[name]
+		if s.Manifest().Guard == nil {
+			continue
+		}
+		res, _, err := s.Guard(ctx, protocol.GuardParams{Stage: stage, Settings: rt.guardSettings[name], Baseline: baselines[name],
+			Changes: append([]protocol.Change{}, changes[name]...)})
+		out = append(out, GuardReport{Provider: name, Result: res, Err: err})
+	}
+	return out
+}
+
+// Session returns a running provider.
+func (rt *Runtime) Session(name string) (*host.Session, bool) { return rt.sessionOf(name) }
 
 // Close stops every provider.
 func (rt *Runtime) Close() {

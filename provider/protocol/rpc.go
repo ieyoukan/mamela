@@ -27,7 +27,63 @@ const (
 	// MethodLookup says whether a change took effect, after an apply whose outcome is unknown.
 	// Reads only, like observe, plus the reads of the change's operation.
 	MethodLookup = "lookup"
+	// MethodGuard is the provider's safety check before and after an apply (ADR 0006): reads only,
+	// the manifest's Guard.Calls, with the guard's credentials when Mamela has some.
+	MethodGuard = "guard"
+	// MethodPrepare makes the change of an explicit operation (deleting, rebooting) on one observed
+	// resource, from its parameters alone: no host/request, like diff.
+	MethodPrepare = "prepare"
 )
+
+// GuardParams ask for a safety check.
+type GuardParams struct {
+	Stage string `json:"stage"` // GuardBefore or GuardAfter
+	// Settings are the guard's settings from mamela.providers.toml ([provider.<name>.guard]):
+	// the boundary it keeps (a pool, a VMID range), thresholds. No secret is in them.
+	Settings jsontext.Value `json:"settings,omitempty"`
+	// Baseline is what the check before returned, for the check after.
+	Baseline jsontext.Value `json:"baseline,omitempty"`
+	// Changes are what the apply is to carry out (before) or carried out (after).
+	Changes []Change `json:"changes"`
+}
+
+// Guard stages.
+const (
+	GuardBefore = "before"
+	GuardAfter  = "after"
+)
+
+// Severity of a guard finding.
+const (
+	SeverityOK    = "ok"
+	SeverityWarn  = "warn"
+	SeverityBlock = "block" // before: nothing of the provider's is applied; after: the apply failed
+)
+
+// Finding is one result of a safety check, for people: a stable code, how serious, and what.
+type Finding struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+// GuardResult is a safety check's result.
+type GuardResult struct {
+	Findings []Finding      `json:"findings"`
+	Baseline jsontext.Value `json:"baseline,omitempty"`
+}
+
+// PrepareParams ask for the change of an explicit operation on a resource Mamela owns.
+type PrepareParams struct {
+	Op       Op        `json:"op"`
+	Desired  *Resource `json:"desired,omitempty"`
+	Observed Observed  `json:"observed"`
+}
+
+// PrepareResult is the change.
+type PrepareResult struct {
+	Change Change `json:"change"`
+}
 
 // MethodHostRequest is the method the provider calls on the host to send an API request.
 const MethodHostRequest = "host/request"

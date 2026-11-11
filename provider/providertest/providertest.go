@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -62,12 +63,24 @@ type Suite struct {
 	NewAPI func() http.Handler
 	// Cases are declarations to converge to, each from an empty world.
 	Cases []Case
+	// GuardSettings are the guard's settings (mamela.providers.toml [provider.<name>.guard]), for a
+	// provider with a guard: it runs before and after each converge, and must find nothing to block.
+	GuardSettings []byte
 }
 
 // Case is one declaration.
 type Case struct {
 	Name    string
 	Desired []protocol.Resource
+	// Explicit are explicit operations (ADR 0006) to carry out, in order, once the declaration has
+	// converged: each must be done, and lookup must say so.
+	Explicit []Explicit
+}
+
+// Explicit is one explicit operation on one declared resource.
+type Explicit struct {
+	Op       protocol.Op
+	Resource string // the graph ID
 }
 
 // BuildWASI builds a Go provider for WASI (GOOS=wasip1 GOARCH=wasm) and returns the program.
@@ -111,8 +124,39 @@ func Run(t *testing.T, s Suite) {
 	for _, c := range s.Cases {
 		t.Run(c.Name+"/converges", func(t *testing.T) {
 			e := s.start(t, -1, "")
+			before := e.guard(protocol.GuardBefore, nil, s.GuardSettings)
 			e.converge(c.Desired, 1)
+			e.guard(protocol.GuardAfter, before, s.GuardSettings)
 		})
+		if len(c.Explicit) > 0 {
+			t.Run(c.Name+"/explicit", func(t *testing.T) {
+				e := s.start(t, -1, "")
+				e.converge(c.Desired, 1)
+				for _, x := range c.Explicit {
+					observed := e.observe(c.Desired)
+					i := slices.IndexFunc(observed, func(o protocol.Observed) bool { return o.ID == x.Resource })
+					if i < 0 || !observed[i].Owned {
+						t.Fatalf("%s %s: not an observed resource Mamela owns", x.Op, x.Resource)
+					}
+					var d *protocol.Resource
+					for j := range c.Desired {
+						if c.Desired[j].ID == x.Resource {
+							d = &c.Desired[j]
+						}
+					}
+					change, err := e.s.Prepare(e.ctx, x.Op, d, observed[i])
+					if err != nil {
+						t.Fatalf("prepare %s %s: %v", x.Op, x.Resource, err)
+					}
+					if r := e.apply(change, c.Desired, observed); r.Outcome != host.OutcomeDone {
+						t.Fatalf("%s %s: %s: %v\n  requests:\n%s", x.Op, x.Resource, r.Outcome, r.Err, requests(r.Requests))
+					}
+					if status := e.lookup(change); status != protocol.LookupDone {
+						t.Errorf("%s %s: done, and lookup says %s", x.Op, x.Resource, status)
+					}
+				}
+			})
+		}
 		t.Run(c.Name+"/keeps-undeclared", func(t *testing.T) {
 			e := s.start(t, -1, "")
 			e.converge(c.Desired, 1)
@@ -199,6 +243,22 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		sess.Close()
 	})
 	return &env{t: t, ctx: ctx, s: sess, up: up, created: map[string][]map[string]string{}}
+}
+
+// guard runs the provider's safety check (if it has one): it must not fail, and on a fake API
+// with nothing outside the provider's reach, find nothing to block.
+func (e *env) guard(stage string, baseline []byte, settings []byte) []byte {
+	e.t.Helper()
+	res, _, err := e.s.Guard(e.ctx, protocol.GuardParams{Stage: stage, Settings: settings, Baseline: baseline})
+	if err != nil {
+		e.t.Fatalf("guard %s: %v", stage, err)
+	}
+	for _, f := range res.Findings {
+		if f.Severity == protocol.SeverityBlock {
+			e.t.Errorf("guard %s blocks: %s %s", stage, f.Code, f.Message)
+		}
+	}
+	return res.Baseline
 }
 
 // observe observes and, as Mamela does, keeps the provider's claims of ownership only for what was

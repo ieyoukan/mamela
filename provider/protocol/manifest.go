@@ -43,6 +43,15 @@ type Manifest struct {
 	// ObserveCalls are the API calls an observation sends (reads only).
 	ObserveCalls []Call `json:"observeCalls,omitempty"`
 	Kinds        []Kind `json:"kinds"`
+	// Guard, when set, is the provider's safety check around every apply of its changes (ADR
+	// 0006): the reads it makes. Mamela runs it before applying (a block finding stops the apply)
+	// and after (comparing with what it found before).
+	Guard *Guard `json:"guard,omitempty"`
+}
+
+// Guard declares a provider's safety check.
+type Guard struct {
+	Calls []Call `json:"calls"` // reads only
 }
 
 // Kind is one resource kind a provider handles.
@@ -71,6 +80,10 @@ type Operation struct {
 	// Calls are the API calls the operation may send through the host, reads included. The
 	// host refuses any other.
 	Calls []Call `json:"calls,omitempty"`
+	// Explicit operations (deleting, rebooting) are never planned: a person asks for one by name
+	// (mamela act) and confirms it by typing the resource's name (ADR 0006). Diff never returns
+	// them; prepare makes their change.
+	Explicit bool `json:"explicit,omitempty"`
 }
 
 // Call is one API call: a method and a path template whose "{name}" segments are IDs ("/items/{item}"),
@@ -261,6 +274,19 @@ func (m Manifest) Check() error {
 	if err := checkCalls(m.ObserveCalls); err != nil {
 		return fmt.Errorf("manifest %s: observe: %w", m.Provider, err)
 	}
+	if m.Guard != nil {
+		if m.API == "" || len(m.Guard.Calls) == 0 {
+			return fmt.Errorf("manifest %s: a guard reads through an api, with calls", m.Provider)
+		}
+		if err := checkCalls(m.Guard.Calls); err != nil {
+			return fmt.Errorf("manifest %s: guard: %w", m.Provider, err)
+		}
+		for _, c := range m.Guard.Calls {
+			if c.File != "" {
+				return fmt.Errorf("manifest %s: guard call %s %s uploads a file", m.Provider, c.Method, c.Path)
+			}
+		}
+	}
 	if len(m.ObserveCalls) > 0 && m.API == "" {
 		return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 	}
@@ -280,8 +306,8 @@ func (m Manifest) Check() error {
 					return fmt.Errorf("manifest %s: %s %s is supported but says why not", m.Provider, k.Kind, o.Op)
 				}
 			case Unsupported:
-				if o.Why == "" || len(o.Needs) > 0 || len(o.Calls) > 0 {
-					return fmt.Errorf("manifest %s: unsupported %s %s needs a reason and no capabilities or calls", m.Provider, k.Kind, o.Op)
+				if o.Why == "" || len(o.Needs) > 0 || len(o.Calls) > 0 || o.Explicit {
+					return fmt.Errorf("manifest %s: unsupported %s %s needs a reason and no capabilities, calls or explicit", m.Provider, k.Kind, o.Op)
 				}
 			default:
 				return fmt.Errorf("manifest %s: %s %s: unknown support %q", m.Provider, k.Kind, o.Op, o.Support)

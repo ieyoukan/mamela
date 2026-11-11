@@ -59,6 +59,13 @@ type APIConfig struct {
 	// TLSFingerprint pins the server certificate's SHA-256 ("AA:BB:..."), for an API with a
 	// self-signed certificate. Otherwise the system's CAs verify it.
 	TLSFingerprint string `toml:"tls_fingerprint"`
+	// GuardTokenID and GuardTokenFile are the credentials of the provider's safety check (ADR
+	// 0006): read-only, and able to see beyond what the provider may change (Proxmox: PVEAuditor
+	// on /, to check that nothing outside the boundary changed). Empty: the token above.
+	GuardTokenID   string `toml:"guard_token_id"`
+	GuardTokenFile string `toml:"guard_token_file"`
+	// Guard is the guard's settings, passed to the provider as they are (no secrets here).
+	Guard map[string]any `toml:"guard"`
 }
 
 // LoadConfig reads the configuration. A missing file configures nothing.
@@ -91,6 +98,8 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("%s: provider %s: auth aws-sigv4 needs token_id (the access key ID), token_file (the secret), region and service", path, name)
 		case a.Auth != "aws-sigv4" && (a.Region != "" || a.Service != ""):
 			return c, fmt.Errorf("%s: provider %s: region and service are for auth aws-sigv4", path, name)
+		case a.GuardTokenID != "" && a.GuardTokenFile == "":
+			return c, fmt.Errorf("%s: provider %s: guard_token_id without guard_token_file", path, name)
 		}
 		if a.TLSFingerprint != "" {
 			if _, err := fingerprint(a.TLSFingerprint); err != nil {
@@ -108,6 +117,30 @@ func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error
 	if !ok {
 		return nil, protocol.Catalog{}, "", nil
 	}
+	return c.apiWith(name, a)
+}
+
+// guard returns the upstream of a provider's guard (its own credentials, or nil for the API's)
+// and its settings as JSON.
+func (c Config) guard(name string) (host.Upstream, []byte, error) {
+	a, ok := c.Provider[name]
+	if !ok {
+		return nil, nil, nil
+	}
+	settings, err := json.Marshal(a.Guard, json.Deterministic(true))
+	if err != nil || a.Guard == nil {
+		settings = nil
+	}
+	if a.GuardTokenFile == "" {
+		return nil, settings, err
+	}
+	g := a
+	g.TokenID, g.TokenFile = a.GuardTokenID, a.GuardTokenFile
+	up, _, _, err := c.apiWith(name, g)
+	return up, settings, err
+}
+
+func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catalog, string, error) {
 	var catalog protocol.Catalog
 	if name, ok := strings.CutPrefix(a.Catalog, "builtin:"); ok {
 		c, found := Catalogs[name]
