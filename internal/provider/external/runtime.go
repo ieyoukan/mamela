@@ -94,6 +94,17 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 	return rt, nil
 }
 
+// SetLimits sets the limits on what one change may make or change (the site's budget for one
+// machine), checked when planning and again before each request is sent.
+func (rt *Runtime) SetLimits(l map[string]int64) {
+	if rt == nil {
+		return
+	}
+	for _, s := range rt.sessions {
+		s.SetLimits(l)
+	}
+}
+
 // SetArtifacts sets what makes the artifacts of the providers' changes (ADR 0004).
 func (rt *Runtime) SetArtifacts(m host.ArtifactMaker) {
 	if rt == nil {
@@ -279,6 +290,9 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			}
 			if err := s.CheckPreconditions(c, p.Observed.Version); err != nil {
 				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
+			}
+			if err := s.CheckLimits(c); err != nil {
+				return nil, fmt.Errorf("LAB-0305: provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			p.Changes = append(p.Changes, state.ProvidedChange{Change: c, Verified: rt.verify(s, c)})
 			out[c.Resource] = p

@@ -157,6 +157,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			}
 		}
 		rt.SetArtifacts(made)
+		rt.SetLimits(siteLimits(site))
 		prov = &external.Provider{Base: labProv, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
 	}
 	host, _ := os.Hostname()

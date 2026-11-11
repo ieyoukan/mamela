@@ -147,6 +147,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// the plan, so apply derives the same denial.
 		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
 	}
+	rt.SetLimits(siteLimits(site))
 	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
 	if err != nil {
 		return report(stderr, err)

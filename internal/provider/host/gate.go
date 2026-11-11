@@ -75,6 +75,8 @@ type gate struct {
 	// artifacts makes the permit's artifacts ready; ready are those made in this apply.
 	artifacts ArtifactMaker
 	ready     map[string]Prepared
+	// limits bound the measured parameters of changes (Options.Limits).
+	limits map[string]int64
 	// created is set once a create request of this apply took effect: the object it made did not
 	// exist when the change was planned, so a change to it needs no observed version (ADR 0004).
 	created bool
@@ -316,6 +318,11 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 				return -1, fmt.Sprintf("%s must be the observed version %s (the change is based on it)", entry.Precondition, p.Precondition)
 			}
 		}
+	}
+	// What it makes or changes stays within the site's budget for one machine, whatever was
+	// approved: the catalog says which parameters size it.
+	if err := entry.CheckLimits(params, g.limits); err != nil {
+		return -1, err.Error()
 	}
 	if upload != "" {
 		if _, ok := g.ready[upload]; !ok {

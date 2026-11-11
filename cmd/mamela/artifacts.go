@@ -145,3 +145,12 @@ func (m *artifacts) verified(path, want string) (io.ReadCloser, error) {
 	}
 	return f, nil
 }
+
+// siteLimits is the site's budget for one machine, as limits on providers' measured parameters.
+func siteLimits(site *lab.Site) map[string]int64 {
+	if site == nil {
+		return nil
+	}
+	return map[string]int64{protocol.MeasureCPU: int64(site.Budget.MaxVCPUPerVM),
+		protocol.MeasureMemoryMiB: site.Budget.MaxMemoryMiBPerVM, protocol.MeasureDiskGiB: site.Budget.MaxDiskGiBPerVM}
+}

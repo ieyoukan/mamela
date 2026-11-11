@@ -35,6 +35,9 @@ type Options struct {
 	Upstream Upstream
 	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
 	Artifacts ArtifactMaker
+	// Limits bound the measured parameters of every change (the catalog's Measures), by measure:
+	// the site's budget for one machine. Absent or 0: no limit.
+	Limits map[string]int64
 	// Now is the clock for permit expiry (default time.Now).
 	Now            func() time.Time
 	MaxMemoryBytes uint64        // per WASM linear memory (default 512 MiB)
@@ -242,6 +245,22 @@ func (s *Session) Manifest() protocol.Manifest { return s.manifest }
 // SetArtifacts sets what makes the artifacts of the changes this session applies.
 func (s *Session) SetArtifacts(m ArtifactMaker) { s.o.Artifacts = m }
 
+// SetLimits sets the limits on measured parameters (Options.Limits).
+func (s *Session) SetLimits(l map[string]int64) { s.o.Limits = l }
+
+// CheckLimits checks a change's requests against the limits, before anyone approves it.
+func (s *Session) CheckLimits(c protocol.Change) error {
+	cat := s.catalog()
+	for _, a := range c.Requests {
+		if e, ok := cat.Lookup(a.Method, a.Path); ok {
+			if err := e.CheckLimits(a.Params, s.o.Limits); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Executable is the provider program.
 func (s *Session) Executable() Executable { return s.exe }
 
@@ -295,7 +314,7 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts}
+	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
 	if permit != nil {
 		g.used = make([]bool, len(permit.Requests))
 	}

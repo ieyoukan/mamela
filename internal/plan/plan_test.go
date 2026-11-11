@@ -481,7 +481,7 @@ func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
 	s.Provided = map[string]state.Provided{"ProxmoxVM cp": {Provider: "proxmox", Kind: "ProxmoxVM", Name: "cp", Declared: true,
 		SpecDigest: state.SpecDigest(g.Resources[0].Provided.Spec), ObservedAt: t0,
 		Observed: protocol.Observed{ID: "ProxmoxVM cp", Kind: "ProxmoxVM", Name: "cp", Exists: true, Owned: true},
-		Changes: []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM cp", Kind: "ProxmoxVM", Op: "resize-vm"}}}}}
+		Changes:  []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM cp", Kind: "ProxmoxVM", Op: "resize-vm"}}}}}
 	pol := policy.Default
 	pol.ProtectedNodes = []string{"cp"}
 	c := find(t, Build(g, s, pol), "ProxmoxVM cp")
