@@ -166,6 +166,11 @@ type Observed struct {
 	// only if it matches what Mamela recorded it set out to create (ADR 0004).
 	Owned      bool `json:"owned"`
 	Unfinished bool `json:"unfinished,omitempty"`
+	// Adoptable is true for an object Mamela made in another way before (Proxmox: a VM of the old
+	// built-in provider, with its marker, in the pool and range): only an explicit operation that
+	// takes it over, confirmed by a person, may act on it; then Mamela records it as its own (ADR
+	// 0006).
+	Adoptable bool `json:"adoptable,omitempty"`
 	// IDs are the object's IDs in the API ({"item": "web"}).
 	IDs map[string]string `json:"ids,omitempty"`
 	// Version is the observed version (an ETag, Proxmox's config digest), the precondition of a

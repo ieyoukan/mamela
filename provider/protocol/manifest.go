@@ -84,6 +84,9 @@ type Operation struct {
 	// (mamela act) and confirms it by typing the resource's name (ADR 0006). Diff never returns
 	// them; prepare makes their change.
 	Explicit bool `json:"explicit,omitempty"`
+	// Adopts: the explicit operation takes over an Adoptable object (its only use); once it is done,
+	// Mamela records the object as its own.
+	Adopts bool `json:"adopts,omitempty"`
 }
 
 // Call is one API call: a method and a path template whose "{name}" segments are IDs ("/items/{item}"),
@@ -148,6 +151,14 @@ func FindCall(calls []Call, method, path string, params map[string][]string, con
 		n++
 	}
 	return found, ids, n == 1
+}
+
+// CheckAdopts: only an explicit operation adopts.
+func (o Operation) checkAdopts() error {
+	if o.Adopts && !o.Explicit {
+		return fmt.Errorf("%s adopts, so it must be explicit", o.Op)
+	}
+	return nil
 }
 
 // In says where the call sends a parameter: "query", "form", or "" when it does not declare it.

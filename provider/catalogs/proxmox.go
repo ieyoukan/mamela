@@ -17,6 +17,14 @@ var Proxmox = protocol.Catalog{API: "proxmox", Entries: []protocol.Entry{
 	{Method: "GET", Path: "/nodes/{node}/tasks/{upid}/status", Effect: protocol.EffectRead},
 	{Method: "GET", Path: "/nodes/{node}/tasks", Effect: protocol.EffectRead, Query: []string{"vmid", "typefilter", "source", "limit"}},
 	{Method: "GET", Path: "/nodes/{node}/storage/{storage}/content", Effect: protocol.EffectRead, Query: []string{"content"}},
+	// What a guard reads (ADR 0006): the cluster's health, the node's memory, the storage's use,
+	// which storages accept what, a token's permissions, every guest and its configuration.
+	{Method: "GET", Path: "/cluster/status", Effect: protocol.EffectRead},
+	{Method: "GET", Path: "/nodes/{node}/status", Effect: protocol.EffectRead},
+	{Method: "GET", Path: "/nodes/{node}/storage/{storage}/status", Effect: protocol.EffectRead},
+	{Method: "GET", Path: "/nodes/{node}/storage", Effect: protocol.EffectRead, Query: []string{"content"}},
+	{Method: "GET", Path: "/access/permissions", Effect: protocol.EffectRead, Query: []string{"userid", "path"}},
+	{Method: "GET", Path: "/nodes/{node}/lxc/{vmid}/config", Effect: protocol.EffectRead},
 	// Uploading adds a file to a storage (an image to import, a cloud-init seed). Proxmox checks
 	// the checksum before it keeps the file. The file itself is the multipart parameter "filename".
 	{Method: "POST", Path: "/nodes/{node}/storage/{storage}/upload", Effect: protocol.EffectCreate,
@@ -38,6 +46,7 @@ var Proxmox = protocol.Catalog{API: "proxmox", Entries: []protocol.Entry{
 		Measures: []protocol.Measure{{Param: "size", Name: protocol.MeasureDiskGiB, Format: protocol.FormatSize}}},
 	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/start", Effect: protocol.EffectRestart},
 	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reboot", Effect: protocol.EffectRestart},
+	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/reset", Effect: protocol.EffectRestart},
 	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/shutdown", Effect: protocol.EffectRestart},
 	{Method: "POST", Path: "/nodes/{node}/qemu/{vmid}/status/stop", Effect: protocol.EffectRestart},
 	{Method: "DELETE", Path: "/nodes/{node}/qemu/{vmid}", Effect: protocol.EffectLoseData, Query: []string{"purge", "destroy-unreferenced-disks"}},
