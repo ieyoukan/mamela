@@ -172,6 +172,15 @@ CREATE TABLE provider_creations (
   PRIMARY KEY (provider, resource, ids)
 );
 `,
+	// 9: the numbers Mamela gives the nodes of providers whose machines have no number of their
+	// own before they exist (an EC2 instance): mamelet's identity in revisions and enrollment.
+	`
+CREATE TABLE node_numbers (
+  node       TEXT PRIMARY KEY,
+  number     INTEGER NOT NULL UNIQUE,
+  created_ms INTEGER NOT NULL
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

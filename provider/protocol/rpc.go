@@ -197,11 +197,24 @@ type Artifact struct {
 	URL    string `json:"url,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
 	Name   string `json:"name,omitempty"` // the file name to store it under
-	// Seed.
+	// Seed. NodeID 0: Mamela assigns the node its number (a machine whose own ID is known only
+	// once it exists, such as an EC2 instance); the provider learns it from host/artifact and
+	// reports it as Observed.Node.ID. Format is how the seed is given to the machine.
 	Node    string   `json:"node,omitempty"`
 	NodeID  int64    `json:"nodeId,omitempty"`
 	Network *Network `json:"network,omitempty"`
+	Format  string   `json:"format,omitempty"`
 }
+
+// Seed formats.
+const (
+	// SeedISO (the default) is a NoCloud ISO with mamelet in it, to attach as a CD-ROM.
+	SeedISO = "iso"
+	// SeedUserData is cloud-init user-data, to pass where the machine is created (EC2 UserData):
+	// mamelet is fetched from the Control Plane and checked against its sha256. Send it as the
+	// value "{artifact:<id>.base64}": the host puts the content in, the provider never sees it.
+	SeedUserData = "user-data"
+)
 
 // Network is a node's IPv4 configuration, given at creation (Mamela's graph Network).
 type Network struct {
@@ -222,6 +235,8 @@ type ArtifactInfo struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// NodeID is the node's number, for a seed (the one Mamela assigned when the change left it 0).
+	NodeID int64 `json:"nodeId,omitempty"`
 }
 
 // ApplyParams is one change to carry out, with its permit and what it was planned from.

@@ -13,7 +13,9 @@ var (
 	sha256Hex    = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	artifactID   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 	artifactName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
-	placeholder  = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.(name|sha256)\}`)
+	placeholder  = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.(name|sha256|base64)\}`)
+	// contentRef is a reference to an artifact's content, which only the host fills, when it sends.
+	contentRef = regexp.MustCompile(`\{artifact:([a-z][a-z0-9-]{0,31})\.base64\}`)
 )
 
 // CheckArtifacts verifies a change's artifacts, and that its requests refer only to them: an
@@ -43,8 +45,10 @@ func CheckArtifacts(c Change) error {
 			}
 		case ArtifactSeed:
 			switch {
-			case a.Node == "" || a.NodeID <= 0 || a.Network == nil:
-				return fmt.Errorf("artifact %s: a seed needs a node, its ID and a network", a.ID)
+			case a.Node == "" || a.NodeID < 0 || a.Network == nil:
+				return fmt.Errorf("artifact %s: a seed needs a node, a network, and its ID or 0 (Mamela assigns one)", a.ID)
+			case a.Format != "" && a.Format != SeedISO && a.Format != SeedUserData:
+				return fmt.Errorf("artifact %s: seed format %q (iso or user-data)", a.ID, a.Format)
 			case a.URL != "" || a.SHA256 != "" || a.Name != "":
 				return fmt.Errorf("artifact %s: a seed's name and sha256 are the host's, not the change's", a.ID)
 			case a.Network.Mode != "dhcp" && a.Network.Mode != "static":
@@ -85,6 +89,9 @@ func FillArtifacts(params map[string][]string, ready map[string]ArtifactInfo) (m
 			var missing string
 			filled := placeholder.ReplaceAllStringFunc(v, func(ref string) string {
 				m := placeholder.FindStringSubmatch(ref)
+				if m[2] == "base64" {
+					return ref // the content: the provider sends the reference, the host fills it in
+				}
 				info, ok := ready[m[1]]
 				if !ok {
 					missing = m[1]
@@ -104,6 +111,29 @@ func FillArtifacts(params map[string][]string, ready map[string]ArtifactInfo) (m
 	return out, nil
 }
 
+// ContentRefs are the artifacts whose content a value names ("{artifact:<id>.base64}").
+func ContentRefs(v string) []string {
+	var out []string
+	for _, m := range contentRef.FindAllStringSubmatch(v, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// FillContent replaces the content references in a value with the base64 of each artifact's
+// content (content returns it).
+func FillContent(v string, content func(id string) (string, error)) (string, error) {
+	var ferr error
+	out := contentRef.ReplaceAllStringFunc(v, func(ref string) string {
+		c, err := content(contentRef.FindStringSubmatch(ref)[1])
+		if err != nil && ferr == nil {
+			ferr = err
+		}
+		return c
+	})
+	return out, ferr
+}
+
 // Describe is an artifact as a plan shows it.
 func (a Artifact) Describe() string {
 	switch a.Kind {
@@ -114,7 +144,14 @@ func (a Artifact) Describe() string {
 		if a.Network.Mode == "static" {
 			net = fmt.Sprintf("static %s via %s dns %s", a.Network.Address, a.Network.Gateway, strings.Join(a.Network.DNS, ","))
 		}
-		return fmt.Sprintf("%s: the mamelet seed of node %s (ID %d, network %s), made by Mamela with a one-time enrollment token", a.ID, a.Node, a.NodeID, net)
+		id, format := fmt.Sprintf("ID %d", a.NodeID), "a NoCloud ISO"
+		if a.NodeID == 0 {
+			id = "a number Mamela assigns"
+		}
+		if a.Format == SeedUserData {
+			format = "user-data that fetches mamelet from the Control Plane"
+		}
+		return fmt.Sprintf("%s: the mamelet seed of node %s (%s, network %s) as %s, made by Mamela with a one-time enrollment token", a.ID, a.Node, id, net, format)
 	}
 	return a.ID
 }
@@ -129,17 +166,26 @@ func Vouch(o Observed, created []map[string]string) Observed {
 		return o
 	}
 	for _, ids := range created {
-		match := true
-		for k, v := range o.IDs {
-			if ids[k] != v {
-				match = false
-				break
-			}
-		}
-		if match {
+		if sameObject(o.IDs, ids) {
 			o.Owned, o.Unfinished = true, unfinished
 			return o
 		}
 	}
 	return o
+}
+
+// sameObject: the IDs of one are among those of the other, with the same values. A create is
+// recorded with the IDs known before it (a Proxmox VMID, an EC2 client token); the object is
+// later observed with those and maybe more (its instance ID), or with fewer (no storage).
+func sameObject(observed, recorded map[string]string) bool {
+	shared := 0
+	for k, v := range observed {
+		if w, ok := recorded[k]; ok {
+			if w != v {
+				return false
+			}
+			shared++
+		}
+	}
+	return shared > 0 && (shared == len(observed) || shared == len(recorded))
 }

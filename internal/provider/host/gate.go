@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -135,6 +136,14 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	}
 	if approved >= 0 {
 		g.used[approved] = true
+		// An artifact's content goes into the request only now, from the host: the provider sent
+		// the reference that was approved, never the content (a seed holds a one-time token).
+		var err error
+		if r, err = g.fillContent(r); err != nil {
+			rec.Outcome, rec.Reason = NotSent, err.Error()
+			g.record = append(g.record, rec)
+			return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: err.Error()}
+		}
 	}
 	if g.upstream == nil {
 		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider (its section in mamela.providers.toml)"
@@ -389,6 +398,54 @@ func formatParams(ps map[string][]string) string {
 		out = append(out, k+"="+strings.Join(ps[k], ","))
 	}
 	return strings.Join(out, " ")
+}
+
+// maxInlineArtifact bounds an artifact's content sent as a parameter value.
+const maxInlineArtifact = 64 << 10
+
+// fillContent puts ready artifacts' content (base64) where a request names it.
+func (g *gate) fillContent(r protocol.HostRequest) (protocol.HostRequest, error) {
+	content := func(id string) (string, error) {
+		p, ok := g.ready[id]
+		if !ok {
+			return "", fmt.Errorf("artifact %s is not ready (ask host/artifact first)", id)
+		}
+		if p.Info.Size > maxInlineArtifact {
+			return "", fmt.Errorf("artifact %s is %d bytes, too big to send as a value", id, p.Info.Size)
+		}
+		rc, err := p.Open()
+		if err != nil {
+			return "", err
+		}
+		defer rc.Close()
+		b, err := io.ReadAll(io.LimitReader(rc, maxInlineArtifact+1))
+		if err != nil {
+			return "", err
+		}
+		return base64.StdEncoding.EncodeToString(b), nil
+	}
+	fill := func(in map[string][]string) (map[string][]string, error) {
+		if in == nil {
+			return nil, nil
+		}
+		out := map[string][]string{}
+		for k, vs := range in {
+			for _, v := range vs {
+				f, err := protocol.FillContent(v, content)
+				if err != nil {
+					return nil, err
+				}
+				out[k] = append(out[k], f)
+			}
+		}
+		return out, nil
+	}
+	var err error
+	if r.Query, err = fill(r.Query); err != nil {
+		return r, err
+	}
+	r.Form, err = fill(r.Form)
+	return r, err
 }
 
 func fixedText(f map[string]string) string {

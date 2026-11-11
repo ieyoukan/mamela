@@ -2,11 +2,13 @@ package host
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +201,32 @@ func TestArtifactsAreChecked(t *testing.T) {
 	}
 	if _, err := protocol.NewPermit(m, base, "op", "", "", "x"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// An artifact's content goes into an approved request only from the host, as the provider sent
+// the approved reference: the provider never has it.
+func TestContentIsFilledByTheHost(t *testing.T) {
+	m := protocol.Manifest{Schema: protocol.Schema, Provider: "p", Version: "1", API: "ec2", Kinds: []protocol.Kind{{Kind: "I", Node: true,
+		Operations: []protocol.Operation{{Op: "create", Support: protocol.Supported, Calls: []protocol.Call{
+			{Method: "POST", Path: "/", Form: []string{"Action", "UserData"}, Fixed: map[string]string{"Action": "RunInstances"}}}}}}}}
+	c := protocol.Change{Resource: "I web", Kind: "I", Op: "create", IDs: map[string]string{},
+		Artifacts: []protocol.Artifact{{ID: "seed", Kind: protocol.ArtifactSeed, Node: "web", Network: &protocol.Network{Mode: "dhcp"}, Format: protocol.SeedUserData}},
+		Requests:  []protocol.Approved{{Method: "POST", Path: "/", Params: map[string][]string{"Action": {"RunInstances"}, "UserData": {"{artifact:seed.base64}"}}}}}
+	p, err := protocol.NewPermit(m, c, "op", "plan", "prov", testNow().Add(time.Minute).Format(time.RFC3339))
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &recorder{files: map[string]string{}}
+	g := gate{phase: phaseApply, calls: p.Calls, permit: &p, upstream: Handler{Handler: api}, now: testNow, used: make([]bool, 1), artifacts: &maker{}}
+	if _, perr := g.artifact(context.Background(), "seed"); perr != nil {
+		t.Fatal(perr)
+	}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{Method: "POST", Path: "/", Form: map[string][]string{"Action": {"RunInstances"}, "UserData": {"{artifact:seed.base64}"}}}); perr != nil {
+		t.Fatal(perr)
+	}
+	want := url.Values{"Action": {"RunInstances"}, "UserData": {base64.StdEncoding.EncodeToString([]byte("seed with token-web"))}}.Encode()
+	if len(api.got) != 1 || api.got[0] != "POST / "+want {
+		t.Fatalf("sent %v, want %s", api.got, want)
 	}
 }

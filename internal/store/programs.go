@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
@@ -115,4 +116,32 @@ func (s *Store) Creations(ctx context.Context, provider, resource string) ([]map
 		out = append(out, ids)
 	}
 	return out, rows.Err()
+}
+
+// FirstNodeNumber is the first number Mamela gives a node: above every Proxmox VMID (at most
+// 999999999), so that the two never meet.
+const FirstNodeNumber = 1_000_000_000
+
+// NodeNumber returns the node's number, giving it the next one the first time.
+func (s *Store) NodeNumber(ctx context.Context, node string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var n int64
+	err = tx.QueryRowContext(ctx, `SELECT number FROM node_numbers WHERE node = ?`, node).Scan(&n)
+	if err == nil {
+		return n, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number) + 1, ?) FROM node_numbers`, FirstNodeNumber).Scan(&n); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO node_numbers(node, number, created_ms) VALUES(?, ?, ?)`, node, n, s.nowMs()); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }

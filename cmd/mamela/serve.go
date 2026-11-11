@@ -52,6 +52,11 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	logger := log.New(stderr, "mamela serve: ", log.LstdFlags)
 	srv := &cp.Server{Store: st, PKI: pki, Now: wallClock, RevisionTTL: 24 * time.Hour, Log: logger}
+	if bin, err := os.ReadFile(site.ControlPlane.MameletBinary); err == nil {
+		srv.MameletBinary = bin // for cloud machines' user-data seeds (ADR 0005)
+	} else {
+		logger.Printf("no mamelet binary to serve to cloud machines (%v)", err)
+	}
 	hs := &http.Server{Addr: site.ControlPlane.Listen, Handler: srv.Handler(), TLSConfig: srv.TLSConfig(),
 		ReadHeaderTimeout: 10 * time.Second, ErrorLog: logger}
 	go func() {

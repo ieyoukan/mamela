@@ -2,7 +2,9 @@ package cp
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -283,4 +285,20 @@ func TestMameletFollowsTheControlPlane(t *testing.T) {
 		t.Fatalf("plain HTTP: refused %q, err %v, state %q", rep.Refused, err, st.ControlPlane)
 	}
 	t.Logf("plain HTTP: refused %q, err %v", rep.Refused, err)
+}
+
+// mamelet is served to anyone, only under its own sha256.
+func TestServesMameletBySHA256(t *testing.T) {
+	e := newEnv(t)
+	bin := []byte("\x7fELF mamelet")
+	s := &Server{Store: e.st, PKI: e.pki, Now: func() time.Time { return e.now }, MameletBinary: bin}
+	h := s.Handler()
+	sum := sha256.Sum256(bin)
+	for path, want := range map[string]int{"/v1/mamelet/" + hex.EncodeToString(sum[:]): 200, "/v1/mamelet/" + strings.Repeat("0", 64): 404} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		if rec.Code != want || (want == 200 && rec.Body.String() != string(bin)) {
+			t.Errorf("%s: %d", path, rec.Code)
+		}
+	}
 }

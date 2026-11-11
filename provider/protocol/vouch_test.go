@@ -19,6 +19,13 @@ func TestVouch(t *testing.T) {
 		{"claimed, another object recorded", true, false, map[string]string{"node": "pve1", "vmid": "7008"}, created, false, false},
 		{"not claimed though recorded", false, false, o.IDs, created, false, false},
 		{"claimed without IDs", true, false, nil, created, false, false},
+		// An EC2 instance: created with a client token, observed with its instance ID too.
+		{"observed with more IDs than recorded", true, false, map[string]string{"ClientToken": "t1", "InstanceId.1": "i-1"},
+			[]map[string]string{{"ClientToken": "t1"}}, true, false},
+		{"another client token", true, false, map[string]string{"ClientToken": "t2", "InstanceId.1": "i-1"},
+			[]map[string]string{{"ClientToken": "t1"}}, false, false},
+		{"only partly overlapping", true, false, map[string]string{"node": "pve1", "zone": "a"},
+			[]map[string]string{{"node": "pve1", "vmid": "7007"}}, false, false},
 	} {
 		in := o
 		in.Owned, in.Unfinished, in.IDs = c.owned, c.unfinished, c.ids

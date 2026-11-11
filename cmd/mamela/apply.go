@@ -147,7 +147,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	digest := site.Providers().DigestWith(rt.Refs())
 	var prov reconcile.Provider = labProv
 	if rt != nil {
-		made := &artifacts{Cache: *imageCache, Site: site}
+		made := &artifacts{Cache: *imageCache, Site: site, Nodes: st}
 		if site.ControlPlane.Enabled() {
 			keys, err := site.SSHPublicKeys()
 			if err != nil {

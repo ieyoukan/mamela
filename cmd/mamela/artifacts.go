@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -29,7 +30,11 @@ type artifacts struct {
 	Cache string      // where downloads are kept, by sha256
 	Site  *lab.Site   // nil: no seeds (no lab, no Control Plane)
 	Seeds *seed.Maker // nil: no seeds
-	HTTP  *http.Client
+	// Nodes gives numbers to the nodes a change leaves without one (ADR 0005).
+	Nodes interface {
+		NodeNumber(ctx context.Context, node string) (int64, error)
+	}
+	HTTP *http.Client
 }
 
 var _ host.ArtifactMaker = (*artifacts)(nil)
@@ -55,12 +60,32 @@ func (m *artifacts) Make(ctx context.Context, a protocol.Artifact) (host.Prepare
 		if err := m.Site.Allows(a.Node, network); err != nil {
 			return host.Prepared{}, err
 		}
-		name, img, err := m.Seeds.New(ctx, a.Node, int(a.NodeID), network)
+		id := a.NodeID
+		if id == 0 {
+			if m.Nodes == nil {
+				return host.Prepared{}, errors.New("this Mamela gives no node numbers")
+			}
+			var err error
+			if id, err = m.Nodes.NodeNumber(ctx, a.Node); err != nil {
+				return host.Prepared{}, err
+			}
+		}
+		var name string
+		var img []byte
+		var err error
+		switch a.Format {
+		case protocol.SeedUserData:
+			sum := sha256.Sum256(m.Seeds.MameletBinary)
+			url := strings.TrimRight(m.Site.ControlPlane.Advertised(), "/") + "/v1/mamelet/" + hex.EncodeToString(sum[:])
+			name, img, err = m.Seeds.NewUserData(ctx, a.Node, int(id), network, url)
+		default:
+			name, img, err = m.Seeds.New(ctx, a.Node, int(id), network)
+		}
 		if err != nil {
 			return host.Prepared{}, err
 		}
 		sum := sha256.Sum256(img)
-		return host.Prepared{Info: protocol.ArtifactInfo{Name: name, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(img))},
+		return host.Prepared{Info: protocol.ArtifactInfo{Name: name, SHA256: hex.EncodeToString(sum[:]), Size: int64(len(img)), NodeID: id},
 			Open: func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(img)), nil }}, nil
 	}
 	return host.Prepared{}, fmt.Errorf("artifact %s: unknown kind %q", a.ID, a.Kind)
