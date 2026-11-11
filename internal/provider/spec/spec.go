@@ -17,6 +17,7 @@ package spec
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"slices"
@@ -148,6 +149,22 @@ func fields(r graph.Resource) map[string]string {
 		f["node"], f["service"] = r.NodeService.Node, r.NodeService.Service
 	case r.NodeK3s != nil:
 		f["node"], f["version"], f["sha256"] = r.NodeK3s.Node, r.NodeK3s.Version, r.NodeK3s.SHA256
+	case r.Provided != nil:
+		// A provider's templates name the spec's top-level strings and integers ("{pool}").
+		var spec map[string]jsontext.Value
+		if json.Unmarshal(r.Provided.Spec, &spec) == nil {
+			for k, v := range spec {
+				switch v.Kind() {
+				case '"':
+					var str string
+					if json.Unmarshal(v, &str) == nil {
+						f[k] = str
+					}
+				case '0':
+					f[k] = string(v)
+				}
+			}
+		}
 	}
 	return f
 }

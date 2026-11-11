@@ -77,7 +77,8 @@ func (p Path) IDs() []string {
 	return out
 }
 
-// CheckPath checks a concrete path: segments of letters, digits and ._~:@=+,- only, none of
+// CheckPath checks a concrete path: segments of letters, digits and ._~:@=+,!- only (a Proxmox
+// task ID is "UPID:node:...:user@realm!token:"), none of
 // them "." or "..". Escapes, queries and fragments are not paths.
 func CheckPath(path string) error {
 	rest, ok := strings.CutPrefix(path, "/")
@@ -97,7 +98,7 @@ func checkSegment(s string) error {
 		return fmt.Errorf("path segment %q", s)
 	}
 	for _, c := range s {
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.ContainsRune("._~:@=+,-", c)) {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.ContainsRune("._~:@=+,!-", c)) {
 			return fmt.Errorf("path segment %q: character %q", s, c)
 		}
 	}

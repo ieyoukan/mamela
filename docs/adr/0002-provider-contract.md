@@ -216,7 +216,8 @@ apply は、今のプロバイダーの digest が plan と違えば何も実行
    - apply: plan と同じプログラムを動かす。新しい diff が承認した変更と完全に同じときだけ実行する。許可の一度きりを SQLite に記録する
    - policy: 効果の検証で判定する（データを失いうる → 拒否、分類できない → 承認、`autoProviderEffects` → 自動）
    - plan の digest に、プロバイダーの実行ファイルの digest とプロトコルの版を加えた
-   - 残り: 今の Proxmox と mamelet を、この契約の上に移す。Proxmox のカタログを host のカタログにする
+   - Proxmox: Mamela が持つカタログ `builtin:proxmox` と、外部の WASM のプロバイダーの例 `examples/pve` を、検証環境の実機で使った。Proxmox のトークン形式の認証と、証明書の fingerprint の固定に対応した
+   - 残り: 組み込みの Proxmox と mamelet を、この契約の上に移す
 4. **段階 3**
    - Pome による配布と版の指定: 実装済み。Pome に `mamela-provider.toml` と WASM のプログラムを入れる。`provider.lock` は作らず、Pome.lock と sumdb の hash の鎖をそのまま使う。宣言で import する
    - 残り: `pome/mamela` v0.2.0 と例のプロバイダーの Pome の公開
