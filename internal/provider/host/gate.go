@@ -122,7 +122,7 @@ func (g *gate) artifact(ctx context.Context, id string) (protocol.ArtifactInfo, 
 // send checks a request, sends it if allowed, records it and returns the answer for the provider.
 func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostResponse, *protocol.Error) {
 	rec := Request{Method: r.Method, Path: r.Path, Change: true}
-	approved, file, reason := g.check(r, &rec)
+	approved, call, reason := g.check(r, &rec)
 	if reason != "" {
 		rec.Outcome, rec.Reason = Refused, reason
 		g.record = append(g.record, rec)
@@ -150,7 +150,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 		if !ok {
 			err = fmt.Errorf("%w: this API connection cannot upload files", ErrNotSent)
 		} else {
-			status, body, err = up.Upload(ctx, r, File{Field: file, Name: p.Info.Name, Size: p.Info.Size, Open: p.Open})
+			status, body, err = up.Upload(ctx, r, File{Field: call.File, Order: call.Form, Name: p.Info.Name, Size: p.Info.Size, Open: p.Open})
 		}
 	} else {
 		status, body, err = g.upstream.Do(ctx, r)
@@ -187,18 +187,18 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	return protocol.HostResponse{Status: status, Body: string(body), Reason: statusText}, nil
 }
 
-// check returns the index of the approved request a request uses (-1 for none), for an upload the
-// parameter that carries the file, and why it is not allowed ("" when it is).
-func (g *gate) check(r protocol.HostRequest, rec *Request) (int, string, string) {
+// check returns the index of the approved request a request uses (-1 for none), the declared call
+// it matched, and why it is not allowed ("" when it is).
+func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, string) {
 	switch g.phase {
 	case phaseDescribe, phaseDiff:
-		return -1, "", fmt.Sprintf("no request is allowed during %s (diff computes from its parameters alone)", g.phase)
+		return -1, protocol.Call{}, fmt.Sprintf("no request is allowed during %s (diff computes from its parameters alone)", g.phase)
 	}
 	if !slices.Contains(protocol.Methods, r.Method) {
-		return -1, "", fmt.Sprintf("method %q", r.Method)
+		return -1, protocol.Call{}, fmt.Sprintf("method %q", r.Method)
 	}
 	if err := protocol.CheckPath(r.Path); err != nil {
-		return -1, "", err.Error()
+		return -1, protocol.Call{}, err.Error()
 	}
 	var call protocol.Call
 	var ids map[string]string
@@ -214,7 +214,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, string, string)
 		}
 	}
 	if !found {
-		return -1, "", fmt.Sprintf("%s %s is not a declared call of this %s", r.Method, r.Path, g.what())
+		return -1, protocol.Call{}, fmt.Sprintf("%s %s is not a declared call of this %s", r.Method, r.Path, g.what())
 	}
 	rec.Call = call.Method + " " + call.Path
 	entry, classified := g.catalog.Lookup(call.Method, call.Path)
@@ -224,10 +224,10 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, string, string)
 	// An upload sends its artifact as the file parameter the call declares and, for a call the
 	// catalog knows, the one the API reads; the provider never sends the file itself.
 	if (r.Upload != "") != (call.File != "") {
-		return -1, "", fmt.Sprintf("%s: an upload names an artifact, and only an upload call sends one", rec.Call)
+		return -1, protocol.Call{}, fmt.Sprintf("%s: an upload names an artifact, and only an upload call sends one", rec.Call)
 	}
 	if call.File != "" && classified && entry.File != call.File {
-		return -1, "", fmt.Sprintf("%s: the API reads the file from %q, not %q", rec.Call, entry.File, call.File)
+		return -1, protocol.Call{}, fmt.Sprintf("%s: the API reads the file from %q, not %q", rec.Call, entry.File, call.File)
 	}
 	// Each parameter is sent where the call declares it and, for a call the catalog knows, where
 	// the API reads it: what the host checks is what the API acts on.
@@ -238,13 +238,13 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, string, string)
 	}{{"query", r.Query}, {"form", r.Form}} {
 		for _, k := range slices.Sorted(maps.Keys(part.vals)) {
 			if _, twice := params[k]; twice {
-				return -1, "", fmt.Sprintf("parameter %q is sent both in the query and in the form", k)
+				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is sent both in the query and in the form", k)
 			}
 			if call.In(k) != part.in {
-				return -1, "", fmt.Sprintf("parameter %q is not declared in the %s of %s", k, part.in, rec.Call)
+				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is not declared in the %s of %s", k, part.in, rec.Call)
 			}
 			if classified && entry.In(k) != part.in {
-				return -1, "", fmt.Sprintf("parameter %q: the API does not read it from the %s of %s", k, part.in, rec.Call)
+				return -1, protocol.Call{}, fmt.Sprintf("parameter %q: the API does not read it from the %s of %s", k, part.in, rec.Call)
 			}
 			params[k] = part.vals[k]
 		}
@@ -256,14 +256,14 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, string, string)
 			if classified {
 				what = string(entry.Effect)
 			}
-			return -1, "", fmt.Sprintf("only reads are allowed during %s; %s is %s", g.phase, rec.Call, what)
+			return -1, protocol.Call{}, fmt.Sprintf("only reads are allowed during %s; %s is %s", g.phase, rec.Call, what)
 		}
-		return -1, "", ""
+		return -1, protocol.Call{}, ""
 	case phaseApply:
 		i, reason := g.checkPermit(rec, call, entry, ids, params, r.Upload)
-		return i, call.File, reason
+		return i, call, reason
 	}
-	return -1, "", "unknown phase"
+	return -1, protocol.Call{}, "unknown phase"
 }
 
 func (g *gate) what() string {

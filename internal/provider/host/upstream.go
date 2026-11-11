@@ -29,8 +29,9 @@ type Upstream interface {
 
 // File is an artifact sent as the file parameter of a multipart request (ADR 0004).
 type File struct {
-	Field string // the form parameter (the catalog's File)
-	Name  string // the file name sent with it
+	Field string   // the form parameter (the catalog's File)
+	Order []string // the form fields in the order the call declares them; some APIs read them in order (pveproxy)
+	Name  string   // the file name sent with it
 	Size  int64
 	Open  func() (io.ReadCloser, error)
 }
@@ -154,7 +155,15 @@ func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *Fil
 func multipartRequest(ctx context.Context, u string, r protocol.HostRequest, f File) (*http.Request, error) {
 	var head bytes.Buffer
 	mw := multipart.NewWriter(&head)
+	// The fields go first, in the declared order (then any other, sorted), and the file last:
+	// pveproxy reads content, checksum-algorithm and checksum in that order before the file.
+	keys := slices.DeleteFunc(slices.Clone(f.Order), func(k string) bool { _, ok := r.Form[k]; return !ok })
 	for _, k := range slices.Sorted(maps.Keys(r.Form)) {
+		if !slices.Contains(keys, k) {
+			keys = append(keys, k)
+		}
+	}
+	for _, k := range keys {
 		for _, v := range r.Form[k] {
 			if err := mw.WriteField(k, v); err != nil {
 				return nil, fmt.Errorf("%w: %v", ErrNotSent, err)

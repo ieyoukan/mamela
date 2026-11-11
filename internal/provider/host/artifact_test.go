@@ -156,7 +156,7 @@ func TestArtifactsAndUploads(t *testing.T) {
 	if perr := send(protocol.HostRequest{Method: "PUT", Path: "/vms/7/config", Form: map[string][]string{"tags": {"lab"}}}); perr != nil {
 		t.Fatalf("a change to the object this apply created: %v", perr)
 	}
-	if got := strings.Join(api.got, "\n"); !strings.Contains(got, "POST /storage/local/upload checksum="+strings.Repeat("a", 64)+" content=iso file:filename=seed-web-1234.iso") ||
+	if got := strings.Join(api.got, "\n"); !strings.Contains(got, "POST /storage/local/upload content=iso checksum="+strings.Repeat("a", 64)+" file:filename=seed-web-1234.iso") ||
 		strings.Contains(got, "no length") || api.files["seed-web-1234.iso"] != "seed with token-web" {
 		t.Fatalf("API received:\n%s\nfiles %v", got, api.files)
 	}
