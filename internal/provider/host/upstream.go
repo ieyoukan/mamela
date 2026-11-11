@@ -79,6 +79,11 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 	}))
 	// Never follow a redirect: the host checked this request, not the one a redirect asks for.
 	client := *h.Client
+	if f != nil {
+		// An upload of a large file takes as long as it takes; the provider call's deadline (the
+		// request's context) still bounds it.
+		client.Timeout = 0
+	}
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {

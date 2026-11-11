@@ -181,6 +181,11 @@ func (b builder) provided(r graph.Resource) Change {
 		for _, reason := range pc.Change.Reasons {
 			c.Diffs = append(c.Diffs, Diff{Field: string(pc.Change.Op), To: reason})
 		}
+		// The files the change sends are approved with it: where a download comes from and its
+		// sha256, and for whom and with which network a seed is made (ADR 0004).
+		for _, a := range pc.Change.Artifacts {
+			c.Diffs = append(c.Diffs, Diff{Field: string(pc.Change.Op) + " artifact", To: a.Describe()})
+		}
 		d := b.pol.DecideProvided(pc.Verified)
 		c.Operations = append(c.Operations, Operation{Op: pc.Change.Op, Decision: d})
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
@@ -278,17 +283,33 @@ func (b builder) vm(r graph.Resource) Change {
 // nodeReady reports whether the node's VM exists, is managed and freshly observed. Without that,
 // node resources wait: there is nothing (or nothing trustworthy) to observe them on.
 func (b builder) nodeReady(node string) (bool, *Note) {
-	vm, ok := b.snap.VMs[node]
+	m, ok := b.machine(node)
 	switch {
 	case !ok:
 		return false, &Note{Code: "MAM-PLAN-0101", Message: fmt.Sprintf("waits for VM %s to be created", node)}
-	case !vm.Managed:
+	case !m.managed:
 		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("VM %s is not managed by Mamela (Foreign)", node),
 			Hint: "Mamela does not configure machines it did not create"}
-	case vm.Stopped:
+	case m.stopped:
 		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for VM %s to be started", node)}
 	}
 	return true, nil
+}
+
+// machine is what plans need of a node: a VirtualMachine, or a provider's machine (ADR 0004).
+type machine struct {
+	managed, stopped bool
+	uptime           time.Duration
+}
+
+func (b builder) machine(node string) (machine, bool) {
+	if vm, ok := b.snap.VMs[node]; ok {
+		return machine{managed: vm.Managed, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
+	}
+	if n, ok := b.snap.Nodes[node]; ok {
+		return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
+	}
+	return machine{}, false
 }
 
 // SilentAgentAfter is how long a VM may run before Mamela says that its agent has never reported.
@@ -300,13 +321,13 @@ const SilentAgentAfter = 15 * time.Minute
 // (the VM may be stuck at boot, for example in emergency mode, or cannot reach the Control
 // Plane), and the plan says so.
 func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
-	vm := b.snap.VMs[node]
-	if up := time.Duration(vm.UptimeSeconds) * time.Second; up < SilentAgentAfter {
+	m, _ := b.machine(node)
+	if m.uptime < SilentAgentAfter {
 		return StatusWaiting, waiting
 	}
 	return StatusBlocked, &Note{Code: "MAM-PLAN-0110",
 		Message: fmt.Sprintf("VM %s has been running for %s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane",
-			node, (time.Duration(vm.UptimeSeconds) * time.Second).Truncate(time.Minute)),
+			node, m.uptime.Truncate(time.Minute)),
 		Hint: "look at its console; if it is stuck, restart it with `mamela reboot " + node + "` (add --hard if the guest does not respond)"}
 }
 

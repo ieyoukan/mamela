@@ -149,7 +149,7 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) publish() {
 	e.t.Helper()
-	if err := node.Publish(e.ctx, e.st, e.g, e.pol, ""); err != nil {
+	if err := node.Publish(e.ctx, e.st, e.g, e.pol, "", nil); err != nil {
 		e.t.Fatal(err)
 	}
 }

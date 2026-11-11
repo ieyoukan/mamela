@@ -87,6 +87,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		host, _ := os.Hostname()
 		var site *lab.Site
 		digest := site.Providers().DigestWith(rt.Refs())
+		rt.SetArtifacts(&artifacts{Cache: *imageCache})
 		prov := &external.Provider{Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
 		rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: time.Hour, Providers: digest}
 		fmt.Fprintf(stdout, "== apply %s\n", p.Digest)
@@ -145,6 +146,17 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	digest := site.Providers().DigestWith(rt.Refs())
 	var prov reconcile.Provider = labProv
 	if rt != nil {
+		made := &artifacts{Cache: *imageCache, Site: site}
+		if site.ControlPlane.Enabled() {
+			keys, err := site.SSHPublicKeys()
+			if err != nil {
+				return report(stderr, err)
+			}
+			if made.Seeds, err = seedMaker(site, st, keys); err != nil {
+				return report(stderr, err)
+			}
+		}
+		rt.SetArtifacts(made)
 		prov = &external.Provider{Base: labProv, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
 	}
 	host, _ := os.Hostname()

@@ -47,7 +47,7 @@ func Validate(g *Graph) error {
 	}
 
 	seen := map[string]bool{}
-	nodes := map[string]bool{}
+	nodes := map[string]int{} // name -> how many resources could be the node of that name
 	k3sServers := map[string]bool{}
 	addresses := map[string]string{} // static address -> VM
 	for _, r := range g.Resources {
@@ -56,8 +56,10 @@ func Validate(g *Graph) error {
 				"remove one of the declarations or give them different names")
 		}
 		seen[r.ID()] = true
-		if r.Kind == KindVirtualMachine {
-			nodes[r.Name] = true
+		// A node is a VirtualMachine, or a resource of a provider whose kind is a node kind (the
+		// provider says which; checked once providers run, ADR 0004).
+		if r.Kind == KindVirtualMachine || r.Provided != nil {
+			nodes[r.Name]++
 		}
 		if r.NodeK3s != nil && r.NodeK3s.Role == K3sServer {
 			k3sServers[r.NodeK3s.Node] = true
@@ -167,10 +169,15 @@ func checkRange(add addFunc, r Resource, field string, v, lo, hi int64, unit str
 	}
 }
 
-func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]bool) {
-	if !nodes[node] {
-		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared as a VirtualMachine in this graph", node),
+func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]int) {
+	switch nodes[node] {
+	case 0:
+		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared in this graph (as a VirtualMachine or a provider's machine)", node),
 			"declare the VM in the same graph, or fix the node name")
+	case 1:
+	default:
+		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q names more than one resource; a node's name must be unique", node),
+			"rename one of them")
 	}
 }
 

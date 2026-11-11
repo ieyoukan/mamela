@@ -94,6 +94,16 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 	return rt, nil
 }
 
+// SetArtifacts sets what makes the artifacts of the providers' changes (ADR 0004).
+func (rt *Runtime) SetArtifacts(m host.ArtifactMaker) {
+	if rt == nil {
+		return
+	}
+	for _, s := range rt.sessions {
+		s.SetArtifacts(m)
+	}
+}
+
 // Close stops every provider.
 func (rt *Runtime) Close() {
 	if rt == nil {
@@ -144,8 +154,34 @@ func (rt *Runtime) names() []string {
 	return out
 }
 
-// CheckGraph verifies that every provider a declaration uses is running, and handles the kind.
+// CheckGraph verifies that every provider a declaration uses is running, and handles the kind, and
+// that a node resource on a provider's resource is on a machine (a node kind).
 func (rt *Runtime) CheckGraph(g *graph.Graph) error {
+	provided := map[string]graph.Resource{}
+	for _, r := range g.Resources {
+		if r.Provided != nil {
+			provided[r.Name] = r
+		}
+	}
+	for _, r := range g.Resources {
+		node := ""
+		switch {
+		case r.NodePackage != nil:
+			node = r.NodePackage.Node
+		case r.NodeService != nil:
+			node = r.NodeService.Node
+		case r.NodeK3s != nil:
+			node = r.NodeK3s.Node
+		}
+		m, ok := provided[node]
+		if !ok {
+			continue
+		}
+		s, running := rt.sessionOf(m.Provided.Provider)
+		if running && !slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == m.Kind && k.Node }) {
+			return fmt.Errorf("%s is on %s, which is not a machine: provider %s does not declare kind %s a node kind", r.ID(), m.ID(), m.Provided.Provider, m.Kind)
+		}
+	}
 	for _, r := range g.Resources {
 		if r.Provided == nil {
 			continue
@@ -293,9 +329,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	if len(provided) > 0 {
-		snap.Provided = provided
-	}
+	snap.AddProvided(provided)
 	p.last = snap
 	return snap, nil
 }

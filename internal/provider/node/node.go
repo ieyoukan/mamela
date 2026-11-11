@@ -63,7 +63,9 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 // and the standing repairs the policy allows without approval (starting a service listed in
 // autoStartServices). One-time grants already in a revision are kept while their package or
 // service is still declared. Nodes without a reserved VMID (not created yet) are skipped.
-func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, controlPlane string) error {
+// nodeIDs are the IDs of providers' machines (ADR 0004), by name, from the observation; a
+// VirtualMachine's is its VMID reservation.
+func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, controlPlane string, nodeIDs map[string]int64) error {
 	type nodeRes struct {
 		pkgs []graph.NodePackageSpec
 		svcs []graph.NodeServiceSpec
@@ -76,6 +78,11 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		case graph.KindVirtualMachine:
 			nodes[r.Name] = &nodeRes{}
 			names = append(names, r.Name)
+		default:
+			if _, isNode := nodeIDs[r.Name]; isNode && r.Provided != nil {
+				nodes[r.Name] = &nodeRes{}
+				names = append(names, r.Name)
+			}
 		case graph.KindNodePackage:
 			if n := nodes[r.NodePackage.Node]; n != nil {
 				n.pkgs = append(n.pkgs, *r.NodePackage)
@@ -94,6 +101,9 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		vmid, ok, err := st.VMID(ctx, name)
 		if err != nil {
 			return err
+		}
+		if id, isNode := nodeIDs[name]; isNode && !ok {
+			vmid, ok = int(id), id > 0
 		}
 		if !ok {
 			continue

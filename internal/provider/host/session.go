@@ -39,6 +39,9 @@ type Options struct {
 	Now            func() time.Time
 	MaxMemoryBytes uint64        // per WASM linear memory (default 512 MiB)
 	CallTimeout    time.Duration // per call to the provider, requests included (default 5 minutes)
+	// ApplyTimeout bounds one apply (and lookup) instead: creating a machine from an image can take
+	// long (default 2 hours).
+	ApplyTimeout time.Duration
 	// StartTimeout bounds starting the provider and its describe (wasmtime compiles the program
 	// first; default 2 minutes).
 	StartTimeout time.Duration
@@ -83,6 +86,9 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	}
 	if o.CallTimeout == 0 {
 		o.CallTimeout = 5 * time.Minute
+	}
+	if o.ApplyTimeout == 0 {
+		o.ApplyTimeout = 2 * time.Hour
 	}
 	if o.StartTimeout == 0 {
 		o.StartTimeout = 2 * time.Minute
@@ -233,6 +239,9 @@ func (s *Session) readLoop(stdout io.Reader) {
 // Manifest is what the provider declared.
 func (s *Session) Manifest() protocol.Manifest { return s.manifest }
 
+// SetArtifacts sets what makes the artifacts of the changes this session applies.
+func (s *Session) SetArtifacts(m ArtifactMaker) { s.o.Artifacts = m }
+
 // Executable is the provider program.
 func (s *Session) Executable() Executable { return s.exe }
 
@@ -379,7 +388,7 @@ func (s *Session) Apply(ctx context.Context, p protocol.Permit, c protocol.Chang
 	s.used[p.OperationID] = true
 	g := s.gate(phaseApply, p.Calls, &p)
 	var out protocol.ApplyResult
-	callErr := s.call(ctx, g, protocol.MethodApply, protocol.ApplyParams{Permit: p, Change: c, Desired: desired, Observed: observed}, &out)
+	callErr := s.callWithin(ctx, s.o.ApplyTimeout, g, protocol.MethodApply, protocol.ApplyParams{Permit: p, Change: c, Desired: desired, Observed: observed}, &out)
 	return outcome(g.record, callErr)
 }
 
@@ -437,7 +446,7 @@ func (s *Session) Lookup(ctx context.Context, c protocol.Change) (protocol.Looku
 	}
 	g := s.gate(phaseLookup, append(slices.Clone(s.manifest.ObserveCalls), o.Calls...), nil)
 	var out protocol.LookupResult
-	err := s.call(ctx, g, protocol.MethodLookup, protocol.LookupParams{Change: c}, &out)
+	err := s.callWithin(ctx, s.o.ApplyTimeout, g, protocol.MethodLookup, protocol.LookupParams{Change: c}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return "", g.record, err
 	}

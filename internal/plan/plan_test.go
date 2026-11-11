@@ -424,3 +424,30 @@ func TestK3sAgentStartsAfterItsServer(t *testing.T) {
 		t.Fatalf("agent once its server runs: %+v", c)
 	}
 }
+
+// A provider's machine is a node like a VirtualMachine: created, Mamela's, running, and how long.
+func TestNodeResourcesOnAProvidersMachine(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
+		`{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := func(s state.Snapshot) Change { return find(t, Build(g, s, policy.Default), "NodePackage web/nginx") }
+	s := state.Empty(t0)
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0101" {
+		t.Fatalf("no machine yet: %+v", c.Note)
+	}
+	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: false, ObservedAt: t0}}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0111" {
+		t.Fatalf("stopped machine: %+v", c.Note)
+	}
+	s.Nodes["web"] = state.Node{Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 3600, ObservedAt: t0}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0110" {
+		t.Fatalf("silent agent on a provider's machine: %+v", c.Note)
+	}
+	s.Nodes["web"] = state.Node{Provider: "proxmox", Managed: false, ID: 7001, Running: true, ObservedAt: t0}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0102" {
+		t.Fatalf("someone else's machine: %+v", c.Note)
+	}
+}

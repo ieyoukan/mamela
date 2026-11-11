@@ -7,6 +7,7 @@
 package graph
 
 import (
+	"encoding/json/v2"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -181,11 +182,27 @@ type NodeServiceSpec struct {
 	Running bool
 }
 
-// StaticIP is the declared static address of VM name, or "" when it uses DHCP or is not declared.
+// StaticIP is the declared static address of node name, or "" when it uses DHCP or is not
+// declared. A provider's machine declares it as spec.network {"mode": "static", "address": ...},
+// in the format of a VirtualMachine.
 func (g *Graph) StaticIP(name string) string {
 	for _, r := range g.Resources {
-		if r.Kind == KindVirtualMachine && r.Name == name && r.VirtualMachine != nil {
+		if r.Name != name {
+			continue
+		}
+		if r.Kind == KindVirtualMachine && r.VirtualMachine != nil {
 			return r.VirtualMachine.Network.IP()
+		}
+		if r.Provided != nil {
+			var spec struct {
+				Network *struct {
+					Mode    string `json:"mode"`
+					Address string `json:"address"`
+				} `json:"network"`
+			}
+			if json.Unmarshal(r.Provided.Spec, &spec) == nil && spec.Network != nil && spec.Network.Mode == string(NetworkStatic) {
+				return Network{Mode: NetworkStatic, Address: spec.Network.Address}.IP()
+			}
 		}
 	}
 	return ""
