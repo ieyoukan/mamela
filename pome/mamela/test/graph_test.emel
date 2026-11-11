@@ -35,13 +35,6 @@ fn machine_package_and_service() {
 }
 
 @test
-fn the_names_of_pome_0_2_do_the_same() {
-  a = Lib.empty() |> Lib.package(app(), "nginx") |> Lib.service(app(), "nginx", True, False)
-  b = Lib.empty() |> Lib.package_on(app(), "nginx") |> Lib.service_on(app(), "nginx", True, False)
-  assert Lib.to_json(a) == Lib.to_json(b)
-}
-
-@test
 fn same_graph_same_text() {
   g = Lib.empty() |> machine("app-server", Lib.Dhcp)
   assert Lib.to_json(g) == Lib.to_json(g)
@@ -82,19 +75,29 @@ fn provided_resources_make_a_v2_graph() {
 }
 
 @test
-fn k3s_cluster() {
-  worker = Lib.Node(name: "worker")
+fn a_resource_after_others() {
   g = Lib.empty()
-    |> machine("app-server", Lib.Dhcp)
-    |> machine("worker", Lib.Dhcp)
-    |> Lib.k3s_server(app(), "v1.33.5+k3s1", "00")
-    |> Lib.k3s_agent(worker, app(), "v1.33.5+k3s1", "00")
+    |> Lib.provided("test", "Cluster", "c", [])
+    |> Lib.provided_after(
+      "test",
+      "Service",
+      "web",
+      [],
+      [Lib.Ref(kind: "Cluster", name: "c"), Lib.Ref(kind: "Group", name: "g")],
+    )
   json = Lib.to_json(g)
   assert json.contains(
-    "{\"kind\":\"NodeK3s\",\"name\":\"app-server/k3s\",\"spec\":{\"node\":\"app-server\",\"role\":\"server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+    "{\"after\":[\"Cluster c\",\"Group g\"],\"kind\":\"Service\",\"name\":\"web\",\"provider\":\"test\",\"spec\":{}}",
   )
-  assert json.contains(
-    "{\"kind\":\"NodeK3s\",\"name\":\"worker/k3s\",\"spec\":{\"node\":\"worker\",\"role\":\"agent\",\"server\":\"app-server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  assert json.contains("{\"kind\":\"Cluster\",\"name\":\"c\",\"provider\":\"test\",\"spec\":{}}")
+}
+
+@test
+fn a_resource_on_a_node() {
+  g = Lib.empty()
+    |> Lib.on_node(app(), "NodeK3s", "app-server/k3s", [("role", Dynamic.Text("server"))])
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"app-server/k3s\",\"spec\":{\"node\":\"app-server\",\"role\":\"server\"}}",
   )
 }
 

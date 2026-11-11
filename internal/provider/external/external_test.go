@@ -266,3 +266,45 @@ func TestSigV4(t *testing.T) {
 		}
 	}
 }
+
+// A resource that needs another first waits until that one exists and is Mamela's: no change of
+// it is computed until then, and then its provider is told what its dependency is (ADR 0007).
+func TestAfterWaitsForTheDependency(t *testing.T) {
+	api := kvapi.New()
+	srv := httptest.NewServer(api)
+	defer srv.Close()
+	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+	rt, err := Start(t.Context(), []store.Program{program(t, wasm(t, "../../../examples/kv/cmd/kv-provider"))}, cfg, wasmtime(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	rec := recorded{}
+	rt.SetCreations(rec)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"KVItem","name":"web","provider":"kv-example","spec":{"value":"v1"}},` +
+		`{"kind":"KVItem","name":"db","provider":"kv-example","after":["KVItem web"],"spec":{"value":"v1"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := rt.Observe(t.Context(), g, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db := got["KVItem db"]; db.Waiting == "" || len(db.Changes) != 0 || !strings.Contains(db.Waiting, "KVItem web") {
+		t.Fatalf("db before web exists: %+v", db)
+	}
+	if web := got["KVItem web"]; web.Waiting != "" || len(web.Changes) != 1 {
+		t.Fatalf("web: %+v", web)
+	}
+	// web is created through Mamela (recorded first, then made).
+	api.Put(kvapi.Item{Name: "web", Value: "v1", Owner: "mamela", Version: 1})
+	rec.RecordCreation(t.Context(), "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
+	got, err = rt.Observe(t.Context(), g, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db := got["KVItem db"]; db.Waiting != "" || len(db.Changes) != 1 || db.Changes[0].Change.Op != "create-item" {
+		t.Fatalf("db once web is Mamela's: %+v", db)
+	}
+}

@@ -112,7 +112,7 @@ func (w *world) plan(t *testing.T, opID string) (protocol.Change, protocol.Permi
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := w.s.Diff(t.Context(), []protocol.Resource{web}, obs)
+	changes, err := w.s.Diff(t.Context(), []protocol.Resource{web}, obs, nil)
 	if err != nil || len(changes) != 1 {
 		t.Fatalf("diff: %v %v", changes, err)
 	}
@@ -423,7 +423,7 @@ func TestBrokenProviderIsStopped(t *testing.T) {
 	if _, _, err := w.s.Observe(t.Context(), nil); code(err) != CodeProtocol {
 		t.Errorf("garbage on stdout: %v", err)
 	}
-	if _, err := w.s.Diff(t.Context(), nil, nil); code(err) != CodeProtocol {
+	if _, err := w.s.Diff(t.Context(), nil, nil, nil); code(err) != CodeProtocol {
 		t.Errorf("a call after the provider was stopped: %v", err)
 	}
 

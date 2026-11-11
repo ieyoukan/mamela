@@ -31,6 +31,7 @@ const (
 	CodeOutOfRange        Code = "MAM-GRAPH-0105"
 	CodeInvalidValue      Code = "MAM-GRAPH-0106"
 	CodeDuplicateAddress  Code = "MAM-GRAPH-0107"
+	CodeCycle             Code = "MAM-GRAPH-0108"
 )
 
 // Problem is one thing wrong with a graph, written for a person: what, where, why, and what to do.

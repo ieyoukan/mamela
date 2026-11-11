@@ -15,11 +15,13 @@ type canonGraph struct {
 	Schema    string          `json:"schema"`
 }
 
+// canonResource: members in sorted order, as the Emela writer (x/json) puts them.
 type canonResource struct {
-	Kind     string `json:"kind"`
-	Name     string `json:"name"`
-	Provider string `json:"provider,omitempty"`
-	Spec     any    `json:"spec"`
+	After    []string `json:"after,omitempty"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	Provider string   `json:"provider,omitempty"`
+	Spec     any      `json:"spec"`
 }
 
 type canonNodePackage struct {
@@ -86,7 +88,7 @@ func (g *Graph) Canonical() []byte {
 	for _, r := range g.Sorted() {
 		cr := canonResource{Kind: string(r.Kind), Name: r.Name}
 		if p := r.Provided; p != nil {
-			cr.Provider, cr.Spec = p.Provider, jsontext.Value(p.Spec)
+			cr.Provider, cr.Spec, cr.After = p.Provider, jsontext.Value(p.Spec), r.After
 			cg.Resources = append(cg.Resources, cr)
 			continue
 		}

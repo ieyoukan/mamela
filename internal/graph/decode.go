@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,7 @@ type wireResource struct {
 	Kind     *string        `json:"kind"`
 	Name     *string        `json:"name"`
 	Provider *string        `json:"provider"`
+	After    *[]string      `json:"after"`
 	Spec     jsontext.Value `json:"spec"`
 }
 
@@ -138,6 +140,10 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		}
 	}
 
+	if wr.After != nil && wr.Provider == nil {
+		return nil, []Problem{{Code: CodeUnknownField, Path: where + " after",
+			Message: "only a resource of a provider has after", Hint: "a resource on a node waits for its node already"}}
+	}
 	if wr.Provider != nil {
 		spec, err := providedSpec(wr.Spec)
 		if err != nil {
@@ -149,6 +155,16 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 				Message: fmt.Sprintf("%s is a built-in kind; a provider cannot declare it", r.Kind)}}
 		}
 		r.Provided = &ProvidedSpec{Provider: *wr.Provider, Spec: spec}
+		if wr.After != nil {
+			seen := map[string]bool{}
+			for _, a := range *wr.After {
+				if !seen[a] {
+					r.After = append(r.After, a)
+					seen[a] = true
+				}
+			}
+			slices.Sort(r.After)
+		}
 		return r, nil
 	}
 	switch r.Kind {

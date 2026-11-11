@@ -162,6 +162,10 @@ func (b builder) provided(r graph.Resource) Change {
 	case b.stale(got.ObservedAt):
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
 		return c
+	case got.Waiting != "":
+		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0113", Message: got.Waiting,
+			Hint: "apply the plan that makes it, then plan again (ADR 0007)"}
+		return c
 	case got.Observed.Exists && !got.Observed.Owned:
 		return b.withOps(c, policy.Subject{Op: policy.OpChangeForeign})
 	}

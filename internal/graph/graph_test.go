@@ -386,3 +386,47 @@ func TestNodeOnAProvidersMachine(t *testing.T) {
 	_, err = Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + machine("web", dhcp) + `,` + pkg + `]}`))
 	assertCode(t, err, CodeDanglingNode)
 }
+
+// A resource of a provider may need others first (ADR 0007): sorted and unique in the canonical
+// form; each must be a resource of a provider in the graph; no cycle; only providers' resources.
+func TestAfter(t *testing.T) {
+	r := func(name, after string) string {
+		a := ""
+		if after != "" {
+			a = `,"after":[` + after + `]`
+		}
+		return `{"kind":"Thing","name":"` + name + `","provider":"test","spec":{}` + a + `}`
+	}
+	doc := func(rs ...string) string {
+		return `{"schema":"mamela-graph/v2","resources":[` + strings.Join(rs, ",") + `]}`
+	}
+	g, err := Decode([]byte(doc(r("a", ""), r("b", `"Thing a"`), r("c", `"Thing b","Thing a","Thing b"`))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(g.Canonical()); !strings.Contains(got, `{"after":["Thing a","Thing b"],"kind":"Thing","name":"c","provider":"test","spec":{}}`) {
+		t.Fatalf("canonical: %s", got)
+	}
+	again, _ := Decode(g.Canonical())
+	without, _ := Decode([]byte(doc(r("a", ""), r("b", ""), r("c", ""))))
+	if again.Digest() != g.Digest() || without.Digest() == g.Digest() {
+		t.Error("after is not part of the digest, or does not round-trip")
+	}
+	for name, c := range map[string]struct {
+		in   string
+		code Code
+	}{
+		"an undeclared resource": {doc(r("a", `"Thing x"`)), CodeDanglingNode},
+		"itself":                 {doc(r("a", `"Thing a"`)), CodeCycle},
+		"a cycle":                {doc(r("a", `"Thing b"`), r("b", `"Thing c"`), r("c", `"Thing a"`)), CodeCycle},
+		"a built-in resource": {`{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) +
+			`,{"kind":"NodePackage","name":"web/nginx","after":["TestVM web"],"spec":{"node":"web","package":"nginx","state":"Present"}}]}`, CodeUnknownField},
+		"a built-in reference": {`{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) + `,` + r("a", `"NodePackage web/nginx"`) +
+			`,{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`, CodeDanglingNode},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode([]byte(c.in))
+			assertCode(t, err, c.code)
+		})
+	}
+}

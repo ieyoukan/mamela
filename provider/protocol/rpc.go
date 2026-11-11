@@ -171,6 +171,8 @@ type Resource struct {
 	Kind ResourceKind   `json:"kind"`
 	Name string         `json:"name"`
 	Spec jsontext.Value `json:"spec,omitempty"` // the declared fields, in the kind's format
+	// After are the IDs of the resources it needs first (ADR 0007).
+	After []string `json:"after,omitempty"`
 }
 
 // ObserveParams lists the declared resources. The provider also reports, from what it reads,
@@ -223,6 +225,10 @@ type ObserveResult struct {
 type DiffParams struct {
 	Desired  []Resource `json:"desired"`
 	Observed []Observed `json:"observed"`
+	// Dependencies are what was observed of the resources the desired ones need first (their
+	// After), by ID: each exists and is Mamela's (ADR 0007). A provider writes their IDs (a
+	// security group's, a cluster's) into its changes. A resource waiting for one is not desired.
+	Dependencies map[string]Observed `json:"dependencies,omitempty"`
 }
 
 // DiffResult lists the changes that make the world match the declaration, in order.

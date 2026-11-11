@@ -1,0 +1,45 @@
+## K3s: a light Kubernetes on Mamela's machines, through mamelet (ADR 0007). A node runs k3s as a
+## server, or as an agent of a server, of this exact release, pinned by the sha256 of its binary
+## for the node's architecture (from the release's sha256sum file). Mamela writes the systemd unit
+## itself and gives the cluster's nodes their join token; start it with
+## `Mamela.service(graph, node, "k3s", True, True)`.
+##
+## These functions keep their form when k3s becomes a mamelet role (ADR 0007): only how they
+## declare it changes.
+
+import Mamela
+import Mamela.{Node}
+import Dynamic.{Text}
+
+## Declares that `node` runs a k3s server of `version`, whose binary has `sha256`.
+pub fn server(graph: Mamela.Graph, node: Node, version: String, sha256: String) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    node,
+    "NodeK3s",
+    "#{node.name}/k3s",
+    [("role", Text("server")), ("version", Text(version)), ("sha256", Text(sha256))],
+  )
+}
+
+## Declares that `node` runs a k3s agent of `version` that joins the server on `server`.
+pub fn agent(
+  graph: Mamela.Graph,
+  node: Node,
+  server: Node,
+  version: String,
+  sha256: String,
+) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    node,
+    "NodeK3s",
+    "#{node.name}/k3s",
+    [
+      ("role", Text("agent")),
+      ("server", Text(server.name)),
+      ("version", Text(version)),
+      ("sha256", Text(sha256)),
+    ],
+  )
+}

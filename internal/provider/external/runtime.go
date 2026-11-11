@@ -278,7 +278,7 @@ func (rt *Runtime) sessionOf(name string) (*host.Session, bool) {
 func Resource(r graph.Resource) protocol.Resource { return resource(r) }
 
 func resource(r graph.Resource) protocol.Resource {
-	return protocol.Resource{ID: r.ID(), Kind: r.Kind, Name: r.Name, Spec: r.Provided.Spec}
+	return protocol.Resource{ID: r.ID(), Kind: r.Kind, Name: r.Name, Spec: r.Provided.Spec, After: r.After}
 }
 
 // Observe asks every provider for the state of its declared resources (and those it created
@@ -288,6 +288,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		return nil, err
 	}
 	out := map[string]state.Provided{}
+	declaredOf := map[string][]protocol.Resource{}
+	observedOf := map[string][]protocol.Observed{}
+	// 1. Every provider observes; its claims of ownership stand only if Mamela recorded that it
+	// set out to create the object: the diff, the plan and what is kept see only what Mamela
+	// vouches for.
 	for _, name := range rt.names() {
 		s := rt.sessions[name]
 		var declared []protocol.Resource
@@ -300,8 +305,6 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
 		}
-		// A provider's claim to own an object stands only if Mamela recorded that it set out to
-		// create it: the diff, the plan and what is kept see only what Mamela vouches for.
 		if rt.creations == nil {
 			return nil, fmt.Errorf("provider %s: no record of what Mamela created to check its claims against", name)
 		}
@@ -311,10 +314,6 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				return nil, err
 			}
 			observed[i] = protocol.Vouch(o, created)
-		}
-		changes, err := s.Diff(ctx, declared, observed)
-		if err != nil {
-			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
 		}
 		byID := map[string]protocol.Observed{}
 		for _, o := range observed {
@@ -347,11 +346,53 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			}
 			out[id] = state.Provided{Provider: name, Kind: o.Kind, Name: o.Name, Observed: o, ObservedAt: asOf}
 		}
+		declaredOf[name], observedOf[name] = declared, observed
+	}
+
+	// 2. A resource whose dependencies do not all exist as Mamela's waits (ADR 0007): no change
+	// of it is computed yet.
+	ready := func(d protocol.Resource) string {
+		for _, a := range d.After {
+			dep, ok := out[a]
+			switch {
+			case !ok || !dep.Observed.Exists:
+				return fmt.Sprintf("waits for %s to be created", a)
+			case !dep.Observed.Owned:
+				return fmt.Sprintf("waits for %s, which is not Mamela's (Foreign or not finished)", a)
+			}
+		}
+		return ""
+	}
+
+	// 3. Each provider computes the changes of what does not wait, with what its dependencies are.
+	for _, name := range rt.names() {
+		s := rt.sessions[name]
+		var desired []protocol.Resource
+		deps := map[string]protocol.Observed{}
+		for _, d := range declaredOf[name] {
+			if why := ready(d); why != "" {
+				p := out[d.ID]
+				p.Waiting = why
+				out[d.ID] = p
+				continue
+			}
+			desired = append(desired, d)
+			for _, a := range d.After {
+				deps[a] = out[a].Observed
+			}
+		}
+		if len(deps) == 0 {
+			deps = nil
+		}
+		changes, err := s.Diff(ctx, desired, observedOf[name], deps)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
+		}
 		seen := map[string]bool{}
 		for _, c := range changes {
 			p, ok := out[c.Resource]
-			if !ok || !p.Declared || p.Provider != name {
-				return nil, fmt.Errorf("provider %s: diff changes %s, which is not one of its declared resources", name, c.Resource)
+			if !ok || !p.Declared || p.Provider != name || p.Waiting != "" {
+				return nil, fmt.Errorf("provider %s: diff changes %s, which is not one of its declared resources ready to change", name, c.Resource)
 			}
 			if key := c.Resource + "\x00" + string(c.Op); seen[key] {
 				return nil, fmt.Errorf("provider %s: diff has %s on %s twice", name, c.Op, c.Resource)

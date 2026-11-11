@@ -62,6 +62,9 @@ type Resource struct {
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
+	// After are the resources of providers this one needs first ("Kind name", sorted, ADR 0007):
+	// it is planned once each exists and is Mamela's.
+	After []string
 }
 
 // ProvidedSpec is a resource of a provider's kind.

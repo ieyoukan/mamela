@@ -461,3 +461,27 @@ func TestWhatRunsOnTheControlPlaneHostIsProtected(t *testing.T) {
 		t.Fatal("the protection is not part of the plan's inputs")
 	}
 }
+
+// A resource that waits for another is shown waiting, with why, and nothing runs for it.
+func TestWaitingForADependency(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"Thing","name":"a","provider":"test","spec":{}},` +
+		`{"kind":"Thing","name":"b","provider":"test","after":["Thing a"],"spec":{}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{}
+	for _, r := range g.Resources {
+		p := state.Provided{Provider: "test", Kind: r.Kind, Name: r.Name, Declared: true, SpecDigest: state.SpecDigest(r.Provided.Spec), ObservedAt: t0,
+			Observed: protocol.Observed{ID: r.ID(), Kind: r.Kind, Name: r.Name}}
+		if r.Name == "b" {
+			p.Waiting = "waits for Thing a to be created"
+		}
+		s.Provided[r.ID()] = p
+	}
+	c := find(t, Build(g, s, policy.Default), "Thing b")
+	if c.Status != StatusWaiting || c.Note == nil || c.Note.Code != "MAM-PLAN-0113" || len(c.Operations) != 0 {
+		t.Fatalf("%+v", c)
+	}
+}

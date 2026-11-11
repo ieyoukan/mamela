@@ -358,10 +358,10 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 }
 
 // Diff asks the provider for the changes. The provider may send no request.
-func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed) ([]protocol.Change, error) {
+func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed, dependencies map[string]protocol.Observed) ([]protocol.Change, error) {
 	g := s.gate(phaseDiff, nil, nil)
 	var out protocol.DiffResult
-	err := s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed}, &out)
+	err := s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed, Dependencies: dependencies}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return nil, err
 	}

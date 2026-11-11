@@ -2,8 +2,10 @@ package graph
 
 import (
 	"fmt"
+	"maps"
 	"net/netip"
 	"regexp"
+	"slices"
 )
 
 var (
@@ -137,7 +139,61 @@ func Validate(g *Graph) error {
 			}
 		}
 	}
+	// after: each names a resource of a provider in this graph, and none waits for itself.
+	provided := map[string]Resource{}
+	for _, r := range g.Resources {
+		if r.Provided != nil {
+			provided[r.ID()] = r
+		}
+	}
+	for _, r := range g.Resources {
+		for _, a := range r.After {
+			if _, ok := provided[a]; !ok {
+				add(r, CodeDanglingNode, "after", fmt.Sprintf("%q is not a resource of a provider in this graph", a),
+					"declare it, or fix the reference (\"Kind name\")")
+			}
+		}
+	}
+	for _, id := range cycles(provided) {
+		r := provided[id]
+		add(r, CodeCycle, "after", fmt.Sprintf("%s needs itself through after", id), "remove one of the dependencies of the cycle")
+	}
 	return newError(problems)
+}
+
+// cycles lists the resources that wait for themselves through after (sorted).
+func cycles(rs map[string]Resource) []string {
+	state := map[string]int{} // 0 new, 1 on the path, 2 done
+	inCycle := map[string]bool{}
+	var path []string
+	var visit func(id string)
+	visit = func(id string) {
+		state[id] = 1
+		path = append(path, id)
+		for _, a := range rs[id].After {
+			switch state[a] {
+			case 0:
+				if _, ok := rs[a]; ok {
+					visit(a)
+				}
+			case 1:
+				for i := len(path) - 1; i >= 0; i-- {
+					inCycle[path[i]] = true
+					if path[i] == a {
+						break
+					}
+				}
+			}
+		}
+		path = path[:len(path)-1]
+		state[id] = 2
+	}
+	for _, id := range slices.Sorted(maps.Keys(rs)) {
+		if state[id] == 0 {
+			visit(id)
+		}
+	}
+	return slices.Sorted(maps.Keys(inCycle))
 }
 
 type addFunc func(r Resource, code Code, field, message, hint string)

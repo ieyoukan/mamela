@@ -85,7 +85,10 @@ type Provided struct {
 	// SpecDigest identifies the declared spec the changes were computed for (SpecDigest()).
 	SpecDigest string           `json:"specDigest,omitempty"`
 	Changes    []ProvidedChange `json:"changes,omitempty"`
-	ObservedAt time.Time        `json:"observedAt"`
+	// Waiting says which resource it needs first does not exist yet or is not Mamela's (ADR
+	// 0007): its changes are not computed until then.
+	Waiting    string    `json:"waiting,omitempty"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // ProvidedChange is one change a provider's diff computed, with what the host's catalog verifies

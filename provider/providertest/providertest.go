@@ -183,7 +183,7 @@ func Run(t *testing.T, s Suite) {
 					t.Errorf("with nothing declared, observe does not report %s as an existing resource Mamela owns; Mamela must see what it created to keep it", r.ID)
 				}
 			}
-			changes, err := e.s.Diff(e.ctx, nil, observed)
+			changes, err := e.s.Diff(e.ctx, nil, observed, nil)
 			if err != nil {
 				t.Fatalf("diff with nothing declared: %v", err)
 			}
@@ -357,15 +357,54 @@ func (e *env) observe(desired []protocol.Resource) []protocol.Observed {
 	return observed
 }
 
+// diff computes the changes as Mamela does (ADR 0007): a resource whose dependencies (After) do
+// not all exist as Mamela's waits, and the others are given what their dependencies are. It
+// returns how many resources wait.
+func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([]protocol.Change, int, error) {
+	byID := map[string]protocol.Observed{}
+	for _, o := range observed {
+		byID[o.ID] = o
+	}
+	var ready []protocol.Resource
+	deps := map[string]protocol.Observed{}
+	waiting := 0
+	for _, d := range desired {
+		ok := true
+		for _, a := range d.After {
+			if o := byID[a]; !o.Exists || !o.Owned {
+				ok = false
+			}
+		}
+		if !ok {
+			waiting++
+			continue
+		}
+		ready = append(ready, d)
+		for _, a := range d.After {
+			deps[a] = byID[a]
+		}
+	}
+	if len(deps) == 0 {
+		deps = nil
+	}
+	changes, err := e.s.Diff(e.ctx, ready, observed, deps)
+	return changes, waiting, err
+}
+
 // round observes, diffs and applies every change once.
 func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
+	changes, results, _ := e.roundWaiting(desired)
+	return changes, results
+}
+
+func (e *env) roundWaiting(desired []protocol.Resource) ([]protocol.Change, []host.Result, int) {
 	e.t.Helper()
 	observed := e.observe(desired)
-	changes, err := e.s.Diff(e.ctx, desired, observed)
+	changes, waiting, err := e.diff(desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)
 	}
-	again, err := e.s.Diff(e.ctx, desired, observed)
+	again, _, err := e.diff(desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff (again): %v", err)
 	}
@@ -379,7 +418,7 @@ func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Resu
 		}
 		results = append(results, e.apply(c, desired, observed))
 	}
-	return changes, results
+	return changes, results, waiting
 }
 
 func (e *env) apply(c protocol.Change, desired []protocol.Resource, observed []protocol.Observed) host.Result {
@@ -413,7 +452,8 @@ func (e *env) apply(c protocol.Change, desired []protocol.Resource, observed []p
 }
 
 // converge applies the declaration in rounds; every apply must be done, and the world must match
-// the declaration (an empty diff) after the given number of rounds. Lookup must say that a
+// the declaration (an empty diff, nothing waiting) after the given number of rounds, and as many
+// more as resources wait for others (ADR 0007). Lookup must say that a
 // planned change is not done before it is applied, and done once the world matches.
 func (e *env) converge(desired []protocol.Resource, rounds int) {
 	e.t.Helper()
@@ -423,18 +463,21 @@ func (e *env) converge(desired []protocol.Resource, rounds int) {
 			e.t.Errorf("%s %s: lookup says %s before the change is applied", c.Op, c.Resource, status)
 		}
 	}
-	for range rounds {
-		changes, results := e.round(desired)
+	for i := 0; i < rounds+len(desired); i++ {
+		changes, results, waiting := e.roundWaiting(desired)
 		for i, r := range results {
 			if r.Outcome != host.OutcomeDone {
 				e.t.Fatalf("%s %s: %s: %v\n  requests:\n%s", changes[i].Op, changes[i].Resource, r.Outcome, r.Err, requests(r.Requests))
 			}
 		}
 		applied = append(applied, changes...)
+		if i+1 >= rounds && waiting == 0 {
+			break
+		}
 	}
 	e.lookups = nil
-	if changes, _ := e.round(desired); len(changes) > 0 {
-		e.t.Fatalf("after applying, the diff still has changes (the world does not match the declaration, or diff is wrong): %s", jsonText(changes))
+	if changes, _, waiting := e.roundWaiting(desired); len(changes) > 0 || waiting > 0 {
+		e.t.Fatalf("after applying, the diff still has changes or resources wait (the world does not match the declaration, or diff is wrong): %d waiting, %s", waiting, jsonText(changes))
 	}
 	for _, c := range applied {
 		if status := e.lookup(c); status != protocol.LookupDone {
@@ -456,8 +499,33 @@ func (e *env) lookup(c protocol.Change) protocol.LookupStatus {
 // change, then requires that observing and applying again converges.
 func (e *env) recover(desired []protocol.Resource) {
 	e.t.Helper()
+	// Round after round (a resource that waits for another is changed in a later round), until
+	// the round that meets the fault.
+	for round := 0; round <= len(desired) && !e.up.hit; round++ {
+		e.recoverRound(desired)
+	}
+	if !e.up.hit {
+		e.t.Fatalf("the fault was not reached (the provider sends fewer changes than in a clean run)")
+	}
+	e.up.at = -1
+	for range 3 + len(desired) {
+		changes, results, waiting := e.roundWaiting(desired)
+		if len(changes) == 0 && waiting == 0 {
+			return
+		}
+		for i, r := range results {
+			if r.Outcome != host.OutcomeDone {
+				e.t.Fatalf("after the fault, %s %s: %s: %v\n  requests:\n%s", changes[i].Op, changes[i].Resource, r.Outcome, r.Err, requests(r.Requests))
+			}
+		}
+	}
+	e.t.Fatalf("after the fault, rounds of observe, diff and apply did not converge")
+}
+
+func (e *env) recoverRound(desired []protocol.Resource) {
+	e.t.Helper()
 	observed := e.observe(desired)
-	changes, err := e.s.Diff(e.ctx, desired, observed)
+	changes, _, err := e.diff(desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)
 	}
@@ -481,22 +549,6 @@ func (e *env) recover(desired []protocol.Resource) {
 			e.t.Errorf("%s %s: the apply is done, and lookup says %s", c.Op, c.Resource, status)
 		}
 	}
-	if !e.up.hit {
-		e.t.Fatalf("the fault was not reached (the provider sends fewer changes than in a clean run)")
-	}
-	e.up.at = -1
-	for range 3 {
-		changes, results := e.round(desired)
-		if len(changes) == 0 {
-			return
-		}
-		for i, r := range results {
-			if r.Outcome != host.OutcomeDone {
-				e.t.Fatalf("after the fault, %s %s: %s: %v\n  requests:\n%s", changes[i].Op, changes[i].Resource, r.Outcome, r.Err, requests(r.Requests))
-			}
-		}
-	}
-	e.t.Fatalf("after the fault, three rounds of observe, diff and apply did not converge")
 }
 
 // faulty sends requests to the fake API, and injects one fault at the at-th change request.
