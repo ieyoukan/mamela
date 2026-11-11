@@ -11,6 +11,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/ieyoukan/mamela/internal/state"
 )
 
 // Program is a provider program a plan was made with.
@@ -230,4 +233,45 @@ func (s *Store) ExplicitOutcome(ctx context.Context, id string) (string, error) 
 func (s *Store) ForgetCreations(ctx context.Context, provider, resource string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource)
 	return err
+}
+
+// Claims are, by provider, the IDs of the objects that the plans made since a time (except one:
+// the plan being applied) are to create: the changes of resources that did not exist when each
+// was planned. Observing treats them as taken, so that plans made one after another and applied
+// together do not choose the same IDs (a Proxmox VMID). A plan that was applied created them, and
+// they are taken anyway; one that never is stops claiming them once it is older than since.
+func (s *Store) Claims(ctx context.Context, since time.Time, exceptPlan string) (map[string][]map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.canonical FROM plans p JOIN snapshots sn ON sn.digest = p.snapshot_digest
+WHERE p.created_ms >= ? AND p.digest != ? ORDER BY p.created_ms`, since.UnixMilli(), exceptPlan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]map[string]string{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var snap state.Snapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return nil, err
+		}
+		for _, id := range slices.Sorted(maps.Keys(snap.Provided)) {
+			p := snap.Provided[id]
+			if p.Observed.Exists {
+				continue
+			}
+			for _, c := range p.Changes {
+				key, _ := json.Marshal(c.Change.IDs, json.Deterministic(true))
+				if len(c.Change.IDs) == 0 || seen[p.Provider+string(key)] {
+					continue
+				}
+				seen[p.Provider+string(key)] = true
+				out[p.Provider] = append(out[p.Provider], c.Change.IDs)
+			}
+		}
+	}
+	return out, rows.Err()
 }

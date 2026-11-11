@@ -179,6 +179,10 @@ type Resource struct {
 // resources it created that are no longer declared (Owned), so that Mamela keeps them.
 type ObserveParams struct {
 	Resources []Resource `json:"resources"`
+	// Claimed are the IDs that other plans, made but maybe not applied yet, are to create through
+	// this provider (a VMID): a provider that chooses IDs treats them as taken, so that plans made
+	// one after another and applied together do not choose the same ones.
+	Claimed []map[string]string `json:"claimed,omitempty"`
 }
 
 // Observed is the real state of one resource.

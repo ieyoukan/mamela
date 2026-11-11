@@ -390,9 +390,14 @@ func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) 
 // Observe asks the provider for the real state. It fails if the provider asked for anything but
 // a declared read.
 func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([]protocol.Observed, []Request, error) {
+	return s.ObserveClaimed(ctx, resources, nil)
+}
+
+// ObserveClaimed observes, telling the provider the IDs other plans are to create (taken).
+func (s *Session) ObserveClaimed(ctx context.Context, resources []protocol.Resource, claimed []map[string]string) ([]protocol.Observed, []Request, error) {
 	g := s.gate(phaseObserve, s.manifest.ObserveCalls, nil)
 	var out protocol.ObserveResult
-	err := s.call(ctx, g, protocol.MethodObserve, protocol.ObserveParams{Resources: resources}, &out)
+	err := s.call(ctx, g, protocol.MethodObserve, protocol.ObserveParams{Resources: resources, Claimed: claimed}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return nil, g.record, err
 	}

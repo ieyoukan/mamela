@@ -19,6 +19,7 @@ import (
 
 // Runtime is the running providers of one plan or apply.
 type Runtime struct {
+	claims   map[string][]map[string]string // IDs other plans are to create, by provider
 	sessions map[string]*host.Session
 	programs []store.Program
 	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
@@ -104,6 +105,13 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 type Creations interface {
 	Creations(ctx context.Context, provider, resource string) ([]map[string]string, error)
 	RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error
+}
+
+// SetClaims sets, by provider, the IDs other plans are to create: observing treats them as taken.
+func (rt *Runtime) SetClaims(c map[string][]map[string]string) {
+	if rt != nil {
+		rt.claims = c
+	}
 }
 
 // SetCreations sets the record that vouches for providers' claims of ownership (required before
@@ -298,7 +306,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				declared = append(declared, resource(r))
 			}
 		}
-		observed, _, err := s.Observe(ctx, declared)
+		var claimed []map[string]string
+		if rt.claims != nil {
+			claimed = rt.claims[name]
+		}
+		observed, _, err := s.ObserveClaimed(ctx, declared, claimed)
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 const homelab = `{"resources":[{"kind":"TestVM","name":"app-server","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v2"}`
@@ -374,5 +375,45 @@ func TestExplicitOperationsAndForgetting(t *testing.T) {
 	}
 	if again, _ := st.NodeNumber(ctx, "web"); again != n {
 		t.Fatalf("web made again got %d, not its number %d", again, n)
+	}
+}
+
+// The IDs other plans are to create are claimed: the creates (changes of resources that did not
+// exist) of the plans made since a time, except the plan being applied.
+func TestClaims(t *testing.T) {
+	st, clock, _ := open(t)
+	ctx := context.Background()
+	g := graphFixture(t)
+	save := func(provided map[string]state.Provided) string {
+		snap := state.Empty(clock.Now())
+		snap.Provided = provided
+		p := plan.Build(g, snap, policy.Default)
+		if err := st.SavePlan(ctx, g, snap, policy.Default, p); err != nil {
+			t.Fatal(err)
+		}
+		return p.Digest
+	}
+	create := func(vmid string) state.Provided {
+		return state.Provided{Provider: "proxmox", Kind: "ProxmoxVM", Name: "vm" + vmid, Declared: true,
+			Changes: []state.ProvidedChange{{Change: protocol.Change{Op: "create-vm", IDs: map[string]string{"node": "pve1", "vmid": vmid}}}}}
+	}
+	old := save(map[string]state.Provided{"ProxmoxVM a": create("7000")})
+	clock.Advance(3 * time.Hour)
+	since := clock.Now().Add(-2 * time.Hour)
+	existing := create("7009")
+	existing.Observed.Exists = true // a change of what exists creates nothing
+	mine := save(map[string]state.Provided{"ProxmoxVM b": create("7001"), "ProxmoxVM c": existing})
+	clock.Advance(time.Minute)
+	other := save(map[string]state.Provided{"ProxmoxVM d": create("7002")})
+	_ = old
+	got, err := st.Claims(ctx, since, "")
+	if err != nil || len(got["proxmox"]) != 2 || got["proxmox"][0]["vmid"] != "7001" || got["proxmox"][1]["vmid"] != "7002" {
+		t.Fatalf("claims of the recent plans: %v %v", got, err)
+	}
+	if got, _ := st.Claims(ctx, since, mine); len(got["proxmox"]) != 1 || got["proxmox"][0]["vmid"] != "7002" {
+		t.Fatalf("claims except the plan being applied: %v", got)
+	}
+	if got, _ := st.Claims(ctx, since, other); len(got["proxmox"]) != 1 || got["proxmox"][0]["vmid"] != "7001" {
+		t.Fatalf("claims except the other: %v", got)
 	}
 }

@@ -86,6 +86,12 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		defer rt.Close()
 		rt.SetCreations(st)
+		// What the other plans of the last hour are to create is taken (not this plan's own).
+		claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), p.Digest)
+		if err != nil {
+			return report(stderr, err)
+		}
+		rt.SetClaims(claims)
 		made := &artifacts{Cache: *imageCache, Site: site, Nodes: st}
 		if site != nil && site.ControlPlane.Enabled() {
 			keys, err := site.SSHPublicKeys()

@@ -22,6 +22,10 @@ import (
 
 const defaultDB = ".mamela/state.db"
 
+// claimWindow is how long a plan's creates are taken for other plans: as long as it can be
+// approved and its approval used (an approval lasts an hour from when it is given).
+const claimWindow = 2 * time.Hour
+
 // wallClock is the only place the CLI reads the current time; planning itself never does.
 var wallClock = func() time.Time { return time.Now().UTC() }
 
@@ -97,6 +101,13 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	rt.SetCreations(st)
 	defer rt.Close()
+	// What the other plans of the last hour are to create is taken: plans made one after another
+	// and applied together do not choose the same IDs (a VMID).
+	claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), "")
+	if err != nil {
+		return report(stderr, err)
+	}
+	rt.SetClaims(claims)
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
 	}
