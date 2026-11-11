@@ -267,6 +267,9 @@ type Change struct {
 // node number): the host fills them in when it makes the artifact ready, and the provider sends
 // them filled. ".base64" (its content) the provider sends as is, and the host fills it in.
 type Approved struct {
+	// API is which of the provider's APIs (Manifest.APIs) the request goes to; empty for a
+	// provider with one.
+	API    string              `json:"api,omitempty"`
 	Method string              `json:"method"`
 	Path   string              `json:"path"` // the call's template
 	Params map[string][]string `json:"params,omitempty"`
@@ -375,6 +378,8 @@ type LookupResult struct {
 // HostRequest is an API request the provider asks the host to send. The host adds the base URL
 // and the credentials; the provider never sees either.
 type HostRequest struct {
+	// API is which of the provider's APIs the request goes to (Manifest.APIs); empty for one.
+	API    string              `json:"api,omitempty"`
 	Method string              `json:"method"`
 	Path   string              `json:"path"`
 	Query  map[string][]string `json:"query,omitempty"`

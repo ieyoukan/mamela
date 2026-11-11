@@ -53,7 +53,7 @@ func NewPermit(m Manifest, c Change, operationID, planDigest, providersDigest, e
 		return Permit{}, err
 	}
 	for _, a := range c.Requests {
-		call, _, ok := FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		call, _, ok := FindCall(o.Calls, a.API, a.Method, a.Path, a.Params, false)
 		if !ok {
 			return Permit{}, fmt.Errorf("request %s %s is not a call of %s %s (or fits more than one)", a.Method, a.Path, c.Kind, c.Op)
 		}

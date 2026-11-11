@@ -2,6 +2,8 @@ package external
 
 import (
 	"io"
+	"maps"
+	"slices"
 
 	"crypto/sha256"
 	"crypto/tls"
@@ -71,6 +73,24 @@ type APIConfig struct {
 	GuardTokenFile string `toml:"guard_token_file"`
 	// Guard is the guard's settings, passed to the provider as they are (no secrets here).
 	Guard map[string]any `toml:"guard"`
+	// APIs are the endpoints of a provider that uses several APIs ([provider.aws.apis.ecs]), by the
+	// names of its manifest (ADR 0007). Each takes what it does not set (auth, profile, region,
+	// credentials, guard credentials) from the provider's section, which then has no api_url.
+	APIs map[string]APIConfig `toml:"apis"`
+}
+
+// inherit fills what an API's section leaves unset from the provider's section.
+func (a APIConfig) inherit(sub APIConfig) APIConfig {
+	for _, f := range []struct{ to, from *string }{
+		{&sub.Auth, &a.Auth}, {&sub.TokenID, &a.TokenID}, {&sub.TokenFile, &a.TokenFile}, {&sub.Profile, &a.Profile},
+		{&sub.Region, &a.Region}, {&sub.Service, &a.Service}, {&sub.TLSFingerprint, &a.TLSFingerprint},
+		{&sub.GuardTokenID, &a.GuardTokenID}, {&sub.GuardTokenFile, &a.GuardTokenFile},
+	} {
+		if *f.to == "" {
+			*f.to = *f.from
+		}
+	}
+	return sub
 }
 
 // LoadConfig reads the configuration. A missing file configures nothing.
@@ -91,40 +111,105 @@ func LoadConfig(path string) (Config, error) {
 		return c, fmt.Errorf("%s: unknown keys %v", path, un)
 	}
 	for name, a := range c.Provider {
-		if err := host.CheckBase(a.APIURL); err != nil {
-			return c, fmt.Errorf("%s: provider %s: %w", path, name, err)
-		}
-		switch {
-		case a.Auth != "" && a.Auth != "bearer" && a.Auth != "proxmox" && a.Auth != "aws-sigv4":
-			return c, fmt.Errorf("%s: provider %s: auth %q (bearer, proxmox or aws-sigv4)", path, name, a.Auth)
-		case a.Auth == "proxmox" && (a.TokenID == "" || a.TokenFile == ""):
-			return c, fmt.Errorf("%s: provider %s: auth proxmox needs token_id and token_file", path, name)
-		case a.Auth == "aws-sigv4" && ((a.TokenID == "" || a.TokenFile == "") == (a.Profile == "") || a.Region == "" || a.Service == ""):
-			return c, fmt.Errorf("%s: provider %s: auth aws-sigv4 needs region, service, and either profile or token_id (the access key ID) and token_file (the secret)", path, name)
-		case a.Auth != "aws-sigv4" && a.Profile != "":
-			return c, fmt.Errorf("%s: provider %s: profile is for auth aws-sigv4", path, name)
-		case a.Auth != "aws-sigv4" && (a.Region != "" || a.Service != ""):
-			return c, fmt.Errorf("%s: provider %s: region and service are for auth aws-sigv4", path, name)
-		case a.GuardTokenID != "" && a.GuardTokenFile == "":
-			return c, fmt.Errorf("%s: provider %s: guard_token_id without guard_token_file", path, name)
-		}
-		if a.TLSFingerprint != "" {
-			if _, err := fingerprint(a.TLSFingerprint); err != nil {
+		if len(a.APIs) == 0 {
+			if err := checkAPI(a); err != nil {
 				return c, fmt.Errorf("%s: provider %s: %w", path, name, err)
+			}
+			continue
+		}
+		if a.APIURL != "" || a.Catalog != "" {
+			return c, fmt.Errorf("%s: provider %s: with apis, api_url and catalog belong to each api's section", path, name)
+		}
+		for api, sub := range a.APIs {
+			if len(sub.APIs) > 0 || sub.Guard != nil {
+				return c, fmt.Errorf("%s: provider %s api %s: apis and guard belong to the provider's section", path, name, api)
+			}
+			if err := checkAPI(a.inherit(sub)); err != nil {
+				return c, fmt.Errorf("%s: provider %s api %s: %w", path, name, api, err)
 			}
 		}
 	}
 	return c, nil
 }
 
-// api returns the upstream and the catalog of a provider, and the endpoint's identity (a digest of
-// the URL, the credential and the catalog); nil upstream when it is not configured.
+// checkAPI checks one API's settings.
+func checkAPI(a APIConfig) error {
+	{
+		if err := host.CheckBase(a.APIURL); err != nil {
+			return err
+		}
+		switch {
+		case a.Auth != "" && a.Auth != "bearer" && a.Auth != "proxmox" && a.Auth != "aws-sigv4":
+			return fmt.Errorf("auth %q (bearer, proxmox or aws-sigv4)", a.Auth)
+		case a.Auth == "proxmox" && (a.TokenID == "" || a.TokenFile == ""):
+			return errors.New("auth proxmox needs token_id and token_file")
+		case a.Auth == "aws-sigv4" && ((a.TokenID == "" || a.TokenFile == "") == (a.Profile == "") || a.Region == "" || a.Service == ""):
+			return errors.New("auth aws-sigv4 needs region, service, and either profile or token_id (the access key ID) and token_file (the secret)")
+		case a.Auth != "aws-sigv4" && a.Profile != "":
+			return errors.New("profile is for auth aws-sigv4")
+		case a.Auth != "aws-sigv4" && (a.Region != "" || a.Service != ""):
+			return errors.New("region and service are for auth aws-sigv4")
+		case a.GuardTokenID != "" && a.GuardTokenFile == "":
+			return errors.New("guard_token_id without guard_token_file")
+		}
+		if a.TLSFingerprint != "" {
+			if _, err := fingerprint(a.TLSFingerprint); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// api returns the upstream and the catalog of a provider with one API, and the endpoint's
+// identity (a digest of the URL, the credential and the catalog); nil upstream when it is not
+// configured.
 func (c Config) api(name string) (host.Upstream, protocol.Catalog, string, error) {
 	a, ok := c.Provider[name]
 	if !ok {
 		return nil, protocol.Catalog{}, "", nil
 	}
 	return c.apiWith(name, a)
+}
+
+// apis returns a provider's endpoints, by API name ("" for a provider with one API), with their
+// guard upstreams, and the identity of them all.
+func (c Config) apis(name string) (map[string]host.API, string, error) {
+	a, ok := c.Provider[name]
+	if !ok {
+		return nil, "", nil
+	}
+	one := func(cfg APIConfig) (host.API, string, error) {
+		up, cat, id, err := c.apiWith(name, cfg)
+		if err != nil {
+			return host.API{}, "", err
+		}
+		ep := host.API{Catalog: cat, Upstream: up}
+		if cfg.GuardTokenFile != "" {
+			g := cfg
+			g.TokenID, g.TokenFile, g.Profile = cfg.GuardTokenID, cfg.GuardTokenFile, ""
+			if ep.GuardUpstream, _, _, err = c.apiWith(name, g); err != nil {
+				return host.API{}, "", err
+			}
+		}
+		return ep, id, nil
+	}
+	if len(a.APIs) == 0 {
+		ep, id, err := one(a)
+		return map[string]host.API{"": ep}, id, err
+	}
+	out := map[string]host.API{}
+	var ids []string
+	for _, api := range slices.Sorted(maps.Keys(a.APIs)) {
+		ep, id, err := one(a.inherit(a.APIs[api]))
+		if err != nil {
+			return nil, "", fmt.Errorf("api %s: %w", api, err)
+		}
+		out[api] = ep
+		ids = append(ids, api+"="+id)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(ids, "\n")))
+	return out, "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 // ScriptInput is what a provider's scripts are written from (protocol.ScriptParams): the guard's

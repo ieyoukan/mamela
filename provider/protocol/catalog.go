@@ -216,6 +216,8 @@ func (c Catalog) Lookup(method, path string) (Entry, bool) {
 
 // LookupCall returns the entry of a declared call: the same method, path and fixed parameters.
 func (c Catalog) LookupCall(call Call) (Entry, bool) {
+	call.API = "" // a catalog is one API's
+
 	for _, e := range c.Entries {
 		if (Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed}).Same(call) {
 			return e, true
@@ -231,7 +233,7 @@ func (c Catalog) LookupApproved(a Approved) (Entry, bool) {
 	for _, e := range c.Entries {
 		calls = append(calls, Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
 	}
-	call, _, ok := FindCall(calls, a.Method, a.Path, a.Params, false)
+	call, _, ok := FindCall(calls, "", a.Method, a.Path, a.Params, false)
 	if !ok {
 		return Entry{}, false
 	}
@@ -262,6 +264,17 @@ func (c Catalog) Verify(o Operation) Verified {
 		}
 	}
 	return v
+}
+
+// SortEffects puts effects in the order of Effects (read to lose-data).
+func SortEffects(es []Effect) []Effect {
+	var out []Effect
+	for _, e := range []Effect{EffectRead, EffectCreate, EffectChange, EffectRestart, EffectLoseData} {
+		if containsEffect(es, e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // MayLoseData reports whether a classified call may destroy data. Policy denies such an

@@ -67,9 +67,14 @@ type gate struct {
 	phase    phase
 	calls    []protocol.Call
 	permit   *protocol.Permit
-	catalog  protocol.Catalog
-	upstream Upstream
-	now      func() time.Time
+	// catalog and upstream serve a provider with one API; apis (when set) serve each API by name,
+	// with defaultAPI the name of a request that names none (ADR 0007).
+	catalog    protocol.Catalog
+	upstream   Upstream
+	apis       map[string]API
+	defaultAPI string
+	guard      bool // the guard's reads go to each API's GuardUpstream, when it has one
+	now        func() time.Time
 	record   []Request
 	// used marks the permit's approved requests already sent (each is sent at most once).
 	used []bool
@@ -125,6 +130,37 @@ func (g *gate) artifact(ctx context.Context, id string) (protocol.ArtifactInfo, 
 	return p.Info, nil
 }
 
+// catalogFor is the host's catalog of an API, when it is for that API.
+func (g *gate) catalogFor(api string) protocol.Catalog {
+	if g.apis == nil {
+		return g.catalog
+	}
+	name := api
+	if name == "" {
+		name = g.defaultAPI
+	}
+	if ep := g.apis[name]; ep.Catalog.API != "" && ep.Catalog.API == name {
+		return ep.Catalog
+	}
+	return protocol.Catalog{}
+}
+
+// upstreamFor sends the requests to an API (nil: not configured).
+func (g *gate) upstreamFor(api string) Upstream {
+	if g.apis == nil {
+		return g.upstream
+	}
+	name := api
+	if name == "" {
+		name = g.defaultAPI
+	}
+	ep := g.apis[name]
+	if g.guard && ep.GuardUpstream != nil {
+		return ep.GuardUpstream
+	}
+	return ep.Upstream
+}
+
 // send checks a request, sends it if allowed, records it and returns the answer for the provider.
 func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostResponse, *protocol.Error) {
 	rec := Request{Method: r.Method, Path: r.Path, Change: true}
@@ -148,7 +184,8 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 			return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: err.Error()}
 		}
 	}
-	if g.upstream == nil {
+	upstream := g.upstreamFor(r.API)
+	if upstream == nil {
 		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider (its section in mamela.providers.toml)"
 		g.record = append(g.record, rec)
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: rec.Reason}
@@ -159,7 +196,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	var statusText string
 	ctx = context.WithValue(ctx, reasonSink{}, &statusText)
 	if r.Upload != "" {
-		up, ok := g.upstream.(Uploader)
+		up, ok := upstream.(Uploader)
 		p := g.ready[r.Upload]
 		if !ok {
 			err = fmt.Errorf("%w: this API connection cannot upload files", ErrNotSent)
@@ -167,7 +204,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 			status, body, err = up.Upload(ctx, r, File{Field: call.File, Order: call.Form, Name: p.Info.Name, Size: p.Info.Size, Open: p.Open})
 		}
 	} else {
-		status, body, err = g.upstream.Do(ctx, r)
+		status, body, err = upstream.Do(ctx, r)
 	}
 	rec.Status = status
 	switch {
@@ -226,7 +263,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 			all[k] = append(all[k], v...)
 		}
 	}
-	call, ids, found := protocol.FindCall(g.calls, r.Method, r.Path, all, true)
+	call, ids, found := protocol.FindCall(g.calls, r.API, r.Method, r.Path, all, true)
 	if !found {
 		return -1, protocol.Call{}, fmt.Sprintf("%s %s is not a declared call of this %s", r.Method, r.Path, g.what())
 	}
@@ -234,7 +271,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	if len(call.Fixed) > 0 {
 		rec.Call += " " + fixedText(call.Fixed)
 	}
-	entry, classified := g.catalog.LookupCall(call)
+	entry, classified := g.catalogFor(call.API).LookupCall(protocol.Call{Method: call.Method, Path: call.Path, Fixed: call.Fixed})
 	if classified {
 		rec.Effect, rec.Change = entry.Effect, entry.Effect != protocol.EffectRead
 	}
@@ -362,7 +399,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	// the facts of the ready artifacts filled in), and the same upload.
 	var near []string
 	for i, a := range p.Requests {
-		if c, _, ok := protocol.FindCall(p.Calls, a.Method, a.Path, a.Params, false); !ok || !c.Same(call) {
+		if c, _, ok := protocol.FindCall(p.Calls, a.API, a.Method, a.Path, a.Params, false); !ok || !c.Same(call) {
 			continue
 		}
 		if g.used[i] {

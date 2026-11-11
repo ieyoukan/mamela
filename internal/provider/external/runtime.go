@@ -51,37 +51,32 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: a provider from a Pome must be WASM", p.Provider)
 		}
-		up, catalog, endpoint, err := cfg.api(p.Provider)
+		apis, endpoint, err := cfg.apis(p.Provider)
 		if err != nil {
 			rt.Close()
-			return nil, err
+			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
-		guardUp, settings, err := cfg.guard(p.Provider)
+		_, settings, err := cfg.guard(p.Provider)
 		if err != nil {
 			rt.Close()
 			return nil, err
 		}
 		rt.guardSettings[p.Provider] = settings
-		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, Catalog: catalog, Upstream: up, GuardUpstream: guardUp})
+		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, APIs: apis})
 		if err != nil {
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
 		m := s.Manifest()
-		switch {
-		case m.Provider != p.Provider || m.Version != p.Version:
+		if m.Provider != p.Provider || m.Version != p.Version {
 			s.Close()
 			rt.Close()
 			return nil, fmt.Errorf("the program of %s %s describes itself as %s %s", p.Provider, p.Version, m.Provider, m.Version)
-		case up != nil && catalog.API == "":
+		}
+		if err := checkEndpoints(m, apis); err != nil {
 			s.Close()
 			rt.Close()
-			return nil, fmt.Errorf("provider %s: its API %s has no catalog, so Mamela cannot tell its reads from its changes and allows neither; "+
-				"set catalog in the provider's section of mamela.providers.toml", p.Provider, m.API)
-		case catalog.API != "" && catalog.API != m.API:
-			s.Close()
-			rt.Close()
-			return nil, fmt.Errorf("provider %s: the configured catalog is for API %q, the provider talks to %q", p.Provider, catalog.API, m.API)
+			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
 		for _, k := range m.Kinds {
 			if graph.Builtin(k.Kind) {
@@ -436,7 +431,7 @@ func (rt *Runtime) verify(s *host.Session, c protocol.Change) protocol.Verified 
 	o, _ := s.Manifest().Operation(c.Kind, c.Op)
 	var calls []protocol.Call
 	for _, a := range c.Requests {
-		call, _, ok := protocol.FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		call, _, ok := protocol.FindCall(o.Calls, a.API, a.Method, a.Path, a.Params, false)
 		if ok && !slices.ContainsFunc(calls, call.Same) {
 			calls = append(calls, call)
 		}
@@ -546,4 +541,33 @@ func changed(r host.Result) string {
 		return "no change took effect"
 	}
 	return "sent: " + strings.Join(out, ", ")
+}
+
+// checkEndpoints: each API the provider talks to that is configured has a catalog for that API
+// (without one, Mamela cannot tell reads from changes and allows neither), and no API is
+// configured that the provider does not have.
+func checkEndpoints(m protocol.Manifest, apis map[string]host.API) error {
+	names := m.APIs
+	if len(names) == 0 && m.API != "" {
+		names = []string{m.API}
+	}
+	for key, ep := range apis {
+		name := key
+		if key == "" {
+			if len(m.APIs) > 0 {
+				return fmt.Errorf("it talks to several APIs (%v): configure each in [provider.%s.apis.<name>]", m.APIs, m.Provider)
+			}
+			name = m.API
+		}
+		switch {
+		case ep.Upstream != nil && !slices.Contains(names, name):
+			return fmt.Errorf("API %q is configured, and the provider talks to %v", name, names)
+		case ep.Upstream != nil && ep.Catalog.API == "":
+			return fmt.Errorf("its API %s has no catalog, so Mamela cannot tell its reads from its changes and allows neither; "+
+				"set catalog in the provider's section of mamela.providers.toml", name)
+		case ep.Catalog.API != "" && ep.Catalog.API != name:
+			return fmt.Errorf("the configured catalog is for API %q, the provider talks to %q", ep.Catalog.API, name)
+		}
+	}
+	return nil
 }

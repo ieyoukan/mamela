@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,9 @@ type Options struct {
 	// GuardUpstream sends the guard's reads, with the guard's own (read-only) credentials; nil:
 	// Upstream (ADR 0006).
 	GuardUpstream Upstream
+	// APIs are the endpoints of a provider that uses several APIs (Manifest.APIs), by name; for a
+	// provider with one, Catalog, Upstream and GuardUpstream are its endpoint (or APIs[""]).
+	APIs map[string]API
 	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
 	Artifacts ArtifactMaker
 	// Limits bound the measured parameters of every change (the catalog's Measures), by measure:
@@ -53,6 +57,13 @@ type Options struct {
 	// StartTimeout bounds starting the provider and its describe (wasmtime compiles the program
 	// first; default 2 minutes).
 	StartTimeout time.Duration
+}
+
+// API is one API's endpoint on the host: its catalog, and where its requests go.
+type API struct {
+	Catalog       protocol.Catalog
+	Upstream      Upstream
+	GuardUpstream Upstream // nil: Upstream
 }
 
 // Session is one running provider.
@@ -103,6 +114,11 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	}
 	if err := o.Catalog.Check(); err != nil {
 		return nil, err
+	}
+	for _, a := range o.APIs {
+		if err := a.Catalog.Check(); err != nil {
+			return nil, err
+		}
 	}
 	// Run exactly what was inspected: a private copy of the inspected bytes, not the path, which
 	// may have been replaced since.
@@ -255,9 +271,8 @@ func (s *Session) SetLimits(l map[string]int64) { s.o.Limits = l }
 
 // CheckLimits checks a change's requests against the limits, before anyone approves it.
 func (s *Session) CheckLimits(c protocol.Change) error {
-	cat := s.catalog()
 	for _, a := range c.Requests {
-		if e, ok := cat.LookupApproved(a); ok {
+		if e, ok := s.catalogFor(a.API).LookupApproved(a); ok {
 			if err := e.CheckLimits(a.Params, s.o.Limits); err != nil {
 				return err
 			}
@@ -272,10 +287,38 @@ func (s *Session) Executable() Executable { return s.exe }
 // Stderr is what the provider wrote to standard error (bounded).
 func (s *Session) Stderr() string { return s.stderr.String() }
 
-// catalog is the host's catalog, when it is for the provider's API.
-func (s *Session) catalog() protocol.Catalog {
-	if s.o.Catalog.API != "" && s.o.Catalog.API == s.manifest.API {
-		return s.o.Catalog
+// apis are the endpoints of the provider's APIs, by name (ADR 0007).
+func (s *Session) apis() map[string]API {
+	out := map[string]API{}
+	if len(s.manifest.APIs) > 0 {
+		for _, name := range s.manifest.APIs {
+			out[name] = s.o.APIs[name]
+		}
+		return out
+	}
+	if s.manifest.API == "" {
+		return out
+	}
+	ep, ok := s.o.APIs[s.manifest.API]
+	if !ok {
+		ep, ok = s.o.APIs[""]
+	}
+	if !ok {
+		ep = API{Catalog: s.o.Catalog, Upstream: s.o.Upstream, GuardUpstream: s.o.GuardUpstream}
+	}
+	out[s.manifest.API] = ep
+	return out
+}
+
+// catalogFor is the host's catalog of one of the provider's APIs ("" for its one API), when it
+// is for that API.
+func (s *Session) catalogFor(api string) protocol.Catalog {
+	name := api
+	if name == "" {
+		name = s.manifest.API
+	}
+	if ep := s.apis()[name]; ep.Catalog.API != "" && ep.Catalog.API == name {
+		return ep.Catalog
 	}
 	return protocol.Catalog{}
 }
@@ -285,10 +328,9 @@ func (s *Session) catalog() protocol.Catalog {
 // and the change must be based on that version. Without that, a change made to the object after
 // approval would be overwritten.
 func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
-	cat := s.catalog()
 	creates := false // an earlier request of the change creates the object (ADR 0004)
 	for _, a := range c.Requests {
-		e, ok := cat.LookupApproved(a)
+		e, ok := s.catalogFor(a.API).LookupApproved(a)
 		if ok && e.Effect == protocol.EffectCreate {
 			creates = true
 		}
@@ -315,11 +357,30 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 	return nil
 }
 
-// Verify classifies an operation's calls with the host's catalog.
-func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
+// Verify classifies an operation's calls with the host's catalogs (each call with its API's).
+func (s *Session) Verify(o protocol.Operation) protocol.Verified {
+	byAPI := map[string][]protocol.Call{}
+	for _, c := range o.Calls {
+		byAPI[c.API] = append(byAPI[c.API], c)
+	}
+	var out protocol.Verified
+	seen := map[protocol.Effect]bool{}
+	for _, api := range slices.Sorted(maps.Keys(byAPI)) {
+		v := s.catalogFor(api).Verify(protocol.Operation{Op: o.Op, Support: o.Support, Calls: byAPI[api]})
+		for _, e := range v.Effects {
+			if !seen[e] {
+				seen[e] = true
+				out.Effects = append(out.Effects, e)
+			}
+		}
+		out.Unclassified = append(out.Unclassified, v.Unclassified...)
+	}
+	out.Effects = protocol.SortEffects(out.Effects)
+	return out
+}
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
+	g := &gate{phase: p, calls: calls, permit: permit, apis: s.apis(), defaultAPI: s.manifest.API, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
 	if permit != nil {
 		g.used = make([]bool, len(permit.Requests))
 	}
@@ -395,9 +456,7 @@ func (s *Session) Guard(ctx context.Context, p protocol.GuardParams) (protocol.G
 		return protocol.GuardResult{}, nil, nil
 	}
 	g := s.gate(phaseGuard, s.manifest.Guard.Calls, nil)
-	if s.o.GuardUpstream != nil {
-		g.upstream = s.o.GuardUpstream
-	}
+	g.guard = true
 	var out protocol.GuardResult
 	err := s.call(ctx, g, protocol.MethodGuard, p, &out)
 	if err := firstRefusal(g, err); err != nil {

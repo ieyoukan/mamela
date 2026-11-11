@@ -18,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/provider/host"
 	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 func wasm(t *testing.T, pkg string, flags ...string) []byte {
@@ -370,6 +371,44 @@ func TestSigV4Profile(t *testing.T) {
 		os.WriteFile(p, []byte(bad), 0o600)
 		if _, err := LoadConfig(p); err == nil {
 			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}
+
+// A provider with several APIs is configured in one section per API, each taking the provider's
+// auth, profile and region; with apis, the provider's own section has no api_url.
+func TestSeveralAPIsConfig(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "credentials")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", file)
+	os.WriteFile(file, []byte("[role]\naws_access_key_id = ASIA\naws_secret_access_key = s\naws_session_token = t\n"), 0o600)
+	load := func(text string) (Config, error) {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(text), 0o600)
+		return LoadConfig(p)
+	}
+	good := "[provider.aws]\nauth = \"aws-sigv4\"\nprofile = \"role\"\nregion = \"ap-northeast-1\"\n\n" +
+		"[provider.aws.apis.ec2]\napi_url = \"https://ec2.ap-northeast-1.amazonaws.com\"\nservice = \"ec2\"\ncatalog = \"builtin:ec2\"\n"
+	c, err := load(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apis, id, err := c.apis("aws")
+	if err != nil || apis["ec2"].Upstream == nil || apis["ec2"].Catalog.API != "ec2" || id == "" {
+		t.Fatalf("%+v %q %v", apis, id, err)
+	}
+	if err := checkEndpoints(protocol.Manifest{Provider: "aws", APIs: []string{"ec2", "ecs"}}, apis); err != nil {
+		t.Errorf("an API left unconfigured is not an error (its requests are not sent): %v", err)
+	}
+	if err := checkEndpoints(protocol.Manifest{Provider: "aws", APIs: []string{"ecs"}}, apis); err == nil {
+		t.Error("an API the provider does not have is configured")
+	}
+	for name, bad := range map[string]string{
+		"api_url beside apis": strings.Replace(good, "region = \"ap-northeast-1\"\n", "region = \"ap-northeast-1\"\napi_url = \"https://x\"\n", 1),
+		"no service":          strings.Replace(good, "service = \"ec2\"\n", "", 1),
+		"guard in an api":     good + "[provider.aws.apis.ec2.guard]\nx = 1\n",
+	} {
+		if _, err := load(bad); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }

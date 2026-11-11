@@ -688,3 +688,23 @@ func TestJSONCalls(t *testing.T) {
 		t.Fatalf("sent %v %q", got.Header, body)
 	}
 }
+
+// A provider with several APIs (ADR 0007): each request is classified by its own API's catalog and
+// sent to that API's endpoint; a call of an API the provider does not declare is not a call.
+func TestSeveralAPIs(t *testing.T) {
+	catA := protocol.Catalog{API: "a", Entries: []protocol.Entry{{Method: "GET", Path: "/x", Effect: protocol.EffectRead}}}
+	catB := protocol.Catalog{API: "b", Entries: []protocol.Entry{{Method: "GET", Path: "/x", Effect: protocol.EffectChange}}}
+	upA, upB := &stub{}, &stub{}
+	calls := []protocol.Call{{API: "a", Method: "GET", Path: "/x"}, {API: "b", Method: "GET", Path: "/x"}}
+	g := gate{phase: phaseObserve, calls: calls, apis: map[string]API{"a": {Catalog: catA, Upstream: upA}, "b": {Catalog: catB, Upstream: upB}}, now: testNow}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "a", Method: "GET", Path: "/x"}); perr != nil || upA.sent != 1 || upB.sent != 0 {
+		t.Fatalf("a read of a: %v (sent a %d, b %d)", perr, upA.sent, upB.sent)
+	}
+	// The same method and path on b is a change there: not during observe.
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "b", Method: "GET", Path: "/x"}); perr == nil || !strings.Contains(perr.Message, "only reads") || upB.sent != 0 {
+		t.Fatalf("a change of b during observe: %v", perr)
+	}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "c", Method: "GET", Path: "/x"}); perr == nil || !strings.Contains(perr.Message, "not a declared call") {
+		t.Fatalf("an undeclared API: %v", perr)
+	}
+}

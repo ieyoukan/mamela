@@ -16,6 +16,7 @@ package protocol
 import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -41,6 +42,10 @@ type Manifest struct {
 	// a provider that runs as a separate program. The host holds the API's catalog and
 	// credentials. Empty for providers built into Mamela.
 	API string `json:"api,omitempty"`
+	// APIs name the APIs of a provider that uses several (AWS: "ec2", "ecs", "logs", "iam"), each
+	// with its own endpoint, credentials and catalog on the host; then each call names its API
+	// (ADR 0007). A provider sets API or APIs, not both.
+	APIs []string `json:"apis,omitempty"`
 	// Observe is what every observation needs (each plan and each apply observes).
 	Observe []Need `json:"observe,omitempty"`
 	// ObserveCalls are the API calls an observation sends (reads only).
@@ -118,6 +123,9 @@ type Call struct {
 	// (ADR 0005), or an AWS JSON API's "X-Amz-Target" header (ADR 0007). Each is also one of
 	// Query, Form or Header, where it is sent.
 	Fixed map[string]string `json:"fixed,omitempty"`
+	// API is which of the provider's APIs the call goes to, for a provider with several (APIs);
+	// empty for a provider with one.
+	API string `json:"api,omitempty"`
 	// Header are parameters sent as HTTP headers ("X-Amz-Target", ADR 0007).
 	Header []string `json:"header,omitempty"`
 	// JSON are the members of a JSON object the call sends as its body (an AWS JSON API, ADR
@@ -125,10 +133,46 @@ type Call struct {
 	JSON []string `json:"json,omitempty"`
 }
 
-// Same reports whether two calls are the same call: method, path and fixed parameters.
+// Same reports whether two calls are the same call: API, method, path and fixed parameters.
 func (c Call) Same(o Call) bool {
-	return c.Method == o.Method && c.Path == o.Path && maps.Equal(c.Fixed, o.Fixed)
+	return c.API == o.API && c.Method == o.Method && c.Path == o.Path && maps.Equal(c.Fixed, o.Fixed)
 }
+
+// checkAPIs: a provider has one API (API) or several (APIs), and each call names one of them
+// exactly when there are several.
+func (m Manifest) checkAPIs() error {
+	if m.API != "" && len(m.APIs) > 0 {
+		return errors.New("api and apis are exclusive")
+	}
+	seen := map[string]bool{}
+	for _, a := range m.APIs {
+		if !validName(a) || seen[a] {
+			return fmt.Errorf("api %q is invalid or named twice", a)
+		}
+		seen[a] = true
+	}
+	calls := slices.Clone(m.ObserveCalls)
+	if m.Guard != nil {
+		calls = append(calls, m.Guard.Calls...)
+	}
+	for _, k := range m.Kinds {
+		for _, o := range k.Operations {
+			calls = append(calls, o.Calls...)
+		}
+	}
+	for _, c := range calls {
+		switch {
+		case len(m.APIs) > 0 && !seen[c.API]:
+			return fmt.Errorf("call %s %s names api %q, not one of %v", c.Method, c.Path, c.API, m.APIs)
+		case len(m.APIs) == 0 && c.API != "":
+			return fmt.Errorf("call %s %s names api %q, and the provider has one api", c.Method, c.Path, c.API)
+		}
+	}
+	return nil
+}
+
+// HasAPIs reports whether the provider uses any API (one, or several).
+func (m Manifest) HasAPIs() bool { return m.API != "" || len(m.APIs) > 0 }
 
 // Takes reports whether params (one value each) carry every fixed parameter of the call.
 func (c Call) Takes(params map[string][]string) bool {
@@ -143,12 +187,12 @@ func (c Call) Takes(params map[string][]string) bool {
 // FindCall is the declared call a request on method and a path template (or a concrete path,
 // when match is set) with params is: the one whose method, path and fixed parameters fit. ok is
 // false when none does, or more than one (an ambiguous declaration).
-func FindCall(calls []Call, method, path string, params map[string][]string, concrete bool) (Call, map[string]string, bool) {
+func FindCall(calls []Call, api, method, path string, params map[string][]string, concrete bool) (Call, map[string]string, bool) {
 	var found Call
 	var ids map[string]string
 	n := 0
 	for _, c := range calls {
-		if c.Method != method || !c.Takes(params) {
+		if c.API != api || c.Method != method || !c.Takes(params) {
 			continue
 		}
 		var m map[string]string
@@ -304,6 +348,9 @@ type Target struct {
 
 // Check verifies a manifest's own consistency.
 func (m Manifest) Check() error {
+	if err := m.checkAPIs(); err != nil {
+		return fmt.Errorf("manifest %s: %w", m.Provider, err)
+	}
 	if m.Schema != Schema || m.Provider == "" || m.Version == "" {
 		return fmt.Errorf("manifest %q: schema %q, provider and version are required", m.Provider, Schema)
 	}
@@ -316,7 +363,7 @@ func (m Manifest) Check() error {
 		return fmt.Errorf("manifest %s: observe: %w", m.Provider, err)
 	}
 	if m.Guard != nil {
-		if m.API == "" || len(m.Guard.Calls) == 0 {
+		if !m.HasAPIs() || len(m.Guard.Calls) == 0 {
 			return fmt.Errorf("manifest %s: a guard reads through an api, with calls", m.Provider)
 		}
 		if err := checkCalls(m.Guard.Calls); err != nil {
@@ -335,7 +382,7 @@ func (m Manifest) Check() error {
 		}
 		seenScripts[sc.Name] = true
 	}
-	if len(m.ObserveCalls) > 0 && m.API == "" {
+	if len(m.ObserveCalls) > 0 && !m.HasAPIs() {
 		return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 	}
 	for _, k := range m.Kinds {
@@ -363,7 +410,7 @@ func (m Manifest) Check() error {
 			if err := checkCalls(o.Calls); err != nil {
 				return fmt.Errorf("manifest %s: %s %s: %w", m.Provider, k.Kind, o.Op, err)
 			}
-			if len(o.Calls) > 0 && m.API == "" {
+			if len(o.Calls) > 0 && !m.HasAPIs() {
 				return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 			}
 			for _, n := range o.Needs {
@@ -397,11 +444,11 @@ func checkCalls(calls []Call) error {
 		if err := checkFixed(c.Method, c.Path, c.Fixed, c.In); err != nil {
 			return err
 		}
-		byPath[c.Method+" "+c.Path] = append(byPath[c.Method+" "+c.Path], c)
+		byPath[c.API+" "+c.Method+" "+c.Path] = append(byPath[c.API+" "+c.Method+" "+c.Path], c)
 		if c.File != "" && (!validName(c.File) || c.In(c.File) != "" || c.Method != "POST") {
 			return fmt.Errorf("call %s %s: file %q must be a POST parameter of its own", c.Method, c.Path, c.File)
 		}
-		key := c.Method + " " + c.Path + " " + fixedKey(c.Fixed)
+		key := c.API + " " + c.Method + " " + c.Path + " " + fixedKey(c.Fixed)
 		if seen[key] {
 			return fmt.Errorf("call %s %s %s is declared twice", c.Method, c.Path, fixedKey(c.Fixed))
 		}
