@@ -1,12 +1,12 @@
 # Mamela — アーキテクチャ設計書
 
-> Status: Draft / v0.2 / 2026-11-08。設計の合意事項と未決事項を分けて記載する。
+> Status: Draft / v0.3 / 2026-11-11（ADR 0006 で Proxmox を本体から外した）。設計の合意事項と未決事項を分けて記載する。
 > Mamela は開発初期の構想であり、以下の API・DSL・CLI 例は実装済みを意味しない。
 > Emela の記述は **Emela v0.27.0（2026-11-07）** の README / `spec/` に基づく。
 
 ## 1. 目的
 
-Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したインフラの Desired State を、Go 製 Control Plane と Pull 型 Go Agent が継続的に収束させる IaC ツール。Kubernetes の Reconciliation モデルを Proxmox VM、Linux パッケージ、systemd サービスに拡張する。
+Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したインフラの Desired State を、Go 製 Control Plane と Pull 型 Go Agent が継続的に収束させる IaC ツール。Kubernetes の Reconciliation モデルを、プロバイダーが作るマシン（Proxmox の VM、クラウドのインスタンスなど）、Linux パッケージ、systemd サービスに拡張する。Mamela 本体は特定の基盤を知らない。基盤ごとの知識はプロバイダー（Pome で配る WASM のプログラム）が持つ（ADR 0004、0006）。
 
 最大の目標は **AI が生成した構成でも、制限された権限と決定的な安全ポリシーの下で自動適用できること**。コードの意味や実世界の副作用を完全に予測できるわけではないため、不明な変更は止める。
 
@@ -15,7 +15,7 @@ Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したイン�
 1. **決定論的 (Deterministic)**: 同じ入力からは、いつ・どこで実行しても同じ Resource Graph と同じ Plan が得られる。実世界の実行結果は決定的にできないので、決定性の境界（§3.1）を明示し、その外側は「再観測して判断する」。
 2. **人間に優しい (Human-friendly)**: 何が・なぜ・どう変わるか（変わらないか）を、人が数秒で読めること。止めたときは理由と次の一手を必ず示す（§3.2）。
 3. **安全 (Safe by default)**: 削除・置換・権限拡大は自動許可しない。安全性が不明なら停止。
-4. **動作を IaC で保証する**: 検証環境そのものも宣言的に定義し、受け入れテストを実機 Proxmox 上で再現可能に回す（[検証環境](lab.md)）。
+4. **動作を IaC で保証する**: 検証環境そのものも宣言的に定義し、受け入れテストを実機の基盤の上で、guard を持つプロバイダーを通して再現可能に回す（[検証環境](lab.md)）。
 
 ### 原則
 
@@ -28,9 +28,9 @@ Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したイン�
 
 ## 2. スコープ
 
-MVP: Proxmox VE 上の Ubuntu VM の作成/観測、cloud-init による Agent 配備、Agent の Pull、APT の状態観測と承認済みインストール、systemd サービスの有効化/稼働、差分/承認/履歴、SQLite を用いた単一 Control Plane。Emela → WASM の構成評価経路は最初に PoC を行う。
+MVP: プロバイダー（Proxmox VE など）を通した Ubuntu のマシンの作成/観測、cloud-init による Agent 配備、Agent の Pull、APT の状態観測と承認済みインストール、systemd サービスの有効化/稼働、差分/承認/履歴、SQLite を用いた単一 Control Plane。Emela → WASM の構成評価経路は最初に PoC を行う。
 
-MVP 対象外: 任意コマンド/任意スクリプト、VM/Volume の自動削除、未知の APT ソースの自動追加、無条件アップグレード、既存（Mamela 管理外）VM の取り込み、マルチクラウド、HA Control Plane、無停止や完全ロールバックの保証。
+MVP 対象外: 任意コマンド/任意スクリプト、マシン/Volume の自動削除、未知の APT ソースの自動追加、無条件アップグレード、既存（Mamela 管理外）のマシンの取り込み（プロバイダーが「Mamela が別の形で作ったもの」と認めたものの引き継ぎ `adopt` だけは、明示操作で行える）、マルチクラウド、HA Control Plane、無停止や完全ロールバックの保証。
 
 ## 3. 全体構成
 
@@ -50,17 +50,18 @@ AI / Human / Git
 | Go Control Plane                                          |
 | Parse + Canonicalize + Schema + Ownership + Plan + Policy |
 | SQLite: resources, revisions, observations, operations    |
-| Proxmox reconciler + Agent config/signing + event log     |
+| Provider host (WASM, permit, guard) + reconciler          |
+| Agent config/signing + event log                          |
 +----------------------+------------------------------------+
           |           ^
-   Proxmox API         |  HTTPS Pull / report (mTLS)
-   (pool 限定 Token)   |
+   基盤の API          |  HTTPS Pull / report (mTLS)
+   (境界を限った Token) |
           |            |
-     Ubuntu VM    Go Agent (per VM)
+   Ubuntu マシン   Go Agent (per machine)
      cloud-init   APT / systemd / local observation & policy
 ~~~
 
-**信頼境界:** Emela/WASM は構成グラフを stdout に書くだけで、クラウド API・ネットワーク・ホストファイルにはアクセスできない。これは Emela の型/Effect 検査ではなく、**WASM コンポーネントの import 集合**で構造的に保証する（§9）。Go 側は生成物も信頼せず、型付きスキーマ、権限、計画と状態を検証する。Proxmox 操作は Control Plane、OS 操作は VM 内の Go Agent が実行する。
+**信頼境界:** Emela/WASM は構成グラフを stdout に書くだけで、クラウド API・ネットワーク・ホストファイルにはアクセスできない。これは Emela の型/Effect 検査ではなく、**WASM コンポーネントの import 集合**で構造的に保証する（§9）。Go 側は生成物も信頼せず、型付きスキーマ、権限、計画と状態を検証する。基盤の API への操作は Control Plane が実行する（隔離したプロバイダーが頼む要求を、host が承認した許可の範囲だけ送る）。OS 操作はマシン内の Go Agent が実行する。
 
 ### 3.1 決定性の境界
 
@@ -73,7 +74,7 @@ AI / Human / Git
 | Agent のローカル判断 | 署名済み Revision、ローカル観測、組込み禁止ルール | **決定的** | 同じ Revision と観測から同じ操作列を出す |
 
 - 計画の入力は SQLite に保存し、`mamela plan --replay <plan-id>` で再計算して digest 一致を確認できるようにする（監査と回帰テストのため）。
-- ツールチェーン（Go、emela、wasmtime）と VM イメージは、バージョンと digest を固定する。暗黙の「latest」を使わない。
+- ツールチェーン（Go、emela、wasmtime）とマシンのイメージは、バージョンと digest を固定する。暗黙の「latest」を使わない。
 - CI では同じソースを 2 回評価して Graph digest の一致を確認する。
 
 ### 3.2 人間に優しい UX
@@ -95,9 +96,9 @@ AI / Human / Git
 | Emela → Go の受け渡し | stdout に JSON 1 文書 `mamela-graph/v1`（Emela 側は `x/json`（v0.3.1）、Go 側は `encoding/json/v2`。§9.2） |
 | Control Plane / CLI | Go |
 | 状態ストア | SQLite（WAL、単一 writer を想定） |
-| VM Provider | Proxmox VE API（Mamela 専用 pool に限定した API Token） |
-| 初期設定 | cloud-init（ステップ 2 は Proxmox の cloud-init ドライブ。Agent の導入には NoCloud seed ISO を候補とする。§10） |
-| VM 内の変更 | Pull 型 Go Agent、APT、systemd |
+| マシンの Provider | Pome で配る外部の WASM プロバイダー（Proxmox は [mamela-proxmox](https://github.com/ieyoukan/mamela-proxmox)、AWS 風の API は `examples/ec2`）。API Token は境界を限ったもの。安全装置（guard、明示操作、スクリプト）もプロバイダーが書く |
+| 初期設定 | cloud-init。Agent の導入は Mamela が作る seed（NoCloud の ISO、EC2 では user-data。§10） |
+| マシン内の変更 | Pull 型 Go Agent、APT、systemd |
 | ノード認証 | 初回限定トークン → mTLS 証明書 |
 | Agent ローカル永続化 | SQLite または原子的なローカルキャッシュ（検証時に確定） |
 
@@ -107,34 +108,46 @@ AI / Human / Git
 
 ## 4. リソースモデル
 
-### Emela DSL（構想例 / 実在 API ではない）
+### Emela の宣言
 
-Emela 側は「Graph を返す純粋な関数」と「それを stdout に書く `main`」だけで構成する。`Mamela.*` は今後作る Mamela 用 Pome の想定であり、存在しない。
+Emela 側は「Graph を返す純粋な関数」と「それを stdout に書く `main`」だけで構成する。次はリポジトリにある例（`examples/homelab/src/main.emel`）。マシンは例の EC2 プロバイダーのインスタンスで、別のプロバイダー（Proxmox なら `github.com/ieyoukan/mamela-proxmox/pome`）を使うときは、マシンの宣言だけが変わる。
 
 ~~~emela
-import Mamela.{Graph, Vm, Service}
+import Std.Console.{SystemConsole}
+import Mamela
+import Ec2.{Instance}
 
-fn infrastructure() -> Graph {
-  app = Vm(name: "app-server", cpu: 4, memory_mib: 8192, image: "ubuntu-24.04", network: Dhcp)
+fn infrastructure() -> Mamela.Graph {
+  app = Instance(
+    name: "app-server",
+    image_id: "ami-0123456789abcdef0",
+    instance_type: "t3.small",
+    subnet_id: "subnet-0123456789abcdef0",
+    security_group_id: "sg-0123456789abcdef0",
+    root_device: "/dev/sda1",
+    disk_gib: 10,
+  )
 
-  Graph.empty()
-    |> Graph.vm(app)
-    |> Graph.package(app, "nginx")
-    |> Graph.service(app, Service(name: "nginx", enabled: True, running: True))
+  Mamela.empty()
+    |> Ec2.instance(app)
+    |> Mamela.package(Ec2.node(app), "nginx")
+    |> Mamela.service(Ec2.node(app), "nginx", True, True)
 }
 
 fn main() {
-  infrastructure() |> Graph.print   # mamela-graph/v1 (JSON) を stdout に書く
+  with SystemConsole {
+    infrastructure() |> Mamela.print
+  }
 }
 ~~~
 
-この記述は目標状態の定義であり、評価時に `apt install` や Proxmox API を実行しない。Emela の WASM 出力からはそもそも実行できない（§9）。
+この記述は目標状態の定義であり、評価時に `apt install` や基盤の API を実行しない。Emela の WASM 出力からはそもそも実行できない（§9）。
 
 ### 中間表現（説明用 YAML）
 
 ~~~yaml
 apiVersion: mamela.dev/v1alpha1
-kind: VirtualMachine
+kind: ProxmoxVM            # プロバイダーの node kind（例）
 metadata:
   uid: vm-01
   name: app-server
@@ -177,22 +190,23 @@ spec:
     - app-server/nginx
 ~~~
 
-識別子は `kind + scope + stable UID` を基本とする。名前の再利用で別の VM を誤操作しない。型固有の Schema と参照解決は Go 側で行う。
+識別子は `kind + scope + stable UID` を基本とする。名前の再利用で別のマシンを誤操作しない。型固有の Schema と参照解決は Go 側で行う。
 
 - `metadata.generation`: Spec の更新世代。
 - `metadata.resourceVersion`: 楽観的な競合検出用。
 - `status.observedGeneration`: Controller が処理を試みた世代。成功を意味しない。
 - `conditions`: Ready / Reconciling / Blocked / Degraded と理由コード。
-- `externalID`: Proxmox 等の実リソースとの対応。必ず再観測して確認。
+- `externalID`: 基盤の実リソース（Proxmox の VMID、EC2 のインスタンス ID など）との対応。必ず再観測して確認。
 - `deletionPolicy: Retain`: 定義から消しても実体を消さない。
 
 ### 所有の目印
 
-Mamela が作った Proxmox VM は、次の **すべて** を満たすものだけを管理対象とする。一つでも欠けたら `Foreign` として扱い、観測だけ行い変更しない。
+Mamela が管理するのは、次の **両方** を満たすものだけである（ADR 0004）。一つでも欠けたら `Foreign` として扱い、観測だけ行い変更しない。
 
-- Mamela 専用 pool に属する。
-- 設定された VMID 予約範囲内にある（`/cluster/nextid` は使わない）。
-- Mamela のタグと、description 内の所有マーカー（Control Plane ID + resource UID）を持つ。
+- プロバイダーが、自分の印（タグ、マーカーなど）がすべてそろっていると申告する（`owned`）。
+- Mamela が、作る前に記録した ID（作成の記録）と一致する。印だけでは足りない。
+
+印の中身はプロバイダーが決める。Proxmox では、Mamela 専用 pool、VMID の予約範囲、タグ、説明欄の所有マーカーである（mamela-proxmox）。以前に別の形で Mamela が作ったもの（旧組み込みプロバイダーの VM）は、プロバイダーが `adoptable` と申告し、人が引き継ぎの明示操作（`mamela act`）を確かめたときだけ Mamela のものになる。
 
 ## 5. Control Plane と SQLite
 
@@ -224,7 +238,7 @@ SQLite の WAL モードとトランザクションを使い、**単一 Control 
 - `resourceVersion` / Generation を用いて競合更新を拒否する。
 - リソース/ノードごとに操作を直列化し、実行前に DB に Intent を書く。
 - 外部 API と DB を一つのトランザクションにできない。Exactly-once を仮定しない。
-- Proxmox では VMID を Intent に先に記録し、その VMID を明示して作成する。同じ VMID での再作成は Proxmox 側で失敗するため、二重作成の自然な防止になる。再起動後はタスク ID、VMID、所有マーカーで再観測する。
+- プロバイダーの作成は、作る前に決まる ID（Proxmox の VMID、EC2 のクライアントトークン）を Intent（作成の記録）に先に書いてから送る。同じ ID での再作成は API 側で失敗するか同じものを返すため、二重作成の自然な防止になる。再起動後は、その ID と所有の印で再観測する。
 - Lease は期限付き。失効後の引継ぎ時も再観測と fencing 相当の仕組みを用いる。
 - Status と Event は、実行結果が不明なときに「成功」を推測しない。
 
@@ -240,7 +254,7 @@ SQLite の WAL モードとトランザクションを使い、**単一 Control 
 8. Provider / Agent が実行前に事前条件を再評価し、実行する。
 9. 結果・Conditions・Events を書き戻す。ドリフト時は新しい Snapshot で再計画する。
 
-VM Ready → Agent enrolled/healthy → NodePackage Ready → NodeService Ready の依存グラフで進める。Agent が未登録でも VM を作り直さない。APT 操作はノードごとに直列化する。失敗時は指数 Backoff と回数制限を使う。jitter は乱数でなく、Operation ID から導いた値にして再現可能にする。
+マシン Ready → Agent enrolled/healthy → NodePackage Ready → NodeService Ready の依存グラフで進める。Agent が未登録でもマシンを作り直さない。マシンの起動のような `late` の変更は、その実行のほかのすべての変更（作成）の後に行う。APT 操作はノードごとに直列化する。失敗時は指数 Backoff と回数制限を使う。jitter は乱数でなく、Operation ID から導いた値にして再現可能にする。
 
 ### Pull 型 Agent
 
@@ -272,19 +286,32 @@ VM Ready → Agent enrolled/healthy → NodePackage Ready → NodeService Ready 
 | 判定 | 例 | デフォルト |
 |---|---|---|
 | Auto | 読み取り、明示許可されたサービス再起動 | 事前条件を満たした場合のみ |
-| ApprovalRequired | 初回パッケージ追加、VM サイズ変更、サービス停止、Firewall 拡大 | 承認待ち |
-| Denied | VM/Volume 削除、破壊的置換、任意 shell 実行、未知の APT source、`Foreign` リソースへの変更 | 拒否 |
+| ApprovalRequired | 初回パッケージ追加、プロバイダーの変更（マシンの作成・大きさの変更など）、サービス停止、Firewall 拡大 | 承認待ち |
+| Denied | plan の中の削除・データを失う変更、破壊的置換、任意 shell 実行、未知の APT source、`Foreign` リソースへの変更、Control Plane のホストの変更 | 拒否 |
 
 APT インストールは maintainer script の特権実行を含み得るため「追加だから安全」としない。許可済み apt source / package/version、signature verification、変更集合の検証と承認が必要。サービスを起動するだけでも副作用はあり得る。
 
 ### 削除と承認
 
-- 未宣言 → `Unmanaged/Orphaned` として保持。`delete` は別の明示行為。
+- 未宣言 → `Unmanaged/Orphaned` として保持。削除は plan に現れない。プロバイダーが明示操作として宣言した削除・再起動・引き継ぎだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
 - 承認は Plan digest、対象 ID、操作範囲、期限に結びつけ、変更で失効する。
 - Agent は署名不正、期限切れ、対象ノード不一致、未知の操作を拒否する。
 - Provider credential、Agent secret、署名鍵は Resource Graph/ログに含めず、安全な権限境界で渡す。
 - Rollback は best-effort。不可逆な OS / DB 操作は安全性を保証できない。
 - Control Plane 自身の乗っ取り、管理者権限濫用、供給元侵害は WASM だけでは防げない。最小権限・監査・強制的な拒否ルールを合わせる。
+
+### 7.1 プロバイダーの安全装置（ADR 0006）
+
+安全装置は Mamela 本体ではなく、プロバイダーの契約の一部である。どのプロバイダーの作者も、自分の基盤に合わせて書け、Mamela が強制する。書き方は [provider-authoring.md](provider-authoring.md)。
+
+| 仕組み | プロバイダーが書くもの | Mamela が強制すること |
+|---|---|---|
+| guard | 適用の前後の検査（読み取りだけ） | `mamela apply` と `mamela act` の前後に必ず呼ぶ。前の block があれば何も送らない。guard 用の読み取り専用の資格情報（`guard_token_id`）で送る。`mamela guard` で前だけを実行できる |
+| 明示操作 | `explicit` の操作（削除、再起動）、`adopts` の操作（引き継ぎ）、その変更を作る `prepare` | diff は返せない。`mamela act --confirm <名前>` のときだけ、guard（前）、意図の記録（`explicit_operations`）、その 1 つの変更だけの許可での送信、guard（後）の順に行う。対象は作成の記録があるもの（引き継ぎは `adoptable` のもの）だけ |
+| スクリプト | root などで人が実行する準備・片付け（ユーザー、トークン、権限） | 要求を一切送らせない。秘密を渡さない。`mamela provider script` で表示するだけで、実行しない |
+| `late` | 遅く実行する変更の印 | その実行のほかのすべての変更の後に送る。何も許可しない |
+
+site（`mamela.site.toml`、`mamela-site/v1`）は、どの基盤でも同じ規則だけを持つ。Control Plane、マシンのログイン、ネットワークの規則（MAM-SITE-0304）、1 台あたりの予算（MAM-SITE-0305）である。基盤ごとの値は `mamela.providers.toml` と宣言に置く。
 
 ### ビルドのサプライチェーン
 
@@ -302,7 +329,7 @@ POST /v1/nodes/{id}/events
 POST /v1/nodes/{id}/heartbeat
 ~~~
 
-初期登録では Token を Proxmox VMID と期待ノードに紐づけ、再利用を拒否。以降は mTLS と証明書ローテーション・失効を導入。Node ID は URL だけでなく証明書主体と照合する。
+初期登録では Token をノード番号（Proxmox の VMID、または Mamela が振る番号）と期待ノードに紐づけ、再利用を拒否。以降は mTLS と証明書ローテーション・失効を導入。Node ID は URL だけでなく証明書主体と照合する。
 
 ~~~bash
 mamela get vms
@@ -317,7 +344,7 @@ mamela events --node app-server
 mamela reconcile app-server
 ~~~
 
-CLI 名は `mamela`（実装中）、Node Agent は `mamelet`（未実装。VM 内で動く小さな Mamela という意味）。
+CLI 名は `mamela`、Node Agent は `mamelet`（マシン内で動く小さな Mamela という意味）。上の CLI は設計案である。実装済みのコマンドは `mamela -h` で分かる（`eval`、`check`、`plan`、`approve`、`apply`、`guard`、`act`、`serve`、`controlplane bundle`、`provider`、`toolchain`）。
 
 ## 9. Emela / WASM 技術方針
 
@@ -362,11 +389,11 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 - Emela の Effect/Handler は構成生成とテストの能力制御に使い、実変更は Go 側に限定する。
 - WASM 経路が塞がっても Reconciler を並行開発できるよう、Go 側に `mamela-graph/v1` の JSON を直接読むテスト用アダプタを持つ（同じデコーダを使う）。
 
-## 10. 初回 VM 作成から OS 管理まで
+## 10. 初回のマシン作成から OS 管理まで
 
-1. Emela で VM、Package、Service を宣言。
-2. Go Policy が許可した Proxmox 作成 Operation を、予約範囲の VMID とともに記録してから実行。テンプレートは使わず、固定した cloud image（sha256）を取り込んで作る（[lab.md §4.2](lab.md#42-テンプレートを使わない-vm-の作り方)）。
-3. Agent 登録情報を含む cloud-init を渡す。ステップ 2 ではユーザー・SSH 公開鍵・DHCP だけなので Proxmox の cloud-init ドライブで足りる。任意の user-data は Proxmox API では渡せない（snippets はアップロードできない）ため、Agent の導入（ステップ 3）では NoCloud seed ISO を生成して ISO としてアップロードし、CD-ROM に接続する方式を第一候補とする。
+1. Emela で、プロバイダーのマシン、Package、Service を宣言。
+2. プロバイダーの作成の変更を承認し、作成の記録（作る前に決まる ID）を書いてから実行。テンプレートは使わず、固定したイメージ（sha256）を成果物として使う（ADR 0004。Proxmox の手順は mamela-proxmox）。
+3. Mamela が作る seed（Agent の設定と一度きりの登録トークンを含む）を渡す。プロバイダーは seed の中身に触れない。Proxmox では NoCloud seed ISO を CD-ROM につなぎ、EC2 では user-data にする。マシンの起動は `late` の変更として、その実行のすべての作成の後に行う。
 4. cloud-init で Agent を導入し、systemd に登録。
 5. 一回限りの Token を使って Agent を Enrollment。
 6. Agent が自ノードの署名済み Desired Revision を Pull。
@@ -376,7 +403,7 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 ## 11. 初期コード構成（予定）
 
 ~~~text
-mamela/
+mamela/                   # 2026-11-11 の構成（ADR 0006 の後）
 ├── cmd/
 │   ├── mamela/           # CLI / Control Plane
 │   └── mamelet/          # Pull Node Agent (mamelet)
@@ -390,19 +417,19 @@ mamela/
 │   ├── plan/             # pure planner + human rendering
 │   ├── store/            # SQLite
 │   ├── reconcile/        # apply with journal, leases, re-observation
+│   ├── site/             # mamela-site/v1 (Control Plane, guest login, network rules, budget)
+│   ├── provider/host/    # runs untrusted providers: permits, guard, prepare, script
+│   ├── provider/external/ # finds providers in the declaration's Pomes, mamela.providers.toml
+│   ├── provider/node/    # mamelet as a provider (packages, services, k3s)
 │   ├── provider/fake/    # in-memory provider with fault injection
-│   ├── proxmox/          # Proxmox API client (read-only for now)
-│   ├── lab/              # lab site, bootstrap script, preflight / postflight
-│   ├── provider/proxmox/
-│   └── agent/
-│       ├── pull/
-│       └── resource/
-│           ├── apt/
-│           └── systemd/
+│   ├── mamelet/          # the node agent
+│   ├── cp/ seed/ noderev/
+│   └── ...
+├── provider/             # public: protocol, sdk, providertest, catalogs
 ├── pome/mamela/          # Mamela 用 Emela Pome（Graph 構築と出力）
 ├── scripts/            # install-toolchain.sh / check.sh
-├── lab/                  # 検証環境の宣言（サイト固有値は gitignore）
-├── examples/homelab/
+├── lab/local/            # 検証用の宣言（サイト固有値。gitignore）
+├── examples/homelab/ ec2/ kv/ kv-demo/
 ├── docs/
 └── README.md
 ~~~
@@ -411,15 +438,15 @@ mamela/
 
 ## 12. MVP 完了条件
 
-- Emela の宣言から VM と nginx の Resource Graph を生成でき、同じ入力で 2 回評価して digest が一致する。
+- Emela の宣言からマシンと nginx の Resource Graph を生成でき、同じ入力で 2 回評価して digest が一致する。
 - 同じ Revision と Snapshot から同じ Plan digest が得られる（`--replay` で確認）。
-- Proxmox 上に Ubuntu VM を新規作成し、重複作成を防げる。
+- プロバイダー（Proxmox など）で Ubuntu のマシンを新規作成し、重複作成を防げる。
 - cloud-init で Agent が自動登録し、mTLS で自ノードの構成を Pull。
 - 承認済みパッケージだけ導入し、nginx の Service を Ready にする。
 - nginx 手動停止後にドリフト検出・許可された再起動を行う。
 - 無許可パッケージ、期限切れ/改ざん Revision、削除要求、`Foreign` リソースへの変更は実行されない。
 - Control Plane/Agent の再起動中断後も、誤成功や重複実行を起こさず再観測できる。
-- 検証環境で、Mamela 管理外のゲストの設定 digest と稼働状態が実行前後で変わらない（[検証環境](lab.md)）。
+- 検証環境で、プロバイダーの guard が、境界の外（Mamela 管理外のゲストなど）が実行前後で変わらないことを確かめる（[検証環境](lab.md)）。
 
 ## 13. 未決事項
 
@@ -438,7 +465,7 @@ mamela/
 - [Wasmtime](https://docs.wasmtime.dev/)
 - [WASI](https://github.com/WebAssembly/WASI)
 - [cloud-init](https://cloudinit.readthedocs.io/)
-- [Proxmox VE API](https://pve.proxmox.com/pve-docs/api-viewer/) / [User Management](https://pve.proxmox.com/wiki/User_Management)
+- [Proxmox VE API](https://pve.proxmox.com/pve-docs/api-viewer/) / [User Management](https://pve.proxmox.com/wiki/User_Management)（Proxmox のプロバイダーは [mamela-proxmox](https://github.com/ieyoukan/mamela-proxmox)）
 - [Kubernetes controllers](https://kubernetes.io/docs/concepts/architecture/controller/)
 
-関連: [開発計画](development.md)、[検証環境](lab.md)、[SQLite 採用 ADR](adr/0001-sqlite.md)。
+関連: [開発計画](development.md)、[検証環境](lab.md)、[SQLite 採用 ADR](adr/0001-sqlite.md)、[ADR 0006](adr/0006-proxmox-out-of-core.md)。

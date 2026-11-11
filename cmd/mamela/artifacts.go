@@ -58,7 +58,7 @@ func (m *artifacts) Make(ctx context.Context, a protocol.Artifact) (host.Prepare
 		}
 		network := graphNetwork(*a.Network)
 		if err := m.Site.Allows(a.Node, network); err != nil {
-			return host.Prepared{}, err
+			return host.Prepared{}, fmt.Errorf("MAM-SITE-0304: %w", err)
 		}
 		id := a.NodeID
 		if id == 0 {

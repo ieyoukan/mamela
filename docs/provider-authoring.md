@@ -14,8 +14,9 @@ Mamela は、プロバイダーが正しく書かれていることを安全の�
 
   | いつ | 通す要求 |
   |---|---|
-  | `describe` と `diff` | 一切通さない |
+  | `describe`、`diff`、`prepare`、`script` | 一切通さない |
   | `observe` と `lookup` | 宣言した読み取りだけ |
+  | `guard` | マニフェストの `guard.calls` の読み取りだけ（guard 用の資格情報があればそれで送る） |
   | `apply` | 承認した 1 操作の呼び出し・パラメータ・対象 ID・値・前提条件・期限に合うものだけ |
 
   合わない要求は送らずに拒否し（`CodeRefused`）、記録する。
@@ -37,7 +38,15 @@ import (
 func main() { sdk.Serve(myprovider.Provider{}) }
 ```
 
-`sdk.Provider` の 5 つのメソッドを実装する。完全な例は [`examples/kv`](../examples/kv) にある。小さなキー・バリューの API の項目を作り、更新するプロバイダーである。
+`sdk.Provider` の 5 つのメソッドを実装する。必要なら、次のインターフェースも実装する（ADR 0006）。
+
+| インターフェース | メソッド | 使うとき |
+|---|---|---|
+| `sdk.Guarder` | `Guard` | 適用の前後の安全確認（下の「guard」） |
+| `sdk.Preparer` | `Prepare` | 削除・再起動・引き継ぎなどの明示操作（下の「明示操作」） |
+| `sdk.Scripter` | `Script` | 人が root などで実行する準備・片付けのスクリプト（下の「スクリプト」） |
+
+完全な例は [`examples/kv`](../examples/kv) にある。小さなキー・バリューの API の項目を作り、更新するプロバイダーである。guard（`max_items`）と明示操作 `delete-item` も持つ。
 
 ### Manifest: 宣言する
 
@@ -49,13 +58,17 @@ func main() { sdk.Serve(myprovider.Provider{}) }
 - **宣言しなかったもの:** 宣言しなかった呼び出しとパラメータは、送れない。パラメータを書かない呼び出しは、パラメータを 1 つも送れない。
 - **`API`:** 話す API の名前（`kv-example/v1`）。host は、この名前で自分のカタログと資格情報を選ぶ。
 - **`ObserveCalls`:** 観測に使う読み取り。
-- **削除:** 宣言から消したリソースを削除する操作は作らない。Mamela は、宣言から消えたものを保持する。
+- **`Explicit`・`Adopts`:** 明示操作の印（下の「明示操作」）。
+- **`Guard`:** guard で使う読み取りの呼び出し（下の「guard」）。
+- **`Scripts`:** 書くスクリプトの名前と説明（下の「スクリプト」）。
+- **削除:** diff は、宣言から消したリソースを削除しない。Mamela は、宣言から消えたものを保持する。削除が要るなら、明示操作として宣言する。
 
 ### Observe: 読む
 
 - **使える要求:** `ObserveCalls` の読み取りだけを使う。
 - **宣言されたリソース:** 宣言されたリソースごとに、存在するか、Mamela が作ったものか（`Owned`。API の中に印を残す）、API の ID（`IDs`）、版（`Version`）、状態を返す。
 - **宣言されていないリソース:** Mamela が作ったもので、もう宣言されていないものも、`Owned` として返す。Mamela はこれを見て保持する。
+- **引き継げるもの:** 以前に別の形で Mamela が作ったもの（Proxmox では、旧組み込みプロバイダーの印を持つ VM）は、`Owned` ではなく `Adoptable` として返す。引き継ぎの明示操作だけが、これに触れられる。
 
 ### Diff: 計算する
 
@@ -66,7 +79,9 @@ func main() { sdk.Serve(myprovider.Provider{}) }
   - 変更の要求（`Requests`）: 送る変更の要求を 1 つずつ、呼び出しと、送るパラメータの名前と値をすべて書く。apply で送れるのはこれだけで、パラメータの省略・追加・値の違いは拒否される。それぞれ 1 回しか送れない
   - 前提条件（`Precondition`。観測した版）
   - 理由
+  - `Late`（必要なとき。下の「遅い変更」）
 - **触らないもの:** 宣言されていないリソースと、Mamela が作っていないリソースは変えない。Mamela が作っていない既存のものと名前が衝突したら、エラーにする。
+- **明示操作は返さない:** `Explicit` の操作の変更を diff が返すと、host が拒む（MAM-PRV-0003）。
 
 ### Apply: 1 つの変更を実行する
 
@@ -126,12 +141,60 @@ VM のようなマシンを作るプロバイダーには、大きなファイ�
   - Mamela は、自分が作ろうとして記録した ID と一致するときだけ、それを自分のものとする。
   - 一致しないものは Foreign として、diff には `owned: false` で渡す。
 - **実行しない差分:** 縮小のように決して行わない差分は、マニフェストで `unsupported` とした操作の変更として、`requests` なしで返す。plan が理由とともに拒否する（MAM-POL-0309）。「差分なし」にしてはいけない。
-- **大きさの上限:** VM の vCPU・メモリ・ディスクのように大きさを決めるパラメータは、Mamela のカタログの `measures` に書く。host は、site の予算を plan と apply の両方で確かめる（LAB-0305）。
+- **大きさの上限:** マシンの vCPU・メモリ・ディスクのように大きさを決めるパラメータは、Mamela のカタログの `measures` に書く。host は、site の予算（`[budget]`）を plan と apply の両方で確かめる（MAM-SITE-0305）。
 - **ノード:** kind に `node: true` を書くと、そのリソースは mamelet が載るマシンになる。
   - 観測では、存在するリソースについて `node`（`id`、`running`、`uptimeSeconds`）を返す。
-  - 宣言では、`Mamela.package_on(Proxmox.node(vm), ...)` のように、パッケージやサービスや k3s をその上に書ける。
+  - 宣言では、`Mamela.package(Ec2.node(app), "nginx")`（`examples/homelab`）のように、パッケージやサービスや k3s をその上に書ける。プロバイダーの Pome は、マシンから `Mamela.Node` を返す関数（`Ec2.node`）を用意する。
   - Mamela は、観測した `id` で revision と登録トークンを出す。
-  - seed のネットワークは、site の規則（`network.dhcp`、`static_first`–`static_last`）で確かめる（LAB-0304）。
+  - マシンの `spec` に `("network", Mamela.network_spec(network))` を書くと、Mamela がその形と、固定アドレスの重複を確かめる（[graph-schema.md](graph-schema.md)）。
+  - seed のネットワークは、site の規則（`network.dhcp`、`static_first`–`static_last`）で確かめる（MAM-SITE-0304）。
+
+## guard: 適用の前後の安全確認（ADR 0006）
+
+共有の本番環境のように、プロバイダーの境界の外に壊してはならないものがあるなら、guard を書く。Mamela は、そのプロバイダーの変更を apply する前後に、必ず guard を呼ぶ。
+
+- **宣言:** マニフェストの `Guard.Calls` に、確認で使う読み取りの呼び出しを書く。`API` が要る。ファイルを送る呼び出しは書けない。
+- **呼び出し（`guard`）:** `GuardParams` を受け取り、`GuardResult` を返す。
+
+  | `Stage` | 渡されるもの | すること |
+  |---|---|---|
+  | `before` | `Changes`: この apply で送りうる変更（Denied は除く）。`mamela act` ではその明示操作の変更、`mamela guard` では空 | 送る前の検査。後で比べるものを `Baseline` に入れて返す |
+  | `after` | `Baseline`: `before` が返したもの | `Baseline` と比べる（境界の外が変わっていないかなど） |
+
+  どちらにも `Settings`（`mamela.providers.toml` の `[provider.<name>.guard]` を JSON にしたもの。秘密は入れない）が渡る。
+- **結果:** `Findings` は、コード（プロバイダーが決める。例 `KV-0001`、`PVE-*`）、重さ（`ok`・`warn`・`block`）、文。どれかが欠ければ host が拒む。
+  - `before` に `block` があれば、Mamela はそのプロバイダーの変更を何も送らない。
+  - `after` の `block` は、apply の失敗として報告する。
+- **資格情報:** `mamela.providers.toml` に `guard_token_id` と `guard_token_file` があれば、guard の要求はそれで送る（境界の外も見える読み取り専用のもの。Proxmox では `/` の `PVEAuditor`）。なければ通常の資格情報で送る。
+- **単独の実行:** `mamela guard <pome-dir>` は `before` だけを実行する。
+- **呼ばないとき:** plan を作ったときとプロバイダーの契約が違えば、apply は guard も呼ばない（reconciler が MAM-REC-0007 で止める）。
+
+## 明示操作: 削除・再起動・引き継ぎ（ADR 0006）
+
+データを失う操作や再起動は、plan に入れない。人が `mamela act` で名前を指し、`--confirm` で打ち直したときだけ行う。
+
+- **宣言:** 操作に `Explicit: true` を書く。diff はこの操作を返さない。
+- **呼び出し（`prepare`）:** `PrepareParams`（操作、宣言、観測）から、その操作の変更を 1 つ返す。diff と同じく、要求は送れない。返す変更は、その操作・その対象・その kind でなければならない。変更の中身（要求、パラメータ、前提条件）は diff と同じ規則で、承認する変更と同じように許可で縛られる。
+- **対象:** Mamela は、作成を記録したもの（`Owned` で、記録と一致するもの）にしか明示操作をしない。Control Plane のホストにもしない。
+- **引き継ぎ（`Adopts: true`）:** `Explicit` の操作にだけ書ける。対象は、観測で `Adoptable` と報告したものだけである。済めば、Mamela はその対象を自分が作ったものとして記録する。
+- **Mamela の記録:** `mamela act` は、送る前に意図を記録し（`explicit_operations`）、結果も記録する。カタログが「データを失いうる」とする要求を含む操作が済めば、作成の記録を消す。
+- **例:** `examples/kv` の `delete-item`。Proxmox では `delete-vm`、`reboot-vm`、`reset-vm`、`adopt-vm`。
+
+## スクリプト: 人が実行する準備と片付け（ADR 0006）
+
+Mamela に使わせるユーザー、トークン、権限を作るには、Mamela が持たない権限が要る。そのスクリプトはプロバイダーが書く。使う人は、Mamela と固定した版のプロバイダーだけで手に入る。
+
+- **宣言:** マニフェストの `Scripts` に、名前（英小文字・数字・`-`）と説明（何をするか、どこでだれが実行するか）を書く。
+- **呼び出し（`script`）:** `ScriptParams`（名前、`Settings`、`Credentials`）から本文を返す。
+  - `Settings` は guard と同じ `[provider.<name>.guard]`。
+  - `Credentials` は資格情報の ID と秘密のファイルの場所（`tokenId`、`tokenFile`、`guardTokenId`、`guardTokenFile`）。秘密そのものは渡さない。
+  - 要求は送れない。本文は UTF-8 で 1 byte から 1 MiB まで。
+- **使い方:** `mamela provider script <pome-dir> <provider>` で一覧、`... <provider> <script>` で本文を表示する。人が読んでから実行する。
+- **例:** Proxmox の `bootstrap`（pool、ユーザー、トークン、ACL を作る。権限は guard が確かめるのと同じマニフェストの needs から導く）、`permissions`、`cleanup`。
+
+## 遅い変更（`late`）
+
+`Change.Late` を `true` にした変更は、その apply のほかのすべての変更の後に送られる。たとえばマシンの起動を、その実行のすべてのマシンの作成の後にする（作成中のディスクの取り込みと、別のマシンの初回起動が重ならないように）。順番を変えるだけで、何も許可しない。
 
 ## ビルドと確認
 
@@ -162,6 +225,16 @@ func TestConformance(t *testing.T) {
 	})
 }
 ```
+
+| `Suite` のフィールド | 意味 |
+|---|---|
+| `GuardSettings` | guard の設定（`[provider.<name>.guard]` の JSON）。guard があれば、各ケースの収束の前後に走らせ、block がないことを確かめる |
+| `ScriptCredentials` | スクリプトを書くときの資格情報の ID とファイル。宣言したスクリプトがすべて書けることを確かめる |
+
+| `Case` のフィールド | 意味 |
+|---|---|
+| `Explicit` | 収束した後に、順に行う明示操作（`Op` と `Resource`）。それぞれ done になり、lookup も done と答えること。引き継ぎなら、その後もう一度収束すること |
+| `World` | 何かが動く前に、偽の API に置いておく物（引き継ぐもの、他人のもの）。`World` のあるケースは、guard つきの収束と明示操作だけを行う |
 
 ケースごとに、空の世界から次のことを確かめる。
 
@@ -230,43 +303,60 @@ Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb 
    api_url    = "https://kv.example.com/api"   # http は 127.0.0.1・::1・localhost だけ
    token_file = "~/.config/kv/token"           # Authorization: Bearer <token>
    catalog    = "kv-catalog.json"              # API のカタログ（必須。ないと読み取りも変更も許さない）
+
+   [provider.kv-example.guard]                 # guard の設定（秘密は書かない）
+   max_items = 5
    ```
+
+   guard 用に別の読み取り専用の資格情報があるなら、`guard_token_id` と `guard_token_file` も書く。
 
 4. `mamela check <pome-dir>` で、各リソースに要る能力を確かめる。
 5. `mamela plan <pome-dir>` を実行する。プロバイダーが観測し、diff を計算する。plan は、変更ごとに対象と、送る要求をすべてパラメータまで表示する。承認するのはこの内容である。
-6. `mamela approve <digest>` で承認し、`mamela apply <digest>` で実行する。
+6. `mamela guard <pome-dir>` で、プロバイダーの guard の前の検査だけを確かめられる（読み取りだけ）。
+7. `mamela approve <digest>` で承認し、`mamela apply <digest>` で実行する。
 
 承認は、そのときの API の接続先（URL・資格情報・カタログ）に対するものである。設定でどれかを変えると、承認は効かなくなる（MAM-REC-0007）。
 
 apply は、plan のときに SQLite に保存したプログラムを動かす。キャッシュや Pome が変わっていても、plan と同じバイト列である。apply は次の手順で進む。
 
-1. 観測し直す。
-2. プロバイダーの変更が承認したものと完全に同じであることを確かめる。違えば（たとえば対象の版が変わっていれば）、何もせずに止まる（MAM-REC-0002）。
-3. 変更ごとに許可を発行する。許可は一度だけ使えて、SQLite に記録する。
+1. guard（前）を走らせる。block があれば何も送らない。
+2. 観測し直す。
+3. プロバイダーの変更が承認したものと完全に同じであることを確かめる。違えば（たとえば対象の版が変わっていれば）、何もせずに止まる（MAM-REC-0002）。
+4. 変更ごとに許可を発行する。許可は一度だけ使えて、SQLite に記録する。`late` の変更は最後に送る。
+5. guard（後）を走らせる。
+
+削除や再起動は `mamela act [--confirm <name>] <op> <resource> <pome-dir>` で行う（[lab.md](lab.md)）。
 
 `examples/kv-demo` で試せる（`go run ./examples/kv/cmd/kv-api` が、ローカルの API になる）。
 
 ### Mamela が持つカタログと、Proxmox
 
-Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox`（`provider/catalogs`。プロバイダーの試験からも import できる）がある。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く。
+Mamela が知っている API のカタログは、`catalog = "builtin:<name>"` で使える。今は `builtin:proxmox` と `builtin:ec2`（`provider/catalogs`。プロバイダーの試験からも import できる）がある。Proxmox のように、トークンの形式が Bearer でなく、証明書が自己署名の API には、次のように書く（値は架空）。
 
 ```toml
-[provider.pve-vm]
-api_url         = "https://pve.example:8006/api2/json"
-auth            = "proxmox"                     # Authorization: PVEAPIToken=<token_id>=<token>
-token_id        = "mamela@pve!lab"
-token_file      = "~/.config/mamela/pve-token"  # chmod 600 でなければ拒否する
-tls_fingerprint = "AA:BB:..."                   # サーバー証明書の SHA-256 を固定する
-catalog         = "builtin:proxmox"
+[provider.proxmox]
+api_url          = "https://pve.example:8006/api2/json"
+auth             = "proxmox"                     # Authorization: PVEAPIToken=<token_id>=<token>
+token_id         = "mamela@pve!lab"
+token_file       = "~/.config/mamela/pve-token"  # chmod 600 でなければ拒否する
+guard_token_id   = "mamela-audit@pve!audit"      # guard だけが使う読み取り専用のトークン
+guard_token_file = "~/.config/mamela/pve-audit-token"
+tls_fingerprint  = "AA:BB:..."                   # サーバー証明書の SHA-256 を固定する
+catalog          = "builtin:proxmox"
+
+[provider.proxmox.guard]
+# guard の設定（境界、しきい値）。中身はプロバイダーが決める（mamela-proxmox の docs/lab.md）
 ```
 
-Proxmox の VM を作り、その上で mamelet を動かすプロバイダーは、[`github.com/ieyoukan/mamela-proxmox`](https://github.com/ieyoukan/mamela-proxmox) にある。使っている仕組みは次のとおり。
+Proxmox の VM を作り、その上で mamelet を動かすプロバイダーは、[`github.com/ieyoukan/mamela-proxmox`](https://github.com/ieyoukan/mamela-proxmox) にある（Pome は `github.com/ieyoukan/mamela-proxmox/pome`）。このリポジトリの仕組みの見本になっている。
 
 - 成果物: 固定したクラウドイメージと seed
 - ノードの kind
 - 同じ変更で作る対象への変更
-
-小さな例として、OS を入れない空の VM を作り、vCPU とメモリを変えるプロバイダーも [`examples/pve`](../examples/pve) にある。偽の Proxmox（`examples/pve/fakepve`）で適合テストを通し、検証環境の実機でも plan・apply した（`docs/development.md`）。
+- guard: クォーラム、ノード、トークンの権限がマニフェストの付与とちょうど同じであること、メモリとストレージの余裕、境界（pool と VMID の範囲）、各変更が境界の中であること、境界の外のゲストが変わっていないこと
+- 明示操作: `delete-vm`、`reboot-vm`、`reset-vm`、`adopt-vm`（旧組み込みプロバイダーの VM の引き継ぎ）
+- スクリプト: `bootstrap`、`permissions`、`cleanup`
+- `late`: VM の起動を、その実行のすべての作成の後にする
 
 ### クラウドの API（AWS）
 

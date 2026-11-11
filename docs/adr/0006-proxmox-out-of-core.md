@@ -1,6 +1,6 @@
 # ADR 0006 — Mamela 本体から Proxmox を出し、安全装置をプロバイダーの契約にする
 
-- 状態: Accepted（2026-11-11）
+- 状態: Accepted（2026-11-11）。実装済み（2026-11-11。1–5 を実装し、Mamela 本体から Proxmox のコードを削除した）
 - 日付: 2026-11-11
 - 対象: `internal/proxmox`、`internal/provider/pve`、組み込み kind `VirtualMachine`、`internal/lab`、`mamela lab`・`destroy`・`reboot`
 
@@ -54,7 +54,7 @@ Proxmox のプロバイダーは、`github.com/ieyoukan/mamela-proxmox` に出�
   3. `--confirm <名前>` があるときだけ、guard の前の検査、許可を発行して apply、guard の後の検査を行う。
 - **所有の確認:** 対象は、所有を Mamela の記録で確かめたもの（ADR 0004 の `Vouch`）に限る。
 - **policy との関係:** 明示操作は policy の承認の代わりに名前の打ち直しを求める。データを失う効果（lose-data）でも実行できるのは、この経路だけである。
-- **記録の片付け:** 削除が済めば、作成の記録とノード番号を消す。
+- **記録の片付け:** 削除が済めば、作成の記録を消す。Mamela が振ったノード番号は消さない。番号を別のマシンに振らないためである（同じ名前のマシンを作り直せば、同じ番号に戻る）。
 - **Proxmox での操作:**
   - `delete-vm`（止めてから削除）
   - `reboot-vm`
@@ -100,3 +100,13 @@ Proxmox の接続先、トークン、pool、VMID の範囲、ストレージ、
 - Mamela 本体のコードには、特定の基盤の知識がなくなる。残るのは、Mamela が持つカタログ（`provider/catalogs`）というデータだけである。
 - どのプロバイダーの作者も、同じ仕組み（guard、明示操作、作成の記録、上限）で安全を作れる。Proxmox のプロバイダーは、その見本になる。
 - **既存の VM:** lab で組み込みのプロバイダーが作った VM は、`adopt-vm` で外部のプロバイダーに引き継ぐ。
+
+## 実装で足したこと
+
+決定の本文になかったが、実装で足したもの。
+
+- **遅い変更（`late`）:** 変更（`Change`）に `late` を足した。`late` の変更は、その apply のほかのすべての変更の後に実行する。組み込みのプロバイダーが持っていた「全台を作ってから起動する」順番を、プロバイダーが印で示す（Proxmox ではマシンの起動）。順番を変えるだけで、何も許可しない。reconcile からは Proxmox の操作名がなくなった。
+- **明示操作の記録:** `mamela act` は、送る前に意図を SQLite の `explicit_operations`（store の migration 10）に記録し、結果（done、failed、partly-done、unknown）と確認した人も記録する。結果が分からないときは lookup で確かめ、やみくもに繰り返さない（MAM-ACT-0201）。引き継ぎが済めば作成の記録を足し、データを失う操作が済めば作成の記録を消す。拒否のコードは MAM-ACT-0100–0106。
+- **guard を呼ばないとき:** plan を作ったときとプロバイダーの契約（プログラム、API の接続先・資格情報・カタログ）が違う apply は、guard も呼ばない。reconciler が、何にも触れずに MAM-REC-0007 で止める。
+- **controlplane bundle:** Proxmox のトークンの代わりに、ホスト用に書き換えた `mamela.providers.toml` と、その秘密（`/etc/mamela/secrets/<provider>-token` と `<provider>-guard-token`）を入れる。
+- **site のコード:** site の規則に合わない変更は、`LAB-0304`・`LAB-0305` の代わりに `MAM-SITE-0304`（ネットワーク）・`MAM-SITE-0305`（1 台あたりの予算）になった。VM の操作とともになくなった policy のコード（MAM-POL-0201・0202・0203・0211・0301・0302・0307）と MAM-GRAPH-0105 は、使い直さない（[reason-codes.md](../reason-codes.md)）。Proxmox の guard のコード（`PVE-*`）は mamela-proxmox の README にある。

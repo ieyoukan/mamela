@@ -4,57 +4,63 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## 例
 
+`examples/homelab`（例の EC2 プロバイダーのインスタンス 1 台と nginx）を評価した結果。
+
 ~~~json
 {
   "resources": [
-    {"kind": "VirtualMachine", "name": "app-server",
-     "spec": {"cpu": 1, "diskGiB": 10, "image": "ubuntu-24.04", "memoryMiB": 1024,
-              "network": {"mode": "dhcp"}}},
     {"kind": "NodePackage", "name": "app-server/nginx",
      "spec": {"node": "app-server", "package": "nginx", "state": "Present"}},
     {"kind": "NodeService", "name": "app-server/nginx",
-     "spec": {"enabled": true, "node": "app-server", "running": true, "service": "nginx"}}
+     "spec": {"enabled": true, "node": "app-server", "running": true, "service": "nginx"}},
+    {"kind": "Ec2Instance", "name": "app-server", "provider": "ec2-example",
+     "spec": {"diskGiB": 10, "imageId": "ami-0123456789abcdef0", "instanceType": "t3.small",
+              "network": {"mode": "dhcp"}, "rootDevice": "/dev/sda1",
+              "securityGroupId": "sg-0123456789abcdef0", "subnetId": "subnet-0123456789abcdef0"}}
   ],
-  "schema": "mamela-graph/v1"
+  "schema": "mamela-graph/v2"
 }
 ~~~
 
-実際の出力は空白なし・キーはソート順の 1 行。
+実際の出力は空白なし・キーはソート順の 1 行。プロバイダーのリソースがあるので `mamela-graph/v2` になる（下の「プロバイダーのリソース」）。
 
 ## 規則
 
-- 最上位は `schema`（値は `"mamela-graph/v1"` のみ）と `resources`（配列）の 2 つ。
-- 各リソースは `kind`・`name`・`spec` の 3 つ。
+- 最上位は `schema`（値は `"mamela-graph/v1"` か `"mamela-graph/v2"`）と `resources`（配列）の 2 つ。
+- 各リソースは `kind`・`name`・`spec` の 3 つ。プロバイダーのリソースは、それに `provider` が加わる。
 - 書かれていないメンバー、重複したメンバー、`null`、小数・指数表記の数値、不正な UTF-8、文書の後に続くデータは、すべて拒否する（末尾の改行 1 つだけは許す）。
 - 文書は 4 MiB まで、リソースは 10,000 件まで。
 
 ## kind
 
-### VirtualMachine
+組み込みの kind は `NodePackage`、`NodeService`、`NodeK3s` の 3 つで、どれもマシンの上のものである。
 
-| フィールド | 型 | 範囲 |
-|---|---|---|
-| `name` | string | ホスト名（小文字・数字・`-`、1–63 文字） |
-| `spec.cpu` | 整数 | 1–64 |
-| `spec.memoryMiB` | 整数 | 256–1,048,576 |
-| `spec.diskGiB` | 整数 | 1–16,384 |
-| `spec.image` | string | `ubuntu-24.04` のような名前 |
-| `spec.network.mode` | string | `dhcp` か `static`（必須。既定はない） |
-| `spec.network.address` | string | `static` のときだけ。IPv4 とプレフィックス長（`192.0.2.10/24`、/8–/30）。ネットワークアドレスとブロードキャストアドレスは不可 |
-| `spec.network.gateway` | string | `static` のときだけ。`address` と同じサブネットの IPv4 で、VM 自身ではない |
-| `spec.network.dns` | string の配列 | `static` のときだけ。IPv4 を 1–3 個 |
+**マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
-- **ネットワークは作成時に一度だけ与える。** seed の netplan（mamelet がない site では Proxmox の cloud-init drive の `ipconfig0` と `nameserver`）で設定する。作成したときのネットワークは所有マーカー（`mamela-network:`）に記録し、観測はそこから読む。宣言を変えても VM は変えず、plan は差分を示して拒否する（MAM-POL-0307）。マーカーに記録がない VM（ネットワークを宣言できる前に作った VM）は `dhcp` とみなす。
-- **同じ固定アドレスを 2 台に宣言できない**（MAM-GRAPH-0107）。
-- **site の範囲:** lab では、固定アドレスは `site.local.toml` の `network.static_first`–`static_last` の中だけ、DHCP は `network.dhcp = true` のときだけ許す。違反は plan の時点で止め（LAB-0304）、apply でも Proxmox に書く前にもう一度確かめる。
-- **Emela:** `Vm(..., network: Dhcp)` または `Vm(..., network: Static(address: "192.0.2.10/24", gateway: "192.0.2.1", dns: ["192.0.2.1"]))`。`network` がない Graph（Pome 0.1.0 が書くもの）は MAM-GRAPH-0004 で拒否する。
+### マシン（プロバイダーの node kind）
+
+- **名前:** マシンの名前は、そのままホスト名になる。小文字・数字・`-` の 1–63 文字で、英数字で始まり英数字で終わる。プロバイダーを動かしたときに確かめる。
+- **`spec.network`:** プロバイダーのリソースの `spec` に `network` があれば、Mamela がその中身を確かめる。プロバイダーの Pome は、Mamela の Pome の `Mamela.network_spec(network)` で書く（`network` は `Mamela.Network` の `Dhcp` か `Static(address: ..., gateway: ..., dns: [...])`。例の EC2 の Pome は `Mamela.network_spec(Mamela.Dhcp)` と書く）。
+
+  | フィールド | 型 | 規則 |
+  |---|---|---|
+  | `spec.network.mode` | string | `dhcp` か `static` |
+  | `spec.network.address` | string | `static` のときだけ。IPv4 とプレフィックス長（`192.0.2.10/24`、/8–/30）。ネットワークアドレスとブロードキャストアドレスは不可 |
+  | `spec.network.gateway` | string | `static` のときだけ。`address` と同じサブネットの IPv4 で、マシン自身ではない |
+  | `spec.network.dns` | string の配列 | `static` のときだけ。IPv4 を 1–3 個 |
+
+  - 形が違えば MAM-GRAPH-0106。
+  - **同じ固定アドレスを 2 台に宣言できない**（MAM-GRAPH-0107）。
+  - **site の範囲:** 固定アドレスは site（`mamela.site.toml`）の `network.static_first`–`static_last` の中だけ、DHCP は `network.dhcp = true` のときだけ許す。作るマシンの seed のネットワークが合わなければ、plan の時点で止め（MAM-SITE-0304）、apply でも seed を作る前にもう一度確かめる。
+  - ネットワークを作った後で変えるかどうかは、プロバイダーが決める（変えないなら、マニフェストで unsupported とした操作として示し、plan が MAM-POL-0309 で拒否する）。
+- **大きさ:** vCPU・メモリ・ディスクの上限は、Graph ではなく site の予算（`[budget]`）が決める。プロバイダーの変更が超えれば MAM-SITE-0305。
 
 ### NodePackage
 
 | フィールド | 型 | 規則 |
 |---|---|---|
 | `name` | string | `<node>/<package>` |
-| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.node` | string | 同じ Graph で宣言したマシン（プロバイダーのリソース）の名前 |
 | `spec.package` | string | Debian のパッケージ名 |
 | `spec.state` | string | `"Present"` のみ。削除は宣言できない |
 
@@ -63,7 +69,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 | フィールド | 型 | 規則 |
 |---|---|---|
 | `name` | string | `<node>/<service>` |
-| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.node` | string | 同じ Graph で宣言したマシン（プロバイダーのリソース）の名前 |
 | `spec.service` | string | systemd のユニット名（`.service` なし） |
 | `spec.enabled` | bool | |
 | `spec.running` | bool | |
@@ -75,9 +81,9 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | フィールド | 型 | 規則 |
 |---|---|---|
 | `name` | string | `<node>/k3s` |
-| `spec.node` | string | 同じ Graph の VirtualMachine の名前 |
+| `spec.node` | string | 同じ Graph で宣言したマシン（プロバイダーのリソース）の名前 |
 | `spec.role` | string | `"server"` か `"agent"` |
-| `spec.server` | string | agent のとき、同じ Graph で k3s server を宣言した VM の名前（server のときは書かない） |
+| `spec.server` | string | agent のとき、同じ Graph で k3s server を宣言したマシンの名前（server のときは書かない） |
 | `spec.version` | string | k3s のリリース（`v1.37.2+k3s1`） |
 | `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`） |
 
@@ -89,7 +95,7 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | agent | `k3s agent --server=https://<server のアドレス>:6443 --token-file=/etc/rancher/k3s/cluster-token` |
 
 - **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
-- **server のアドレス:** server の VM が固定アドレスを宣言していれば、それを使う（報告を待たず、報告にも従わない）。DHCP なら、server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
+- **server のアドレス:** server のマシンが固定アドレス（`spec.network`）を宣言していれば、それを使う（報告を待たず、報告にも従わない）。DHCP なら、server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
 
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
@@ -106,11 +112,11 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | `name` | 英数字と `.` `_` `:` `@` `-`、253 文字まで |
 | `spec` | JSON のオブジェクト。文字列・整数・真偽値・配列・オブジェクトだけ（`null` と小数は不可）。整数は ±(2^53−1) まで（正規形は数を倍精度で書くので、それを超える整数は別の値になる。黙って変えずに拒否する。大きな値は文字列で書く）。深さ 32 まで。Mamela は中身を解釈せず、正規形（RFC 8785）にしてプロバイダーに渡す |
 
-宣言では、プロバイダーの Pome の関数（`Kv.item(...)`）で書く。それらは `Mamela.provided` を呼ぶ。
+宣言では、プロバイダーの Pome の関数（`Kv.item(...)`、`Ec2.instance(...)`）で書く。それらは `Mamela.provided` を呼ぶ。マシンの上のものは、プロバイダーの Pome が返す `Mamela.Node`（`Ec2.node(app)` など）に対して `Mamela.package`・`Mamela.service`・`Mamela.k3s_server`・`Mamela.k3s_agent` で書く（Mamela の Pome 0.3.0。`*_on` の名前も同じものとして残っている）。
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（VirtualMachine → NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。
 
