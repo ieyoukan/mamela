@@ -303,6 +303,20 @@ systemctl enable --now mamela-serve
 - **ホストでの権限:** serve は、権限のない専用ユーザー `mamela-cp` で動く（lab の VM のログインユーザー `mamela` とは別にする。こちらは sudo できる）。書けるのは `/var/lib/mamela` だけである。
 - **移した後の plan と apply:** ホストの上で実行する（`sudo -u mamela mamela plan --site /etc/mamela/site.toml --db /var/lib/mamela/state.db <宣言>`）。宣言の評価には、ホストにリポジトリとツールチェーン（`scripts/install-toolchain.sh`）が要る。手元から CP に頼む API は、まだない（ADR 0003）。
 
+## 6.45 外部の Proxmox プロバイダー（`github.com/ieyoukan/mamela-proxmox`）
+
+組み込みの `VirtualMachine` の代わりに、Pome で配る Proxmox のプロバイダー（ADR 0004）でも、mamelet の載る VM を作れる。
+
+- **宣言:** `Proxmox.vm(site, vm)` と書き、その上に `Mamela.package_on(Proxmox.node(vm), ...)` を書く。site の値（node、pool、ストレージ、bridge、tag、VMID の範囲）は、`site.local.toml` と同じにする。実アドレスを含むので、宣言は `lab/local/` に置く。
+- **`mamela.providers.toml`:** `[provider.proxmox]` に、API の URL、`auth = "proxmox"`、運用トークン、`tls_fingerprint`、`catalog = "builtin:proxmox"` を書く。
+- **plan に出るもの:**
+  - アップロードするイメージ（URL と sha256）
+  - Mamela が作る seed（ノード、VMID、ネットワーク）
+
+  seed のネットワークは site の規則で確かめる（LAB-0304）。
+- **手順:** VM の作成から起動までは、組み込みと同じ流れで進む（`create-vm` の後に `start-vm`）。中断された作成は、次の plan が残りを提案する（`grow-vm-disk`、`start-vm`、`tag-vm`）。
+- **組み込みとの関係:** 組み込みの観測は、このプロバイダーの VM を Foreign と見る。plan はプロバイダーの観測を先に使う。所有マーカーが違うので、互いの VM を変えない。
+
 ## 6.5 再起動（`mamela reboot`）
 
 起動で止まった VM（MAM-PLAN-0110）などを、Mamela の記録の中で再起動する。`mamela destroy` と同じく plan の外の明示的なコマンドで、所有の確認（pool、VMID の範囲、タグ、マーカー、VMID の予約）、名前の打ち直し、preflight と postflight を行う。変えるのは VM の電源の状態だけである。
