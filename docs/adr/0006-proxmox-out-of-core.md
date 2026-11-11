@@ -61,14 +61,20 @@ Proxmox のプロバイダーは、`github.com/ieyoukan/mamela-proxmox` に出�
   - `reset-vm`
   - `adopt-vm`: 旧組み込みプロバイダーの印を持つ VM を引き継ぐ。移行のため。
 
-### 3. 管理用の道具は、プロバイダーのリポジトリに置く
+### 3. root で実行するスクリプトは、プロバイダー（WASM）が書く
 
-root で実行するスクリプトを作る道具は、基盤ごとに違う。Proxmox のものは `mamela-proxmox` の CLI（`mamela-proxmox lab bootstrap`、`cleanup`）に移す。
+pool、ユーザー、Token、ACL を作るスクリプトは、基盤ごとに違い、Mamela の Token では実行できない（人が root で実行する）。これらは、プロバイダーが書く。
 
-- bootstrap: pool、ユーザー、トークン、ACL を作るスクリプト
-- cleanup: 使われなくなったアップロードを消すスクリプト
-
-権限の一覧は、プロバイダーのマニフェストと Proxmox の権限カタログから導く。カタログも `mamela-proxmox` に移す。
+- **宣言:** マニフェストの `scripts` に、名前と説明（何をするか、どこでだれが実行するか）を書く。
+- **呼び出し:** `script` の呼び出しで、名前と設定を渡すと、本文が返る。
+  - 渡すもの: `[provider.X.guard]` と、資格情報の ID と秘密のファイルの場所。秘密そのものは渡さない。
+  - host は、この間の要求をすべて拒む。本文は UTF-8 で 1 MiB まで。
+- **実行:** `mamela provider script <pome-dir> <provider> [<script>]`。宣言の依存（Pome.lock で固定）からプロバイダーを見つけて動かす。使う人に必要なのは Mamela だけである。
+- **Proxmox での中身:**
+  - `bootstrap`: pool、ユーザー、Token、ACL を作る。権限は、guard が確かめるのと同じマニフェストの needs から導く。
+  - `permissions`: 権限と、それが要る操作の説明。
+  - `cleanup`: 使われなくなったアップロードの一覧。`--free` のときだけ消す。
+- **権限カタログ:** Proxmox の権限カタログ（各呼び出しに要る権限）は `mamela-proxmox` に移し、マニフェストの needs がそれを満たすことを試験で確かめる。
 
 トンネルは、Control Plane を LAN に置く形（ADR 0003）になったので、なくす。
 
