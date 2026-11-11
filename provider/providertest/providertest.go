@@ -389,7 +389,7 @@ func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([
 	for _, d := range desired {
 		ok := true
 		for _, a := range d.After {
-			if o := byID[a]; !o.Exists || !o.Owned {
+			if o := byID[a]; !o.Exists || !o.Owned || o.Unfinished {
 				ok = false
 			}
 		}

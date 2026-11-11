@@ -346,18 +346,7 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 
 	// 2. A resource whose dependencies do not all exist as Mamela's waits (ADR 0007): no change
 	// of it is computed yet.
-	ready := func(d protocol.Resource) string {
-		for _, a := range d.After {
-			dep, ok := out[a]
-			switch {
-			case !ok || !dep.Observed.Exists:
-				return fmt.Sprintf("waits for %s to be created", a)
-			case !dep.Observed.Owned:
-				return fmt.Sprintf("waits for %s, which is not Mamela's (Foreign or not finished)", a)
-			}
-		}
-		return ""
-	}
+	ready := func(d protocol.Resource) string { return waitsFor(d, out) }
 
 	// 3. Each provider computes the changes of what does not wait, with what its dependencies are.
 	for _, name := range rt.names() {
@@ -404,7 +393,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			if err := s.CheckLimits(c); err != nil {
-				return nil, fmt.Errorf("MAM-SITE-0305: provider %s: the change of %s: %w", name, c.Resource, err)
+				code := "MAM-SITE-0305" // over the site's budget
+				if errors.Is(err, protocol.ErrValueNotAllowed) {
+					code = "MAM-PRV-0008" // a value the catalog does not allow
+				}
+				return nil, fmt.Errorf("%s: provider %s: the change of %s: %w", code, name, c.Resource, err)
 			}
 			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
 			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
@@ -570,4 +563,22 @@ func checkEndpoints(m protocol.Manifest, apis map[string]host.API) error {
 		}
 	}
 	return nil
+}
+
+// waitsFor says what a resource waits for (ADR 0007): a dependency that does not exist yet, is not
+// Mamela's, or whose creation did not finish (its IDs may not be all there: a create that was
+// interrupted and is finished by applying again). "" when it waits for nothing.
+func waitsFor(d protocol.Resource, provided map[string]state.Provided) string {
+	for _, a := range d.After {
+		dep, ok := provided[a]
+		switch {
+		case !ok || !dep.Observed.Exists:
+			return fmt.Sprintf("waits for %s to be created", a)
+		case !dep.Observed.Owned:
+			return fmt.Sprintf("waits for %s, which is not Mamela's (Foreign)", a)
+		case dep.Observed.Unfinished:
+			return fmt.Sprintf("waits for %s, whose creation did not finish (apply again to finish it)", a)
+		}
+	}
+	return ""
 }

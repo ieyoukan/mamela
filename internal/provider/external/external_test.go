@@ -17,6 +17,7 @@ import (
 	"github.com/ieyoukan/mamela/examples/kv/kvapi"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/provider/host"
+	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
@@ -409,6 +410,31 @@ func TestSeveralAPIsConfig(t *testing.T) {
 	} {
 		if _, err := load(bad); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A resource waits for a dependency that does not exist, is not Mamela's, or whose creation did not
+// finish; it waits for nothing once each of them is Mamela's and finished.
+func TestWaitsFor(t *testing.T) {
+	d := protocol.Resource{ID: "KVItem db", After: []string{"KVItem web"}}
+	for _, c := range []struct {
+		web  *protocol.Observed
+		want string
+	}{
+		{nil, "to be created"},
+		{&protocol.Observed{}, "to be created"},
+		{&protocol.Observed{Exists: true}, "not Mamela's"},
+		{&protocol.Observed{Exists: true, Owned: true, Unfinished: true}, "did not finish"},
+		{&protocol.Observed{Exists: true, Owned: true}, ""},
+	} {
+		provided := map[string]state.Provided{}
+		if c.web != nil {
+			provided["KVItem web"] = state.Provided{Observed: *c.web}
+		}
+		got := waitsFor(d, provided)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("web %+v: %q, want %q", c.web, got, c.want)
 		}
 	}
 }

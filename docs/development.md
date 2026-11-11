@@ -204,7 +204,7 @@
 
 Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもない。そのため、パッケージと同じ考え方で、版と sha256 を宣言で固定する組み込みの kind `NodeK3s` を足した。
 
-- **宣言:** `Mamela.k3s_server(graph, vm, version, sha256)` と `Mamela.k3s_agent(graph, vm, server, version, sha256)`。例は `examples/k3s`（server 1 台と agent 2 台、traefik と metrics-server なし。ADR 0006 で mamela-proxmox に移した）。Mamela の Pome 0.3.0 からは、`vm` の代わりにプロバイダーのマシンの `Node` を取る。
+- **宣言:** 当時は `Mamela.k3s_server(graph, vm, version, sha256)` と `Mamela.k3s_agent(graph, vm, server, version, sha256)`。ADR 0007 で、別の Pome（`pome/k3s`）の `K3s.server(graph, node, version, sha256)` と `K3s.agent(graph, node, server, version, sha256)` に移った（プロバイダーのマシンの `Node` を取る）。例は `examples/k3s`（server 1 台と agent 2 台、traefik と metrics-server なし。ADR 0006 で mamela-proxmox に移した）。
 - **クラスタ:**
   - 参加のトークンは、Control Plane がクラスタごとに作り、ノードの revision にだけ入れる。
   - agent の server のアドレスは、server の mamelet の報告から取る。報告するのは既定経路のインターフェースのアドレスだけで、k3s の範囲（10.42/16、10.43/16）は除く。plan に表示し、承認と違えば導入しない。
@@ -227,10 +227,30 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
 - **site:** `internal/site`（`mamela-site/v1`、`mamela.site.toml`、雛形は `mamela.site.example.toml`、`--site` か `MAMELA_SITE`）。Control Plane、ゲストのログイン、ネットワークの規則、1 台あたりの予算だけ。基盤ごとの値は `mamela.providers.toml`（`guard_token_id`、`guard_token_file`、`[provider.<name>.guard]`）と宣言に置く。site のコードは MAM-SITE-0304・0305。
 - **削除したもの:** `internal/proxmox`、`internal/provider/pve`、`internal/lab`、`mamela lab ...`・`destroy`・`reboot`、組み込みの `VirtualMachine`（graph は MAM-GRAPH-0005 とヒントで拒否する）、VM 用の policy のコード（[reason-codes.md](reason-codes.md) に廃止として残す）、`LAB-*` のコード。
 - **controlplane bundle:** Proxmox のトークンの代わりに、ホスト用に書き換えた `mamela.providers.toml` と、その秘密（`/etc/mamela/secrets/<provider>-token`、`<provider>-guard-token`）を入れる。
-- **Mamela の Pome 0.3.0:** `Vm`・`vm`・`node(vm)` をなくした。`package`・`service`・`k3s_server`・`k3s_agent` は `Node` を取る（`*_on` も同じものとして残す）。プロバイダーの Pome 向けに `network_spec(Network)` を足した。
+- **Mamela の Pome 0.3.0:** `Vm`・`vm`・`node(vm)` をなくした。`package`・`service` は `Node` を取る。プロバイダーの Pome 向けに `network_spec(Network)` を足した。ADR 0007 で、`*_on` の別名と k3s の関数はなくし、k3s は `pome/k3s` に分けた。
 - **例:** `examples/homelab` は例の EC2 プロバイダーのインスタンスと nginx になった。`examples/kv` に guard（`max_items`）と明示操作 `delete-item` を足した。Proxmox の例は mamela-proxmox に移した。
 - **適合試験:** `providertest` に `GuardSettings`、`ScriptCredentials`、`Case.Explicit`、`Case.World` を足した（[provider-authoring.md](provider-authoring.md)）。
 - **試験:** 偽のプロバイダー（`internal/provider/fake`）のマシンで、reconcile・plan・graph・node の試験を書き直した。
+
+## 公開する Pome の形、依存、AWS（ADR 0007、2026-11-11）
+
+設計は [ADR 0007](adr/0007-stable-pome-and-dependencies.md)。
+
+- **Pome:** Mamela Pome 0.3.0 は、グラフ、`Node`、`Network`、`package`・`service`、`Ref`・`provided`・`provided_after`、`on_node` だけ。k3s は `pome/k3s`（`K3s.server`・`K3s.agent`）。
+- **依存:** グラフ v2 の `after`（MAM-GRAPH-0103、0108）、待ち（MAM-PLAN-0113）、diff の `Dependencies`。作成が途中で止まった依存先も待つ。
+- **AWS:** JSON の API（`header`・`json`）、profile の一時的な資格情報、1 つのプロバイダーの複数の API、カタログの値の許可リスト（`values`、違反は MAM-PRV-0008）、`builtin:ecs`・`logs`・`ssm`・`iam`。
+- **実機での検証（github.com/ieyoukan/mamela-aws）:** 運用者の AWS ロール（MFA の assume-role）で、次を確かめた。
+  - **作ったもの:** 専用の VPC、サブネット、インターネットゲートウェイ、ルートテーブル、セキュリティグループ 2 つ、EC2（t4g.micro、nginx のコンテナー、IAM ロールなし）、ECS のクラスター、タスク定義、Fargate Spot のサービス（タスク数 0）、ロググループ、タスクの実行ロール。
+  - **作り方:** 依存の深さに合わせて、plan と apply を 6 回繰り返した。
+  - **負荷試験:** 明示操作 `run-task` で locust を 1 回動かした。196 リクエストで失敗は 0。
+  - **片付け:** 明示操作 `delete` で、すべてを消した。
+  - **guard:** 前後のどちらでも block はなかった。境界の外の EC2 インスタンスとクラスターは変わらなかった。
+  - **実機で見つけて直したこと:**
+    - メンバーのない JSON の呼び出しの本文
+    - 先頭が `/` の ID
+    - IAM のタグに要る `iam:TagRole`。運用者のロールになく、プロバイダーはロールにタグを付けないことにした
+    - インスタンスプロファイルを作れない運用者では ECS on EC2 にできないこと。プロバイダーに、IAM ロールのないインスタンスを足した
+    - RunInstances の固定のパラメータ
 
 ## テストの優先順位
 

@@ -3,4 +3,4 @@
 provider = "ec2-example"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "ec13e817b68ef47264c911d0537d768490f458ce66cecbf9a27108dad9f156f6"
+sha256 = "89078d9186b62e72143eacfda459c37d727b9b241e1be0665fde44e4d7c9325f"

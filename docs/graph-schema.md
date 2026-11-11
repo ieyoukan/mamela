@@ -27,7 +27,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 ## 規則
 
 - 最上位は `schema`（値は `"mamela-graph/v1"` か `"mamela-graph/v2"`）と `resources`（配列）の 2 つ。
-- 各リソースは `kind`・`name`・`spec` の 3 つ。プロバイダーのリソースは、それに `provider` が加わる。
+- 各リソースは `kind`・`name`・`spec` の 3 つ。プロバイダーのリソースは、それに `provider` が加わり、`after`（下の「依存」）も持てる。
 - 書かれていないメンバー、重複したメンバー、`null`、小数・指数表記の数値、不正な UTF-8、文書の後に続くデータは、すべて拒否する（末尾の改行 1 つだけは許す）。
 - 文書は 4 MiB まで、リソースは 10,000 件まで。
 
@@ -76,7 +76,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ### NodeK3s
 
-k3s（軽量な Kubernetes）の server または agent。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
+k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Pome（`github.com/ieyoukan/mamela/pome/k3s`、モジュール `K3s`）の `K3s.server(graph, node, version, sha256)` と `K3s.agent(graph, node, server, version, sha256)` で書く（ADR 0007）。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -111,14 +111,33 @@ k3s（軽量な Kubernetes）の server または agent。mamelet が、承認�
 | `provider` | プロバイダーの名前（マニフェストの `provider`）。英小文字・数字・`-` |
 | `name` | 英数字と `.` `_` `:` `@` `-`、253 文字まで |
 | `spec` | JSON のオブジェクト。文字列・整数・真偽値・配列・オブジェクトだけ（`null` と小数は不可）。整数は ±(2^53−1) まで（正規形は数を倍精度で書くので、それを超える整数は別の値になる。黙って変えずに拒否する。大きな値は文字列で書く）。深さ 32 まで。Mamela は中身を解釈せず、正規形（RFC 8785）にしてプロバイダーに渡す |
+| `after` | 省略できる。先にできていなければならないプロバイダーのリソースの ID（`"Kind name"`）の配列（下の「依存」） |
 
-宣言では、プロバイダーの Pome の関数（`Kv.item(...)`、`Ec2.instance(...)`）で書く。それらは `Mamela.provided` を呼ぶ。マシンの上のものは、プロバイダーの Pome が返す `Mamela.Node`（`Ec2.node(app)` など）に対して `Mamela.package`・`Mamela.service`・`Mamela.k3s_server`・`Mamela.k3s_agent` で書く（Mamela の Pome 0.3.0。`*_on` の名前も同じものとして残っている）。
+宣言では、プロバイダーの Pome の関数（`Kv.item(...)`、`Ec2.instance(...)`）で書く。それらは `Mamela.provided`（依存があれば `Mamela.provided_after`）を呼ぶ。マシンの上のものは、プロバイダーの Pome が返す `Mamela.Node`（`Ec2.node(app)` など）に対して `Mamela.package`・`Mamela.service` で書く。k3s は K3s の Pome の `K3s.server`・`K3s.agent` で書く（上の「NodeK3s」）。Mamela の Pome 0.3.0 には、0.2 の `*_on` の名前も `k3s_server`・`k3s_agent` もない（ADR 0007）。
+
+### 依存（`after`、ADR 0007）
+
+クラウドでは、あるリソースが、作るまで決まらない別のリソースの ID を要る（ECS の service は、cluster・task definition・security group の ID が要る）。そのリソースには `after` を書く。次は形だけを示す例である（`spec` の中身はプロバイダーが決める）。
+
+~~~json
+{"after": ["AwsEcsCluster main", "AwsEcsTaskDefinition web"], "kind": "AwsEcsService", "name": "web", "provider": "aws",
+ "spec": {"cluster": "main", "count": 1, "taskDefinition": "web"}}
+~~~
+
+- **参照:** 各要素は、同じ Graph で宣言したプロバイダーのリソースの ID（kind と名前を空白 1 つでつないだもの）。別のプロバイダーのリソースでもよい。
+  - 宣言にない参照、組み込みの kind のリソースへの参照は MAM-GRAPH-0103。
+  - 循環（自分自身を含む）は MAM-GRAPH-0108。
+  - 組み込みの kind のリソース（`NodePackage` など）に `after` を書くと MAM-GRAPH-0003。マシンの上のものは、もともとマシンを待つ。
+- **正規形:** 名前の順に並べ、重複を除く。空なら書かない（`after` のないリソースと同じ）。`after` は digest に入る。
+- **plan:** 依存先のどれかが、まだないか、Mamela のものと確かめられない（Foreign など）とき、そのリソースは待つ（MAM-PLAN-0113）。プロバイダーには、そのリソースの diff を求めない。依存先ができた次の plan で、変更が計画される。依存の深さだけ plan と apply を繰り返す。
+- **プロバイダーに渡すもの:** diff には、待たないリソースの依存先の観測（Mamela が所有を確かめた ID と状態）を `dependencies` として渡す（[provider-authoring.md](provider-authoring.md)）。
+- **宣言:** Mamela の Pome では `Mamela.provided_after(graph, provider, kind, name, spec, after)` と書く。`after` は、Mamela の Pome の型 `Ref(kind: ..., name: ...)` の一覧である。`Ref` は、プロバイダーの Pome が自分の型の値から作る。使う人は型の値を渡すだけなので、宣言にない名前を書き間違えない。
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
-- `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。
+- `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 
 ## 互換性
 

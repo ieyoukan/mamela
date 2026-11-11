@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -201,13 +202,17 @@ func ReadMeasure(format, value string) (int64, error) {
 	return 0, fmt.Errorf("unknown measure format %q", format)
 }
 
+// ErrValueNotAllowed: a parameter has a value its catalog entry does not list (Values): Mamela
+// allows no other, whatever the change or the site's budget.
+var ErrValueNotAllowed = errors.New("not one of the values Mamela allows")
+
 // CheckLimits checks the measured parameters of a request to a call against limits (by measure
 // name; absent or 0: no limit). A measured value that does not read is refused, limit or not.
 func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) error {
 	for _, p := range slices.Sorted(maps.Keys(e.Values)) {
 		for _, v := range params[p] {
 			if !slices.Contains(e.Values[p], ParamText(e.In(p), v)) {
-				return fmt.Errorf("%s %s: %s=%s is not one of the values Mamela allows (%s)", e.Method, e.Path, p, v, strings.Join(e.Values[p], ", "))
+				return fmt.Errorf("%s %s: %s=%s: %w (%s)", e.Method, e.Path, p, v, ErrValueNotAllowed, strings.Join(e.Values[p], ", "))
 			}
 		}
 	}

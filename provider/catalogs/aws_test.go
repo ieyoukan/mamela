@@ -1,6 +1,7 @@
 package catalogs
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -23,8 +24,7 @@ func TestIAMIsHeldToECS(t *testing.T) {
 	if err := attach.CheckLimits(map[string][]string{"RoleName": {"r"}, "PolicyArn": {PolicyECSTaskExecution}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := attach.CheckLimits(map[string][]string{"PolicyArn": {"arn:aws:iam::aws:policy/AdministratorAccess"}}, nil); err == nil ||
-		!strings.Contains(err.Error(), "not one of the values") {
+	if err := attach.CheckLimits(map[string][]string{"PolicyArn": {"arn:aws:iam::aws:policy/AdministratorAccess"}}, nil); !errors.Is(err, protocol.ErrValueNotAllowed) {
 		t.Fatalf("an administrator policy: %v", err)
 	}
 	create := entry("CreateRole")

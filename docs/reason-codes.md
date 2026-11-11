@@ -36,7 +36,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 |---|---|
 | MAM-GRAPH-0001 | JSON として正しくない（途中で切れた、Graph 以外を出力した、不正な UTF-8） |
 | MAM-GRAPH-0002 | `schema` が対応していない値 |
-| MAM-GRAPH-0003 | 定義されていないメンバーがある |
+| MAM-GRAPH-0003 | 定義されていないメンバーがある。組み込みの kind のリソースに `after` を書いた（`after` を持てるのはプロバイダーのリソースだけ。マシンの上のものは、もともとマシンを待つ） |
 | MAM-GRAPH-0004 | 必要なメンバーがない、または `null` |
 | MAM-GRAPH-0005 | 知らない kind。組み込みの kind をプロバイダーのリソースとして書いた。組み込みの `VirtualMachine`（ADR 0006 でなくなった）。マシンはプロバイダーの Pome で宣言する（Proxmox なら `github.com/ieyoukan/mamela-proxmox/pome`）。Mamela の Pome は 0.3.0 を使う |
 | MAM-GRAPH-0006 | 文書が大きすぎる |
@@ -52,11 +52,12 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 |---|---|
 | MAM-GRAPH-0101 | 名前が正しくない（プロバイダーのリソースの kind・provider・name の形） |
 | MAM-GRAPH-0102 | 同じリソースが 2 回宣言されている |
-| MAM-GRAPH-0103 | 参照している node が Graph にない（プロバイダーのマシンとして宣言されていない）、同じ名前のリソースが 2 つある。k3s の agent の server が、k3s の server として宣言されていない |
+| MAM-GRAPH-0103 | 参照している node が Graph にない（プロバイダーのマシンとして宣言されていない）、同じ名前のリソースが 2 つある。k3s の agent の server が、k3s の server として宣言されていない。`after` の参照（`"Kind name"`）が、同じ Graph のプロバイダーのリソースではない（宣言していない、組み込みの kind のリソース、書き間違い） |
 | MAM-GRAPH-0104 | 名前が `<node>/<package>` などの形と合わない |
 | MAM-GRAPH-0105 | 廃止（ADR 0006）。値が範囲外（組み込みの VirtualMachine の vCPU・メモリ・ディスク）。マシンの大きさの上限は site の予算（MAM-SITE-0305）が決める |
 | MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、`Present` 以外の状態、k3s の版・sha256・役割、マシンの `spec.network`） |
 | MAM-GRAPH-0107 | 同じ固定アドレスが複数のマシンに宣言されている（マシンの `spec.network.address`） |
+| MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに報告する。循環の中の依存を 1 つ外す |
 
 ## MAM-POL — ポリシーの判定
 
@@ -101,6 +102,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0110 | マシンが初回起動に十分な時間（15 分）を超えて動いているのに、mamelet が一度も報告していない。起動で止まっている（緊急モードなど）か、Control Plane に届かない。コンソールを確かめ、プロバイダーの明示操作で再起動する（`mamela act`。Proxmox なら `reboot-vm`、応答しなければ `reset-vm`） |
 | MAM-PLAN-0111 | マシンが止まっているので、その上のリソースは起動を待つ |
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
+| MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
@@ -131,6 +133,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PRV-0005 | 許可が変更と一致しない、期限が切れた、または使用済み | 新しく plan して承認する |
 | MAM-PRV-0006 | プロバイダーのプログラムが止まった、または時間内に答えなかった | stderr の詳細を見る |
 | MAM-PRV-0007 | プロバイダーが、頼まれたことをできなかったと答えた | メッセージに従う |
+| MAM-PRV-0008 | プロバイダーの変更が、Mamela のカタログが許さない値を送る（カタログの `values`。たとえば IAM の path・信頼ポリシー・付けるポリシー）。plan の時点で止め、apply でも送る前に確かめる | プロバイダーの不具合か、宣言が許されない値を求めている。カタログを広げるなら、Mamela への変更としてレビューする |
 
 ## MAM-SITE — site の規則
 
