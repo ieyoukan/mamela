@@ -3,4 +3,4 @@
 provider = "pve-vm"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "e45f3fb8cc8e60a9ff8b36ef27df34f4467180dd2f4237775562a62f6edb67c6"
+sha256 = "f34f349e5105b185d64804a6658751547cf92b58d8776680fd69c4e2f22141f2"

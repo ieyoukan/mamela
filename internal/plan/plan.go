@@ -187,6 +187,11 @@ func (b builder) provided(r graph.Resource) Change {
 			c.Diffs = append(c.Diffs, Diff{Field: string(pc.Change.Op) + " artifact", To: a.Describe()})
 		}
 		d := b.pol.DecideProvided(pc.Verified)
+		if pc.Unsupported != "" {
+			d = policy.Decision{Verdict: policy.Denied, Code: "MAM-POL-0309",
+				Message: fmt.Sprintf("provider %s does not carry out %s: %s", r.Provided.Provider, pc.Change.Op, pc.Unsupported),
+				Hint:    "restore the declared value to what the resource has, or change the resource by hand"}
+		}
 		c.Operations = append(c.Operations, Operation{Op: pc.Change.Op, Decision: d})
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
 		c.ProviderChanges = append(c.ProviderChanges, pc.Change)

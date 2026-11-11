@@ -489,3 +489,22 @@ func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// A difference a provider never acts on is shown and denied, with its reason; it is not "in sync".
+func TestUnsupportedProviderChangeIsDenied(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"diskGiB":5}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{"ProxmoxVM web": {Provider: "proxmox", Kind: "ProxmoxVM", Name: "web", Declared: true,
+		SpecDigest: state.SpecDigest(g.Resources[0].Provided.Spec), ObservedAt: t0,
+		Observed: protocol.Observed{ID: "ProxmoxVM web", Kind: "ProxmoxVM", Name: "web", Exists: true, Owned: true},
+		Changes: []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM web", Kind: "ProxmoxVM", Op: "shrink-vm-disk",
+			Reasons: []string{"disk 10 -> 5 GiB"}}, Unsupported: "shrinking a disk can destroy data"}}}}
+	c := find(t, Build(g, s, policy.Default), "ProxmoxVM web")
+	if c.Status != StatusChange || c.Verdict != policy.Denied || c.Operations[0].Decision.Code != "MAM-POL-0309" ||
+		!strings.Contains(c.Operations[0].Decision.Message, "shrinking a disk") {
+		t.Fatalf("%+v", c)
+	}
+}

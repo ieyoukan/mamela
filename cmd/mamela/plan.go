@@ -96,6 +96,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err)
 	}
+	rt.SetCreations(st)
 	defer rt.Close()
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)

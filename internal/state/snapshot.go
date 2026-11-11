@@ -95,6 +95,9 @@ type Provided struct {
 type ProvidedChange struct {
 	Change   protocol.Change   `json:"change"`
 	Verified protocol.Verified `json:"verified"`
+	// Unsupported says why the provider does not carry the change out (its manifest's Why): the
+	// world differs from the declaration in a way it never changes. The plan denies it.
+	Unsupported string `json:"unsupported,omitempty"`
 }
 
 // SpecDigest identifies a provider's spec (canonical JSON).

@@ -115,10 +115,7 @@ func Run(t *testing.T, s Suite) {
 		t.Run(c.Name+"/keeps-undeclared", func(t *testing.T) {
 			e := s.start(t, -1, "")
 			e.converge(c.Desired, 1)
-			observed, _, err := e.s.Observe(e.ctx, nil)
-			if err != nil {
-				t.Fatalf("observe with nothing declared: %v", err)
-			}
+			observed := e.observe(nil)
 			for _, r := range c.Desired {
 				if !hasOwned(observed, r) {
 					t.Errorf("with nothing declared, observe does not report %s as an existing resource Mamela owns; Mamela must see what it created to keep it", r.ID)
@@ -161,6 +158,9 @@ type env struct {
 	s   *host.Session
 	up  *faulty
 	ops int
+	// created is what was applied while its object did not exist, by resource: Mamela's record of
+	// what it set out to create, which vouches for the provider's claims of ownership.
+	created map[string][]map[string]string
 	// lookups, when set, checks each change before it is applied.
 	lookups func(protocol.Change)
 }
@@ -197,16 +197,27 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		}
 		sess.Close()
 	})
-	return &env{t: t, ctx: ctx, s: sess, up: up}
+	return &env{t: t, ctx: ctx, s: sess, up: up, created: map[string][]map[string]string{}}
 }
 
-// round observes, diffs and applies every change once.
-func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
+// observe observes and, as Mamela does, keeps the provider's claims of ownership only for what was
+// created through it (protocol.Vouch).
+func (e *env) observe(desired []protocol.Resource) []protocol.Observed {
 	e.t.Helper()
 	observed, _, err := e.s.Observe(e.ctx, desired)
 	if err != nil {
 		e.t.Fatalf("observe: %v", err)
 	}
+	for i, o := range observed {
+		observed[i] = protocol.Vouch(o, e.created[o.ID])
+	}
+	return observed
+}
+
+// round observes, diffs and applies every change once.
+func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
+	e.t.Helper()
+	observed := e.observe(desired)
 	changes, err := e.s.Diff(e.ctx, desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)
@@ -247,6 +258,9 @@ func (e *env) apply(c protocol.Change, desired []protocol.Resource, observed []p
 		if observed[i].ID == c.Resource {
 			o = &observed[i]
 		}
+	}
+	if o == nil || !o.Exists {
+		e.created[c.Resource] = append(e.created[c.Resource], c.IDs) // intent first, as Mamela records it
 	}
 	r := e.s.Apply(e.ctx, p, c, d, o)
 	if r.Disbelieved {
@@ -299,10 +313,7 @@ func (e *env) lookup(c protocol.Change) protocol.LookupStatus {
 // change, then requires that observing and applying again converges.
 func (e *env) recover(desired []protocol.Resource) {
 	e.t.Helper()
-	observed, _, err := e.s.Observe(e.ctx, desired)
-	if err != nil {
-		e.t.Fatalf("observe: %v", err)
-	}
+	observed := e.observe(desired)
 	changes, err := e.s.Diff(e.ctx, desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)

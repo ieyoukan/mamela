@@ -362,6 +362,14 @@ func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observe
 		if c.Resource == "" {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change %+v has no resource", c)}
 		}
+		// A difference the provider never acts on is reported as a change of an operation it
+		// declares unsupported, with nothing to send: the plan shows it and denies it.
+		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+			if len(c.Requests) > 0 || len(c.Artifacts) > 0 {
+				return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is unsupported and sends nothing, yet it has requests", c.Resource, c.Op)}
+			}
+			continue
+		}
 		if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %v", c.Resource, err)}
 		}

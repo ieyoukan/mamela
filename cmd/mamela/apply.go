@@ -78,6 +78,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if rt, err = startPrograms(ctx, programs, t, *providersFile); err != nil {
 			return report(stderr, err)
 		}
+		rt.SetCreations(st)
 		defer rt.Close()
 	}
 	siteGiven := false

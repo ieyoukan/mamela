@@ -133,7 +133,7 @@ func (p Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.ObserveP
 			continue
 		}
 		vm := vms[vmid]
-		o := protocol.Observed{ID: string(Kind) + "/" + vm.Name, Kind: Kind, Name: vm.Name, IDs: ids(vm.Node, vmid)}
+		o := protocol.Observed{ID: string(Kind) + " " + vm.Name, Kind: Kind, Name: vm.Name, IDs: ids(vm.Node, vmid)}
 		if err := p.fill(ctx, h, &o, vm); err != nil {
 			return out, err
 		}

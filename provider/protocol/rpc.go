@@ -104,9 +104,12 @@ type Observed struct {
 	Kind   ResourceKind `json:"kind"`
 	Name   string       `json:"name"`
 	Exists bool         `json:"exists"`
-	// Owned is true when the provider's marker says Mamela created it. A provider changes only
-	// what it owns or creates.
-	Owned bool `json:"owned"`
+	// Owned is true when every mark of ownership the provider keeps is there (Proxmox: the marker,
+	// the tag, the pool and the VMID range). Unfinished is true when only some are (a create that
+	// was interrupted before its last step). Either is a claim: Mamela treats the object as its own
+	// only if it matches what Mamela recorded it set out to create (ADR 0004).
+	Owned      bool `json:"owned"`
+	Unfinished bool `json:"unfinished,omitempty"`
 	// IDs are the object's IDs in the API ({"item": "web"}).
 	IDs map[string]string `json:"ids,omitempty"`
 	// Version is the observed version (an ETag, Proxmox's config digest), the precondition of a

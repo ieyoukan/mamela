@@ -118,3 +118,28 @@ func (a Artifact) Describe() string {
 	}
 	return a.ID
 }
+
+// Vouch is what Mamela makes of a provider's claim to own an object: claimed (Owned or
+// Unfinished), it is Mamela's only if its IDs match those of an object Mamela recorded it set out
+// to create for the resource (ADR 0004). A marker alone is not enough: anyone can copy one.
+func Vouch(o Observed, created []map[string]string) Observed {
+	claimed, unfinished := o.Owned || o.Unfinished, o.Unfinished
+	o.Owned, o.Unfinished = false, false
+	if !claimed || !o.Exists || len(o.IDs) == 0 {
+		return o
+	}
+	for _, ids := range created {
+		match := true
+		for k, v := range o.IDs {
+			if ids[k] != v {
+				match = false
+				break
+			}
+		}
+		if match {
+			o.Owned, o.Unfinished = true, unfinished
+			return o
+		}
+	}
+	return o
+}

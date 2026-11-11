@@ -24,6 +24,7 @@ type Runtime struct {
 	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
 	// catalog): an approval is for that API only.
 	endpoints map[string]string
+	creations Creations
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -92,6 +93,20 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 		rt.endpoints[p.Provider] = endpoint
 	}
 	return rt, nil
+}
+
+// Creations is Mamela's record of what it set out to create through providers.
+type Creations interface {
+	Creations(ctx context.Context, provider, resource string) ([]map[string]string, error)
+	RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error
+}
+
+// SetCreations sets the record that vouches for providers' claims of ownership (required before
+// observing).
+func (rt *Runtime) SetCreations(c Creations) {
+	if rt != nil {
+		rt.creations = c
+	}
 }
 
 // SetLimits sets the limits on what one change may make or change (the site's budget for one
@@ -239,6 +254,18 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
 		}
+		// A provider's claim to own an object stands only if Mamela recorded that it set out to
+		// create it: the diff, the plan and what is kept see only what Mamela vouches for.
+		if rt.creations == nil {
+			return nil, fmt.Errorf("provider %s: no record of what Mamela created to check its claims against", name)
+		}
+		for i, o := range observed {
+			created, err := rt.creations.Creations(ctx, name, o.ID)
+			if err != nil {
+				return nil, err
+			}
+			observed[i] = protocol.Vouch(o, created)
+		}
 		changes, err := s.Diff(ctx, declared, observed)
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
@@ -294,7 +321,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			if err := s.CheckLimits(c); err != nil {
 				return nil, fmt.Errorf("LAB-0305: provider %s: the change of %s: %w", name, c.Resource, err)
 			}
-			p.Changes = append(p.Changes, state.ProvidedChange{Change: c, Verified: rt.verify(s, c)})
+			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
+			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+				pc.Unsupported = o.Why
+			}
+			p.Changes = append(p.Changes, pc)
 			out[c.Resource] = p
 		}
 	}
@@ -379,6 +410,14 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	}
 	if err := p.Store.UsePermit(ctx, id, step.OperationID, step.PlanDigest); err != nil {
 		return err
+	}
+	// Intent first: a change planned when its object did not exist creates it; that is recorded
+	// before anything is sent, so that an object it leaves unfinished is still known to be
+	// Mamela's (and nothing else is).
+	if o, ok := p.last.Provided[r.ID()]; !ok || !o.Observed.Exists {
+		if err := p.Store.RecordCreation(ctx, r.Provided.Provider, r.ID(), change.IDs, step.PlanDigest, step.OperationID); err != nil {
+			return err
+		}
 	}
 	desired := resource(r)
 	var observed *protocol.Observed

@@ -159,6 +159,19 @@ CREATE TABLE k3s_tokens (
   created_ms INTEGER NOT NULL
 );
 `,
+	// 8: what Mamela set out to create through a provider, recorded before the create is sent: a
+	// provider's object is Mamela's only if it matches one of these (its marker alone is not enough).
+	`
+CREATE TABLE provider_creations (
+  provider     TEXT NOT NULL,
+  resource     TEXT NOT NULL,
+  ids          TEXT NOT NULL,
+  plan_digest  TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  recorded_ms  INTEGER NOT NULL,
+  PRIMARY KEY (provider, resource, ids)
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
