@@ -1,15 +1,14 @@
 import Lib
 import Dynamic
+import Dynamic.Number
 
-fn app() -> Lib.Vm {
-  Lib.Vm(
-    name: "app-server",
-    cpu: 2,
-    memory_mib: 2048,
-    disk_gib: 10,
-    image: "ubuntu-24.04",
-    network: Lib.Dhcp,
-  )
+fn app() -> Lib.Node {
+  Lib.Node(name: "app-server")
+}
+
+## A machine of a provider's kind, as a provider's Pome declares one.
+fn machine(graph: Lib.Graph, name: String, network: Lib.Network) -> Lib.Graph {
+  Lib.provided(graph, "test", "TestVM", name, [("network", Lib.network_spec(network))])
 }
 
 @test
@@ -18,44 +17,47 @@ fn empty_graph() {
 }
 
 @test
-fn vm_package_and_service() {
+fn machine_package_and_service() {
   g = Lib.empty()
-    |> Lib.vm(app())
+    |> machine("app-server", Lib.Dhcp)
     |> Lib.package(app(), "nginx")
     |> Lib.service(app(), "nginx", True, True)
   expected = String.concat(
     [
       "{\"resources\":[",
-      "{\"kind\":\"VirtualMachine\",\"name\":\"app-server\",\"spec\":{\"cpu\":2,\"diskGiB\":10,\"image\":\"ubuntu-24.04\",\"memoryMiB\":2048,\"network\":{\"mode\":\"dhcp\"}}},",
       "{\"kind\":\"NodePackage\",\"name\":\"app-server/nginx\",\"spec\":{\"node\":\"app-server\",\"package\":\"nginx\",\"state\":\"Present\"}},",
-      "{\"kind\":\"NodeService\",\"name\":\"app-server/nginx\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"nginx\"}}",
-      "],\"schema\":\"mamela-graph/v1\"}",
+      "{\"kind\":\"NodeService\",\"name\":\"app-server/nginx\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"nginx\"}},",
+      "{\"kind\":\"TestVM\",\"name\":\"app-server\",\"provider\":\"test\",\"spec\":{\"network\":{\"mode\":\"dhcp\"}}}",
+      "],\"schema\":\"mamela-graph/v2\"}",
     ],
   )
   assert Lib.to_json(g) == expected
 }
 
 @test
+fn the_names_of_pome_0_2_do_the_same() {
+  a = Lib.empty() |> Lib.package(app(), "nginx") |> Lib.service(app(), "nginx", True, False)
+  b = Lib.empty() |> Lib.package_on(app(), "nginx") |> Lib.service_on(app(), "nginx", True, False)
+  assert Lib.to_json(a) == Lib.to_json(b)
+}
+
+@test
 fn same_graph_same_text() {
-  g = Lib.empty() |> Lib.vm(app())
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp)
   assert Lib.to_json(g) == Lib.to_json(g)
 }
 
 @test
 fn large_integers_are_written_as_integers() {
   # The Go side rejects floats and exponents, so integers must stay plain digits.
-  vm = Lib.Vm(
-    name: "big",
-    cpu: 64,
-    memory_mib: 1048576,
-    disk_gib: 16384,
-    image: "ubuntu-24.04",
-    network: Lib.Dhcp,
-  )
-  json = Lib.to_json(Lib.empty() |> Lib.vm(vm))
-  assert json.contains("\"memoryMiB\":1048576")
-  assert json.contains("\"diskGiB\":16384")
-  assert json.contains("\"cpu\":64")
+  g = Lib.empty()
+    |> Lib.provided(
+      "test",
+      "TestVM",
+      "big",
+      [("memoryMiB", Dynamic.Number(Number.from_int(1048576)))],
+    )
+  assert Lib.to_json(g).contains("\"memoryMiB\":1048576")
 }
 
 @test
@@ -81,17 +83,10 @@ fn provided_resources_make_a_v2_graph() {
 
 @test
 fn k3s_cluster() {
-  worker = Lib.Vm(
-    name: "worker",
-    cpu: 1,
-    memory_mib: 1024,
-    disk_gib: 10,
-    image: "ubuntu-24.04",
-    network: Lib.Dhcp,
-  )
+  worker = Lib.Node(name: "worker")
   g = Lib.empty()
-    |> Lib.vm(app())
-    |> Lib.vm(worker)
+    |> machine("app-server", Lib.Dhcp)
+    |> machine("worker", Lib.Dhcp)
     |> Lib.k3s_server(app(), "v1.33.5+k3s1", "00")
     |> Lib.k3s_agent(worker, app(), "v1.33.5+k3s1", "00")
   json = Lib.to_json(g)
@@ -105,19 +100,12 @@ fn k3s_cluster() {
 
 @test
 fn static_network() {
-  vm = Lib.Vm(
-    name: "db",
-    cpu: 1,
-    memory_mib: 1024,
-    disk_gib: 10,
-    image: "ubuntu-24.04",
-    network: Lib.Static(
-      address: "192.0.2.10/24",
-      gateway: "192.0.2.1",
-      dns: ["192.0.2.1", "198.51.100.1"],
-    ),
+  network = Lib.Static(
+    address: "192.0.2.10/24",
+    gateway: "192.0.2.1",
+    dns: ["192.0.2.1", "198.51.100.1"],
   )
-  json = Lib.to_json(Lib.empty() |> Lib.vm(vm))
+  json = Lib.to_json(Lib.empty() |> machine("db", network))
   assert json.contains(
     "\"network\":{\"address\":\"192.0.2.10/24\",\"dns\":[\"192.0.2.1\",\"198.51.100.1\"],\"gateway\":\"192.0.2.1\",\"mode\":\"static\"}",
   )

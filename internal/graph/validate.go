@@ -6,16 +6,6 @@ import (
 	"regexp"
 )
 
-// Limits on declared values. They are deliberately conservative; raising one is a reviewed change.
-const (
-	MinCPU       = 1
-	MaxCPU       = 64
-	MinMemoryMiB = 256
-	MaxMemoryMiB = 1 << 20 // 1 TiB
-	MinDiskGiB   = 1
-	MaxDiskGiB   = 16384
-)
-
 var (
 	// A node name is a DNS label: it becomes a hostname.
 	nodeNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -23,8 +13,6 @@ var (
 	packageNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 	// systemd unit name without the ".service" suffix; no path separators or whitespace.
 	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,254}$`)
-	// An image reference such as "ubuntu-24.04".
-	imageRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
 	// A k3s release ("v1.33.5+k3s1") and a sha256 in hex.
 	K3sVersionRe   = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
@@ -49,16 +37,16 @@ func Validate(g *Graph) error {
 	seen := map[string]bool{}
 	nodes := map[string]int{} // name -> how many resources could be the node of that name
 	k3sServers := map[string]bool{}
-	addresses := map[string]string{} // static address -> VM
+	addresses := map[string]string{} // static address -> machine
 	for _, r := range g.Resources {
 		if seen[r.ID()] {
 			add(r, CodeDuplicateResource, "", fmt.Sprintf("%s is declared more than once", r.ID()),
 				"remove one of the declarations or give them different names")
 		}
 		seen[r.ID()] = true
-		// A node is a VirtualMachine, or a resource of a provider whose kind is a node kind (the
-		// provider says which; checked once providers run, ADR 0004).
-		if r.Kind == KindVirtualMachine || r.Provided != nil {
+		// A node is a resource of a provider whose kind is a node kind (the provider says which;
+		// checked once providers run, ADR 0004).
+		if r.Provided != nil {
 			nodes[r.Name]++
 		}
 		if r.NodeK3s != nil && r.NodeK3s.Role == K3sServer {
@@ -80,33 +68,24 @@ func Validate(g *Graph) error {
 				add(r, CodeInvalidName, "name", fmt.Sprintf("name %q is not a valid resource name", r.Name),
 					"use letters, digits and '.', '_', ':', '@', '-', starting with a letter or digit")
 			}
+			// A machine's network (spec.network, the Mamela Pome's Network): well formed, and each
+			// static address declared once.
+			if n, ok := r.Network(); ok {
+				for _, p := range checkNetwork(n) {
+					add(r, CodeInvalidValue, "spec.network", p, networkHint)
+				}
+				if ip := n.IP(); ip != "" && n.Mode == NetworkStatic {
+					if other, dup := addresses[ip]; dup {
+						add(r, CodeDuplicateAddress, "spec.network.address", fmt.Sprintf("address %s is also declared for machine %s", ip, other),
+							"give each machine its own address")
+					} else {
+						addresses[ip] = r.Name
+					}
+				}
+			}
 			continue
 		}
 		switch r.Kind {
-		case KindVirtualMachine:
-			s := r.VirtualMachine
-			if !nodeNameRe.MatchString(r.Name) {
-				add(r, CodeInvalidName, "name", fmt.Sprintf("VM name %q is not a valid hostname", r.Name),
-					"use 1-63 lowercase letters, digits and '-', starting and ending with a letter or digit")
-			}
-			checkRange(add, r, "spec.cpu", s.CPU, MinCPU, MaxCPU, "")
-			checkRange(add, r, "spec.memoryMiB", s.MemoryMiB, MinMemoryMiB, MaxMemoryMiB, " MiB")
-			checkRange(add, r, "spec.diskGiB", s.DiskGiB, MinDiskGiB, MaxDiskGiB, " GiB")
-			if !imageRe.MatchString(s.Image) {
-				add(r, CodeInvalidValue, "spec.image", fmt.Sprintf("image %q is not a valid image name", s.Image),
-					"use a name such as \"ubuntu-24.04\"")
-			}
-			for _, p := range checkNetwork(s.Network) {
-				add(r, CodeInvalidValue, "spec.network", p, networkHint)
-			}
-			if ip := s.Network.IP(); ip != "" {
-				if other, dup := addresses[ip]; dup {
-					add(r, CodeDuplicateAddress, "spec.network.address", fmt.Sprintf("address %s is also declared for VM %s", ip, other),
-						"give each VM its own address")
-				} else {
-					addresses[ip] = r.Name
-				}
-			}
 		case KindNodePackage:
 			s := r.NodePackage
 			checkNodeRef(add, r, s.Node, nodes)
@@ -140,7 +119,7 @@ func Validate(g *Graph) error {
 				add(r, CodeInvalidValue, "spec.server", "a k3s server has no server", "")
 			case s.Role == K3sAgent && !k3sServers[s.Server]:
 				add(r, CodeDanglingNode, "spec.server", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Server),
-					"declare the server with Mamela.k3s_server on that VM")
+					"declare the server with Mamela.k3s_server on that node")
 			case s.Role == K3sAgent && s.Server == s.Node:
 				add(r, CodeInvalidValue, "spec.server", "a node cannot be an agent of itself", "")
 			case s.Role != K3sServer && s.Role != K3sAgent:
@@ -163,17 +142,15 @@ func Validate(g *Graph) error {
 
 type addFunc func(r Resource, code Code, field, message, hint string)
 
-func checkRange(add addFunc, r Resource, field string, v, lo, hi int64, unit string) {
-	if v < lo || v > hi {
-		add(r, CodeOutOfRange, field, fmt.Sprintf("%s is %d%s, outside %d%s to %d%s", field, v, unit, lo, unit, hi, unit), "")
-	}
-}
+// ValidNodeName reports whether a machine's name can be its hostname (a DNS label): checked for a
+// provider's node kinds once the providers say which kinds are machines.
+func ValidNodeName(name string) bool { return nodeNameRe.MatchString(name) }
 
 func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]int) {
 	switch nodes[node] {
 	case 0:
-		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared in this graph (as a VirtualMachine or a provider's machine)", node),
-			"declare the VM in the same graph, or fix the node name")
+		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared in this graph (as a provider's machine)", node),
+			"declare the machine in the same graph, or fix the node name")
 	case 1:
 	default:
 		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q names more than one resource; a node's name must be unique", node),
@@ -183,10 +160,13 @@ func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]int) {
 
 const networkHint = "declare Dhcp, or Static(address: \"192.0.2.10/24\", gateway: \"192.0.2.1\", dns: [\"192.0.2.1\"])"
 
-// checkNetwork says what is wrong with a VM's network, if anything.
+// checkNetwork says what is wrong with a machine's network, if anything.
 func checkNetwork(n Network) []string {
 	switch n.Mode {
 	case NetworkDHCP:
+		if n.Address != "" || n.Gateway != "" || len(n.DNS) > 0 {
+			return []string{"a DHCP network has no address, gateway or name servers of its own"}
+		}
 		return nil
 	case NetworkStatic:
 	default:
@@ -213,7 +193,7 @@ func checkNetwork(n Network) []string {
 	case !subnet.Contains(gw):
 		out = append(out, fmt.Sprintf("gateway %s is not in the address's subnet %s", gw, subnet))
 	case gw == addr:
-		out = append(out, fmt.Sprintf("gateway %s is the VM's own address", gw))
+		out = append(out, fmt.Sprintf("gateway %s is the machine's own address", gw))
 	}
 	if len(n.DNS) < 1 || len(n.DNS) > 3 {
 		out = append(out, fmt.Sprintf("%d name servers; declare 1 to 3", len(n.DNS)))

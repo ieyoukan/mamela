@@ -27,10 +27,9 @@ const SchemaV2 = "mamela-graph/v2"
 type Kind = protocol.ResourceKind
 
 const (
-	KindVirtualMachine Kind = "VirtualMachine"
-	KindNodePackage    Kind = "NodePackage"
-	KindNodeService    Kind = "NodeService"
-	KindNodeK3s        Kind = "NodeK3s"
+	KindNodePackage Kind = "NodePackage"
+	KindNodeService Kind = "NodeService"
+	KindNodeK3s     Kind = "NodeK3s"
 )
 
 // Builtin reports whether a kind is one of Mamela's own (not a provider's).
@@ -39,12 +38,12 @@ func Builtin(k Kind) bool {
 	return ok
 }
 
-// kindOrder fixes the canonical order of kinds: nodes before what lives on them.
+// kindOrder fixes the canonical order of the built-in kinds. Machines are providers' node kinds
+// (ADR 0004, 0006); the built-in kinds are what lives on them.
 var kindOrder = map[Kind]int{
-	KindVirtualMachine: 0,
-	KindNodePackage:    1,
-	KindNodeService:    2,
-	KindNodeK3s:        3,
+	KindNodePackage: 1,
+	KindNodeService: 2,
+	KindNodeK3s:     3,
 }
 
 // Graph is a decoded and validated desired state.
@@ -57,10 +56,9 @@ type Resource struct {
 	Kind Kind
 	Name string
 
-	VirtualMachine *VirtualMachineSpec
-	NodePackage    *NodePackageSpec
-	NodeService    *NodeServiceSpec
-	NodeK3s        *NodeK3sSpec
+	NodePackage *NodePackageSpec
+	NodeService *NodeServiceSpec
+	NodeK3s     *NodeK3sSpec
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
@@ -77,16 +75,7 @@ type ProvidedSpec struct {
 // ID is the identity of a resource within a graph.
 func (r Resource) ID() string { return string(r.Kind) + " " + r.Name }
 
-// VirtualMachineSpec is the desired shape of a VM.
-type VirtualMachineSpec struct {
-	CPU       int64
-	MemoryMiB int64
-	DiskGiB   int64
-	Image     string
-	Network   Network
-}
-
-// NetworkMode is how a VM gets its IPv4 address. A declaration always says which: there is no
+// NetworkMode is how a machine gets its IPv4 address. A declaration always says which: there is no
 // default.
 type NetworkMode string
 
@@ -95,7 +84,9 @@ const (
 	NetworkStatic NetworkMode = "static"
 )
 
-// Network is a VM's IPv4 configuration, given to it at creation (cloud-init).
+// Network is a machine's IPv4 configuration, given to it at creation (its seed). A provider's
+// machine declares it as spec.network: {"mode": "dhcp"} or {"mode": "static", "address": ...,
+// "gateway": ..., "dns": [...]} (the Mamela Pome's Network).
 type Network struct {
 	Mode    NetworkMode
 	Address string   // static: the address with its prefix length, such as "192.0.2.10/24"
@@ -161,7 +152,7 @@ type NodePackageSpec struct {
 type NodeK3sSpec struct {
 	Node    string
 	Role    K3sRole
-	Server  string // for an agent: the VM of its server
+	Server  string // for an agent: the node of its server
 	Version string // "v1.33.5+k3s1"
 	SHA256  string // hex, of the release's binary for the node's architecture
 }
@@ -182,27 +173,32 @@ type NodeServiceSpec struct {
 	Running bool
 }
 
-// StaticIP is the declared static address of node name, or "" when it uses DHCP or is not
-// declared. A provider's machine declares it as spec.network {"mode": "static", "address": ...},
-// in the format of a VirtualMachine.
+// Network is the network a provider's machine declares (spec.network), if it declares one.
+func (r Resource) Network() (Network, bool) {
+	if r.Provided == nil {
+		return Network{}, false
+	}
+	var spec struct {
+		Network *struct {
+			Mode    string   `json:"mode"`
+			Address string   `json:"address"`
+			Gateway string   `json:"gateway"`
+			DNS     []string `json:"dns"`
+		} `json:"network"`
+	}
+	if json.Unmarshal(r.Provided.Spec, &spec) != nil || spec.Network == nil {
+		return Network{}, false
+	}
+	n := spec.Network
+	return Network{Mode: NetworkMode(n.Mode), Address: n.Address, Gateway: n.Gateway, DNS: n.DNS}, true
+}
+
+// StaticIP is the declared static address of machine name, or "" when it uses DHCP or is not
+// declared.
 func (g *Graph) StaticIP(name string) string {
 	for _, r := range g.Resources {
-		if r.Name != name {
-			continue
-		}
-		if r.Kind == KindVirtualMachine && r.VirtualMachine != nil {
-			return r.VirtualMachine.Network.IP()
-		}
-		if r.Provided != nil {
-			var spec struct {
-				Network *struct {
-					Mode    string `json:"mode"`
-					Address string `json:"address"`
-				} `json:"network"`
-			}
-			if json.Unmarshal(r.Provided.Spec, &spec) == nil && spec.Network != nil && spec.Network.Mode == string(NetworkStatic) {
-				return Network{Mode: NetworkStatic, Address: spec.Network.Address}.IP()
-			}
+		if n, ok := r.Network(); ok && r.Name == name && n.Mode == NetworkStatic {
+			return n.IP()
 		}
 	}
 	return ""

@@ -19,10 +19,11 @@ import (
 	"github.com/ieyoukan/mamela/internal/reconcile"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
-const desiredJSON = `{"schema":"mamela-graph/v1","resources":[
-{"kind":"VirtualMachine","name":"app","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
+const desiredJSON = `{"schema":"mamela-graph/v2","resources":[
+{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},
 {"kind":"NodePackage","name":"app/nginx","spec":{"node":"app","package":"nginx","state":"Present"}},
 {"kind":"NodeService","name":"app/nginx","spec":{"node":"app","service":"nginx","enabled":true,"running":true}}]}`
 
@@ -92,15 +93,36 @@ func (c storeCP) Report(ctx context.Context, r noderev.Report) error {
 	return c.st.PutNodeReport(ctx, r)
 }
 
-// vmWorld says VM app exists and is Mamela's.
-type vmWorld struct{ now func() time.Time }
+// machineWorld is mamelet's world on machine app, which its provider reports existing, Mamela's
+// and running (number 7001).
+type machineWorld struct {
+	e     *env
+	nodes *node.Provider
+}
 
-func (w vmWorld) Observe(context.Context) (state.Snapshot, error) {
-	s := state.Empty(w.now())
-	s.VMs["app"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: w.now()}
+func (w machineWorld) Observe(ctx context.Context) (state.Snapshot, error) {
+	s, err := w.nodes.Observe(ctx)
+	if err != nil {
+		return s, err
+	}
+	for _, r := range w.e.g.Resources {
+		if r.Provided == nil {
+			continue
+		}
+		s.AddProvided(map[string]state.Provided{r.ID(): {Provider: r.Provided.Provider, Kind: r.Kind, Name: r.Name, Declared: true,
+			SpecDigest: state.SpecDigest(r.Provided.Spec), ObservedAt: s.AsOf,
+			Observed: protocol.Observed{ID: r.ID(), Kind: r.Kind, Name: r.Name, Exists: true, Owned: true, IDs: map[string]string{"vmid": "7001"},
+				Node: &protocol.ObservedNode{ID: 7001, Running: true, UptimeSeconds: 60}}}})
+	}
 	return s, nil
 }
-func (vmWorld) Apply(context.Context, reconcile.Step) error { return fmt.Errorf("no VM changes here") }
+
+func (w machineWorld) Apply(ctx context.Context, step reconcile.Step) error {
+	if step.Resource.Provided != nil {
+		return fmt.Errorf("no machine changes here")
+	}
+	return w.nodes.Apply(ctx, step)
+}
 
 type env struct {
 	t     *testing.T
@@ -128,9 +150,6 @@ func newEnv(t *testing.T) *env {
 	if e.g, err = graph.Decode([]byte(desiredJSON)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.AllocateVMID(e.ctx, "app", 7001, 7001, func(context.Context, int) (bool, error) { return true, nil }); err != nil {
-		t.Fatal(err)
-	}
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	e.agent = &mamelet.Agent{
 		Config: mamelet.Config{Node: "app", VMID: 7001, RevisionKey: key.Public().(ed25519.PublicKey), AllowedOrigins: []string{"Ubuntu:"}},
@@ -143,13 +162,13 @@ func newEnv(t *testing.T) *env {
 		e.agent.Round(ctx)
 		return nil
 	}}
-	e.rec = &reconcile.Reconciler{Store: st, Provider: node.Combined{VMs: vmWorld{now: clock}, Nodes: e.nodes}, Owner: "test", Lease: time.Hour}
+	e.rec = &reconcile.Reconciler{Store: st, Provider: machineWorld{e: e, nodes: e.nodes}, Owner: "test", Lease: time.Hour}
 	return e
 }
 
 func (e *env) publish() {
 	e.t.Helper()
-	if err := node.Publish(e.ctx, e.st, e.g, e.pol, "", nil); err != nil {
+	if err := node.Publish(e.ctx, e.st, e.g, e.pol, "", map[string]int64{"app": 7001}); err != nil {
 		e.t.Fatal(err)
 	}
 }

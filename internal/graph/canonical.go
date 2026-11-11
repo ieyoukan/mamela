@@ -22,21 +22,6 @@ type canonResource struct {
 	Spec     any    `json:"spec"`
 }
 
-type canonVirtualMachine struct {
-	CPU       int64        `json:"cpu"`
-	DiskGiB   int64        `json:"diskGiB"`
-	Image     string       `json:"image"`
-	MemoryMiB int64        `json:"memoryMiB"`
-	Network   canonNetwork `json:"network"`
-}
-
-type canonNetwork struct {
-	Address string   `json:"address,omitempty"`
-	DNS     []string `json:"dns,omitempty"`
-	Gateway string   `json:"gateway,omitempty"`
-	Mode    string   `json:"mode"`
-}
-
 type canonNodePackage struct {
 	Node    string `json:"node"`
 	Package string `json:"package"`
@@ -106,11 +91,6 @@ func (g *Graph) Canonical() []byte {
 			continue
 		}
 		switch r.Kind {
-		case KindVirtualMachine:
-			s := r.VirtualMachine
-			n := s.Network
-			cr.Spec = canonVirtualMachine{CPU: s.CPU, DiskGiB: s.DiskGiB, Image: s.Image, MemoryMiB: s.MemoryMiB,
-				Network: canonNetwork{Address: n.Address, DNS: n.DNS, Gateway: n.Gateway, Mode: string(n.Mode)}}
 		case KindNodePackage:
 			s := r.NodePackage
 			cr.Spec = canonNodePackage{Node: s.Node, Package: s.Package, State: string(s.State)}

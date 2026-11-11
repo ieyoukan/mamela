@@ -12,11 +12,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/ieyoukan/mamela/internal/lab"
+	"github.com/ieyoukan/mamela/internal/provider/external"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 )
 
 // Where a Control Plane host keeps what the bundle holds (ADR 0003).
@@ -36,16 +38,17 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fs := flag.NewFlagSet("mamela controlplane bundle", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
-	sitePath := fs.String("site", envOr("MAMELA_LAB_SITE", "lab/site.local.toml"), "lab site definition")
+	sitePath := addSiteFlag(fs)
+	providersFile := addProvidersFlag(fs)
 	out := fs.String("out", ".mamela/controlplane-bundle.tar", "the archive to write (mode 0600; it holds tokens and private keys)")
 	newURL := fs.String("url", "", "how mamelet reaches the Control Plane on its host, https://<address>:<port> (required)")
-	host := fs.String("host", "", "the lab VM the Control Plane will run on, if it is one: its plans never change it")
+	host := fs.String("host", "", "the machine the Control Plane will run on, if Mamela manages it: its plans never change it")
 	fs.Usage = func() { fmt.Fprint(stderr, controlPlaneUsage); fs.PrintDefaults() }
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 0 || *newURL == "" {
 		fs.Usage()
 		return 2
 	}
-	site, err := lab.LoadSite(*sitePath)
+	site, err := sitedef.Load(*sitePath)
 	if err != nil {
 		return report(stderr, err)
 	}
@@ -60,7 +63,7 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	files := map[string]bundleFile{}
 	add := func(name string, mode int64, data []byte) { files[name] = bundleFile{mode: mode, data: data} }
 	read := func(path string) ([]byte, error) {
-		p, err := lab.ExpandHome(path)
+		p, err := sitedef.ExpandHome(path)
 		if err != nil {
 			return nil, err
 		}
@@ -69,13 +72,10 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 
 	// The site, as the host sees it: its own URL, listening on its address, its files.
 	moved := *site
-	moved.Proxmox.TokenSecretFile = cpSecrets + "/lab-token"
-	moved.Proxmox.AuditTokenSecretFile = cpSecrets + "/audit-token"
 	moved.ControlPlane.URL = *newURL
 	moved.ControlPlane.Listen = net.JoinHostPort("0.0.0.0", u.Port())
 	moved.ControlPlane.StateDir = cpVar + "/cp"
 	moved.ControlPlane.MameletBinary = cpVar + "/mamelet-linux-amd64"
-	moved.ControlPlane.TunnelJump = ""
 	moved.ControlPlane.MoveTo = ""
 	moved.ControlPlane.Host = *host
 	if site.Guest.SSHPublicKeyFile != "" {
@@ -86,32 +86,58 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		add("etc/guest-ssh.pub", 0o644, b)
 	}
-	if site.Proxmox.TLSCAFile != "" {
-		moved.Proxmox.TLSCAFile = cpEtc + "/proxmox-ca.pem"
-		b, err := read(site.Proxmox.TLSCAFile)
-		if err != nil {
-			return report(stderr, err)
-		}
-		add("etc/proxmox-ca.pem", 0o644, b)
-	}
 	if err := moved.Validate(); err != nil {
 		return report(stderr, fmt.Errorf("the site for the host: %w", err))
 	}
 	var siteText bytes.Buffer
-	fmt.Fprintf(&siteText, "# The lab site of the Control Plane host, written by `mamela controlplane bundle` on %s.\n", wallClock().Format(time.RFC3339))
+	fmt.Fprintf(&siteText, "# The site of the Control Plane host, written by `mamela controlplane bundle` on %s.\n", wallClock().Format(time.RFC3339))
 	if err := toml.NewEncoder(&siteText).Encode(moved); err != nil {
 		return report(stderr, err)
 	}
 	add("etc/site.toml", 0o600, siteText.Bytes())
 
-	for name, path := range map[string]string{"secrets/lab-token": site.Proxmox.TokenSecretFile, "secrets/audit-token": site.Proxmox.AuditTokenSecretFile} {
-		secret, err := lab.ReadSecret(path)
+	// The providers' APIs (plan and apply run on the host, with its database), with their secrets
+	// and catalog files moved to the host's places.
+	if _, err := os.Stat(*providersFile); err == nil {
+		cfg, err := external.LoadConfig(*providersFile)
 		if err != nil {
 			return report(stderr, err)
 		}
-		add("etc/"+name, 0o600, []byte(secret+"\n"))
+		for name, a := range cfg.Provider {
+			for _, f := range []struct {
+				path *string
+				dest string
+			}{{&a.TokenFile, name + "-token"}, {&a.GuardTokenFile, name + "-guard-token"}} {
+				if *f.path == "" {
+					continue
+				}
+				secret, err := sitedef.ReadSecret(*f.path)
+				if err != nil {
+					return report(stderr, fmt.Errorf("provider %s: %w", name, err))
+				}
+				add("etc/secrets/"+f.dest, 0o600, []byte(secret+"\n"))
+				*f.path = cpSecrets + "/" + f.dest
+			}
+			if a.Catalog != "" && !strings.HasPrefix(a.Catalog, "builtin:") {
+				b, err := read(a.Catalog)
+				if err != nil {
+					return report(stderr, fmt.Errorf("provider %s: catalog: %w", name, err))
+				}
+				add("etc/catalog-"+name+".json", 0o644, b)
+				a.Catalog = cpEtc + "/catalog-" + name + ".json"
+			}
+			cfg.Provider[name] = a
+		}
+		var text bytes.Buffer
+		fmt.Fprintf(&text, "# The providers' APIs of the Control Plane host, written by `mamela controlplane bundle` on %s.\n", wallClock().Format(time.RFC3339))
+		if err := toml.NewEncoder(&text).Encode(cfg); err != nil {
+			return report(stderr, err)
+		}
+		add("etc/providers.toml", 0o640, text.Bytes())
+	} else if !os.IsNotExist(err) {
+		return report(stderr, err)
 	}
-	stateDir, err := lab.ExpandHome(site.ControlPlane.StateDir)
+	stateDir, err := sitedef.ExpandHome(site.ControlPlane.StateDir)
 	if err != nil {
 		return report(stderr, err)
 	}
@@ -161,13 +187,14 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if err := writeBundle(*out, files); err != nil {
 		return report(stderr, err)
 	}
-	fmt.Fprintf(stdout, "wrote %s (mode 0600: it holds the Proxmox tokens and the Control Plane's private keys)\n\n", *out)
+	fmt.Fprintf(stdout, "wrote %s (mode 0600: it holds the providers' tokens and the Control Plane's private keys)\n\n", *out)
 	fmt.Fprintf(stdout, "On the host (Linux, amd64), as root:\n")
 	fmt.Fprintf(stdout, "  1. put a linux/amd64 mamela at /usr/local/bin/mamela (GOOS=linux GOARCH=amd64 go build -o mamela ./cmd/mamela)\n")
 	fmt.Fprintf(stdout, "  2. mkdir b && tar -xf %s -C b && b/install.sh b   (review install.sh first)\n", filepath.Base(*out))
 	fmt.Fprintf(stdout, "  3. stop `mamela serve` here, then: systemctl enable --now mamela-serve\n\n")
 	fmt.Fprintf(stdout, "Mamelets created from now on reach %s directly. Existing ones move when their revision says so:\n", *newURL)
-	fmt.Fprintf(stdout, "set controlplane.move_to = %q here and plan --site once before making this bundle (ADR 0003).\n", *newURL)
+	fmt.Fprintf(stdout, "set controlplane.move_to = %q here and plan once before making this bundle (ADR 0003).\n", *newURL)
+	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
 	if site.ControlPlane.MoveTo != *newURL {
 		fmt.Fprintf(stdout, "\nnote: controlplane.move_to is %q here, not %q: existing mamelets have not been told to move.\n", site.ControlPlane.MoveTo, *newURL)
 	}
@@ -222,8 +249,8 @@ func isLoopbackHost(h string) bool {
 const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<address>:<port> [--host <vm>] [flags]
 
 Packs what a Control Plane host needs (ADR 0003) into one archive: a consistent copy of the state
-database, the Control Plane's keys, the Proxmox tokens, the lab site rewritten for the host, the
-mamelet binary, a systemd unit and an install script. The archive holds secrets: copy it only to
+database, the Control Plane's keys, the site and the providers' APIs (mamela.providers.toml, with
+their tokens) rewritten for the host, the mamelet binary, a systemd unit and an install script. The archive holds secrets: copy it only to
 the host, over SSH, and delete it afterwards.
 
 Flags:
@@ -262,20 +289,21 @@ r="${MAMELA_INSTALL_ROOT:-}" # a root to install under (tests); empty: /
 test -x $r/usr/local/bin/mamela || { echo "put a linux/amd64 mamela at $r/usr/local/bin/mamela first" >&2; exit 1; }
 # Refuse before writing anything when this host has a Control Plane already: installing another
 # bundle over it would mix its database with other keys, tokens or site.
-for existing in $r/var/lib/mamela/state.db $r/var/lib/mamela/cp $r/etc/mamela/site.toml $r/etc/mamela/secrets $r/etc/systemd/system/mamela-serve.service; do
+for existing in $r/var/lib/mamela/state.db $r/var/lib/mamela/cp $r/etc/mamela/site.toml $r/etc/mamela/providers.toml $r/etc/mamela/secrets $r/etc/systemd/system/mamela-serve.service; do
   if test -e "$existing"; then
     echo "$existing exists: this host has a Control Plane already; nothing was changed (move it away to install this bundle)" >&2
     exit 1
   fi
 done
-# A user of its own, never a login user: the guest login user of lab VMs is often "mamela", and may sudo.
+# A user of its own, never a login user: the login user of the machines is often "mamela", and may sudo.
 id mamela-cp >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/mamela --shell /usr/sbin/nologin mamela-cp
 install -d -m 0750 -o root -g mamela-cp $r/etc/mamela
 install -d -m 0750 -o root -g mamela-cp $r/etc/mamela/secrets
 install -d -m 0700 -o mamela-cp -g mamela-cp $r/var/lib/mamela $r/var/lib/mamela/cp
-for f in "$b"/etc/secrets/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/etc/mamela/secrets/; done
+for f in "$b"/etc/secrets/*; do if test -f "$f"; then install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/etc/mamela/secrets/; fi; done
 install -m 0640 -o root -g mamela-cp "$b/etc/site.toml" $r/etc/mamela/site.toml
-for f in "$b"/etc/guest-ssh.pub "$b"/etc/proxmox-ca.pem; do
+if test -f "$b/etc/providers.toml"; then install -m 0640 -o root -g mamela-cp "$b/etc/providers.toml" $r/etc/mamela/providers.toml; fi
+for f in "$b"/etc/guest-ssh.pub "$b"/etc/catalog-*.json; do
   if test -f "$f"; then install -m 0644 -o root -g root "$f" $r/etc/mamela/; fi
 done
 for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var/lib/mamela/cp/; done

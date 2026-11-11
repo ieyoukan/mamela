@@ -2,13 +2,36 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"io/fs"
+	"os"
 
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/store"
 )
+
+// defaultSite is where the site definition is looked for (gitignored; mamela.site.example.toml).
+const defaultSite = "mamela.site.toml"
+
+func addSiteFlag(fs *flag.FlagSet) *string {
+	return fs.String("site", envOr("MAMELA_SITE", defaultSite),
+		"the site definition: the Control Plane, the machines' login, network rules and limits (TOML; see mamela.site.example.toml)")
+}
+
+// loadSite reads the site definition, or returns nil when there is none at the default place (a
+// declaration of providers' resources alone needs none). A site named explicitly must exist.
+func loadSite(path string) (*sitedef.Site, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) && path == defaultSite && os.Getenv("MAMELA_SITE") == "" {
+		return nil, nil
+	}
+	return sitedef.Load(path)
+}
 
 func addProvidersFlag(fs *flag.FlagSet) *string {
 	return fs.String("providers", envOr("MAMELA_PROVIDERS", "mamela.providers.toml"),
@@ -27,7 +50,7 @@ func startProviders(ctx context.Context, dir string, t tools, configPath string)
 
 // declaredProviders are the built-in providers and those the declaration in dir imports: their
 // manifests say what each resource may need. Nothing is observed; no API is contacted.
-func declaredProviders(ctx context.Context, site *lab.Site, dir string, t tools) (spec.Providers, error) {
+func declaredProviders(ctx context.Context, site *sitedef.Site, dir string, t tools) (spec.Providers, error) {
 	rt, err := startProviders(ctx, dir, t, "")
 	if err != nil {
 		return nil, err

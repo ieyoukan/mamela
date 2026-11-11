@@ -16,7 +16,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/graph"
-	"github.com/ieyoukan/mamela/internal/lab"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 )
 
 const usage = `mamela - safe, declarative infrastructure (early development)
@@ -27,13 +27,13 @@ Usage:
   mamela plan [flags] <pome-dir>      show and save what would change, and what needs approval
   mamela plan --replay <plan-digest>  recompute a saved plan and check it is unchanged
   mamela approve <plan-digest>        approve exactly that plan
-  mamela apply --site <file> <plan-digest>  carry out an approved plan on the lab Proxmox
-  mamela destroy --site <file> <vm>   destroy a VM Mamela created (shows it first; needs --confirm <vm>)
-  mamela reboot --site <file> <vm>    restart a VM Mamela created, for example one stuck at boot (--hard resets it; needs --confirm <vm>)
+  mamela apply <plan-digest>          carry out an approved plan (each provider's guard checks before and after)
+  mamela guard <pome-dir>             run the providers' safety checks, as before an apply (read-only)
+  mamela act <op> <resource> <pome-dir>  an explicit operation of a provider (delete, reboot, adopt...);
+                                      shows it, and does it only with --confirm <resource name>
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
-  mamela serve --site <file>          serve mamelet (the agent in lab VMs): enrollment, revisions, reports
-  mamela lab <bootstrap|preflight|postflight|tunnel>  set up and check the live test lab (docs/lab.md)
-  mamela provider <inspect|trust>     check a provider program; trust a native one
+  mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
+  mamela provider <inspect|trust|script>  check a provider program; trust a native one; print its setup scripts
   mamela toolchain [status|install]  check or install the pinned emela and wasmtime
   mamela version                      print the Mamela version and its pinned toolchain
 
@@ -62,14 +62,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runApprove(ctx, args[1:], stdout, stderr)
 	case "apply":
 		return runApply(ctx, args[1:], stdout, stderr)
-	case "lab":
-		return runLab(ctx, args[1:], stdout, stderr)
+	case "guard":
+		return runGuard(ctx, args[1:], stdout, stderr)
+	case "act":
+		return runAct(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
-	case "destroy":
-		return runDestroy(ctx, args[1:], stdout, stderr)
-	case "reboot":
-		return runReboot(ctx, args[1:], stdout, stderr)
 	case "controlplane":
 		return runControlPlane(ctx, args[1:], stdout, stderr)
 	case "provider":
@@ -91,7 +89,6 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela eval", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print the canonical mamela-graph/v1 JSON instead of a summary")
-	sitePath := fs.String("site", "", "lab site definition, to name the ACL paths in what the declaration may need")
 	twice := fs.Bool("twice", false, "evaluate twice and require the same digest (determinism check)")
 	tf := addToolFlags(fs)
 	fs.Usage = func() {
@@ -129,12 +126,7 @@ func runEval(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	printSummary(stdout, dir, res, *twice)
-	var site *lab.Site // nil: placeholder paths
-	if *sitePath != "" {
-		if site, err = lab.LoadSite(*sitePath); err != nil {
-			return report(stderr, err)
-		}
-	}
+	var site *sitedef.Site // a provider's targets are templates over its resources' fields
 	ps, err := declaredProviders(ctx, site, dir, t)
 	if err != nil {
 		return report(stderr, err)
@@ -176,9 +168,6 @@ func printSummary(w io.Writer, dir string, res *evaluate.Result, twice bool) {
 
 func describe(r graph.Resource) string {
 	switch r.Kind {
-	case graph.KindVirtualMachine:
-		s := r.VirtualMachine
-		return fmt.Sprintf("%d vCPU, %d MiB memory, %d GiB disk, image %s, network %s", s.CPU, s.MemoryMiB, s.DiskGiB, s.Image, s.Network)
 	case graph.KindNodePackage:
 		s := r.NodePackage
 		return fmt.Sprintf("package %s present on %s", s.Package, s.Node)

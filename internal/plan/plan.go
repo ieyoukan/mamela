@@ -56,6 +56,8 @@ type Diff struct {
 type Operation struct {
 	Op       policy.Op       `json:"op"`
 	Decision policy.Decision `json:"decision"`
+	// Late operations run after every other operation of the apply (protocol.Change.Late).
+	Late bool `json:"late,omitempty"`
 }
 
 // Note explains a status that has no operation (waiting, blocked, retained).
@@ -109,12 +111,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		ProvidersDigest: providers,
 		AsOf:            snap.AsOf.UTC(),
 	}}
-	desiredVMs := map[string]bool{}
 	for _, r := range g.Sorted() {
 		switch r.Kind {
-		case graph.KindVirtualMachine:
-			desiredVMs[r.Name] = true
-			p.Changes = append(p.Changes, b.guard(r.Name, b.vm(r)))
 		case graph.KindNodePackage:
 			p.Changes = append(p.Changes, b.guard(r.NodePackage.Node, b.pkg(r)))
 		case graph.KindNodeService:
@@ -127,16 +125,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			}
 		}
 	}
-	// Managed VMs that are no longer declared are kept: removal is not deletion.
-	for _, name := range slices.Sorted(maps.Keys(snap.VMs)) {
-		if vm := snap.VMs[name]; vm.Managed && !desiredVMs[name] {
-			p.Changes = append(p.Changes, Change{Kind: graph.KindVirtualMachine, Name: name, Status: StatusRetained,
-				Diffs: []Diff{}, Operations: []Operation{},
-				Note: &Note{Code: "MAM-PLAN-0301", Message: "removed from the declaration; Mamela keeps it and never deletes it",
-					Hint: "delete it by hand if it is no longer needed"}})
-		}
-	}
-	// The same for the resources of providers: a provider reports what Mamela created.
+	// Resources of providers that are no longer declared are kept: removal is not deletion. A
+	// provider reports what Mamela created.
 	declared := map[string]bool{}
 	for _, r := range g.Resources {
 		declared[r.ID()] = true
@@ -146,7 +136,7 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, Change{Kind: o.Kind, Name: o.Name, Status: StatusRetained, Provider: o.Provider,
 				Diffs: []Diff{}, Operations: []Operation{},
 				Note: &Note{Code: "MAM-PLAN-0301", Message: "removed from the declaration; Mamela keeps it and never deletes it",
-					Hint: "delete it by hand if it is no longer needed"}})
+					Hint: "if it is no longer needed, delete it with its provider's explicit operation (mamela act), or by hand"}})
 		}
 	}
 	p.Digest = digest(p)
@@ -194,7 +184,7 @@ func (b builder) provided(r graph.Resource) Change {
 				Message: fmt.Sprintf("provider %s does not carry out %s: %s", r.Provided.Provider, pc.Change.Op, pc.Unsupported),
 				Hint:    "restore the declared value to what the resource has, or change the resource by hand"}
 		}
-		c.Operations = append(c.Operations, Operation{Op: pc.Change.Op, Decision: d})
+		c.Operations = append(c.Operations, Operation{Op: pc.Change.Op, Decision: d, Late: pc.Change.Late})
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
 		c.ProviderChanges = append(c.ProviderChanges, pc.Change)
 	}
@@ -232,106 +222,43 @@ func (b builder) staleNote(observedAt time.Time) *Note {
 		Hint:    "observe again before planning; Mamela does not act on stale information"}
 }
 
-func (b builder) vm(r graph.Resource) Change {
-	want := r.VirtualMachine
-	c := newChange(r)
-	got, exists := b.snap.VMs[r.Name]
-	if !exists {
-		c.Diffs = []Diff{
-			{"cpu", "", itoa(want.CPU)}, {"memoryMiB", "", itoa(want.MemoryMiB)},
-			{"diskGiB", "", itoa(want.DiskGiB)}, {"image", "", want.Image}, {"network", "", want.Network.String()},
-			// Created stopped, started after every VM of the run is created.
-			{"running", "false", "true"},
-		}
-		return b.withOps(c, policy.Subject{Op: policy.OpCreateVM}, policy.Subject{Op: policy.OpStartVM})
-	}
-	if !got.Managed {
-		c.Diffs = []Diff{}
-		return b.withOps(c, policy.Subject{Op: policy.OpChangeForeign})
-	}
-	if b.stale(got.ObservedAt) {
-		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
-		return c
-	}
-	var subjects []policy.Subject
-	// The disk first: resizing CPU or memory restarts a running VM, and the guest grows its
-	// filesystem to the disk at boot (cloud-init growpart).
-	if got.DiskGiB != want.DiskGiB {
-		c.Diffs = append(c.Diffs, Diff{"diskGiB", itoa(got.DiskGiB), itoa(want.DiskGiB)})
-		op := policy.OpGrowVMDisk
-		if want.DiskGiB < got.DiskGiB {
-			op = policy.OpShrinkVMDisk
-		}
-		subjects = append(subjects, policy.Subject{Op: op})
-	}
-	if got.CPU != want.CPU {
-		c.Diffs = append(c.Diffs, Diff{"cpu", itoa(got.CPU), itoa(want.CPU)})
-		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMCPU})
-	}
-	if got.MemoryMiB != want.MemoryMiB {
-		c.Diffs = append(c.Diffs, Diff{"memoryMiB", itoa(got.MemoryMiB), itoa(want.MemoryMiB)})
-		subjects = append(subjects, policy.Subject{Op: policy.OpResizeVMMemory})
-	}
-	if got.Image != want.Image {
-		c.Diffs = append(c.Diffs, Diff{"image", got.Image, want.Image})
-		subjects = append(subjects, policy.Subject{Op: policy.OpReplaceVMImage})
-	}
-	if got.Network != "" && got.Network != want.Network.String() {
-		c.Diffs = append(c.Diffs, Diff{"network", got.Network, want.Network.String()})
-		subjects = append(subjects, policy.Subject{Op: policy.OpChangeVMNetwork})
-	}
-	if got.Stopped {
-		c.Diffs = append(c.Diffs, Diff{"running", "false", "true"})
-		subjects = append(subjects, policy.Subject{Op: policy.OpStartVM})
-	}
-	return b.withOps(c, subjects...)
-}
-
-// nodeReady reports whether the node's VM exists, is managed and freshly observed. Without that,
+// nodeReady reports whether the node's machine exists, is managed and running. Without that,
 // node resources wait: there is nothing (or nothing trustworthy) to observe them on.
 func (b builder) nodeReady(node string) (bool, *Note) {
 	m, ok := b.machine(node)
 	switch {
 	case !ok:
-		return false, &Note{Code: "MAM-PLAN-0101", Message: fmt.Sprintf("waits for VM %s to be created", node)}
+		return false, &Note{Code: "MAM-PLAN-0101", Message: fmt.Sprintf("waits for machine %s to be created", node)}
 	case !m.managed:
-		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("VM %s is not managed by Mamela (Foreign)", node),
-			Hint: "Mamela does not configure machines it did not create"}
+		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("machine %s is not managed by Mamela (Foreign)", node),
+			Hint: "Mamela does not configure machines it did not create; a provider may offer to adopt one (mamela act)"}
 	case m.stopped:
-		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for VM %s to be started", node)}
+		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for machine %s to be started", node)}
 	}
 	return true, nil
 }
 
-// machine is what plans need of a node: a VirtualMachine, or a provider's machine (ADR 0004).
+// machine is what plans need of a node: a provider's machine (ADR 0004).
 type machine struct {
 	managed, stopped bool
 	uptime           time.Duration
 }
 
 func (b builder) machine(node string) (machine, bool) {
-	vm, isVM := b.snap.VMs[node]
-	if isVM && vm.Managed {
-		return machine{managed: true, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
+	n, ok := b.snap.Nodes[node]
+	if !ok {
+		return machine{}, false
 	}
-	// A provider's machine is, to the built-in Proxmox observation, a VM it did not create
-	// (Foreign): the provider's word on its own machine comes first.
-	if n, ok := b.snap.Nodes[node]; ok {
-		return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
-	}
-	if isVM {
-		return machine{managed: false, stopped: vm.Stopped, uptime: time.Duration(vm.UptimeSeconds) * time.Second}, true
-	}
-	return machine{}, false
+	return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
 }
 
-// SilentAgentAfter is how long a VM may run before Mamela says that its agent has never reported.
+// SilentAgentAfter is how long a machine may run before Mamela says that its agent has never reported.
 // A first boot with cloud-init takes a few minutes; this is well beyond it.
 const SilentAgentAfter = 15 * time.Minute
 
-// awaitAgent is how a node resource waits for its agent's first report: patiently while the VM is
-// young, but once it has been running long past a first boot, the agent is not coming by itself
-// (the VM may be stuck at boot, for example in emergency mode, or cannot reach the Control
+// awaitAgent is how a node resource waits for its agent's first report: patiently while the
+// machine is young, but once it has been running long past a first boot, the agent is not coming
+// by itself (the machine may be stuck at boot, for example in emergency mode, or cannot reach the Control
 // Plane), and the plan says so.
 func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
 	m, _ := b.machine(node)
@@ -339,9 +266,9 @@ func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
 		return StatusWaiting, waiting
 	}
 	return StatusBlocked, &Note{Code: "MAM-PLAN-0110",
-		Message: fmt.Sprintf("VM %s has been running for %s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane",
+		Message: fmt.Sprintf("machine %s has been running for %s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane",
 			node, m.uptime.Truncate(time.Minute)),
-		Hint: "look at its console; if it is stuck, restart it with `mamela reboot " + node + "` (add --hard if the guest does not respond)"}
+		Hint: "look at its console; if it is stuck, restart it with its provider's explicit operation (mamela act, for example reboot-vm or reset-vm of Proxmox)"}
 }
 
 func (b builder) pkg(r graph.Resource) Change {
@@ -561,8 +488,6 @@ func (p *Plan) Canonical() []byte {
 	}
 	return out
 }
-
-func itoa(n int64) string { return fmt.Sprintf("%d", n) }
 
 func btoa(b bool) string {
 	if b {

@@ -255,8 +255,12 @@ func (rt *Runtime) CheckGraph(g *graph.Graph) error {
 		if !ok {
 			return fmt.Errorf("%s uses provider %s, which none of the declaration's dependencies provides (add the provider's Pome to Pome.toml)", r.ID(), r.Provided.Provider)
 		}
-		if !slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind }) {
+		i := slices.IndexFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind })
+		if i < 0 {
 			return fmt.Errorf("%s: provider %s does not handle kind %s", r.ID(), r.Provided.Provider, r.Kind)
+		}
+		if s.Manifest().Kinds[i].Node && !graph.ValidNodeName(r.Name) {
+			return fmt.Errorf("%s is a machine, and %q is not a valid hostname: use 1-63 lowercase letters, digits and '-', starting and ending with a letter or digit", r.ID(), r.Name)
 		}
 	}
 	return nil
@@ -269,6 +273,9 @@ func (rt *Runtime) sessionOf(name string) (*host.Session, bool) {
 	s, ok := rt.sessions[name]
 	return s, ok
 }
+
+// Resource is a declared resource of a provider, as the provider receives it.
+func Resource(r graph.Resource) protocol.Resource { return resource(r) }
 
 func resource(r graph.Resource) protocol.Resource {
 	return protocol.Resource{ID: r.ID(), Kind: r.Kind, Name: r.Name, Spec: r.Provided.Spec}
@@ -358,7 +365,7 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			if err := s.CheckLimits(c); err != nil {
-				return nil, fmt.Errorf("LAB-0305: provider %s: the change of %s: %w", name, c.Resource, err)
+				return nil, fmt.Errorf("MAM-SITE-0305: provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
 			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
@@ -369,6 +376,15 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		}
 	}
 	return out, nil
+}
+
+// Verify classifies the requests a change of provider name sends, with the host's catalog.
+func (rt *Runtime) Verify(name string, c protocol.Change) protocol.Verified {
+	s, ok := rt.sessionOf(name)
+	if !ok {
+		return protocol.Verified{}
+	}
+	return rt.verify(s, c)
 }
 
 // verify classifies the requests a change sends, with the host's catalog.

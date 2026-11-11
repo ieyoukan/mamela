@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/provider/host"
 	"github.com/ieyoukan/mamela/internal/seed"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -27,9 +27,9 @@ const maxDownload = 8 << 30
 // artifacts makes the files providers' changes need (ADR 0004): downloads, checked against their
 // sha256 and cached by it, and nodes' mamelet seeds, with the site's network rules.
 type artifacts struct {
-	Cache string      // where downloads are kept, by sha256
-	Site  *lab.Site   // nil: no seeds (no lab, no Control Plane)
-	Seeds *seed.Maker // nil: no seeds
+	Cache string        // where downloads are kept, by sha256
+	Site  *sitedef.Site // nil: no seeds (no site, no Control Plane)
+	Seeds *seed.Maker   // nil: no seeds
 	// Nodes gives numbers to the nodes a change leaves without one (ADR 0005).
 	Nodes interface {
 		NodeNumber(ctx context.Context, node string) (int64, error)
@@ -172,7 +172,7 @@ func (m *artifacts) verified(path, want string) (io.ReadCloser, error) {
 }
 
 // siteLimits is the site's budget for one machine, as limits on providers' measured parameters.
-func siteLimits(site *lab.Site) map[string]int64 {
+func siteLimits(site *sitedef.Site) map[string]int64 {
 	if site == nil {
 		return nil
 	}

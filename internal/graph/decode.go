@@ -30,21 +30,6 @@ type wireResource struct {
 	Spec     jsontext.Value `json:"spec"`
 }
 
-type wireVirtualMachine struct {
-	CPU       *int64       `json:"cpu"`
-	MemoryMiB *int64       `json:"memoryMiB"`
-	DiskGiB   *int64       `json:"diskGiB"`
-	Image     *string      `json:"image"`
-	Network   *wireNetwork `json:"network"`
-}
-
-type wireNetwork struct {
-	Mode    *string   `json:"mode"`
-	Address *string   `json:"address"`
-	Gateway *string   `json:"gateway"`
-	DNS     *[]string `json:"dns"`
-}
-
 type wireNodePackage struct {
 	Node    *string `json:"node"`
 	Package *string `json:"package"`
@@ -167,47 +152,10 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		return r, nil
 	}
 	switch r.Kind {
-	case KindVirtualMachine:
-		var s wireVirtualMachine
-		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
-			return nil, problemsOf(fromJSONError(err, where+" spec"))
-		}
-		need(s.CPU != nil, "cpu")
-		need(s.MemoryMiB != nil, "memoryMiB")
-		need(s.DiskGiB != nil, "diskGiB")
-		need(s.Image != nil, "image")
-		need(s.Network != nil, "network")
-		if s.Network == nil {
-			problems[len(problems)-1].Hint = "a VM says how it gets its address: " + networkHint + " (the Mamela Pome 0.2.0 and later write it)"
-		}
-		var network Network
-		if n := s.Network; n != nil {
-			need(n.Mode != nil, "network.mode")
-			if n.Mode != nil {
-				network.Mode = NetworkMode(*n.Mode)
-			}
-			static := network.Mode == NetworkStatic
-			for _, f := range []struct {
-				name    string
-				present bool
-			}{{"address", n.Address != nil}, {"gateway", n.Gateway != nil}, {"dns", n.DNS != nil}} {
-				if static && !f.present {
-					need(false, "network."+f.name)
-				}
-				if !static && f.present {
-					problems = append(problems, Problem{Code: CodeUnknownField, Path: where + " spec.network." + f.name,
-						Message: fmt.Sprintf("spec.network.%s is only for a static network", f.name),
-						Hint:    "a DHCP network has no address, gateway or name servers of its own"})
-				}
-			}
-			if static && n.Address != nil && n.Gateway != nil && n.DNS != nil {
-				network.Address, network.Gateway, network.DNS = *n.Address, *n.Gateway, *n.DNS
-			}
-		}
-		if len(problems) == 0 {
-			r.VirtualMachine = &VirtualMachineSpec{CPU: *s.CPU, MemoryMiB: *s.MemoryMiB, DiskGiB: *s.DiskGiB, Image: *s.Image,
-				Network: network}
-		}
+	case "VirtualMachine":
+		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
+			Message: "the built-in kind VirtualMachine was removed: machines come from providers (ADR 0006)",
+			Hint:    "declare the machine with its provider's Pome (for Proxmox, github.com/ieyoukan/mamela-proxmox/pome: Proxmox.vm) and use the Mamela Pome 0.3.0"})
 	case KindNodePackage:
 		var s wireNodePackage
 		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
@@ -249,7 +197,7 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 	default:
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
 			Message: fmt.Sprintf("kind %q is not known", r.Kind),
-			Hint:    "known kinds are VirtualMachine, NodePackage, NodeService and NodeK3s; a provider's kind needs its \"provider\""})
+			Hint:    "known kinds are NodePackage, NodeService and NodeK3s; a provider's kind needs its \"provider\""})
 	}
 	if len(problems) > 0 {
 		return nil, problems

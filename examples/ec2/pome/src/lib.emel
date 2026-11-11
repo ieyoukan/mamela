@@ -2,7 +2,7 @@
 ## provider (examples/ec2). The provider runs isolated; Mamela signs its requests, checks each one,
 ## and gives each instance its mamelet seed as user-data, which the provider never sees.
 ##
-## An instance is a node: declare packages and services on `Ec2.node(i)` with `Mamela.package_on`.
+## An instance is a node: declare packages and services on `Ec2.node(i)` with `Mamela.package`.
 
 import Mamela
 import Dynamic.{Dynamic, Text}
@@ -33,7 +33,7 @@ pub fn instance(graph: Mamela.Graph, i: Instance) -> Mamela.Graph {
     ("securityGroupId", Text(i.security_group_id)),
     ("rootDevice", Text(i.root_device)),
     ("diskGiB", Dynamic.Number(Number.from_int(i.disk_gib))),
-    ("network", Dynamic.object([("mode", Text("dhcp"))])),
+    ("network", Mamela.network_spec(Mamela.Dhcp)),
   ]
   Mamela.provided(graph, PROVIDER, "Ec2Instance", i.name, spec)
 }

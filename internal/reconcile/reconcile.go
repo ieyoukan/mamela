@@ -145,16 +145,16 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		desired[res.ID()] = res
 	}
 
-	// Operations run in phases: every VM of the run is created before any is started, so that no
-	// first boot competes with another VM's disk import (a boot that waits too long for its disk
-	// ends in emergency mode).
+	// Operations run in phases: late ones after all others (every machine of the run is created
+	// before any is started, so that no first boot competes with another machine's disk import; a
+	// boot that waits too long for its disk ends in emergency mode).
 	for phase := range 2 {
 		for _, full := range p.Changes {
 			if full.Status != plan.StatusChange {
 				continue
 			}
 			c := full
-			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(o.Op) != phase })
+			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(o) != phase })
 			if len(c.Operations) == 0 {
 				continue
 			}
@@ -280,9 +280,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 	return rep, nil
 }
 
-// opPhase is the phase an operation runs in: starting a VM comes after everything else.
-func opPhase(op policy.Op) int {
-	if op == policy.OpStartVM {
+// opPhase is the phase an operation runs in: late ones after everything else.
+func opPhase(op plan.Operation) int {
+	if op.Late {
 		return 1
 	}
 	return 0

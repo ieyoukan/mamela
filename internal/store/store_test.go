@@ -15,7 +15,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/state"
 )
 
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"TestVM","name":"app-server","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v2"}`
 
 // fakeClock is a settable clock safe for concurrent use.
 type fakeClock struct {
@@ -182,12 +182,12 @@ func TestJournalClaimIsExclusive(t *testing.T) {
 	ctx := context.Background()
 	s, clock, _ := open(t)
 	p := savedPlan(t, s, clock.Now())
-	o, err := s.Intend(ctx, "op1", p.Digest, "VirtualMachine app-server", "create-vm")
+	o, err := s.Intend(ctx, "op1", p.Digest, "TestVM app-server", "create-vm")
 	if err != nil || o.Stage != StageIntended {
 		t.Fatalf("Intend: %v %+v", err, o)
 	}
 	// Intend again keeps the existing entry.
-	if o, _ := s.Intend(ctx, "op1", p.Digest, "VirtualMachine app-server", "create-vm"); o.Stage != StageIntended {
+	if o, _ := s.Intend(ctx, "op1", p.Digest, "TestVM app-server", "create-vm"); o.Stage != StageIntended {
 		t.Fatalf("second Intend changed the entry: %+v", o)
 	}
 	if ok, _ := s.Claim(ctx, "op1", "worker-a", time.Minute); !ok {
@@ -281,39 +281,6 @@ func TestEventsAreOrdered(t *testing.T) {
 	evs, err := s.Events(ctx, p.Digest)
 	if err != nil || len(evs) != 3 || evs[0].Message != "one" || evs[2].Message != "three" {
 		t.Fatalf("events: %v %+v", err, evs)
-	}
-}
-
-func TestAllocateVMIDIsStableAndSkipsUsedIDs(t *testing.T) {
-	ctx := context.Background()
-	st, _, _ := open(t)
-	inCluster := map[int]bool{7000: true} // someone else's guest
-	asked := 0
-	free := func(_ context.Context, v int) (bool, error) { asked++; return !inCluster[v], nil }
-
-	a, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
-	if err != nil || a != 7001 {
-		t.Fatalf("first allocation: %d %v, want 7001", a, err)
-	}
-	// Once reserved, the same name always gets the same VMID, even if the cluster now says it is
-	// in use (by the VM this reservation created).
-	inCluster[7001] = true
-	again, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
-	if err != nil || again != 7001 {
-		t.Fatalf("second allocation: %d %v, want 7001", again, err)
-	}
-	b, err := st.AllocateVMID(ctx, "db", 7000, 7002, free)
-	if err != nil || b != 7002 {
-		t.Fatalf("other name: %d %v, want 7002", b, err)
-	}
-	if _, err := st.AllocateVMID(ctx, "cache", 7000, 7002, free); err == nil {
-		t.Fatal("allocated beyond the range")
-	}
-	if v, ok, err := st.VMID(ctx, "web"); err != nil || !ok || v != 7001 {
-		t.Fatalf("VMID(web) = %d %v %v", v, ok, err)
-	}
-	if _, ok, _ := st.VMID(ctx, "nothing"); ok {
-		t.Fatal("found a VMID for an unknown name")
 	}
 }
 

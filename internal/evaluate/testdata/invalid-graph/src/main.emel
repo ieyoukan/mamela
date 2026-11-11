@@ -1,18 +1,14 @@
-# Type-checks, but declares values Mamela refuses: an invalid hostname, zero CPUs and
-# a package name with a shell metacharacter. All three must be reported at once.
+# Type-checks, but declares values Mamela refuses: a machine whose name is not a resource name,
+# a package on a node that is not declared, and a package name with a shell metacharacter. All
+# three must be reported at once.
 import Std.Console.{SystemConsole}
-import Mamela.{Vm, Dhcp}
+import Mamela.{Node}
 
 fn main() {
-  web = Vm(
-    name: "Web_Server",
-    cpu: 0,
-    memory_mib: 1024,
-    disk_gib: 10,
-    image: "ubuntu-24.04",
-    network: Dhcp,
-  )
   with SystemConsole {
-    Mamela.empty() |> Mamela.vm(web) |> Mamela.package(web, "nginx;reboot") |> Mamela.print
+    Mamela.empty()
+      |> Mamela.provided("test", "TestVM", "../web", [])
+      |> Mamela.package(Node(name: "web"), "nginx;reboot")
+      |> Mamela.print
   }
 }

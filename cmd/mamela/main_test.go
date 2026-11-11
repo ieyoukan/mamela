@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ieyoukan/mamela/examples/ec2/fakeec2"
 	"github.com/ieyoukan/mamela/internal/evaluate"
 )
 
@@ -52,8 +54,8 @@ func TestUsage(t *testing.T) {
 	if code, _, stderr := runCLI("delete"); code != 2 || !strings.Contains(stderr, `unknown command "delete"`) {
 		t.Errorf("unknown command: code=%d stderr=%q", code, stderr)
 	}
-	if code, _, stderr := runCLI("destroy"); code != 2 || !strings.Contains(stderr, "--confirm") {
-		t.Errorf("destroy without a VM: code=%d stderr=%q", code, stderr)
+	if code, _, stderr := runCLI("act"); code != 2 || !strings.Contains(stderr, "--confirm") {
+		t.Errorf("act without an operation: code=%d stderr=%q", code, stderr)
 	}
 	if code, _, _ := runCLI("eval"); code != 2 {
 		t.Errorf("eval without a directory: code=%d", code)
@@ -68,10 +70,9 @@ func TestEvalSummary(t *testing.T) {
 	}
 	for _, want := range []string{
 		"3 resources",
-		"sha256:106ce1583fdfaf00e799f2ad39ebe7c94932c4856ca0a276c388c3a9a8ddd34c",
 		"evaluated twice, same digest",
 		"emela " + evaluate.PinnedEmela + ", wasmtime " + evaluate.PinnedWasmtime,
-		"VirtualMachine  app-server",
+		"Ec2Instance  app-server        via provider ec2-example",
 		"service nginx enabled, running on app-server",
 	} {
 		if !strings.Contains(stdout, want) {
@@ -86,7 +87,7 @@ func TestEvalJSONIsCanonical(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, stderr)
 	}
-	if !strings.HasPrefix(stdout, `{"resources":[{"kind":"VirtualMachine"`) || !strings.HasSuffix(stdout, `"schema":"mamela-graph/v1"}`+"\n") {
+	if !strings.HasPrefix(stdout, `{"resources":[{"kind":"NodePackage"`) || !strings.HasSuffix(stdout, `"schema":"mamela-graph/v2"}`+"\n") {
 		t.Errorf("unexpected JSON: %s", stdout)
 	}
 }
@@ -97,7 +98,7 @@ func TestEvalReportsProblems(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code=%d", code)
 	}
-	for _, want := range []string{"3 problems", "MAM-GRAPH-0101", "MAM-GRAPH-0105", "MAM-GRAPH-0106", "hint:"} {
+	for _, want := range []string{"3 problems", "MAM-GRAPH-0101", "MAM-GRAPH-0103", "MAM-GRAPH-0106", "hint:"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("report lacks %q:\n%s", want, stderr)
 		}
@@ -118,7 +119,7 @@ func TestEvalFindsRepositoryToolchain(t *testing.T) {
 	toolchainDir(t)
 	t.Setenv("MAMELA_TOOLCHAIN_DIR", "")
 	t.Setenv("EMELA_POME_CACHE", "")
-	t.Chdir(filepath.Join("..", "..", "examples", "lab-l2"))
+	t.Chdir(filepath.Join("..", "..", "examples", "homelab"))
 	code, stdout, stderr := runCLI("eval", ".")
 	if code != 0 || !strings.Contains(stdout, "3 resources") {
 		t.Errorf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
@@ -182,14 +183,35 @@ func TestToolchainStatusRefusesOtherBuilds(t *testing.T) {
 	}
 }
 
+// fakeEC2 serves the example EC2 API and returns a mamela.providers.toml for it (requests are
+// signed with a fake key).
+func fakeEC2(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(fakeec2.New())
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "secret"), []byte("fake-secret\n"), 0o600)
+	config := filepath.Join(dir, "mamela.providers.toml")
+	os.WriteFile(config, []byte(`[provider.ec2-example]
+api_url = "`+srv.URL+`/"
+auth = "aws-sigv4"
+token_id = "AKIAFAKE"
+token_file = "`+filepath.Join(dir, "secret")+`"
+region = "ap-northeast-1"
+service = "ec2"
+catalog = "builtin:ec2"
+`), 0o600)
+	return config
+}
+
 func TestPlanReplayApprove(t *testing.T) {
 	dir := toolchainDir(t)
 	db := filepath.Join(t.TempDir(), "state.db")
-	code, stdout, stderr := runCLI("plan", "--db", db, "--toolchain", dir, filepath.Join("..", "..", "examples", "homelab"))
+	code, stdout, stderr := runCLI("plan", "--db", db, "--providers", fakeEC2(t), "--toolchain", dir, filepath.Join("..", "..", "examples", "homelab"))
 	if code != 0 {
 		t.Fatalf("plan: code=%d stderr=%s", code, stderr)
 	}
-	for _, want := range []string{"+ VirtualMachine app-server  [needs approval]", "MAM-PLAN-0101", "Nothing has been changed"} {
+	for _, want := range []string{"+ Ec2Instance app-server  [needs approval]  via ec2-example", "MAM-PLAN-0101", "Nothing has been changed"} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("plan output lacks %q:\n%s", want, stdout)
 		}
@@ -211,61 +233,45 @@ func TestPlanReplayApprove(t *testing.T) {
 	}
 }
 
+// A snapshot of the built-in observation is read strictly: one with VMs (before ADR 0006) is
+// refused, not half-read.
 func TestPlanWithSnapshot(t *testing.T) {
 	dir := toolchainDir(t)
 	snap := filepath.Join(t.TempDir(), "snap.json")
-	const body = `{"asOf":"2026-11-08T12:00:00Z","vms":{"app-server":{"managed":true,"cpu":1,"memoryMiB":1024,"diskGiB":20,"image":"ubuntu-24.04","observedAt":"2026-11-08T12:00:00Z"}},"packages":{},"services":{}}`
-	if err := os.WriteFile(snap, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	code, stdout, stderr := runCLI("plan", "--db", filepath.Join(t.TempDir(), "s.db"), "--toolchain", dir, "--snapshot", snap,
-		filepath.Join("..", "..", "examples", "homelab"))
-	if code != 0 {
-		t.Fatalf("code=%d stderr=%s", code, stderr)
-	}
-	for _, want := range []string{"[DENIED]", "diskGiB: 20 -> 10", "MAM-POL-0301", "MAM-PLAN-0103"} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("output lacks %q:\n%s", want, stdout)
+	plan := func(body string) (int, string, string) {
+		if err := os.WriteFile(snap, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
 		}
+		return runCLI("plan", "--db", filepath.Join(t.TempDir(), "s.db"), "--providers", fakeEC2(t), "--toolchain", dir, "--snapshot", snap,
+			filepath.Join("..", "..", "examples", "homelab"))
+	}
+	if code, stdout, stderr := plan(`{"asOf":"2026-11-08T12:00:00Z","packages":{},"services":{}}`); code != 0 || !strings.Contains(stdout, "MAM-PLAN-0101") {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	if code, _, stderr := plan(`{"asOf":"2026-11-08T12:00:00Z","vms":{},"packages":{},"services":{}}`); code != 1 || !strings.Contains(stderr, "vms") {
+		t.Fatalf("a snapshot with VMs: code=%d stderr=%s", code, stderr)
 	}
 }
 
-func TestLabBootstrapPrintsScript(t *testing.T) {
-	code, stdout, stderr := runCLI("lab", "bootstrap", "--site", filepath.Join("..", "..", "lab", "site.example.toml"))
-	if code != 0 {
-		t.Fatalf("code=%d stderr=%s", code, stderr)
-	}
-	for _, want := range []string{"#!/usr/bin/env bash", "set -euo pipefail", "pveum pool add mamela-lab", "PVEAuditor"} {
-		if !strings.Contains(stdout, want) {
-			t.Errorf("script lacks %q", want)
-		}
-	}
-}
-
-func TestLabPreflightNeedsSecrets(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // no token files, whatever this machine has
-	code, _, stderr := runCLI("lab", "preflight", "--site", filepath.Join("..", "..", "lab", "site.example.toml"))
-	if code != 1 || !strings.Contains(stderr, "mamela-audit@pve!audit") {
-		t.Errorf("code=%d stderr=%s", code, stderr)
-	}
-}
-
-func TestApplyNeedsALabAndAStoredPlan(t *testing.T) {
+func TestApplyNeedsAStoredPlan(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir()) // no mamela.site.toml here
 	db := filepath.Join(t.TempDir(), "state.db")
-	site := filepath.Join("..", "..", "lab", "site.example.toml")
-	code, _, stderr := runCLI("apply", "--db", db, "--site", site, "sha256:0000")
+	code, _, stderr := runCLI("apply", "--db", db, "sha256:0000")
 	if code != 1 || !strings.Contains(stderr, "no plan sha256:0000") {
 		t.Errorf("unknown plan: code=%d stderr=%s", code, stderr)
 	}
-	if code, _, _ := runCLI("apply", "--db", db, "--site", site); code != 2 {
+	if code, _, _ := runCLI("apply", "--db", db); code != 2 {
 		t.Errorf("no digest: code=%d", code)
+	}
+	if code, _, stderr := runCLI("apply", "--db", db, "--site", "missing.toml", "sha256:0000"); code != 1 || !strings.Contains(stderr, "missing.toml") {
+		t.Errorf("a site named and missing: code=%d stderr=%s", code, stderr)
 	}
 }
 
 func TestCheckJSON(t *testing.T) {
 	dir := toolchainDir(t)
-	code, stdout, stderr := runCLI("check", "--json", "--toolchain", dir, filepath.Join("..", "..", "examples", "lab-l2"))
+	code, stdout, stderr := runCLI("check", "--json", "--toolchain", dir, filepath.Join("..", "..", "examples", "homelab"))
 	if code != 0 {
 		t.Fatalf("code=%d stderr=%s", code, stderr)
 	}
@@ -281,9 +287,9 @@ func TestCheckJSON(t *testing.T) {
 		found[q.Resource+" "+string(q.Op)+" "+q.Provider+" "+q.Capability] = true
 	}
 	for _, want := range []string{
-		"VirtualMachine mamela-l2 create-vm proxmox VM.Allocate",
-		"NodePackage mamela-l2/nginx install-package mamelet apt.install",
-		"NodeService mamela-l2/nginx start-service mamelet systemd.start",
+		"Ec2Instance app-server create-vm ec2-example ec2:RunInstances",
+		"NodePackage app-server/nginx install-package mamelet apt.install",
+		"NodeService app-server/nginx start-service mamelet systemd.start",
 	} {
 		if !found[want] {
 			t.Errorf("requirements lack %q", want)

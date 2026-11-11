@@ -9,18 +9,12 @@ func TestDecisions(t *testing.T) {
 		s    Subject
 		want Verdict
 	}{
-		{Subject{Op: OpCreateVM}, ApprovalRequired},
-		{Subject{Op: OpResizeVMCPU}, ApprovalRequired},
-		{Subject{Op: OpResizeVMMemory}, ApprovalRequired},
-		{Subject{Op: OpGrowVMDisk}, ApprovalRequired},
 		{Subject{Op: OpInstallPackage}, ApprovalRequired},
 		{Subject{Op: OpEnableService, Service: "nginx"}, ApprovalRequired},
 		{Subject{Op: OpStartService, Service: "nginx"}, Auto},
 		{Subject{Op: OpStartService, Service: "postgresql"}, ApprovalRequired},
 		{Subject{Op: OpStopService, Service: "nginx"}, ApprovalRequired},
 		{Subject{Op: OpDisableService, Service: "nginx"}, ApprovalRequired},
-		{Subject{Op: OpShrinkVMDisk}, Denied},
-		{Subject{Op: OpReplaceVMImage}, Denied},
 		{Subject{Op: OpChangeForeign}, Denied},
 		{Subject{Op: "delete-vm"}, Denied},
 		{Subject{Op: "run-shell"}, Denied},

@@ -62,6 +62,13 @@ func (s *Server) Put(it Item) {
 	s.items[it.Name] = &it
 }
 
+// Delete removes an item directly, as someone else would.
+func (s *Server) Delete(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.items, name)
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

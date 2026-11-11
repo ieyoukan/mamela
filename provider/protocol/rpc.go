@@ -247,6 +247,10 @@ type Change struct {
 	// Precondition is the observed Version the change is based on.
 	Precondition string   `json:"precondition,omitempty"`
 	Reasons      []string `json:"reasons,omitempty"`
+	// Late changes run after every other change of the apply: starting a machine once every
+	// machine of the run is created, so that no first boot competes with another machine's disk
+	// import. It orders changes and grants nothing.
+	Late bool `json:"late,omitempty"`
 	// Artifacts are the files the change needs, which the host makes ready and sends; the
 	// provider never sees their content (ADR 0004).
 	Artifacts []Artifact `json:"artifacts,omitempty"`

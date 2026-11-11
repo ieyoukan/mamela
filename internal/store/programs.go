@@ -145,3 +145,51 @@ func (s *Store) NodeNumber(ctx context.Context, node string) (int64, error) {
 	}
 	return n, tx.Commit()
 }
+
+// StartExplicit records, before anything is sent, an explicit operation a person confirmed (ADR
+// 0006). The change is the provider's, as shown.
+func (s *Store) StartExplicit(ctx context.Context, id, provider, resource, op string, change []byte, confirmedBy string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO explicit_operations(id, provider, resource, op, change, confirmed_by, started_ms)
+VALUES(?, ?, ?, ?, ?, ?, ?)`, id, provider, resource, op, string(change), confirmedBy, s.nowMs())
+	return err
+}
+
+// FinishExplicit records how an explicit operation ended ("done", "failed", "partly-done",
+// "unknown").
+func (s *Store) FinishExplicit(ctx context.Context, id, outcome, detail string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE explicit_operations SET outcome = ?, detail = ?, finished_ms = ? WHERE id = ? AND outcome = 'started'`,
+		outcome, detail, s.nowMs(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("store: explicit operation %s is not started", id)
+	}
+	return nil
+}
+
+// ExplicitOutcome is how an explicit operation ended ("started" while it has not).
+func (s *Store) ExplicitOutcome(ctx context.Context, id string) (string, error) {
+	var outcome string
+	err := s.db.QueryRowContext(ctx, `SELECT outcome FROM explicit_operations WHERE id = ?`, id).Scan(&outcome)
+	return outcome, notFound(err)
+}
+
+// ForgetCreations removes Mamela's records of a resource of a provider once its object is deleted
+// (ADR 0006), and the number of the node of that name, if Mamela gave it one.
+func (s *Store) ForgetCreations(ctx context.Context, provider, resource, node string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource); err != nil {
+		return err
+	}
+	if node != "" {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM node_numbers WHERE node = ?`, node); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

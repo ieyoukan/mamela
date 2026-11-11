@@ -42,8 +42,8 @@ func TestK3sThroughMamelet(t *testing.T) {
 	defer srv.Close()
 
 	e := newEnv(t)
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` +
-		`{"kind":"VirtualMachine","name":"app","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},` +
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
 		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
 		`{"kind":"NodeService","name":"app/k3s","spec":{"enabled":true,"node":"app","running":true,"service":"k3s"}}]}`))
 	if err != nil {

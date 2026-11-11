@@ -17,11 +17,13 @@ func item(name, spec string) protocol.Resource {
 // The example provider passes the conformance suite, as a WASI program.
 func TestConformance(t *testing.T) {
 	providertest.Run(t, providertest.Suite{
-		Provider: providertest.BuildWASI(t, "./cmd/kv-provider"),
-		Catalog:  kvapi.Catalog,
-		NewAPI:   func() http.Handler { return kvapi.New() },
+		Provider:      providertest.BuildWASI(t, "./cmd/kv-provider"),
+		Catalog:       kvapi.Catalog,
+		NewAPI:        func() http.Handler { return kvapi.New() },
+		GuardSettings: []byte(`{"max_items":5}`),
 		Cases: []providertest.Case{
-			{Name: "one-item", Desired: []protocol.Resource{item("web", `{"value":"v1"}`)}},
+			{Name: "one-item", Desired: []protocol.Resource{item("web", `{"value":"v1"}`)},
+				Explicit: []providertest.Explicit{{Op: kvprovider.OpDelete, Resource: "KVItem/web"}}},
 			{Name: "items-with-labels", Desired: []protocol.Resource{
 				item("db", `{"value":"v1","labels":["prod","eu"]}`),
 				item("web", `{"value":"v2"}`),

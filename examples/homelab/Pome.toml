@@ -1,13 +1,15 @@
 [pome]
 name = "github.com/ieyoukan/mamela/examples/homelab"
-version = "0.1.0"
+version = "0.2.0"
 emela = "0.27.0"
 
 [build]
 target = "wasm"
 
 [dependencies]
-"github.com/ieyoukan/mamela/pome/mamela" = "v0.1.0"
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.3.0"
+"github.com/ieyoukan/mamela/examples/ec2/pome" = "v0.1.0"
 
 [replace]
 "github.com/ieyoukan/mamela/pome/mamela" = { path = "../../pome/mamela" }
+"github.com/ieyoukan/mamela/examples/ec2/pome" = { path = "../ec2/pome" }
