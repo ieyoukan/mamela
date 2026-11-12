@@ -258,25 +258,30 @@ const installScript = `#!/usr/bin/env bash
 # with the directory the bundle was extracted to. It does not start anything.
 set -euo pipefail
 b="${1:?usage: install.sh <extracted bundle directory>}"
-test -x /usr/local/bin/mamela || { echo "put a linux/amd64 mamela at /usr/local/bin/mamela first" >&2; exit 1; }
+r="${MAMELA_INSTALL_ROOT:-}" # a root to install under (tests); empty: /
+test -x $r/usr/local/bin/mamela || { echo "put a linux/amd64 mamela at $r/usr/local/bin/mamela first" >&2; exit 1; }
+# Refuse before writing anything when this host has a Control Plane already: installing another
+# bundle over it would mix its database with other keys, tokens or site.
+for existing in $r/var/lib/mamela/state.db $r/var/lib/mamela/cp $r/etc/mamela/site.toml $r/etc/mamela/secrets $r/etc/systemd/system/mamela-serve.service; do
+  if test -e "$existing"; then
+    echo "$existing exists: this host has a Control Plane already; nothing was changed (move it away to install this bundle)" >&2
+    exit 1
+  fi
+done
 # A user of its own, never a login user: the guest login user of lab VMs is often "mamela", and may sudo.
 id mamela-cp >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/mamela --shell /usr/sbin/nologin mamela-cp
-install -d -m 0750 -o root -g mamela-cp /etc/mamela
-install -d -m 0750 -o root -g mamela-cp /etc/mamela/secrets
-install -d -m 0700 -o mamela-cp -g mamela-cp /var/lib/mamela /var/lib/mamela/cp
-for f in "$b"/etc/secrets/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" /etc/mamela/secrets/; done
-install -m 0640 -o root -g mamela-cp "$b/etc/site.toml" /etc/mamela/site.toml
+install -d -m 0750 -o root -g mamela-cp $r/etc/mamela
+install -d -m 0750 -o root -g mamela-cp $r/etc/mamela/secrets
+install -d -m 0700 -o mamela-cp -g mamela-cp $r/var/lib/mamela $r/var/lib/mamela/cp
+for f in "$b"/etc/secrets/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/etc/mamela/secrets/; done
+install -m 0640 -o root -g mamela-cp "$b/etc/site.toml" $r/etc/mamela/site.toml
 for f in "$b"/etc/guest-ssh.pub "$b"/etc/proxmox-ca.pem; do
-  if test -f "$f"; then install -m 0644 -o root -g root "$f" /etc/mamela/; fi
+  if test -f "$f"; then install -m 0644 -o root -g root "$f" $r/etc/mamela/; fi
 done
-for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" /var/lib/mamela/cp/; done
-install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" /var/lib/mamela/mamelet-linux-amd64
-if test -e /var/lib/mamela/state.db; then
-  echo "/var/lib/mamela/state.db exists; not overwriting it (move it away to install this bundle's)" >&2
-  exit 1
-fi
-install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" /var/lib/mamela/state.db
-install -m 0644 -o root -g root "$b/mamela-serve.service" /etc/systemd/system/mamela-serve.service
+for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var/lib/mamela/cp/; done
+install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
+install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
+install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
 systemctl daemon-reload
 echo "installed; start it with: systemctl enable --now mamela-serve"
 `

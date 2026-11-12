@@ -24,6 +24,7 @@ type Runtime struct {
 	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
 	// catalog): an approval is for that API only.
 	endpoints map[string]string
+	creations Creations
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -94,6 +95,41 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 	return rt, nil
 }
 
+// Creations is Mamela's record of what it set out to create through providers.
+type Creations interface {
+	Creations(ctx context.Context, provider, resource string) ([]map[string]string, error)
+	RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error
+}
+
+// SetCreations sets the record that vouches for providers' claims of ownership (required before
+// observing).
+func (rt *Runtime) SetCreations(c Creations) {
+	if rt != nil {
+		rt.creations = c
+	}
+}
+
+// SetLimits sets the limits on what one change may make or change (the site's budget for one
+// machine), checked when planning and again before each request is sent.
+func (rt *Runtime) SetLimits(l map[string]int64) {
+	if rt == nil {
+		return
+	}
+	for _, s := range rt.sessions {
+		s.SetLimits(l)
+	}
+}
+
+// SetArtifacts sets what makes the artifacts of the providers' changes (ADR 0004).
+func (rt *Runtime) SetArtifacts(m host.ArtifactMaker) {
+	if rt == nil {
+		return
+	}
+	for _, s := range rt.sessions {
+		s.SetArtifacts(m)
+	}
+}
+
 // Close stops every provider.
 func (rt *Runtime) Close() {
 	if rt == nil {
@@ -144,8 +180,34 @@ func (rt *Runtime) names() []string {
 	return out
 }
 
-// CheckGraph verifies that every provider a declaration uses is running, and handles the kind.
+// CheckGraph verifies that every provider a declaration uses is running, and handles the kind, and
+// that a node resource on a provider's resource is on a machine (a node kind).
 func (rt *Runtime) CheckGraph(g *graph.Graph) error {
+	provided := map[string]graph.Resource{}
+	for _, r := range g.Resources {
+		if r.Provided != nil {
+			provided[r.Name] = r
+		}
+	}
+	for _, r := range g.Resources {
+		node := ""
+		switch {
+		case r.NodePackage != nil:
+			node = r.NodePackage.Node
+		case r.NodeService != nil:
+			node = r.NodeService.Node
+		case r.NodeK3s != nil:
+			node = r.NodeK3s.Node
+		}
+		m, ok := provided[node]
+		if !ok {
+			continue
+		}
+		s, running := rt.sessionOf(m.Provided.Provider)
+		if running && !slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == m.Kind && k.Node }) {
+			return fmt.Errorf("%s is on %s, which is not a machine: provider %s does not declare kind %s a node kind", r.ID(), m.ID(), m.Provided.Provider, m.Kind)
+		}
+	}
 	for _, r := range g.Resources {
 		if r.Provided == nil {
 			continue
@@ -191,6 +253,18 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		observed, _, err := s.Observe(ctx, declared)
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
+		}
+		// A provider's claim to own an object stands only if Mamela recorded that it set out to
+		// create it: the diff, the plan and what is kept see only what Mamela vouches for.
+		if rt.creations == nil {
+			return nil, fmt.Errorf("provider %s: no record of what Mamela created to check its claims against", name)
+		}
+		for i, o := range observed {
+			created, err := rt.creations.Creations(ctx, name, o.ID)
+			if err != nil {
+				return nil, err
+			}
+			observed[i] = protocol.Vouch(o, created)
 		}
 		changes, err := s.Diff(ctx, declared, observed)
 		if err != nil {
@@ -244,7 +318,14 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			if err := s.CheckPreconditions(c, p.Observed.Version); err != nil {
 				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
 			}
-			p.Changes = append(p.Changes, state.ProvidedChange{Change: c, Verified: rt.verify(s, c)})
+			if err := s.CheckLimits(c); err != nil {
+				return nil, fmt.Errorf("LAB-0305: provider %s: the change of %s: %w", name, c.Resource, err)
+			}
+			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
+			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+				pc.Unsupported = o.Why
+			}
+			p.Changes = append(p.Changes, pc)
 			out[c.Resource] = p
 		}
 	}
@@ -256,10 +337,9 @@ func (rt *Runtime) verify(s *host.Session, c protocol.Change) protocol.Verified 
 	o, _ := s.Manifest().Operation(c.Kind, c.Op)
 	var calls []protocol.Call
 	for _, a := range c.Requests {
-		for _, call := range o.Calls {
-			if call.Method == a.Method && call.Path == a.Path && !slices.ContainsFunc(calls, func(x protocol.Call) bool { return x.Method == call.Method && x.Path == call.Path }) {
-				calls = append(calls, call)
-			}
+		call, _, ok := protocol.FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		if ok && !slices.ContainsFunc(calls, call.Same) {
+			calls = append(calls, call)
 		}
 	}
 	return s.Verify(protocol.Operation{Op: c.Op, Support: protocol.Supported, Calls: calls})
@@ -274,7 +354,8 @@ type Provider struct {
 	Store     *store.Store // records each permit, once
 	Clock     func() time.Time
 	Providers string // the providers digest, written into each permit
-	// PermitTTL bounds each permit (default 10 minutes).
+	// PermitTTL bounds each permit (default 2 hours, the host's limit on one apply: creating a
+	// machine from an image waits for the import). A permit is used once, by one apply.
 	PermitTTL time.Duration
 
 	last state.Snapshot
@@ -293,9 +374,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 	if err != nil {
 		return state.Snapshot{}, err
 	}
-	if len(provided) > 0 {
-		snap.Provided = provided
-	}
+	snap.AddProvided(provided)
 	p.last = snap
 	return snap, nil
 }
@@ -321,7 +400,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	now := p.Clock().UTC()
 	ttl := p.PermitTTL
 	if ttl == 0 {
-		ttl = 10 * time.Minute
+		ttl = 2 * time.Hour
 	}
 	id := step.OperationID + "@" + now.Format(time.RFC3339Nano)
 	permit, err := protocol.NewPermit(s.Manifest(), change, id, step.PlanDigest, p.Providers, now.Add(ttl).Format(time.RFC3339))
@@ -330,6 +409,14 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	}
 	if err := p.Store.UsePermit(ctx, id, step.OperationID, step.PlanDigest); err != nil {
 		return err
+	}
+	// Intent first: a change planned when its object did not exist creates it; that is recorded
+	// before anything is sent, so that an object it leaves unfinished is still known to be
+	// Mamela's (and nothing else is).
+	if o, ok := p.last.Provided[r.ID()]; !ok || !o.Observed.Exists {
+		if err := p.Store.RecordCreation(ctx, r.Provided.Provider, r.ID(), change.IDs, step.PlanDigest, step.OperationID); err != nil {
+			return err
+		}
 	}
 	desired := resource(r)
 	var observed *protocol.Observed

@@ -33,10 +33,18 @@ type Options struct {
 	Catalog protocol.Catalog
 	// Upstream sends the allowed requests (nil: none can be sent).
 	Upstream Upstream
+	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
+	Artifacts ArtifactMaker
+	// Limits bound the measured parameters of every change (the catalog's Measures), by measure:
+	// the site's budget for one machine. Absent or 0: no limit.
+	Limits map[string]int64
 	// Now is the clock for permit expiry (default time.Now).
 	Now            func() time.Time
 	MaxMemoryBytes uint64        // per WASM linear memory (default 512 MiB)
 	CallTimeout    time.Duration // per call to the provider, requests included (default 5 minutes)
+	// ApplyTimeout bounds one apply (and lookup) instead: creating a machine from an image can take
+	// long (default 2 hours).
+	ApplyTimeout time.Duration
 	// StartTimeout bounds starting the provider and its describe (wasmtime compiles the program
 	// first; default 2 minutes).
 	StartTimeout time.Duration
@@ -81,6 +89,9 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	}
 	if o.CallTimeout == 0 {
 		o.CallTimeout = 5 * time.Minute
+	}
+	if o.ApplyTimeout == 0 {
+		o.ApplyTimeout = 2 * time.Hour
 	}
 	if o.StartTimeout == 0 {
 		o.StartTimeout = 2 * time.Minute
@@ -231,6 +242,25 @@ func (s *Session) readLoop(stdout io.Reader) {
 // Manifest is what the provider declared.
 func (s *Session) Manifest() protocol.Manifest { return s.manifest }
 
+// SetArtifacts sets what makes the artifacts of the changes this session applies.
+func (s *Session) SetArtifacts(m ArtifactMaker) { s.o.Artifacts = m }
+
+// SetLimits sets the limits on measured parameters (Options.Limits).
+func (s *Session) SetLimits(l map[string]int64) { s.o.Limits = l }
+
+// CheckLimits checks a change's requests against the limits, before anyone approves it.
+func (s *Session) CheckLimits(c protocol.Change) error {
+	cat := s.catalog()
+	for _, a := range c.Requests {
+		if e, ok := cat.LookupApproved(a); ok {
+			if err := e.CheckLimits(a.Params, s.o.Limits); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // Executable is the provider program.
 func (s *Session) Executable() Executable { return s.exe }
 
@@ -251,9 +281,22 @@ func (s *Session) catalog() protocol.Catalog {
 // approval would be overwritten.
 func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 	cat := s.catalog()
+	creates := false // an earlier request of the change creates the object (ADR 0004)
 	for _, a := range c.Requests {
-		e, ok := cat.Lookup(a.Method, a.Path)
+		e, ok := cat.LookupApproved(a)
+		if ok && e.Effect == protocol.EffectCreate {
+			creates = true
+		}
 		if !ok || e.Precondition == "" {
+			continue
+		}
+		if creates && observed == "" && c.Precondition == "" {
+			// A change to the object the same change creates: it did not exist when observed, so
+			// there is no version to base it on and nobody else's change to lose. The host allows
+			// it only after the create took effect in the same apply.
+			if _, sends := a.Params[e.Precondition]; sends {
+				return fmt.Errorf("%s %s sends %s, and the object it changes does not exist yet", a.Method, a.Path, e.Precondition)
+			}
 			continue
 		}
 		if observed == "" || c.Precondition != observed {
@@ -271,7 +314,7 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now}
+	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
 	if permit != nil {
 		g.used = make([]bool, len(permit.Requests))
 	}
@@ -294,6 +337,17 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 		if o.ID == "" || !validIDs(o.IDs) {
 			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %+v: an ID and valid ID names are required", o)}
 		}
+		// A node kind says, for each machine that exists, what Mamela needs to run mamelet on it;
+		// any other kind says nothing of the sort.
+		isNode := slices.ContainsFunc(s.manifest.Kinds, func(k protocol.Kind) bool { return k.Kind == o.Kind && k.Node })
+		switch {
+		case isNode && o.Exists && o.Owned && (o.Node == nil || o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: a node it owns needs node.id (positive) and its state", o.ID)}
+		case o.Node != nil && (o.Node.ID <= 0 || o.Node.UptimeSeconds < 0):
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: node.id must be positive", o.ID)}
+		case (!isNode || !o.Exists) && o.Node != nil:
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s: only an existing resource of a node kind has node", o.ID)}
+		}
 	}
 	return out.Resources, g.record, nil
 }
@@ -309,6 +363,14 @@ func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observe
 	for _, c := range out.Changes {
 		if c.Resource == "" {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change %+v has no resource", c)}
+		}
+		// A difference the provider never acts on is reported as a change of an operation it
+		// declares unsupported, with nothing to send: the plan shows it and denies it.
+		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+			if len(c.Requests) > 0 || len(c.Artifacts) > 0 {
+				return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is unsupported and sends nothing, yet it has requests", c.Resource, c.Op)}
+			}
+			continue
 		}
 		if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %v", c.Resource, err)}
@@ -368,7 +430,7 @@ func (s *Session) Apply(ctx context.Context, p protocol.Permit, c protocol.Chang
 	s.used[p.OperationID] = true
 	g := s.gate(phaseApply, p.Calls, &p)
 	var out protocol.ApplyResult
-	callErr := s.call(ctx, g, protocol.MethodApply, protocol.ApplyParams{Permit: p, Change: c, Desired: desired, Observed: observed}, &out)
+	callErr := s.callWithin(ctx, s.o.ApplyTimeout, g, protocol.MethodApply, protocol.ApplyParams{Permit: p, Change: c, Desired: desired, Observed: observed}, &out)
 	return outcome(g.record, callErr)
 }
 
@@ -426,7 +488,7 @@ func (s *Session) Lookup(ctx context.Context, c protocol.Change) (protocol.Looku
 	}
 	g := s.gate(phaseLookup, append(slices.Clone(s.manifest.ObserveCalls), o.Calls...), nil)
 	var out protocol.LookupResult
-	err := s.call(ctx, g, protocol.MethodLookup, protocol.LookupParams{Change: c}, &out)
+	err := s.callWithin(ctx, s.o.ApplyTimeout, g, protocol.MethodLookup, protocol.LookupParams{Change: c}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return "", g.record, err
 	}
@@ -508,6 +570,19 @@ func (s *Session) callWithin(ctx context.Context, timeout time.Duration, g *gate
 		}
 		m := rd.msg
 		switch {
+		case m.Method == protocol.MethodHostArtifact:
+			reply := protocol.Message{JSONRPC: "2.0", ID: m.ID}
+			var ha protocol.HostArtifact
+			if err := json.Unmarshal(m.Params, &ha, json.RejectUnknownMembers(true)); err != nil {
+				reply.Error = &protocol.Error{Code: protocol.CodeInvalidParams, Message: err.Error()}
+			} else if info, perr := g.artifact(ctx, ha.ID); perr != nil {
+				reply.Error = perr
+			} else if reply.Result, err = json.Marshal(info, json.Deterministic(true)); err != nil {
+				return err
+			}
+			if err := s.write(ctx, reply); err != nil {
+				return s.fail(fmt.Sprintf("the provider did not read the answer to its request within %s", timeout), err)
+			}
 		case m.Method == protocol.MethodHostRequest:
 			reply := protocol.Message{JSONRPC: "2.0", ID: m.ID}
 			var hr protocol.HostRequest

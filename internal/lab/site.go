@@ -59,6 +59,14 @@ type ControlPlane struct {
 	MoveTo string `toml:"move_to"`
 }
 
+// Advertised is the URL mamelet reaches the Control Plane at: where it moves to, if it moves.
+func (c ControlPlane) Advertised() string {
+	if c.MoveTo != "" {
+		return c.MoveTo
+	}
+	return c.URL
+}
+
 // Enabled reports whether the site has a Control Plane for mamelet.
 func (c ControlPlane) Enabled() bool { return c.URL != "" }
 

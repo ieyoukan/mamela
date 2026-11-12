@@ -15,6 +15,7 @@ package protocol
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -48,6 +49,9 @@ type Manifest struct {
 type Kind struct {
 	Kind       ResourceKind `json:"kind"`
 	Operations []Operation  `json:"operations"`
+	// Node: resources of this kind are machines mamelet runs on (ADR 0004). Their observation
+	// reports Observed.Node, and node resources (packages, services, k3s) may be declared on them.
+	Node bool `json:"node,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -77,6 +81,60 @@ type Call struct {
 	Path   string   `json:"path"`
 	Query  []string `json:"query,omitempty"`
 	Form   []string `json:"form,omitempty"`
+	// File is the form parameter that carries an uploaded artifact (multipart), for an upload call.
+	File string `json:"file,omitempty"`
+	// Fixed are parameters the call always sends with exactly these values, and which tell it
+	// apart from other calls on the same method and path: a query API's "Action=RunInstances"
+	// (ADR 0005). Each is also one of Query or Form, where it is sent.
+	Fixed map[string]string `json:"fixed,omitempty"`
+}
+
+// Same reports whether two calls are the same call: method, path and fixed parameters.
+func (c Call) Same(o Call) bool {
+	return c.Method == o.Method && c.Path == o.Path && maps.Equal(c.Fixed, o.Fixed)
+}
+
+// Takes reports whether params (one value each) carry every fixed parameter of the call.
+func (c Call) Takes(params map[string][]string) bool {
+	for k, v := range c.Fixed {
+		if got := params[k]; len(got) != 1 || got[0] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// FindCall is the declared call a request on method and a path template (or a concrete path,
+// when match is set) with params is: the one whose method, path and fixed parameters fit. ok is
+// false when none does, or more than one (an ambiguous declaration).
+func FindCall(calls []Call, method, path string, params map[string][]string, concrete bool) (Call, map[string]string, bool) {
+	var found Call
+	var ids map[string]string
+	n := 0
+	for _, c := range calls {
+		if c.Method != method || !c.Takes(params) {
+			continue
+		}
+		var m map[string]string
+		if concrete {
+			p, err := ParsePath(c.Path)
+			if err != nil {
+				continue
+			}
+			var ok bool
+			if m, ok = p.Match(path); !ok {
+				continue
+			}
+		} else if c.Path != path {
+			continue
+		}
+		if n > 0 && found.Same(c) {
+			continue // the same call, declared twice (observe's reads and an operation's)
+		}
+		found, ids = c, m
+		n++
+	}
+	return found, ids, n == 1
 }
 
 // In says where the call sends a parameter: "query", "form", or "" when it does not declare it.
@@ -195,6 +253,11 @@ func (m Manifest) Check() error {
 	if m.Schema != Schema || m.Provider == "" || m.Version == "" {
 		return fmt.Errorf("manifest %q: schema %q, provider and version are required", m.Provider, Schema)
 	}
+	for _, c := range m.ObserveCalls {
+		if c.File != "" {
+			return fmt.Errorf("manifest %s: observe call %s %s uploads a file", m.Provider, c.Method, c.Path)
+		}
+	}
 	if err := checkCalls(m.ObserveCalls); err != nil {
 		return fmt.Errorf("manifest %s: observe: %w", m.Provider, err)
 	}
@@ -252,16 +315,70 @@ var Methods = []string{"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 func checkCalls(calls []Call) error {
 	seen := map[string]bool{}
+	byPath := map[string][]Call{}
 	for _, c := range calls {
 		if err := checkCall(c.Method, c.Path, c.Query, c.Form); err != nil {
 			return err
 		}
-		if seen[c.Method+" "+c.Path] {
-			return fmt.Errorf("call %s %s is declared twice", c.Method, c.Path)
+		if err := checkFixed(c.Method, c.Path, c.Fixed, c.In); err != nil {
+			return err
 		}
-		seen[c.Method+" "+c.Path] = true
+		byPath[c.Method+" "+c.Path] = append(byPath[c.Method+" "+c.Path], c)
+		if c.File != "" && (!validName(c.File) || c.In(c.File) != "" || c.Method != "POST") {
+			return fmt.Errorf("call %s %s: file %q must be a POST parameter of its own", c.Method, c.Path, c.File)
+		}
+		key := c.Method + " " + c.Path + " " + fixedKey(c.Fixed)
+		if seen[key] {
+			return fmt.Errorf("call %s %s %s is declared twice", c.Method, c.Path, fixedKey(c.Fixed))
+		}
+		seen[key] = true
+	}
+	return checkDistinct(byPath)
+}
+
+// checkFixed: each fixed parameter is one the call sends, with a value.
+func checkFixed(method, path string, fixed map[string]string, in func(string) string) error {
+	for k, v := range fixed {
+		if in(k) == "" || v == "" {
+			return fmt.Errorf("call %s %s: fixed parameter %s=%q is not one of its parameters, or is empty", method, path, k, v)
+		}
 	}
 	return nil
+}
+
+// checkDistinct: calls on the same method and path are told apart by their fixed parameters: each
+// has some, and no request can take two of them (they differ in a parameter both fix).
+func checkDistinct(byPath map[string][]Call) error {
+	for key, cs := range byPath {
+		if len(cs) < 2 {
+			continue
+		}
+		for i, a := range cs {
+			if len(a.Fixed) == 0 {
+				return fmt.Errorf("calls %s are told apart only by fixed parameters, and one has none", key)
+			}
+			for _, b := range cs[i+1:] {
+				differ := false
+				for k, v := range a.Fixed {
+					if w, ok := b.Fixed[k]; ok && w != v {
+						differ = true
+					}
+				}
+				if !differ {
+					return fmt.Errorf("calls %s %s and %s could be the same request", key, fixedKey(a.Fixed), fixedKey(b.Fixed))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func fixedKey(f map[string]string) string {
+	var parts []string
+	for _, k := range slices.Sorted(maps.Keys(f)) {
+		parts = append(parts, k+"="+f[k])
+	}
+	return strings.Join(parts, "&")
 }
 
 func checkCall(method, path string, query, form []string) error {

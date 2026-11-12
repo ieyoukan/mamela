@@ -27,9 +27,13 @@ package providertest
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -112,10 +116,7 @@ func Run(t *testing.T, s Suite) {
 		t.Run(c.Name+"/keeps-undeclared", func(t *testing.T) {
 			e := s.start(t, -1, "")
 			e.converge(c.Desired, 1)
-			observed, _, err := e.s.Observe(e.ctx, nil)
-			if err != nil {
-				t.Fatalf("observe with nothing declared: %v", err)
-			}
+			observed := e.observe(nil)
 			for _, r := range c.Desired {
 				if !hasOwned(observed, r) {
 					t.Errorf("with nothing declared, observe does not report %s as an existing resource Mamela owns; Mamela must see what it created to keep it", r.ID)
@@ -158,6 +159,9 @@ type env struct {
 	s   *host.Session
 	up  *faulty
 	ops int
+	// created is what was applied while its object did not exist, by resource: Mamela's record of
+	// what it set out to create, which vouches for the provider's claims of ownership.
+	created map[string][]map[string]string
 	// lookups, when set, checks each change before it is applied.
 	lookups func(protocol.Change)
 }
@@ -182,7 +186,7 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		}
 	}
 	up := &faulty{api: s.NewAPI(), catalog: s.Catalog, at: at, kind: kind}
-	o.Upstream = up
+	o.Upstream, o.Artifacts = up, fakeArtifacts{}
 	ctx := t.Context()
 	sess, err := host.Start(ctx, exe, o)
 	if err != nil {
@@ -194,16 +198,27 @@ func (s Suite) start(t *testing.T, at int, kind string) *env {
 		}
 		sess.Close()
 	})
-	return &env{t: t, ctx: ctx, s: sess, up: up}
+	return &env{t: t, ctx: ctx, s: sess, up: up, created: map[string][]map[string]string{}}
 }
 
-// round observes, diffs and applies every change once.
-func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
+// observe observes and, as Mamela does, keeps the provider's claims of ownership only for what was
+// created through it (protocol.Vouch).
+func (e *env) observe(desired []protocol.Resource) []protocol.Observed {
 	e.t.Helper()
 	observed, _, err := e.s.Observe(e.ctx, desired)
 	if err != nil {
 		e.t.Fatalf("observe: %v", err)
 	}
+	for i, o := range observed {
+		observed[i] = protocol.Vouch(o, e.created[o.ID])
+	}
+	return observed
+}
+
+// round observes, diffs and applies every change once.
+func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
+	e.t.Helper()
+	observed := e.observe(desired)
 	changes, err := e.s.Diff(e.ctx, desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)
@@ -244,6 +259,9 @@ func (e *env) apply(c protocol.Change, desired []protocol.Resource, observed []p
 		if observed[i].ID == c.Resource {
 			o = &observed[i]
 		}
+	}
+	if o == nil || !o.Exists {
+		e.created[c.Resource] = append(e.created[c.Resource], c.IDs) // intent first, as Mamela records it
 	}
 	r := e.s.Apply(e.ctx, p, c, d, o)
 	if r.Disbelieved {
@@ -296,10 +314,7 @@ func (e *env) lookup(c protocol.Change) protocol.LookupStatus {
 // change, then requires that observing and applying again converges.
 func (e *env) recover(desired []protocol.Resource) {
 	e.t.Helper()
-	observed, _, err := e.s.Observe(e.ctx, desired)
-	if err != nil {
-		e.t.Fatalf("observe: %v", err)
-	}
+	observed := e.observe(desired)
 	changes, err := e.s.Diff(e.ctx, desired, observed)
 	if err != nil {
 		e.t.Fatalf("diff: %v", err)
@@ -353,6 +368,22 @@ type faulty struct {
 }
 
 func (f *faulty) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, error) {
+	return f.send(ctx, r, nil)
+}
+
+// Upload implements host.Uploader.
+func (f *faulty) Upload(ctx context.Context, r protocol.HostRequest, file host.File) (int, []byte, error) {
+	return f.send(ctx, r, &file)
+}
+
+func (f *faulty) send(ctx context.Context, r protocol.HostRequest, file *host.File) (int, []byte, error) {
+	h := host.Handler{Handler: f.api}
+	do := func() (int, []byte, error) {
+		if file != nil {
+			return h.Upload(ctx, r, *file)
+		}
+		return h.Do(ctx, r)
+	}
 	if isChange(f.catalog, r) {
 		i := f.changes
 		f.changes++
@@ -361,11 +392,29 @@ func (f *faulty) Do(ctx context.Context, r protocol.HostRequest) (int, []byte, e
 			if f.kind == faultNotSent {
 				return 0, nil, fmt.Errorf("%w: injected: connection refused", host.ErrNotSent)
 			}
-			host.Handler{Handler: f.api}.Do(ctx, r)
+			do()
 			return 0, nil, errors.New("injected: the connection was lost after the request was sent")
 		}
 	}
-	return host.Handler{Handler: f.api}.Do(ctx, r)
+	return do()
+}
+
+// fakeArtifacts makes artifacts of fake content: a download claims its declared sha256 (the fake
+// API does not check it), a seed gets a name and a sha256 of its own.
+type fakeArtifacts struct{}
+
+func (fakeArtifacts) Make(_ context.Context, a protocol.Artifact) (host.Prepared, error) {
+	content := "fake " + string(a.Kind) + " " + a.ID
+	info := protocol.ArtifactInfo{Name: a.Name, SHA256: a.SHA256, Size: int64(len(content))}
+	if a.Kind == protocol.ArtifactSeed {
+		sum := sha256.Sum256([]byte(content + a.Node))
+		info.NodeID = a.NodeID
+		if info.NodeID == 0 { // as Mamela does: a number of its own, the same for the same node
+			info.NodeID = 1_000_000_000 + int64(binary.BigEndian.Uint16(sum[:2]))
+		}
+		info.Name, info.SHA256 = fmt.Sprintf("mamela-seed-%s-%d.iso", a.Node, info.NodeID), hex.EncodeToString(sum[:])
+	}
+	return host.Prepared{Info: info, Open: func() (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(content)), nil }}, nil
 }
 
 // isChange: anything the catalog does not classify as a read.

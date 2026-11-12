@@ -78,6 +78,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
 | MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある |
 | MAM-POL-0308 | Denied | Control Plane が自分の動くホスト（site の `controlplane.host`）を変える操作（ADR 0003） |
+| MAM-POL-0309 | Denied | プロバイダーが実行しない変更（マニフェストで unsupported とした操作。ディスクの縮小、イメージやネットワークの変更など）。差分は表示し、理由を示す |
 | MAM-POL-0307 | Denied | VM のネットワークの変更（作成時に一度だけ与える。その場で変えると VM が切り離されうる） |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 
@@ -146,6 +147,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | LAB-0302 | BLOCK | pool の中に、VMID 予約範囲外のゲストがいる |
 | LAB-0303 | BLOCK | VM 数の予算を超える |
 | LAB-0304 | BLOCK | 作る VM のネットワークを site が許さない（範囲外の固定アドレス、許されていない DHCP）。plan の時点で止める |
+| LAB-0305 | BLOCK | プロバイダーの変更が、site の 1 台あたりの予算（vCPU、メモリ、ディスク）を超える。plan の時点で止め、apply でも送る前に確かめる。どのパラメータが大きさを決めるかは Mamela のカタログ（Measures）が決める |
 | LAB-0400 | ok | 管理外のゲストはすべて変わっていない |
 | LAB-0401 | BLOCK | 管理外のゲストが消えた |
 | LAB-0402 | BLOCK | 管理外のゲストの状態（running / stopped）が変わった |

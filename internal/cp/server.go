@@ -1,6 +1,7 @@
 package cp
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -26,9 +27,23 @@ type Server struct {
 	// unreachable, mamelet keeps repairing drift from its last revision until it expires.
 	RevisionTTL time.Duration
 	Log         *log.Logger
+	// MameletBinary is the mamelet a cloud machine's user-data seed fetches (ADR 0005): served at
+	// /v1/mamelet/<its sha256> to anyone, since it is no secret; the seed checks the sha256.
+	MameletBinary []byte
 }
 
 const maxBody = 1 << 20
+
+// mamelet serves the mamelet binary, only under its own sha256.
+func (s *Server) mamelet(w http.ResponseWriter, r *http.Request) {
+	sum := sha256.Sum256(s.MameletBinary)
+	if len(s.MameletBinary) == 0 || r.PathValue("sha256") != hex.EncodeToString(sum[:]) {
+		http.Error(w, "no such mamelet", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Write(s.MameletBinary)
+}
 
 // TLSConfig requires TLS 1.3; client certificates are verified when given (enrollment has none).
 func (s *Server) TLSConfig() *tls.Config {
@@ -44,6 +59,7 @@ func (s *Server) TLSConfig() *tls.Config {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/enroll", s.enroll)
+	mux.HandleFunc("GET /v1/mamelet/{sha256}", s.mamelet)
 	mux.HandleFunc("GET /v1/nodes/{node}/revision", s.revision)
 	mux.HandleFunc("POST /v1/nodes/{node}/report", s.report)
 	return mux

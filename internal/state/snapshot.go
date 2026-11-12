@@ -30,6 +30,38 @@ type Snapshot struct {
 	Provided map[string]Provided `json:"provided,omitempty"`
 	// K3s by "<node>/k3s". Absent means "not observed".
 	K3s map[string]K3s `json:"k3s,omitempty"`
+	// Nodes are the machines of providers' node kinds, by resource name (ADR 0004).
+	Nodes map[string]Node `json:"nodes,omitempty"`
+}
+
+// AddProvided records providers' observations, and from them the machines of node kinds.
+func (s *Snapshot) AddProvided(provided map[string]Provided) {
+	if len(provided) == 0 {
+		return
+	}
+	s.Provided = provided
+	for _, p := range provided {
+		o := p.Observed
+		if o.Node == nil || !o.Exists {
+			continue
+		}
+		if s.Nodes == nil {
+			s.Nodes = map[string]Node{}
+		}
+		s.Nodes[p.Name] = Node{Provider: p.Provider, Kind: string(p.Kind), Managed: o.Owned, ID: o.Node.ID,
+			Running: o.Node.Running, UptimeSeconds: o.Node.UptimeSeconds, ObservedAt: p.ObservedAt}
+	}
+}
+
+// Node is a provider's machine that mamelet runs on.
+type Node struct {
+	Provider      string    `json:"provider"`
+	Kind          string    `json:"kind"`
+	Managed       bool      `json:"managed"` // the provider's marker says Mamela created it
+	ID            int64     `json:"id"`      // in revisions and enrollment
+	Running       bool      `json:"running"`
+	UptimeSeconds int64     `json:"uptimeSeconds,omitempty"`
+	ObservedAt    time.Time `json:"observedAt"`
 }
 
 // K3s is an observed k3s on a node: Mamela's unit installed, and the sha256 of the binary.
@@ -63,6 +95,9 @@ type Provided struct {
 type ProvidedChange struct {
 	Change   protocol.Change   `json:"change"`
 	Verified protocol.Verified `json:"verified"`
+	// Unsupported says why the provider does not carry the change out (its manifest's Why): the
+	// world differs from the declaration in a way it never changes. The plan denies it.
+	Unsupported string `json:"unsupported,omitempty"`
 }
 
 // SpecDigest identifies a provider's spec (canonical JSON).
@@ -155,6 +190,13 @@ func (s Snapshot) normalized() Snapshot {
 		for k, v := range s.Provided {
 			v.ObservedAt = v.ObservedAt.UTC()
 			n.Provided[k] = v
+		}
+	}
+	if len(s.Nodes) > 0 {
+		n.Nodes = map[string]Node{}
+		for k, v := range s.Nodes {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.Nodes[k] = v
 		}
 	}
 	return n

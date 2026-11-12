@@ -11,6 +11,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
@@ -422,5 +423,88 @@ func TestK3sAgentStartsAfterItsServer(t *testing.T) {
 	s.Services["srv/k3s"] = state.Service{Exists: true, Enabled: true, Running: true, ObservedAt: t0}
 	if c := find(t, Build(g, s, policy.Default), "NodeService ag/k3s"); c.Status != StatusChange {
 		t.Fatalf("agent once its server runs: %+v", c)
+	}
+}
+
+// A provider's machine is a node like a VirtualMachine: created, Mamela's, running, and how long.
+func TestNodeResourcesOnAProvidersMachine(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
+		`{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := func(s state.Snapshot) Change { return find(t, Build(g, s, policy.Default), "NodePackage web/nginx") }
+	s := state.Empty(t0)
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0101" {
+		t.Fatalf("no machine yet: %+v", c.Note)
+	}
+	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: false, ObservedAt: t0}}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0111" {
+		t.Fatalf("stopped machine: %+v", c.Note)
+	}
+	s.Nodes["web"] = state.Node{Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 3600, ObservedAt: t0}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0110" {
+		t.Fatalf("silent agent on a provider's machine: %+v", c.Note)
+	}
+	s.Nodes["web"] = state.Node{Provider: "proxmox", Managed: false, ID: 7001, Running: true, ObservedAt: t0}
+	if c := pkg(s); c.Note == nil || c.Note.Code != "MAM-PLAN-0102" {
+		t.Fatalf("someone else's machine: %+v", c.Note)
+	}
+}
+
+// The built-in observation sees a provider's machine as a Foreign VM of the same name; the
+// provider's word on its machine comes first.
+func TestProvidersMachineIsNotForeign(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
+		`{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.VMs["web"] = state.VM{Managed: false, ObservedAt: t0}
+	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 60, ObservedAt: t0}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage web/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0103" {
+		t.Fatalf("%+v", c.Note)
+	}
+}
+
+// A provider's machine that is the Control Plane's host is protected like a VirtualMachine: its
+// change is shown and denied, never approvable.
+func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"cp","provider":"proxmox","spec":{"cpu":4}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{"ProxmoxVM cp": {Provider: "proxmox", Kind: "ProxmoxVM", Name: "cp", Declared: true,
+		SpecDigest: state.SpecDigest(g.Resources[0].Provided.Spec), ObservedAt: t0,
+		Observed: protocol.Observed{ID: "ProxmoxVM cp", Kind: "ProxmoxVM", Name: "cp", Exists: true, Owned: true},
+		Changes:  []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM cp", Kind: "ProxmoxVM", Op: "resize-vm"}}}}}
+	pol := policy.Default
+	pol.ProtectedNodes = []string{"cp"}
+	c := find(t, Build(g, s, pol), "ProxmoxVM cp")
+	if c.Verdict != policy.Denied || len(c.Operations) != 1 || c.Operations[0].Decision.Code != "MAM-POL-0308" {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// A difference a provider never acts on is shown and denied, with its reason; it is not "in sync".
+func TestUnsupportedProviderChangeIsDenied(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"diskGiB":5}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{"ProxmoxVM web": {Provider: "proxmox", Kind: "ProxmoxVM", Name: "web", Declared: true,
+		SpecDigest: state.SpecDigest(g.Resources[0].Provided.Spec), ObservedAt: t0,
+		Observed: protocol.Observed{ID: "ProxmoxVM web", Kind: "ProxmoxVM", Name: "web", Exists: true, Owned: true},
+		Changes: []state.ProvidedChange{{Change: protocol.Change{Resource: "ProxmoxVM web", Kind: "ProxmoxVM", Op: "shrink-vm-disk",
+			Reasons: []string{"disk 10 -> 5 GiB"}}, Unsupported: "shrinking a disk can destroy data"}}}}
+	c := find(t, Build(g, s, policy.Default), "ProxmoxVM web")
+	if c.Status != StatusChange || c.Verdict != policy.Denied || c.Operations[0].Decision.Code != "MAM-POL-0309" ||
+		!strings.Contains(c.Operations[0].Decision.Message, "shrinking a disk") {
+		t.Fatalf("%+v", c)
 	}
 }

@@ -1,0 +1,44 @@
+## Ec2: Amazon EC2 instances that Mamela's agent (mamelet) runs on, made by the example ec2
+## provider (examples/ec2). The provider runs isolated; Mamela signs its requests, checks each one,
+## and gives each instance its mamelet seed as user-data, which the provider never sees.
+##
+## An instance is a node: declare packages and services on `Ec2.node(i)` with `Mamela.package_on`.
+
+import Mamela
+import Dynamic.{Dynamic, Text}
+import Dynamic.Number
+
+## The provider, as its manifest names it.
+pub const PROVIDER = "ec2-example"
+
+## An instance: launched from `image_id` (an AMI) with `instance_type`, in `subnet_id` with
+## `security_group_id`, with a root volume of `disk_gib` on `root_device` ("/dev/sda1" for Ubuntu).
+## It gets its address from the subnet.
+pub type Instance(
+  name: String,
+  image_id: String,
+  instance_type: String,
+  subnet_id: String,
+  security_group_id: String,
+  root_device: String,
+  disk_gib: Int,
+)
+
+## Declares the instance.
+pub fn instance(graph: Mamela.Graph, i: Instance) -> Mamela.Graph {
+  spec = [
+    ("imageId", Text(i.image_id)),
+    ("instanceType", Text(i.instance_type)),
+    ("subnetId", Text(i.subnet_id)),
+    ("securityGroupId", Text(i.security_group_id)),
+    ("rootDevice", Text(i.root_device)),
+    ("diskGiB", Dynamic.Number(Number.from_int(i.disk_gib))),
+    ("network", Dynamic.object([("mode", Text("dhcp"))])),
+  ]
+  Mamela.provided(graph, PROVIDER, "Ec2Instance", i.name, spec)
+}
+
+## The instance as a node, for packages, services and k3s on it.
+pub fn node(i: Instance) -> Mamela.Node {
+  Mamela.Node(name: i.name)
+}

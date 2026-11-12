@@ -200,3 +200,34 @@ func TestMakerNamesSeedsByContent(t *testing.T) {
 		t.Fatalf("a DHCP seed %q is reused for a static network", f)
 	}
 }
+
+// A cloud machine's seed is user-data alone: it fetches mamelet over https from the Control Plane,
+// verified with Mamela's CA, and installs it only if its sha256 is the one Mamela put there; it
+// fits a cloud's limit and configures no network.
+func TestUserDataSeed(t *testing.T) {
+	p := params()
+	sha := strings.Repeat("ab", 32)
+	ud, err := UserData(p, "https://cp.example:8443/v1/mamelet/"+sha, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(ud)
+	for _, want := range []string{"#cloud-config\n", "--cacert /etc/mamelet/ca.pem", "--proto =https", sha + "  $f\\\" | sha256sum -c -", "tok-123", "/etc/mamelet/ca.pem"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("user-data lacks %q", want)
+		}
+	}
+	if len(ud) > MaxUserData || strings.Contains(text, "ethernets") || strings.Contains(text, "qemu-guest-agent") {
+		t.Fatalf("user-data (%d bytes):\n%s", len(ud), text)
+	}
+	if _, err := UserData(p, "http://cp.example/v1/mamelet/x", sha); err == nil {
+		t.Error("fetched mamelet over http")
+	}
+	if _, err := UserData(p, "https://cp.example/v1/mamelet/x'; rm -rf /", sha); err == nil {
+		t.Error("a URL that breaks out of the command")
+	}
+	p.Network = graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.10/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}
+	if _, err := UserData(p, "https://cp.example/v1/mamelet/"+sha, sha); err == nil {
+		t.Error("a static network in user-data")
+	}
+}

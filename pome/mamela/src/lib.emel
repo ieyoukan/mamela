@@ -75,26 +75,60 @@ pub fn vm(graph: Graph, vm: Vm) -> Graph {
   Graph(vms: List.append(graph.vms, [vm]), ..graph)
 }
 
-## Declares that `name` is installed on `node`. Taking the `Vm` itself (not its name)
-## keeps the reference from pointing at a node that was never declared by a typo.
+## A machine mamelet runs on: a `Vm`, or a machine a provider makes (its Pome gives a function that
+## returns one, such as `Proxmox.node`). Taking a `Node` (not a name) keeps a reference from
+## pointing at a machine that was never declared by a typo.
+pub type Node(name: String)
+
+## The node of a `Vm`.
+pub fn node(vm: Vm) -> Node {
+  Node(name: vm.name)
+}
+
+## Declares that `name` is installed on `node`.
 pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
+  package_on(graph, Node(name: node.name), name)
+}
+
+## Declares that `name` is installed on a node.
+pub fn package_on(graph: Graph, node: Node, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
 }
 
 ## Declares that `node` runs a k3s server of `version`, whose binary has `sha256`.
 pub fn k3s_server(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
+  k3s_server_on(graph, Node(name: node.name), version, sha256)
+}
+
+## Declares that a node runs a k3s server of `version`, whose binary has `sha256`.
+pub fn k3s_server_on(graph: Graph, node: Node, version: String, sha256: String) -> Graph {
   k = K3s(node: node.name, role: "server", server: "", version:, sha256:)
   Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
 }
 
-## Declares that `node` runs a k3s agent of `version` that joins the server on `server`. Taking the
-## server's `Vm` keeps the reference from pointing at a node that was never declared.
+## Declares that `node` runs a k3s agent of `version` that joins the server on `server`.
 pub fn k3s_agent(graph: Graph, node: Vm, server: Vm, version: String, sha256: String) -> Graph {
+  k3s_agent_on(graph, Node(name: node.name), Node(name: server.name), version, sha256)
+}
+
+## Declares that a node runs a k3s agent of `version` that joins the server on `server`.
+pub fn k3s_agent_on(
+  graph: Graph,
+  node: Node,
+  server: Node,
+  version: String,
+  sha256: String,
+) -> Graph {
   k = K3s(node: node.name, role: "agent", server: server.name, version:, sha256:)
   Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
 }
 
 pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Bool) -> Graph {
+  service_on(graph, Node(name: node.name), name, enabled, running)
+}
+
+## Declares a systemd service on a node.
+pub fn service_on(graph: Graph, node: Node, name: String, enabled: Bool, running: Bool) -> Graph {
   s = Service(node: node.name, name:, enabled:, running:)
   Graph(services: List.append(graph.services, [s]), ..graph)
 }

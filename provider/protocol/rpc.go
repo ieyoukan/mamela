@@ -32,6 +32,10 @@ const (
 // MethodHostRequest is the method the provider calls on the host to send an API request.
 const MethodHostRequest = "host/request"
 
+// MethodHostArtifact is the method the provider calls on the host, during apply, to have one of
+// the change's artifacts made ready and to learn its name, sha256 and size (never its content).
+const MethodHostArtifact = "host/artifact"
+
 // Message is one JSON-RPC 2.0 message: a request (Method is set) or a response (Result or
 // Error). Every request has an ID; there are no notifications.
 type Message struct {
@@ -100,15 +104,28 @@ type Observed struct {
 	Kind   ResourceKind `json:"kind"`
 	Name   string       `json:"name"`
 	Exists bool         `json:"exists"`
-	// Owned is true when the provider's marker says Mamela created it. A provider changes only
-	// what it owns or creates.
-	Owned bool `json:"owned"`
+	// Owned is true when every mark of ownership the provider keeps is there (Proxmox: the marker,
+	// the tag, the pool and the VMID range). Unfinished is true when only some are (a create that
+	// was interrupted before its last step). Either is a claim: Mamela treats the object as its own
+	// only if it matches what Mamela recorded it set out to create (ADR 0004).
+	Owned      bool `json:"owned"`
+	Unfinished bool `json:"unfinished,omitempty"`
 	// IDs are the object's IDs in the API ({"item": "web"}).
 	IDs map[string]string `json:"ids,omitempty"`
 	// Version is the observed version (an ETag, Proxmox's config digest), the precondition of a
 	// change based on this observation.
 	Version string         `json:"version,omitempty"`
 	State   jsontext.Value `json:"state,omitempty"`
+	// Node is set for an existing resource of a node kind (Kind.Node): a machine mamelet runs on.
+	Node *ObservedNode `json:"node,omitempty"`
+}
+
+// ObservedNode is what Mamela needs to know of a machine mamelet runs on (ADR 0004).
+type ObservedNode struct {
+	// ID identifies the machine in its revision and enrollment (Proxmox: the VMID).
+	ID            int64 `json:"id"`
+	Running       bool  `json:"running"`
+	UptimeSeconds int64 `json:"uptimeSeconds,omitempty"`
 }
 
 // ObserveResult is the observed state.
@@ -144,13 +161,83 @@ type Change struct {
 	// Precondition is the observed Version the change is based on.
 	Precondition string   `json:"precondition,omitempty"`
 	Reasons      []string `json:"reasons,omitempty"`
+	// Artifacts are the files the change needs, which the host makes ready and sends; the
+	// provider never sees their content (ADR 0004).
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 }
 
 // Approved is one approved changing request: a declared call and exactly the parameters it sends.
+// A value may name an artifact's facts, "{artifact:<id>.name}", ".sha256" or ".node" (a seed's
+// node number): the host fills them in when it makes the artifact ready, and the provider sends
+// them filled. ".base64" (its content) the provider sends as is, and the host fills it in.
 type Approved struct {
 	Method string              `json:"method"`
 	Path   string              `json:"path"` // the call's template
 	Params map[string][]string `json:"params,omitempty"`
+	// Upload is the artifact this request sends as its file (the call's File parameter).
+	Upload string `json:"upload,omitempty"`
+}
+
+// ArtifactKind is what an artifact is and who makes it.
+type ArtifactKind string
+
+const (
+	// ArtifactDownload is a file the host downloads from URL (https) and checks against SHA256.
+	ArtifactDownload ArtifactKind = "download"
+	// ArtifactSeed is a node's mamelet seed (cloud-init NoCloud): the host makes it, with a fresh
+	// one-time enrollment token, for Node with NodeID and Network. Its name and sha256 are known
+	// only when it is made.
+	ArtifactSeed ArtifactKind = "seed"
+)
+
+// Artifact is one file a change needs.
+type Artifact struct {
+	ID   string       `json:"id"` // referenced as {artifact:<id>...} and by Approved.Upload
+	Kind ArtifactKind `json:"kind"`
+	// Download.
+	URL    string `json:"url,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
+	Name   string `json:"name,omitempty"` // the file name to store it under
+	// Seed. NodeID 0: Mamela assigns the node its number (a machine whose own ID is known only
+	// once it exists, such as an EC2 instance); the provider learns it from host/artifact and
+	// reports it as Observed.Node.ID. Format is how the seed is given to the machine.
+	Node    string   `json:"node,omitempty"`
+	NodeID  int64    `json:"nodeId,omitempty"`
+	Network *Network `json:"network,omitempty"`
+	Format  string   `json:"format,omitempty"`
+}
+
+// Seed formats.
+const (
+	// SeedISO (the default) is a NoCloud ISO with mamelet in it, to attach as a CD-ROM.
+	SeedISO = "iso"
+	// SeedUserData is cloud-init user-data, to pass where the machine is created (EC2 UserData):
+	// mamelet is fetched from the Control Plane and checked against its sha256. Send it as the
+	// value "{artifact:<id>.base64}": the host puts the content in, the provider never sees it.
+	SeedUserData = "user-data"
+)
+
+// Network is a node's IPv4 configuration, given at creation (Mamela's graph Network).
+type Network struct {
+	Mode    string   `json:"mode"` // "dhcp" or "static"
+	Address string   `json:"address,omitempty"`
+	Gateway string   `json:"gateway,omitempty"`
+	DNS     []string `json:"dns,omitempty"`
+}
+
+// HostArtifact asks for one of the change's artifacts.
+type HostArtifact struct {
+	ID string `json:"id"`
+}
+
+// ArtifactInfo is a ready artifact, as the provider may know it.
+type ArtifactInfo struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	// NodeID is the node's number, for a seed (the one Mamela assigned when the change left it 0).
+	NodeID int64 `json:"nodeId,omitempty"`
 }
 
 // ApplyParams is one change to carry out, with its permit and what it was planned from.
@@ -193,10 +280,15 @@ type HostRequest struct {
 	Path   string              `json:"path"`
 	Query  map[string][]string `json:"query,omitempty"`
 	Form   map[string][]string `json:"form,omitempty"` // sent as application/x-www-form-urlencoded
+	// Upload names an artifact of the change: the host sends the form as multipart/form-data, with
+	// the artifact as the call's File parameter.
+	Upload string `json:"upload,omitempty"`
 }
 
 // HostResponse is the API's response.
 type HostResponse struct {
 	Status int    `json:"status"`
 	Body   string `json:"body"`
+	// Reason is the status line's text when the API puts its error there (Proxmox does).
+	Reason string `json:"reason,omitempty"`
 }

@@ -1,8 +1,11 @@
 package external
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -67,6 +70,11 @@ name = "example.com/app"
 	pkgs, err := Discover(filepath.Join(root, "app"), cache)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// An absolute [replace] path is used as is.
+	write(t, filepath.Join(root, "abs/Pome.toml"), "[pome]\nname = \"example.com/abs\"\n[replace]\n\"example.com/local\" = { path = \""+filepath.ToSlash(filepath.Join(root, "local"))+"\" }\n")
+	if abs, err := Discover(filepath.Join(root, "abs"), cache); err != nil || len(abs) != 1 || abs[0].Provider != "local" {
+		t.Errorf("an absolute replace path: %+v %v", abs, err)
 	}
 	if len(pkgs) != 2 || pkgs[0].Provider != "local" || pkgs[0].Version != "local" || pkgs[1].Provider != "kv" || pkgs[1].Source != "example.com/Acme/kv" {
 		t.Fatalf("%+v", pkgs)
@@ -143,6 +151,7 @@ func TestObserveChecksTheDiff(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer rt.Close()
+			rt.SetCreations(noCreations{})
 			got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
 			if c.want == "" {
 				if err != nil || len(got["KVItem web"].Changes) != 1 {
@@ -161,5 +170,99 @@ func TestObserveChecksTheDiff(t *testing.T) {
 	if _, err := Start(t.Context(), []store.Program{{Provider: "kv-example", Version: "9.9.9", Source: "test",
 		Digest: "sha256:" + hex.EncodeToString(sum[:]), Data: data}}, cfg, wasmtime(t)); err == nil {
 		t.Error("a program of another version started")
+	}
+}
+
+// The catalogs Mamela ships are consistent.
+func TestBuiltinCatalogs(t *testing.T) {
+	for name, c := range Catalogs {
+		if err := c.Check(); err != nil || c.API != name {
+			t.Errorf("%s: %v (api %q)", name, err, c.API)
+		}
+	}
+}
+
+// noCreations is a record of nothing created.
+type noCreations struct{}
+
+func (noCreations) Creations(context.Context, string, string) ([]map[string]string, error) {
+	return nil, nil
+}
+func (noCreations) RecordCreation(context.Context, string, string, map[string]string, string, string) error {
+	return nil
+}
+
+// recorded is a record of creations.
+type recorded map[string][]map[string]string
+
+func (r recorded) Creations(_ context.Context, provider, resource string) ([]map[string]string, error) {
+	return r[provider+"/"+resource], nil
+}
+func (r recorded) RecordCreation(_ context.Context, provider, resource string, ids map[string]string, _, _ string) error {
+	r[provider+"/"+resource] = append(r[provider+"/"+resource], ids)
+	return nil
+}
+
+// An object that carries the provider's marker is Mamela's only if Mamela recorded that it set out
+// to create it: a copied marker (here, an item with Mamela's owner that Mamela never made) is
+// someone else's object, and nothing changes it.
+func TestOwnershipNeedsMamelasRecord(t *testing.T) {
+	api := kvapi.New()
+	api.Put(kvapi.Item{Name: "web", Value: "old", Owner: "mamela", Version: 1})
+	srv := httptest.NewServer(api)
+	defer srv.Close()
+	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+	rt, err := Start(t.Context(), []store.Program{program(t, wasm(t, "../../../examples/kv/cmd/kv-provider"))}, cfg, wasmtime(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	rec := recorded{}
+	rt.SetCreations(rec)
+	if _, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0)); err == nil || !strings.Contains(err.Error(), "did not create it") {
+		t.Fatalf("an item with a copied marker is taken as Mamela's: %v", err)
+	}
+	rec.RecordCreation(t.Context(), "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
+	got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
+	if err != nil || !got["KVItem web"].Observed.Owned || len(got["KVItem web"].Changes) != 1 {
+		t.Fatalf("an item Mamela recorded creating: %+v %v", got["KVItem web"], err)
+	}
+}
+
+// An AWS API's requests are signed with SigV4 over their body, for the configured region and
+// service; the signature changes with the body.
+func TestSigV4(t *testing.T) {
+	now := func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }
+	sign := SigV4("AKIDEXAMPLE", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "ap-northeast-1", "ec2", now)
+	req := func(body string) *http.Request {
+		r, _ := http.NewRequest("POST", "https://ec2.ap-northeast-1.amazonaws.com/", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return r
+	}
+	a, b := req("Action=StartInstances&InstanceId.1=i-1"), req("Action=StartInstances&InstanceId.1=i-2")
+	if err := sign(a); err != nil {
+		t.Fatal(err)
+	}
+	sign(b)
+	auth := a.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261111/ap-northeast-1/ec2/aws4_request") ||
+		a.Header.Get("X-Amz-Date") != "20261111T120000Z" || strings.Contains(auth, "wJalr") {
+		t.Fatalf("authorization %q date %q", auth, a.Header.Get("X-Amz-Date"))
+	}
+	if auth == b.Header.Get("Authorization") {
+		t.Fatal("the signature does not cover the body")
+	}
+	if body, _ := io.ReadAll(a.Body); string(body) != "Action=StartInstances&InstanceId.1=i-1" {
+		t.Fatalf("the body was consumed by signing: %q", body)
+	}
+	for _, bad := range []string{
+		"[provider.ec2]\napi_url = \"https://ec2.example\"\nauth = \"aws-sigv4\"\ntoken_id = \"AKID\"\n",
+		"[provider.ec2]\napi_url = \"https://ec2.example\"\nregion = \"us-east-1\"\n",
+	} {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(bad), 0o600)
+		if _, err := LoadConfig(p); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
 	}
 }

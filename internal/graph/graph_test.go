@@ -375,3 +375,19 @@ func TestNetworks(t *testing.T) {
 		t.Fatal("site range not enforced")
 	}
 }
+
+// A node resource may be on a provider's machine (ADR 0004); a node's name must name one resource.
+func TestNodeOnAProvidersMachine(t *testing.T) {
+	machine := `{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1,"network":{"mode":"static","address":"192.0.2.40/24"}}}`
+	pkg := `{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}`
+	g, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine + `,` + pkg + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.StaticIP("web") != "192.0.2.40" {
+		t.Fatalf("static IP of a provider's machine: %q", g.StaticIP("web"))
+	}
+	vm := `{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
+	_, err = Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine + `,` + vm + `,` + pkg + `]}`))
+	assertCode(t, err, CodeDanglingNode)
+}

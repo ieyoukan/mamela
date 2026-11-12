@@ -1,0 +1,6 @@
+# The provider program of this Pome. Mamela runs it isolated (WASM) and checks this sha256;
+# Pome.lock and the sumdb pin the whole Pome, this file and the program included.
+provider = "ec2-example"
+version = "0.1.0"
+program = "provider.wasm"
+sha256 = "9c89b58072dda4ded2fb751030b33aad2a58bd4b19f5f8948e05507887a9f249"

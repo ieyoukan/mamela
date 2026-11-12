@@ -345,3 +345,18 @@ func TestPlanProgramsAndPermits(t *testing.T) {
 		t.Errorf("a permit issued twice: %v", err)
 	}
 }
+
+// A node keeps its number; numbers are above every Proxmox VMID and never shared.
+func TestNodeNumbers(t *testing.T) {
+	st, _, _ := open(t)
+	ctx := context.Background()
+	a, err := st.NodeNumber(ctx, "web")
+	if err != nil || a != FirstNodeNumber {
+		t.Fatalf("first %d %v", a, err)
+	}
+	b, _ := st.NodeNumber(ctx, "db")
+	again, _ := st.NodeNumber(ctx, "web")
+	if b != a+1 || again != a {
+		t.Fatalf("db %d, web again %d", b, again)
+	}
+}

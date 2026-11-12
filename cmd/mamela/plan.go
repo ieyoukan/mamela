@@ -18,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 const defaultDB = ".mamela/state.db"
@@ -95,6 +96,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err)
 	}
+	rt.SetCreations(st)
 	defer rt.Close()
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
@@ -146,13 +148,12 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// the plan, so apply derives the same denial.
 		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
 	}
+	rt.SetLimits(siteLimits(site))
 	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
 	if err != nil {
 		return report(stderr, err)
 	}
-	if len(provided) > 0 {
-		snap.Provided = provided
-	}
+	snap.AddProvided(provided)
 	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
 	if site != nil {
 		// A VM the site would refuse to create is refused here, before anyone approves it.
@@ -175,13 +176,19 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
 		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
 		// refuses a revision with a member it does not know.
-		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.MoveTo); err != nil {
+		ids := map[string]int64{}
+		for name, n := range snap.Nodes {
+			if n.Managed {
+				ids[name] = n.ID
+			}
+		}
+		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.MoveTo, ids); err != nil {
 			return report(stderr, err)
 		}
 	}
 	plan.Render(stdout, p)
 	if site != nil {
-		renderPlanUses(stdout, site, p, res.Graph, pol)
+		renderPlanUses(stdout, site, p, res.Graph, pol, rt.Manifests())
 	}
 	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
 	return 0
@@ -233,10 +240,20 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return 0
 }
 
-// siteRefusals says which VMs the plan would create with a network the site does not allow.
+// siteRefusals says which VMs the plan would create with a network the site does not allow: built-in
+// VMs, and providers' machines whose seed names a network (ADR 0004).
 func siteRefusals(site *lab.Site, p *plan.Plan, g *graph.Graph) []string {
 	var out []string
 	for _, c := range p.Changes {
+		for _, pc := range c.ProviderChanges {
+			for _, a := range pc.Artifacts {
+				if a.Kind == protocol.ArtifactSeed && a.Network != nil {
+					if err := site.Allows(a.Node, graphNetwork(*a.Network)); err != nil {
+						out = append(out, err.Error())
+					}
+				}
+			}
+		}
 		if c.Kind != graph.KindVirtualMachine || !slices.ContainsFunc(c.Operations, func(o plan.Operation) bool { return o.Op == policy.OpCreateVM }) {
 			continue
 		}
