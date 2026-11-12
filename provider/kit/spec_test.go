@@ -61,13 +61,13 @@ func TestSpecRefused(t *testing.T) {
 		"map":    struct{ M map[string]string `json:"m"` }{},
 		"nested": struct{ L [][]string `json:"l"` }{},
 		"values": struct{ N int `json:"n" values:"1|2"` }{},
-		"twice": struct {
-			A string `json:"a"`
-			B string `json:"a"`
-		}{},
 	} {
 		if err := protocol.CheckFields(kit.SpecOf(v)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	twice := []protocol.Field{{Name: "a", Type: protocol.FieldString}, {Name: "a", Type: protocol.FieldInt}}
+	if err := protocol.CheckFields(twice); err == nil {
+		t.Error("a field twice: accepted")
 	}
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Builds the example provider into its Pome (examples/kv/pome/provider.wasm) and writes its
-# sha256 into mamela-provider.toml. The build is reproducible: TestPomeProgramIsTheBuild rebuilds
-# it and checks that the committed program is exactly this build of the source.
+# Builds the example provider into its Pome (examples/kv/pome/provider.wasm), writes its sha256
+# into mamela-provider.toml, and generates the Pome's Emela (src/lib.emel) from its manifest. The
+# build is reproducible: TestPomeProgramIsTheBuild rebuilds it and checks that the committed program
+# is exactly this build of the source, and that the Emela is what it generates.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
@@ -23,4 +24,6 @@ version = "0.1.0"
 program = "provider.wasm"
 sha256 = "$sum"
 TOML
+# The Pome's Emela is generated from the program's manifest (the kind's spec).
+go run ./cmd/mamela provider pome examples/kv/pome >/dev/null
 echo "$out $sum"

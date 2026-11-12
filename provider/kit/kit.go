@@ -88,6 +88,11 @@ type Explicit interface {
 	Prepare(op protocol.Op, o protocol.Observed, desired *protocol.Resource) (protocol.Change, error)
 }
 
+// Documented is a kind that says what a resource of it is (for its generated Pome).
+type Documented interface {
+	Doc() string
+}
+
 // Specified is a kind whose spec is a Go struct: its fields become the manifest's spec (from json
 // and mamela tags, see SpecOf), from which the kind's Pome is generated.
 type Specified interface {
@@ -198,6 +203,9 @@ func (p *Provider) Manifest() protocol.Manifest {
 		mk := protocol.Kind{Kind: k.Kind()}
 		if n, ok := k.(Node); ok {
 			mk.Node = n.IsNode()
+		}
+		if d, ok := k.(Documented); ok {
+			mk.Doc = d.Doc()
 		}
 		if s, ok := k.(Specified); ok {
 			mk.Spec = SpecOf(s.Spec())

@@ -83,6 +83,8 @@ type Kind struct {
 	// Spec are the fields of the kind's spec (ADR 0009), when the provider gives them: its Pome's
 	// types and functions can then be generated.
 	Spec []Field `json:"spec,omitempty"`
+	// Doc says what a resource of the kind is, for its generated Pome.
+	Doc string `json:"doc,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.

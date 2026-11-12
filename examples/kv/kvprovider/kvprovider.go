@@ -78,6 +78,7 @@ var write = []protocol.Need{{Capability: "kv:Write", Target: protocol.Target{Typ
 
 func (items) Kind() protocol.ResourceKind { return Kind }
 func (items) Spec() any                   { return Spec{} }
+func (items) Doc() string                 { return "An item of the key-value API: its value, and its labels." }
 func (items) Reads() []protocol.Call      { return []protocol.Call{listItems} }
 func (items) Operations() []protocol.Operation {
 	return []protocol.Operation{
