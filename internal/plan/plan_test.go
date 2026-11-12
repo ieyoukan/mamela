@@ -14,7 +14,37 @@ import (
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"TestVM","name":"app-server","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v2"}`
+
+// vm is a provider's machine ("TestVM" of provider "test") with a network.
+func vm(name, network string) string {
+	return `{"kind":"TestVM","name":"` + name + `","provider":"test","spec":{"cpu":1,"network":` + network + `}}`
+}
+
+// machineObserved records what the provider observed of a declared machine of g, and its changes.
+func machineObserved(s *state.Snapshot, g *graph.Graph, name string, exists, owned, running bool, uptime int64, changes ...state.ProvidedChange) {
+	for _, r := range g.Resources {
+		if r.Name != name || r.Provided == nil {
+			continue
+		}
+		o := protocol.Observed{ID: r.ID(), Kind: r.Kind, Name: name, Exists: exists, Owned: owned}
+		if exists {
+			o.IDs = map[string]string{"name": name}
+			o.Node = &protocol.ObservedNode{ID: 7000, Running: running, UptimeSeconds: uptime}
+		}
+		if s.Provided == nil {
+			s.Provided = map[string]state.Provided{}
+		}
+		s.Provided[r.ID()] = state.Provided{Provider: r.Provided.Provider, Kind: r.Kind, Name: name, Declared: true, Observed: o,
+			SpecDigest: state.SpecDigest(r.Provided.Spec), Changes: changes, ObservedAt: t0}
+	}
+	s.AddProvided(s.Provided)
+}
+
+func providedChange(id string, op protocol.Op, effect protocol.Effect) state.ProvidedChange {
+	return state.ProvidedChange{Change: protocol.Change{Resource: id, Kind: "TestVM", Op: op, Reasons: []string{string(op)}},
+		Verified: protocol.Verified{Effects: []protocol.Effect{effect}}}
+}
 
 var t0 = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 
@@ -29,8 +59,12 @@ func desired(t *testing.T) *graph.Graph {
 
 // converged is the snapshot of a world that matches the declaration.
 func converged() state.Snapshot {
+	g, err := graph.Decode([]byte(homelab))
+	if err != nil {
+		panic(err)
+	}
 	s := state.Empty(t0)
-	s.VMs["app-server"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: t0}
+	machineObserved(&s, g, "app-server", true, true, true, 600)
 	s.Packages["app-server/nginx"] = state.Package{Installed: true, Version: "1.24.0", ObservedAt: t0}
 	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: true, ObservedAt: t0}
 	return s
@@ -56,10 +90,14 @@ func ops(c Change) []policy.Op {
 }
 
 func TestEmptyWorld(t *testing.T) {
-	p := Build(desired(t), state.Empty(t0), policy.Default)
-	vm := find(t, p, "VirtualMachine app-server")
-	if vm.Status != StatusChange || vm.Verdict != policy.ApprovalRequired || ops(vm)[0] != policy.OpCreateVM {
-		t.Errorf("VM: %+v", vm)
+	g := desired(t)
+	s := state.Empty(t0)
+	machineObserved(&s, g, "app-server", false, false, false, 0,
+		providedChange("TestVM app-server", "create-vm", protocol.EffectCreate))
+	p := Build(g, s, policy.Default)
+	m := find(t, p, "TestVM app-server")
+	if m.Status != StatusChange || m.Verdict != policy.ApprovalRequired || ops(m)[0] != "create-vm" || !m.Creates {
+		t.Errorf("machine: %+v", m)
 	}
 	for _, id := range []string{"NodePackage app-server/nginx", "NodeService app-server/nginx"} {
 		c := find(t, p, id)
@@ -126,50 +164,17 @@ func TestPackageAndServiceDrift(t *testing.T) {
 	}
 }
 
-func TestDestructiveVMChangesAreDenied(t *testing.T) {
+func TestForeignMachineIsNeverChanged(t *testing.T) {
 	s := converged()
-	vm := s.VMs["app-server"]
-	vm.DiskGiB = 20 // declared 10: shrinking
-	vm.Image = "debian-12"
-	s.VMs["app-server"] = vm
-	c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server")
-	if c.Verdict != policy.Denied {
-		t.Fatalf("verdict %s, want Denied: %+v", c.Verdict, c)
-	}
-	got := ops(c)
-	if len(got) != 2 || got[0] != policy.OpShrinkVMDisk || got[1] != policy.OpReplaceVMImage {
-		t.Errorf("ops %v", got)
-	}
-}
-
-func TestResizeNeedsApproval(t *testing.T) {
-	s := converged()
-	vm := s.VMs["app-server"]
-	vm.CPU, vm.MemoryMiB, vm.DiskGiB = 2, 2048, 5 // declared 1 / 1024 / 10
-	s.VMs["app-server"] = vm
-	c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server")
-	if c.Verdict != policy.ApprovalRequired {
-		t.Fatalf("verdict %s", c.Verdict)
-	}
-	want := []policy.Op{policy.OpGrowVMDisk, policy.OpResizeVMCPU, policy.OpResizeVMMemory}
-	if got := ops(c); len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
-		t.Errorf("ops %v, want %v", got, want)
-	}
-}
-
-func TestForeignVMIsNeverChanged(t *testing.T) {
-	s := converged()
-	vm := s.VMs["app-server"]
-	vm.Managed = false
-	s.VMs["app-server"] = vm
+	machineObserved(&s, desired(t), "app-server", true, false, true, 600)
 	p := Build(desired(t), s, policy.Default)
-	c := find(t, p, "VirtualMachine app-server")
+	c := find(t, p, "TestVM app-server")
 	if c.Verdict != policy.Denied || ops(c)[0] != policy.OpChangeForeign {
-		t.Errorf("VM: %+v", c)
+		t.Errorf("machine: %+v", c)
 	}
 	pkg := find(t, p, "NodePackage app-server/nginx")
 	if pkg.Status != StatusWaiting || pkg.Note.Code != "MAM-PLAN-0102" {
-		t.Errorf("package on a foreign VM: %+v", pkg)
+		t.Errorf("package on a foreign machine: %+v", pkg)
 	}
 }
 
@@ -193,18 +198,24 @@ func TestMissingAgentReportWaits(t *testing.T) {
 	}
 }
 
-func TestRemovedVMIsRetained(t *testing.T) {
+// undeclared is a machine a provider reports that is no longer declared.
+func undeclared(s *state.Snapshot, name string, owned bool) {
+	s.Provided["TestVM "+name] = state.Provided{Provider: "test", Kind: "TestVM", Name: name, ObservedAt: t0,
+		Observed: protocol.Observed{ID: "TestVM " + name, Kind: "TestVM", Name: name, Exists: true, Owned: owned}}
+}
+
+func TestRemovedMachineIsRetained(t *testing.T) {
 	s := converged()
-	s.VMs["old-db"] = state.VM{Managed: true, CPU: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu-24.04", ObservedAt: t0}
-	s.VMs["someone-elses"] = state.VM{Managed: false, CPU: 4, MemoryMiB: 8192, DiskGiB: 32, Image: "x", ObservedAt: t0}
+	undeclared(&s, "old-db", true)
+	undeclared(&s, "someone-elses", false)
 	p := Build(desired(t), s, policy.Default)
-	c := find(t, p, "VirtualMachine old-db")
+	c := find(t, p, "TestVM old-db")
 	if c.Status != StatusRetained || len(c.Operations) != 0 || c.Note.Code != "MAM-PLAN-0301" {
 		t.Errorf("%+v", c)
 	}
 	for _, ch := range p.Changes {
 		if ch.Name == "someone-elses" {
-			t.Errorf("a foreign VM that is not declared must not appear in the plan: %+v", ch)
+			t.Errorf("a foreign machine that is not declared must not appear in the plan: %+v", ch)
 		}
 	}
 }
@@ -212,17 +223,17 @@ func TestRemovedVMIsRetained(t *testing.T) {
 func TestRender(t *testing.T) {
 	s := converged()
 	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
-	s.VMs["old-db"] = state.VM{Managed: true, CPU: 2, MemoryMiB: 2048, DiskGiB: 20, Image: "ubuntu-24.04", ObservedAt: t0}
+	undeclared(&s, "old-db", true)
 	var buf bytes.Buffer
 	Render(&buf, Build(desired(t), s, policy.Default))
 	out := buf.String()
 	for _, want := range []string{
-		"= VirtualMachine app-server  [in sync]",
+		"= TestVM app-server  [in sync]  via test",
 		"~ NodeService app-server/nginx  [needs approval]",
 		"running: false -> true",
 		"MAM-POL-0206",
 		"hint: add it to autoStartServices",
-		"- VirtualMachine old-db  [retained]",
+		"- TestVM old-db  [retained]  via test",
 		"Summary: 1 needs approval, 1 retained, 2 in sync.",
 		"Nothing has been changed",
 	} {
@@ -287,37 +298,11 @@ func TestServiceWaitsForItsUnit(t *testing.T) {
 	}
 }
 
-// A VM keeps the network it was created with: a declared change is shown and denied. VMs made
-// before networks were recorded observe as "dhcp".
-func TestNetworkChangeIsDenied(t *testing.T) {
-	s := converged()
-	vm := s.VMs["app-server"]
-	vm.Network = "static 192.0.2.10/24 via 192.0.2.1 dns 192.0.2.1"
-	s.VMs["app-server"] = vm
-	c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server")
-	if c.Verdict != policy.Denied || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpChangeVMNetwork ||
-		c.Operations[0].Decision.Code != "MAM-POL-0307" || len(c.Diffs) != 1 || c.Diffs[0].To != "dhcp" {
-		t.Fatalf("%+v", c)
-	}
-	vm.Network = "dhcp"
-	s.VMs["app-server"] = vm
-	if c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server"); c.Status != StatusInSync {
-		t.Fatalf("same network: %+v", c)
-	}
-	created := find(t, Build(desired(t), state.Empty(t0), policy.Default), "VirtualMachine app-server")
-	if !slices.ContainsFunc(created.Diffs, func(d Diff) bool { return d.Field == "network" && d.To == "dhcp" }) {
-		t.Fatalf("create does not show the network: %+v", created.Diffs)
-	}
-}
-
 // An agent of a server with a declared static address joins that address at once: it neither
 // waits for the server's report nor follows it.
 func TestK3sAgentOfAStaticServer(t *testing.T) {
 	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
-	vm := func(name, network string) string {
-		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":` + network + `}}`
-	}
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` +
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
 		vm("srv", `{"mode":"static","address":"192.0.2.40/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`) + `,` + vm("ag", `{"mode":"dhcp"}`) + `,` +
 		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
 		`{"kind":"NodeK3s","name":"ag/k3s","spec":{"node":"ag","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}]}`))
@@ -326,7 +311,7 @@ func TestK3sAgentOfAStaticServer(t *testing.T) {
 	}
 	s := state.Empty(t0)
 	for _, n := range []string{"srv", "ag"} {
-		s.VMs[n] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: t0}
+		machineObserved(&s, g, n, true, true, true, 600)
 	}
 	s.K3s = map[string]state.K3s{
 		"srv/k3s": {Installed: true, SHA256: sha, Addresses: []string{"10.42.0.0", "192.0.2.77"}, ObservedAt: t0},
@@ -338,69 +323,38 @@ func TestK3sAgentOfAStaticServer(t *testing.T) {
 	}
 }
 
-// A stopped VM is started (with approval) and its node resources wait. A VM that has been running
-// long past a first boot without its agent ever reporting is called out, with what to do.
-func TestStoppedVMAndSilentAgent(t *testing.T) {
+// A stopped machine's node resources wait. A machine that has been running long past a first
+// boot without its agent ever reporting is called out, with what to do.
+func TestStoppedMachineAndSilentAgent(t *testing.T) {
+	g := desired(t)
 	s := state.Empty(t0)
-	s.VMs["app-server"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", Network: "dhcp",
-		Stopped: true, ObservedAt: t0}
-	p := Build(desired(t), s, policy.Default)
-	vm := find(t, p, "VirtualMachine app-server")
-	if len(vm.Operations) != 1 || vm.Operations[0].Op != policy.OpStartVM || vm.Verdict != policy.ApprovalRequired {
-		t.Fatalf("stopped VM: %+v", vm)
+	machineObserved(&s, g, "app-server", true, true, false, 0, providedChange("TestVM app-server", "start-vm", protocol.EffectRestart))
+	p := Build(g, s, policy.Default)
+	if m := find(t, p, "TestVM app-server"); len(m.Operations) != 1 || m.Operations[0].Op != "start-vm" || m.Verdict != policy.ApprovalRequired {
+		t.Fatalf("stopped machine: %+v", m)
 	}
 	if c := find(t, p, "NodePackage app-server/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0111" {
-		t.Fatalf("package of a stopped VM: %+v", c.Note)
+		t.Fatalf("package of a stopped machine: %+v", c.Note)
 	}
-
-	young := s.VMs["app-server"]
-	young.Stopped, young.UptimeSeconds = false, int64((5 * time.Minute).Seconds())
-	s.VMs["app-server"] = young
-	if c := find(t, Build(desired(t), s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
-		t.Fatalf("young VM: %+v", c)
+	machineObserved(&s, g, "app-server", true, true, true, int64((5 * time.Minute).Seconds()))
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Fatalf("young machine: %+v", c)
 	}
-	old := young
-	old.UptimeSeconds = int64((40 * time.Minute).Seconds())
-	s.VMs["app-server"] = old
-	c := find(t, Build(desired(t), s, policy.Default), "NodePackage app-server/nginx")
+	machineObserved(&s, g, "app-server", true, true, true, int64((40 * time.Minute).Seconds()))
+	c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx")
 	if c.Status != StatusBlocked || c.Note.Code != "MAM-PLAN-0110" || !strings.Contains(c.Note.Message, "40m") ||
-		!strings.Contains(c.Note.Hint, "mamela reboot app-server") {
+		!strings.Contains(c.Note.Hint, "mamela act") {
 		t.Fatalf("silent agent: %+v", c.Note)
-	}
-}
-
-// A Control Plane never changes its own host (ADR 0003): every change to it, or to what runs on
-// it, is shown and denied. Other VMs are planned as usual.
-func TestControlPlaneHostIsProtected(t *testing.T) {
-	pol := policy.Default
-	pol.ProtectedNodes = []string{"app-server"}
-	s := converged()
-	vm := s.VMs["app-server"]
-	vm.CPU = 2
-	s.VMs["app-server"] = vm
-	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
-	p := Build(desired(t), s, pol)
-	for _, id := range []string{"VirtualMachine app-server", "NodeService app-server/nginx"} {
-		c := find(t, p, id)
-		if c.Verdict != policy.Denied || len(c.Operations) == 0 || c.Operations[0].Decision.Code != "MAM-POL-0308" {
-			t.Fatalf("%s: %+v", id, c)
-		}
-	}
-	if Build(desired(t), s, pol).Digest == Build(desired(t), s, policy.Default).Digest {
-		t.Fatal("the protection is not part of the plan's inputs")
 	}
 }
 
 // A k3s agent's service starts only once its server's runs (its start would wait for the server).
 func TestK3sAgentStartsAfterItsServer(t *testing.T) {
 	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
-	vm := func(name string) string {
-		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
-	}
 	svc := func(node string) string {
 		return `{"kind":"NodeService","name":"` + node + `/k3s","spec":{"enabled":true,"node":"` + node + `","running":true,"service":"k3s"}}`
 	}
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` + vm("srv") + `,` + vm("ag") + `,` +
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("srv", `{"mode":"dhcp"}`) + `,` + vm("ag", `{"mode":"dhcp"}`) + `,` +
 		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
 		`{"kind":"NodeK3s","name":"ag/k3s","spec":{"node":"ag","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
 		svc("srv") + `,` + svc("ag") + `]}`))
@@ -409,7 +363,7 @@ func TestK3sAgentStartsAfterItsServer(t *testing.T) {
 	}
 	s := state.Empty(t0)
 	for _, n := range []string{"srv", "ag"} {
-		s.VMs[n] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", Network: "dhcp", ObservedAt: t0}
+		machineObserved(&s, g, n, true, true, true, 600)
 		s.Services[n+"/k3s"] = state.Service{Exists: true, ObservedAt: t0}
 	}
 	s.K3s = map[string]state.K3s{"srv/k3s": {Installed: true, SHA256: sha, ObservedAt: t0}, "ag/k3s": {Installed: true, SHA256: sha, ObservedAt: t0}}
@@ -426,7 +380,7 @@ func TestK3sAgentStartsAfterItsServer(t *testing.T) {
 	}
 }
 
-// A provider's machine is a node like a VirtualMachine: created, Mamela's, running, and how long.
+// A provider's machine is a node: created, Mamela's, running, and how long.
 func TestNodeResourcesOnAProvidersMachine(t *testing.T) {
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
 		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
@@ -453,25 +407,8 @@ func TestNodeResourcesOnAProvidersMachine(t *testing.T) {
 	}
 }
 
-// The built-in observation sees a provider's machine as a Foreign VM of the same name; the
-// provider's word on its machine comes first.
-func TestProvidersMachineIsNotForeign(t *testing.T) {
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
-		`{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"cpu":1}},` +
-		`{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := state.Empty(t0)
-	s.VMs["web"] = state.VM{Managed: false, ObservedAt: t0}
-	s.Nodes = map[string]state.Node{"web": {Provider: "proxmox", Managed: true, ID: 7001, Running: true, UptimeSeconds: 60, ObservedAt: t0}}
-	if c := find(t, Build(g, s, policy.Default), "NodePackage web/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0103" {
-		t.Fatalf("%+v", c.Note)
-	}
-}
-
-// A provider's machine that is the Control Plane's host is protected like a VirtualMachine: its
-// change is shown and denied, never approvable.
+// A provider's machine that is the Control Plane's host is protected (ADR 0003): its change, and
+// every change of what runs on it, is shown and denied, never approvable.
 func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"cp","provider":"proxmox","spec":{"cpu":4}}]}`))
 	if err != nil {
@@ -505,6 +442,46 @@ func TestUnsupportedProviderChangeIsDenied(t *testing.T) {
 	c := find(t, Build(g, s, policy.Default), "ProxmoxVM web")
 	if c.Status != StatusChange || c.Verdict != policy.Denied || c.Operations[0].Decision.Code != "MAM-POL-0309" ||
 		!strings.Contains(c.Operations[0].Decision.Message, "shrinking a disk") {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// What runs on the Control Plane's host is protected too, and the protection is part of the plan's
+// inputs.
+func TestWhatRunsOnTheControlPlaneHostIsProtected(t *testing.T) {
+	pol := policy.Default
+	pol.ProtectedNodes = []string{"app-server"}
+	s := converged()
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
+	c := find(t, Build(desired(t), s, pol), "NodeService app-server/nginx")
+	if c.Verdict != policy.Denied || len(c.Operations) == 0 || c.Operations[0].Decision.Code != "MAM-POL-0308" {
+		t.Fatalf("%+v", c)
+	}
+	if Build(desired(t), s, pol).Digest == Build(desired(t), s, policy.Default).Digest {
+		t.Fatal("the protection is not part of the plan's inputs")
+	}
+}
+
+// A resource that waits for another is shown waiting, with why, and nothing runs for it.
+func TestWaitingForADependency(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"Thing","name":"a","provider":"test","spec":{}},` +
+		`{"kind":"Thing","name":"b","provider":"test","after":["Thing a"],"spec":{}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	s.Provided = map[string]state.Provided{}
+	for _, r := range g.Resources {
+		p := state.Provided{Provider: "test", Kind: r.Kind, Name: r.Name, Declared: true, SpecDigest: state.SpecDigest(r.Provided.Spec), ObservedAt: t0,
+			Observed: protocol.Observed{ID: r.ID(), Kind: r.Kind, Name: r.Name}}
+		if r.Name == "b" {
+			p.Waiting = "waits for Thing a to be created"
+		}
+		s.Provided[r.ID()] = p
+	}
+	c := find(t, Build(g, s, policy.Default), "Thing b")
+	if c.Status != StatusWaiting || c.Note == nil || c.Note.Code != "MAM-PLAN-0113" || len(c.Operations) != 0 {
 		t.Fatalf("%+v", c)
 	}
 }

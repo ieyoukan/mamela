@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,9 @@ const (
 	phaseDiff     phase = "diff"
 	phaseApply    phase = "apply"
 	phaseLookup   phase = "lookup"
+	phaseGuard    phase = "guard"
+	phasePrepare  phase = "prepare"
+	phaseScript   phase = "script"
 )
 
 // RequestOutcome is what became of one request the provider asked for.
@@ -61,13 +65,18 @@ func (r Request) String() string {
 
 // gate decides and records the requests of one call to the provider.
 type gate struct {
-	phase    phase
-	calls    []protocol.Call
-	permit   *protocol.Permit
-	catalog  protocol.Catalog
-	upstream Upstream
-	now      func() time.Time
-	record   []Request
+	phase  phase
+	calls  []protocol.Call
+	permit *protocol.Permit
+	// catalog and upstream serve a provider with one API; apis (when set) serve each API by name,
+	// with defaultAPI the name of a request that names none (ADR 0007).
+	catalog    protocol.Catalog
+	upstream   Upstream
+	apis       map[string]API
+	defaultAPI string
+	guard      bool // the guard's reads go to each API's GuardUpstream, when it has one
+	now        func() time.Time
+	record     []Request
 	// used marks the permit's approved requests already sent (each is sent at most once).
 	used []bool
 	// halt, once set, refuses every further change: after a change whose outcome is unknown,
@@ -122,6 +131,37 @@ func (g *gate) artifact(ctx context.Context, id string) (protocol.ArtifactInfo, 
 	return p.Info, nil
 }
 
+// catalogFor is the host's catalog of an API, when it is for that API.
+func (g *gate) catalogFor(api string) protocol.Catalog {
+	if g.apis == nil {
+		return g.catalog
+	}
+	name := api
+	if name == "" {
+		name = g.defaultAPI
+	}
+	if ep := g.apis[name]; ep.Catalog.API != "" && ep.Catalog.API == name {
+		return ep.Catalog
+	}
+	return protocol.Catalog{}
+}
+
+// upstreamFor sends the requests to an API (nil: not configured).
+func (g *gate) upstreamFor(api string) Upstream {
+	if g.apis == nil {
+		return g.upstream
+	}
+	name := api
+	if name == "" {
+		name = g.defaultAPI
+	}
+	ep := g.apis[name]
+	if g.guard && ep.GuardUpstream != nil {
+		return ep.GuardUpstream
+	}
+	return ep.Upstream
+}
+
 // send checks a request, sends it if allowed, records it and returns the answer for the provider.
 func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostResponse, *protocol.Error) {
 	rec := Request{Method: r.Method, Path: r.Path, Change: true}
@@ -145,10 +185,16 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 			return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: err.Error()}
 		}
 	}
-	if g.upstream == nil {
+	upstream := g.upstreamFor(r.API)
+	if upstream == nil {
 		rec.Outcome, rec.Reason = NotSent, "no API is configured for this provider (its section in mamela.providers.toml)"
 		g.record = append(g.record, rec)
 		return protocol.HostResponse{}, &protocol.Error{Code: protocol.CodeNotSent, Message: rec.Reason}
+	}
+	if len(call.JSON) > 0 && r.JSON == nil {
+		// A call of a JSON API sends a JSON object, an empty one when it has no members (ECS
+		// ListClusters): the provider's empty object does not survive the protocol's encoding.
+		r.JSON = map[string]jsontext.Value{}
 	}
 	var status int
 	var body []byte
@@ -156,7 +202,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 	var statusText string
 	ctx = context.WithValue(ctx, reasonSink{}, &statusText)
 	if r.Upload != "" {
-		up, ok := g.upstream.(Uploader)
+		up, ok := upstream.(Uploader)
 		p := g.ready[r.Upload]
 		if !ok {
 			err = fmt.Errorf("%w: this API connection cannot upload files", ErrNotSent)
@@ -164,7 +210,7 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 			status, body, err = up.Upload(ctx, r, File{Field: call.File, Order: call.Form, Name: p.Info.Name, Size: p.Info.Size, Open: p.Open})
 		}
 	} else {
-		status, body, err = g.upstream.Do(ctx, r)
+		status, body, err = upstream.Do(ctx, r)
 	}
 	rec.Status = status
 	switch {
@@ -202,8 +248,8 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 // it matched, and why it is not allowed ("" when it is).
 func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, string) {
 	switch g.phase {
-	case phaseDescribe, phaseDiff:
-		return -1, protocol.Call{}, fmt.Sprintf("no request is allowed during %s (diff computes from its parameters alone)", g.phase)
+	case phaseDescribe, phaseDiff, phasePrepare, phaseScript:
+		return -1, protocol.Call{}, fmt.Sprintf("no request is allowed during %s (it computes from its parameters alone)", g.phase)
 	}
 	if !slices.Contains(protocol.Methods, r.Method) {
 		return -1, protocol.Call{}, fmt.Sprintf("method %q", r.Method)
@@ -211,15 +257,19 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	if err := protocol.CheckPath(r.Path); err != nil {
 		return -1, protocol.Call{}, err.Error()
 	}
-	// The call it is: method, path and the fixed parameters it carries ("Action=RunInstances").
+	// The call it is: method, path and the fixed parameters it carries ("Action=RunInstances",
+	// "X-Amz-Target: ...").
+	members, err := protocol.JSONParams(r.JSON)
+	if err != nil {
+		return -1, protocol.Call{}, err.Error()
+	}
 	all := map[string][]string{}
-	for k, v := range r.Query {
-		all[k] = v
+	for _, part := range []map[string][]string{r.Query, r.Form, r.Header, members} {
+		for k, v := range part {
+			all[k] = append(all[k], v...)
+		}
 	}
-	for k, v := range r.Form {
-		all[k] = append(all[k], v...)
-	}
-	call, ids, found := protocol.FindCall(g.calls, r.Method, r.Path, all, true)
+	call, ids, found := protocol.FindCall(g.calls, r.API, r.Method, r.Path, all, true)
 	if !found {
 		return -1, protocol.Call{}, fmt.Sprintf("%s %s is not a declared call of this %s", r.Method, r.Path, g.what())
 	}
@@ -227,7 +277,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	if len(call.Fixed) > 0 {
 		rec.Call += " " + fixedText(call.Fixed)
 	}
-	entry, classified := g.catalog.LookupCall(call)
+	entry, classified := g.catalogFor(call.API).LookupCall(protocol.Call{Method: call.Method, Path: call.Path, Fixed: call.Fixed})
 	if classified {
 		rec.Effect, rec.Change = entry.Effect, entry.Effect != protocol.EffectRead
 	}
@@ -245,10 +295,10 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	for _, part := range []struct {
 		in   string
 		vals map[string][]string
-	}{{"query", r.Query}, {"form", r.Form}} {
+	}{{"query", r.Query}, {"form", r.Form}, {"header", r.Header}, {"json", members}} {
 		for _, k := range slices.Sorted(maps.Keys(part.vals)) {
 			if _, twice := params[k]; twice {
-				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is sent both in the query and in the form", k)
+				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is sent in two places (both the query and the form, or a header or the body)", k)
 			}
 			if call.In(k) != part.in {
 				return -1, protocol.Call{}, fmt.Sprintf("parameter %q is not declared in the %s of %s", k, part.in, rec.Call)
@@ -260,7 +310,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 		}
 	}
 	switch g.phase {
-	case phaseObserve, phaseLookup:
+	case phaseObserve, phaseLookup, phaseGuard:
 		if rec.Change {
 			what := "unclassified (the host's catalog does not know it)"
 			if classified {
@@ -268,7 +318,7 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 			}
 			return -1, protocol.Call{}, fmt.Sprintf("only reads are allowed during %s; %s is %s", g.phase, rec.Call, what)
 		}
-		return -1, protocol.Call{}, ""
+		return -1, call, ""
 	case phaseApply:
 		i, reason := g.checkPermit(rec, call, entry, ids, params, r.Upload)
 		return i, call, reason
@@ -309,9 +359,19 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.IDs)) {
 		for _, v := range params[name] {
-			if v != p.IDs[name] {
+			if protocol.ParamText(call.In(name), v) != p.IDs[name] {
 				return -1, fmt.Sprintf("parameter %s=%s is not the approved %s", name, v, p.IDs[name])
 			}
+		}
+	}
+	// A parameter the catalog says names the object is bound like a path's: one of the permit's IDs.
+	for _, b := range entry.Bind {
+		want, ok := p.IDs[b]
+		if !ok {
+			return -1, fmt.Sprintf("%s names the object of %s, and the permit binds no %s", b, rec.Call, b)
+		}
+		if got := params[b]; len(got) != 1 || protocol.ParamText(entry.In(b), got[0]) != want {
+			return -1, fmt.Sprintf("%s=%s is not the approved %s", b, strings.Join(got, ","), want)
 		}
 	}
 	// A call the catalog gives a precondition always carries the observed version: without it, a
@@ -345,7 +405,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	// the facts of the ready artifacts filled in), and the same upload.
 	var near []string
 	for i, a := range p.Requests {
-		if c, _, ok := protocol.FindCall(p.Calls, a.Method, a.Path, a.Params, false); !ok || !c.Same(call) {
+		if c, _, ok := protocol.FindCall(p.Calls, a.API, a.Method, a.Path, a.Params, false); !ok || !c.Same(call) {
 			continue
 		}
 		if g.used[i] {

@@ -11,17 +11,20 @@ import (
 	"slices"
 	"time"
 
-	"github.com/ieyoukan/mamela/internal/graph"
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/node"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 const defaultDB = ".mamela/state.db"
+
+// claimWindow is how long a plan's creates are taken for other plans: as long as it can be
+// approved and its approval used (an approval lasts an hour from when it is given).
+const claimWindow = 2 * time.Hour
 
 // wallClock is the only place the CLI reads the current time; planning itself never does.
 var wallClock = func() time.Time { return time.Now().UTC() }
@@ -38,7 +41,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
 	snapshotFile := fs.String("snapshot", "", "observed state as a snapshot JSON file (default: an empty world, observed now)")
-	sitePath := fs.String("site", "", "observe the lab Proxmox of this site definition instead (read-only)")
+	sitePath := addSiteFlag(fs)
 	replay := fs.String("replay", "", "recompute a stored plan by digest and check that it is unchanged")
 	tf := addToolFlags(fs)
 	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
@@ -46,8 +49,8 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
 			"Shows what would change, why, and what needs approval. Saves the plan so it can be approved.\n"+
-			"Nothing outside the state database is changed. With --site, it also updates what each node's\n"+
-			"mamelet observes (never what it may change: that takes an approved apply).\n\nFlags:\n")
+			"Nothing outside the state database is changed. With a site that has a Control Plane, it also updates\n"+
+			"what each node's mamelet observes (never what it may change: that takes an approved apply).\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -98,31 +101,25 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	rt.SetCreations(st)
 	defer rt.Close()
+	// What the other plans of the last hour are to create is taken: plans made one after another
+	// and applied together do not choose the same IDs (a VMID).
+	claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), "")
+	if err != nil {
+		return report(stderr, err)
+	}
+	rt.SetClaims(claims)
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
 	}
 
-	snap := state.Empty(wallClock())
-	if *snapshotFile != "" && *sitePath != "" {
-		fmt.Fprintln(stderr, "mamela plan: use either --snapshot or --site, not both")
-		return 2
+	site, err := loadSite(*sitePath)
+	if err != nil {
+		return report(stderr, err)
 	}
-	var site *lab.Site
-	if *sitePath != "" {
-		if site, err = lab.LoadSite(*sitePath); err != nil {
-			return report(stderr, err)
-		}
-		operating, err := labClient(site, site.Proxmox.TokenID, site.Proxmox.TokenSecretFile)
-		if err != nil {
-			return report(stderr, err)
-		}
-		prov, err := labProvider(site, operating, st, "", false)
-		if err != nil {
-			return report(stderr, err)
-		}
-		if snap, err = prov.Observe(ctx); err != nil {
-			return report(stderr, fmt.Errorf("observe the lab: %w", err))
-		}
+	// What mamelet on each machine last reported (read from the database; nothing is contacted).
+	snap, err := (&node.Provider{Store: st, Clock: wallClock}).Observe(ctx)
+	if err != nil {
+		return report(stderr, err)
 	}
 	if *snapshotFile != "" {
 		b, err := os.ReadFile(*snapshotFile)
@@ -156,10 +153,10 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	snap.AddProvided(provided)
 	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
 	if site != nil {
-		// A VM the site would refuse to create is refused here, before anyone approves it.
-		if refused := siteRefusals(site, p, res.Graph); len(refused) > 0 {
+		// A machine the site would refuse to create is refused here, before anyone approves it.
+		if refused := siteRefusals(site, p); len(refused) > 0 {
 			for _, r := range refused {
-				fmt.Fprintf(stderr, "LAB-0304: %s\n", r)
+				fmt.Fprintf(stderr, "MAM-SITE-0304: %s\n", r)
 			}
 			fmt.Fprintf(stderr, "  hint: declare an address in the site's network.static_first..static_last, or Dhcp if network.dhcp allows it (%s)\n", *sitePath)
 			return 1
@@ -172,7 +169,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err := st.SavePlanPrograms(ctx, p.Digest, rt.Programs()); err != nil {
 		return report(stderr, err)
 	}
-	if *sitePath != "" {
+	if site != nil && site.ControlPlane.Enabled() {
 		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
 		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
 		// refuses a revision with a member it does not know.
@@ -240,9 +237,9 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	return 0
 }
 
-// siteRefusals says which VMs the plan would create with a network the site does not allow: built-in
-// VMs, and providers' machines whose seed names a network (ADR 0004).
-func siteRefusals(site *lab.Site, p *plan.Plan, g *graph.Graph) []string {
+// siteRefusals says which machines the plan would create with a network the site does not allow:
+// providers' machines whose seed names a network (ADR 0004).
+func siteRefusals(site *sitedef.Site, p *plan.Plan) []string {
 	var out []string
 	for _, c := range p.Changes {
 		for _, pc := range c.ProviderChanges {
@@ -251,16 +248,6 @@ func siteRefusals(site *lab.Site, p *plan.Plan, g *graph.Graph) []string {
 					if err := site.Allows(a.Node, graphNetwork(*a.Network)); err != nil {
 						out = append(out, err.Error())
 					}
-				}
-			}
-		}
-		if c.Kind != graph.KindVirtualMachine || !slices.ContainsFunc(c.Operations, func(o plan.Operation) bool { return o.Op == policy.OpCreateVM }) {
-			continue
-		}
-		for _, r := range g.Resources {
-			if r.Kind == graph.KindVirtualMachine && r.Name == c.Name {
-				if err := site.Allows(r.Name, r.VirtualMachine.Network); err != nil {
-					out = append(out, err.Error())
 				}
 			}
 		}

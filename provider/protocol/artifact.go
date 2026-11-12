@@ -178,6 +178,21 @@ func Vouch(o Observed, created []map[string]string) Observed {
 	return o
 }
 
+// Targets reports whether a change's IDs name the observed object: every one of them is one of
+// the observed IDs, with the same value, and there is at least one. A change of an object that
+// exists acts on it alone (ADR 0006): its IDs are what Mamela observed (and vouched for).
+func Targets(observed, change map[string]string) bool {
+	if len(change) == 0 {
+		return false
+	}
+	for k, v := range change {
+		if w, ok := observed[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
 // sameObject: the IDs of one are among those of the other, with the same values. A create is
 // recorded with the IDs known before it (a Proxmox VMID, an EC2 client token); the object is
 // later observed with those and maybe more (its instance ID), or with fewer (no storage).

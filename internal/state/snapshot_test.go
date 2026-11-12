@@ -8,12 +8,12 @@ import (
 func TestDigestIsDeterministicAndTimezoneFree(t *testing.T) {
 	jst := time.FixedZone("JST", 9*3600)
 	a := Empty(time.Date(2026, 11, 8, 21, 0, 0, 0, jst))
-	a.VMs["b"] = VM{Managed: true, CPU: 1, ObservedAt: time.Date(2026, 11, 8, 20, 59, 0, 0, jst)}
-	a.VMs["a"] = VM{Managed: true, CPU: 2, ObservedAt: time.Date(2026, 11, 8, 20, 59, 0, 0, jst)}
+	a.Services["b/nginx"] = Service{Exists: true, ObservedAt: time.Date(2026, 11, 8, 20, 59, 0, 0, jst)}
+	a.Services["a/nginx"] = Service{Exists: true, Running: true, ObservedAt: time.Date(2026, 11, 8, 20, 59, 0, 0, jst)}
 
 	b := Empty(time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC))
-	b.VMs["a"] = VM{Managed: true, CPU: 2, ObservedAt: time.Date(2026, 11, 8, 11, 59, 0, 0, time.UTC)}
-	b.VMs["b"] = VM{Managed: true, CPU: 1, ObservedAt: time.Date(2026, 11, 8, 11, 59, 0, 0, time.UTC)}
+	b.Services["a/nginx"] = Service{Exists: true, Running: true, ObservedAt: time.Date(2026, 11, 8, 11, 59, 0, 0, time.UTC)}
+	b.Services["b/nginx"] = Service{Exists: true, ObservedAt: time.Date(2026, 11, 8, 11, 59, 0, 0, time.UTC)}
 
 	if a.Digest() != b.Digest() {
 		t.Errorf("same instant in different zones or insertion order gave different digests:\n%s\n%s", a.Canonical(), b.Canonical())
@@ -34,8 +34,9 @@ func TestDecodeRoundTrip(t *testing.T) {
 
 func TestDecodeRejects(t *testing.T) {
 	for name, in := range map[string]string{
-		"unknown member": `{"asOf":"2026-11-08T12:00:00Z","vms":{},"packages":{},"services":{},"extra":1}`,
-		"no asOf":        `{"vms":{},"packages":{},"services":{}}`,
+		"unknown member": `{"asOf":"2026-11-08T12:00:00Z","packages":{},"services":{},"extra":1}`,
+		"no asOf":        `{"packages":{},"services":{}}`,
+		"VMs (ADR 0006)": `{"asOf":"2026-11-08T12:00:00Z","vms":{},"packages":{},"services":{}}`,
 		"duplicate":      `{"asOf":"2026-11-08T12:00:00Z","asOf":"2026-11-08T12:00:00Z"}`,
 		"trailing":       `{"asOf":"2026-11-08T12:00:00Z"} {}`,
 	} {

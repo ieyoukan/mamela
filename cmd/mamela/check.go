@@ -10,8 +10,8 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/graph"
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 )
 
 // CheckSchema names the format of `mamela check --json`.
@@ -49,7 +49,6 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fs := flag.NewFlagSet("mamela check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print a mamela-check/v1 JSON document (for editors and tools)")
-	sitePath := fs.String("site", "", "lab site definition, to resolve targets to the site's names (read only; nothing is contacted)")
 	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela check [flags] <pome-dir>\n\n"+
@@ -64,14 +63,7 @@ func runCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fs.Usage()
 		return 2
 	}
-	var site *lab.Site
-	if *sitePath != "" {
-		s, err := lab.LoadSite(*sitePath)
-		if err != nil {
-			return report(stderr, err)
-		}
-		site = s
-	}
+	var site *sitedef.Site // a provider's targets are templates over its resources' fields
 	out := CheckResult{Schema: CheckSchema, Pome: fs.Arg(0), Diagnostics: []Diagnostic{}}
 	ps := site.Providers()
 	t, err := tf.find()

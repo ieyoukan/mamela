@@ -1,23 +1,27 @@
-# A minimal homelab declaration: one VM with nginx installed and running.
+# A minimal declaration: one machine with nginx installed and running. The machine is an instance
+# of the example EC2 provider (examples/ec2); with another provider's Pome (for Proxmox,
+# github.com/ieyoukan/mamela-proxmox/pome), only the machine's declaration changes.
 # Evaluating it only prints the desired state; it changes nothing.
 
 import Std.Console.{SystemConsole}
-import Mamela.{Vm, Dhcp}
+import Mamela
+import Ec2.{Instance}
 
 fn infrastructure() -> Mamela.Graph {
-  app = Vm(
+  app = Instance(
     name: "app-server",
-    cpu: 1,
-    memory_mib: 1024,
+    image_id: "ami-0123456789abcdef0",
+    instance_type: "t3.small",
+    subnet_id: "subnet-0123456789abcdef0",
+    security_group_id: "sg-0123456789abcdef0",
+    root_device: "/dev/sda1",
     disk_gib: 10,
-    image: "ubuntu-24.04",
-    network: Dhcp,
   )
 
   Mamela.empty()
-    |> Mamela.vm(app)
-    |> Mamela.package(app, "nginx")
-    |> Mamela.service(app, "nginx", True, True)
+    |> Ec2.instance(app)
+    |> Mamela.package(Ec2.node(app), "nginx")
+    |> Mamela.service(Ec2.node(app), "nginx", True, True)
 }
 
 fn main() {

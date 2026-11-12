@@ -8,13 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ieyoukan/mamela/internal/toolchain"
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -33,6 +36,12 @@ type Options struct {
 	Catalog protocol.Catalog
 	// Upstream sends the allowed requests (nil: none can be sent).
 	Upstream Upstream
+	// GuardUpstream sends the guard's reads, with the guard's own (read-only) credentials; nil:
+	// Upstream (ADR 0006).
+	GuardUpstream Upstream
+	// APIs are the endpoints of a provider that uses several APIs (Manifest.APIs), by name; for a
+	// provider with one, Catalog, Upstream and GuardUpstream are its endpoint (or APIs[""]).
+	APIs map[string]API
 	// Artifacts makes the artifacts of an approved change ready (nil: none can be made).
 	Artifacts ArtifactMaker
 	// Limits bound the measured parameters of every change (the catalog's Measures), by measure:
@@ -48,6 +57,13 @@ type Options struct {
 	// StartTimeout bounds starting the provider and its describe (wasmtime compiles the program
 	// first; default 2 minutes).
 	StartTimeout time.Duration
+}
+
+// API is one API's endpoint on the host: its catalog, and where its requests go.
+type API struct {
+	Catalog       protocol.Catalog
+	Upstream      Upstream
+	GuardUpstream Upstream // nil: Upstream
 }
 
 // Session is one running provider.
@@ -98,6 +114,11 @@ func Start(ctx context.Context, exe Executable, o Options) (*Session, error) {
 	}
 	if err := o.Catalog.Check(); err != nil {
 		return nil, err
+	}
+	for _, a := range o.APIs {
+		if err := a.Catalog.Check(); err != nil {
+			return nil, err
+		}
 	}
 	// Run exactly what was inspected: a private copy of the inspected bytes, not the path, which
 	// may have been replaced since.
@@ -250,9 +271,8 @@ func (s *Session) SetLimits(l map[string]int64) { s.o.Limits = l }
 
 // CheckLimits checks a change's requests against the limits, before anyone approves it.
 func (s *Session) CheckLimits(c protocol.Change) error {
-	cat := s.catalog()
 	for _, a := range c.Requests {
-		if e, ok := cat.LookupApproved(a); ok {
+		if e, ok := s.catalogFor(a.API).LookupApproved(a); ok {
 			if err := e.CheckLimits(a.Params, s.o.Limits); err != nil {
 				return err
 			}
@@ -267,10 +287,38 @@ func (s *Session) Executable() Executable { return s.exe }
 // Stderr is what the provider wrote to standard error (bounded).
 func (s *Session) Stderr() string { return s.stderr.String() }
 
-// catalog is the host's catalog, when it is for the provider's API.
-func (s *Session) catalog() protocol.Catalog {
-	if s.o.Catalog.API != "" && s.o.Catalog.API == s.manifest.API {
-		return s.o.Catalog
+// apis are the endpoints of the provider's APIs, by name (ADR 0007).
+func (s *Session) apis() map[string]API {
+	out := map[string]API{}
+	if len(s.manifest.APIs) > 0 {
+		for _, name := range s.manifest.APIs {
+			out[name] = s.o.APIs[name]
+		}
+		return out
+	}
+	if s.manifest.API == "" {
+		return out
+	}
+	ep, ok := s.o.APIs[s.manifest.API]
+	if !ok {
+		ep, ok = s.o.APIs[""]
+	}
+	if !ok {
+		ep = API{Catalog: s.o.Catalog, Upstream: s.o.Upstream, GuardUpstream: s.o.GuardUpstream}
+	}
+	out[s.manifest.API] = ep
+	return out
+}
+
+// catalogFor is the host's catalog of one of the provider's APIs ("" for its one API), when it
+// is for that API.
+func (s *Session) catalogFor(api string) protocol.Catalog {
+	name := api
+	if name == "" {
+		name = s.manifest.API
+	}
+	if ep := s.apis()[name]; ep.Catalog.API != "" && ep.Catalog.API == name {
+		return ep.Catalog
 	}
 	return protocol.Catalog{}
 }
@@ -280,10 +328,9 @@ func (s *Session) catalog() protocol.Catalog {
 // and the change must be based on that version. Without that, a change made to the object after
 // approval would be overwritten.
 func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
-	cat := s.catalog()
 	creates := false // an earlier request of the change creates the object (ADR 0004)
 	for _, a := range c.Requests {
-		e, ok := cat.LookupApproved(a)
+		e, ok := s.catalogFor(a.API).LookupApproved(a)
 		if ok && e.Effect == protocol.EffectCreate {
 			creates = true
 		}
@@ -310,11 +357,30 @@ func (s *Session) CheckPreconditions(c protocol.Change, observed string) error {
 	return nil
 }
 
-// Verify classifies an operation's calls with the host's catalog.
-func (s *Session) Verify(o protocol.Operation) protocol.Verified { return s.catalog().Verify(o) }
+// Verify classifies an operation's calls with the host's catalogs (each call with its API's).
+func (s *Session) Verify(o protocol.Operation) protocol.Verified {
+	byAPI := map[string][]protocol.Call{}
+	for _, c := range o.Calls {
+		byAPI[c.API] = append(byAPI[c.API], c)
+	}
+	var out protocol.Verified
+	seen := map[protocol.Effect]bool{}
+	for _, api := range slices.Sorted(maps.Keys(byAPI)) {
+		v := s.catalogFor(api).Verify(protocol.Operation{Op: o.Op, Support: o.Support, Calls: byAPI[api]})
+		for _, e := range v.Effects {
+			if !seen[e] {
+				seen[e] = true
+				out.Effects = append(out.Effects, e)
+			}
+		}
+		out.Unclassified = append(out.Unclassified, v.Unclassified...)
+	}
+	out.Effects = protocol.SortEffects(out.Effects)
+	return out
+}
 
 func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) *gate {
-	g := &gate{phase: p, calls: calls, permit: permit, catalog: s.catalog(), upstream: s.o.Upstream, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
+	g := &gate{phase: p, calls: calls, permit: permit, apis: s.apis(), defaultAPI: s.manifest.API, now: s.o.Now, artifacts: s.o.Artifacts, limits: s.o.Limits}
 	if permit != nil {
 		g.used = make([]bool, len(permit.Requests))
 	}
@@ -324,9 +390,14 @@ func (s *Session) gate(p phase, calls []protocol.Call, permit *protocol.Permit) 
 // Observe asks the provider for the real state. It fails if the provider asked for anything but
 // a declared read.
 func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([]protocol.Observed, []Request, error) {
+	return s.ObserveClaimed(ctx, resources, nil)
+}
+
+// ObserveClaimed observes, telling the provider the IDs other plans are to create (taken).
+func (s *Session) ObserveClaimed(ctx context.Context, resources []protocol.Resource, claimed []map[string]string) ([]protocol.Observed, []Request, error) {
 	g := s.gate(phaseObserve, s.manifest.ObserveCalls, nil)
 	var out protocol.ObserveResult
-	err := s.call(ctx, g, protocol.MethodObserve, protocol.ObserveParams{Resources: resources}, &out)
+	err := s.call(ctx, g, protocol.MethodObserve, protocol.ObserveParams{Resources: resources, Claimed: claimed}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return nil, g.record, err
 	}
@@ -353,16 +424,20 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 }
 
 // Diff asks the provider for the changes. The provider may send no request.
-func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed) ([]protocol.Change, error) {
+func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed, dependencies map[string]protocol.Observed) ([]protocol.Change, error) {
 	g := s.gate(phaseDiff, nil, nil)
 	var out protocol.DiffResult
-	err := s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed}, &out)
+	err := s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed, Dependencies: dependencies}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return nil, err
 	}
 	for _, c := range out.Changes {
 		if c.Resource == "" {
 			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change %+v has no resource", c)}
+		}
+		// An explicit operation is never planned: a person asks for it (mamela act).
+		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Explicit {
+			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is an explicit operation, which diff never returns", c.Resource, c.Op)}
 		}
 		// A difference the provider never acts on is reported as a change of an operation it
 		// declares unsupported, with nothing to send: the plan shows it and denies it.
@@ -377,6 +452,85 @@ func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observe
 		}
 	}
 	return out.Changes, nil
+}
+
+// Guard runs the provider's safety check (ADR 0006): reads only, the manifest's guard calls, with
+// the guard's credentials. A provider without a guard has nothing to check (ok, no findings).
+func (s *Session) Guard(ctx context.Context, p protocol.GuardParams) (protocol.GuardResult, []Request, error) {
+	if s.manifest.Guard == nil {
+		return protocol.GuardResult{}, nil, nil
+	}
+	g := s.gate(phaseGuard, s.manifest.Guard.Calls, nil)
+	g.guard = true
+	var out protocol.GuardResult
+	err := s.call(ctx, g, protocol.MethodGuard, p, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return protocol.GuardResult{}, g.record, err
+	}
+	for _, f := range out.Findings {
+		if f.Code == "" || f.Message == "" || !slices.Contains([]string{protocol.SeverityOK, protocol.SeverityWarn, protocol.SeverityBlock}, f.Severity) {
+			return protocol.GuardResult{}, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("guard finding %+v: a code, a severity (ok, warn, block) and a message are required", f)}
+		}
+	}
+	return out, g.record, nil
+}
+
+// Prepare asks for the change of an explicit operation on an observed resource (ADR 0006). The
+// provider may send no request. The change must be that operation, on that resource.
+func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol.Resource, observed protocol.Observed) (protocol.Change, error) {
+	o, ok := s.manifest.Operation(observed.Kind, op)
+	if !ok || !o.Explicit || o.Support != protocol.Supported {
+		return protocol.Change{}, &Error{Code: CodePermit, Message: fmt.Sprintf("%s is not an explicit operation of %s %s", op, s.manifest.Provider, observed.Kind)}
+	}
+	g := s.gate(phasePrepare, nil, nil)
+	var out protocol.PrepareResult
+	err := s.call(ctx, g, protocol.MethodPrepare, protocol.PrepareParams{Op: op, Desired: desired, Observed: observed}, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return protocol.Change{}, err
+	}
+	c := out.Change
+	if c.Resource != observed.ID || c.Op != op || c.Kind != observed.Kind {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s returned %s of %s", op, observed.ID, c.Op, c.Resource)}
+	}
+	if !protocol.Targets(observed.IDs, c.IDs) {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s names objects %v, not the observed %v: an explicit operation acts on the object Mamela observed, and nothing else", op, observed.ID, c.IDs, observed.IDs)}
+	}
+	if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
+		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s: %v", op, observed.ID, err)}
+	}
+	return c, nil
+}
+
+// MaxScriptBytes bounds a script's text.
+const MaxScriptBytes = 1 << 20
+
+// Script asks the provider for one of its declared scripts. It may send no request; the text is
+// for a person to review before running it.
+func (s *Session) Script(ctx context.Context, p protocol.ScriptParams) (string, error) {
+	if !slices.ContainsFunc(s.manifest.Scripts, func(sc protocol.Script) bool { return sc.Name == p.Name }) {
+		var names []string
+		for _, sc := range s.manifest.Scripts {
+			names = append(names, sc.Name)
+		}
+		return "", &Error{Code: CodePermit, Message: fmt.Sprintf("provider %s writes no script %q (it writes: %s)", s.manifest.Provider, p.Name, orNone(names))}
+	}
+	g := s.gate(phaseScript, nil, nil)
+	var out protocol.ScriptResult
+	err := s.call(ctx, g, protocol.MethodScript, p, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return "", err
+	}
+	if out.Text == "" || len(out.Text) > MaxScriptBytes || !utf8.ValidString(out.Text) {
+		return "", &Error{Code: CodeProtocol, Message: fmt.Sprintf("script %s: the text must be UTF-8, 1 byte to %d bytes", p.Name, MaxScriptBytes)}
+	}
+	return out.Text, nil
+}
+
+func orNone(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
 }
 
 // Outcome is what an apply did, as the host knows it from the requests it sent.
@@ -493,7 +647,7 @@ func (s *Session) Lookup(ctx context.Context, c protocol.Change) (protocol.Looku
 		return "", g.record, err
 	}
 	switch out.Status {
-	case protocol.LookupDone, protocol.LookupNotDone, protocol.LookupPartly:
+	case protocol.LookupDone, protocol.LookupNotDone, protocol.LookupPartly, protocol.LookupUnknown:
 		return out.Status, g.record, nil
 	}
 	return "", g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("lookup status %q", out.Status)}
@@ -643,9 +797,15 @@ func (s *Session) fail(what string, err error) error {
 	return s.dead
 }
 
+// validIDs: each ID's name could name a path parameter, and its value is made of path segments
+// (a cloud's names have slashes, and may start with one: a CloudWatch Logs group "/ecs/web").
 func validIDs(ids map[string]string) bool {
 	for k, v := range ids {
-		if _, err := protocol.ParsePath("/{" + k + "}"); err != nil || protocol.CheckPath("/"+v) != nil {
+		path := v
+		if !strings.HasPrefix(path, "/") {
+			path = "/" + path
+		}
+		if _, err := protocol.ParsePath("/{" + k + "}"); err != nil || path == "/" || protocol.CheckPath(path) != nil {
 			return false
 		}
 	}

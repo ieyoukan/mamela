@@ -17,7 +17,9 @@ import (
 	"github.com/ieyoukan/mamela/examples/kv/kvapi"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/provider/host"
+	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 func wasm(t *testing.T, pkg string, flags ...string) []byte {
@@ -173,12 +175,48 @@ func TestObserveChecksTheDiff(t *testing.T) {
 	}
 }
 
-// The catalogs Mamela ships are consistent.
-func TestBuiltinCatalogs(t *testing.T) {
-	for name, c := range Catalogs {
-		if err := c.Check(); err != nil || c.API != name {
-			t.Errorf("%s: %v (api %q)", name, err, c.API)
+// A provider's Pome ships the catalogs of its APIs (ADR 0008): files inside the Pome, each a valid
+// mamela-catalog/v1. Mamela ships none: builtin: names are refused with a hint.
+func TestShippedCatalogs(t *testing.T) {
+	pkg, err := LoadPackage("../../../examples/ec2/pome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := protocol.DecodeCatalog(pkg.Catalogs["ec2"]); err != nil || c.API != "ec2" || len(pkg.Catalogs) != 1 {
+		t.Fatalf("the EC2 example's catalogs: %v %v", pkg.Catalogs, err)
+	}
+	program, _ := os.ReadFile("../../../examples/ec2/pome/provider.wasm")
+	sum := sha256.Sum256(program)
+	pome := func(catalogs, file, content string) error {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "provider.wasm"), program, 0o644)
+		os.MkdirAll(filepath.Join(dir, "catalogs"), 0o755)
+		os.WriteFile(filepath.Join(dir, file), []byte(content), 0o644)
+		os.WriteFile(filepath.Join(dir, ProviderFile), []byte("provider = \"ec2-example\"\nversion = \"0.1.0\"\nprogram = \"provider.wasm\"\nsha256 = \""+
+			hex.EncodeToString(sum[:])+"\"\n\n[catalogs]\n"+catalogs), 0o644)
+		_, err := LoadPackage(dir)
+		return err
+	}
+	good := `{"schema":"mamela-catalog/v1","api":"x","entries":[{"method":"GET","path":"/x","effect":"read"}]}`
+	if err := pome(`x = "catalogs/x.json"`, "catalogs/x.json", good); err != nil {
+		t.Fatalf("a good catalog: %v", err)
+	}
+	for name, c := range map[string][3]string{
+		"outside the Pome":  {`x = "../x.json"`, "catalogs/x.json", good},
+		"not clean":         {`x = "catalogs/../catalogs/x.json"`, "catalogs/x.json", good},
+		"no schema":         {`x = "catalogs/x.json"`, "catalogs/x.json", `{"api":"x","entries":[]}`},
+		"an unknown member": {`x = "catalogs/x.json"`, "catalogs/x.json", `{"schema":"mamela-catalog/v1","api":"x","entries":[],"trust":"me"}`},
+		"a bad entry":       {`x = "catalogs/x.json"`, "catalogs/x.json", `{"schema":"mamela-catalog/v1","api":"x","entries":[{"method":"GET","path":"x","effect":"read"}]}`},
+		"a bad name":        {`"x y" = "catalogs/x.json"`, "catalogs/x.json", good},
+		"a missing file":    {`x = "catalogs/y.json"`, "catalogs/x.json", good},
+	} {
+		if err := pome(c[0], c[1], c[2]); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
+	}
+	cfg := Config{Provider: map[string]APIConfig{"p": {APIURL: "https://api.example", Catalog: "builtin:ec2"}}}
+	if _, _, err := cfg.apis("p"); err == nil || !strings.Contains(err.Error(), "pome:<name>") {
+		t.Errorf("a builtin catalog: %v", err)
 	}
 }
 
@@ -263,6 +301,184 @@ func TestSigV4(t *testing.T) {
 		os.WriteFile(p, []byte(bad), 0o600)
 		if _, err := LoadConfig(p); err == nil {
 			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}
+
+// A resource that needs another first waits until that one exists and is Mamela's: no change of
+// it is computed until then, and then its provider is told what its dependency is (ADR 0007).
+func TestAfterWaitsForTheDependency(t *testing.T) {
+	api := kvapi.New()
+	srv := httptest.NewServer(api)
+	defer srv.Close()
+	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+	rt, err := Start(t.Context(), []store.Program{program(t, wasm(t, "../../../examples/kv/cmd/kv-provider"))}, cfg, wasmtime(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	rec := recorded{}
+	rt.SetCreations(rec)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"KVItem","name":"web","provider":"kv-example","spec":{"value":"v1"}},` +
+		`{"kind":"KVItem","name":"db","provider":"kv-example","after":["KVItem web"],"spec":{"value":"v1"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := rt.Observe(t.Context(), g, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db := got["KVItem db"]; db.Waiting == "" || len(db.Changes) != 0 || !strings.Contains(db.Waiting, "KVItem web") {
+		t.Fatalf("db before web exists: %+v", db)
+	}
+	if web := got["KVItem web"]; web.Waiting != "" || len(web.Changes) != 1 {
+		t.Fatalf("web: %+v", web)
+	}
+	// web is created through Mamela (recorded first, then made).
+	api.Put(kvapi.Item{Name: "web", Value: "v1", Owner: "mamela", Version: 1})
+	rec.RecordCreation(t.Context(), "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
+	got, err = rt.Observe(t.Context(), g, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db := got["KVItem db"]; db.Waiting != "" || len(db.Changes) != 1 || db.Changes[0].Change.Op != "create-item" {
+		t.Fatalf("db once web is Mamela's: %+v", db)
+	}
+}
+
+// A profile's temporary credentials are read for each request, with their session token, so that
+// renewed credentials are used; the approval's scope names the profile, not the key (ADR 0007).
+func TestSigV4Profile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "credentials")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", file)
+	write := func(key, token string) {
+		os.WriteFile(file, []byte("[other]\naws_access_key_id = AKIAOTHER\naws_secret_access_key = x\n\n[role]\naws_access_key_id = "+key+
+			"\naws_secret_access_key = secret\naws_session_token = "+token+"\n"), 0o600)
+	}
+	now := func() time.Time { return time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC) }
+	sign := SigV4Profile("role", "ap-northeast-1", "ecs", now)
+	req := func() *http.Request {
+		r, _ := http.NewRequest("POST", "https://ecs.ap-northeast-1.amazonaws.com/", strings.NewReader(`{}`))
+		return r
+	}
+	write("ASIAFIRST", "token-1")
+	a := req()
+	if err := sign(a); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(a.Header.Get("Authorization"), "Credential=ASIAFIRST/") || a.Header.Get("X-Amz-Security-Token") != "token-1" {
+		t.Fatalf("signed %q with token %q", a.Header.Get("Authorization"), a.Header.Get("X-Amz-Security-Token"))
+	}
+	write("ASIARENEWED", "token-2")
+	b := req()
+	sign(b)
+	if !strings.Contains(b.Header.Get("Authorization"), "Credential=ASIARENEWED/") || b.Header.Get("X-Amz-Security-Token") != "token-2" {
+		t.Fatal("renewed credentials are not used")
+	}
+	if err := SigV4Profile("missing", "ap-northeast-1", "ecs", now)(req()); err == nil || !strings.Contains(err.Error(), "renew") {
+		t.Fatalf("a profile without credentials: %v", err)
+	}
+	cfg := func(profile string) string {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte("[provider.aws]\napi_url = \"https://ecs.ap-northeast-1.amazonaws.com\"\nauth = \"aws-sigv4\"\nprofile = \""+profile+
+			"\"\nregion = \"ap-northeast-1\"\nservice = \"ecs\"\n"), 0o600)
+		return p
+	}
+	c, err := LoadConfig(cfg("role"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, id1, err := c.api("aws")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write("ASIATHIRD", "token-3")
+	_, _, id2, _ := c.api("aws")
+	c2, _ := LoadConfig(cfg("other"))
+	_, _, id3, _ := c2.api("aws")
+	if id1 != id2 || id1 == id3 {
+		t.Fatalf("scope: renewed %v, other profile %v", id1 == id2, id1 == id3)
+	}
+	for _, bad := range []string{
+		"[provider.aws]\napi_url = \"https://x\"\nauth = \"aws-sigv4\"\nprofile = \"role\"\ntoken_id = \"A\"\ntoken_file = \"t\"\nregion = \"r\"\nservice = \"s\"\n",
+		"[provider.kv]\napi_url = \"https://x\"\nprofile = \"role\"\n",
+	} {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(bad), 0o600)
+		if _, err := LoadConfig(p); err == nil {
+			t.Errorf("accepted:\n%s", bad)
+		}
+	}
+}
+
+// A provider with several APIs is configured in one section per API, each taking the provider's
+// auth, profile and region; with apis, the provider's own section has no api_url.
+func TestSeveralAPIsConfig(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "credentials")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", file)
+	os.WriteFile(file, []byte("[role]\naws_access_key_id = ASIA\naws_secret_access_key = s\naws_session_token = t\n"), 0o600)
+	load := func(text string) (Config, error) {
+		p := filepath.Join(t.TempDir(), "p.toml")
+		os.WriteFile(p, []byte(text), 0o600)
+		return LoadConfig(p)
+	}
+	good := "[provider.aws]\nauth = \"aws-sigv4\"\nprofile = \"role\"\nregion = \"ap-northeast-1\"\n\n" +
+		"[provider.aws.apis.ec2]\napi_url = \"https://ec2.ap-northeast-1.amazonaws.com\"\nservice = \"ec2\"\ncatalog = \"pome:ec2\"\n"
+	c, err := load(good)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ec2, err := os.ReadFile("../../../examples/ec2/pome/catalogs/ec2.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := c.apis("aws"); err == nil || !strings.Contains(err.Error(), "ships no catalog \"ec2\"") {
+		t.Errorf("a catalog the provider's Pome does not ship: %v", err)
+	}
+	c = c.withShipped("aws", map[string][]byte{"ec2": ec2})
+	apis, id, err := c.apis("aws")
+	if err != nil || apis["ec2"].Upstream == nil || apis["ec2"].Catalog.API != "ec2" || id == "" {
+		t.Fatalf("%+v %q %v", apis, id, err)
+	}
+	if err := checkEndpoints(protocol.Manifest{Provider: "aws", APIs: []string{"ec2", "ecs"}}, apis); err != nil {
+		t.Errorf("an API left unconfigured is not an error (its requests are not sent): %v", err)
+	}
+	if err := checkEndpoints(protocol.Manifest{Provider: "aws", APIs: []string{"ecs"}}, apis); err == nil {
+		t.Error("an API the provider does not have is configured")
+	}
+	for name, bad := range map[string]string{
+		"api_url beside apis": strings.Replace(good, "region = \"ap-northeast-1\"\n", "region = \"ap-northeast-1\"\napi_url = \"https://x\"\n", 1),
+		"no service":          strings.Replace(good, "service = \"ec2\"\n", "", 1),
+		"guard in an api":     good + "[provider.aws.apis.ec2.guard]\nx = 1\n",
+	} {
+		if _, err := load(bad); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A resource waits for a dependency that does not exist, is not Mamela's, or whose creation did not
+// finish; it waits for nothing once each of them is Mamela's and finished.
+func TestWaitsFor(t *testing.T) {
+	d := protocol.Resource{ID: "KVItem db", After: []string{"KVItem web"}}
+	for _, c := range []struct {
+		web  *protocol.Observed
+		want string
+	}{
+		{nil, "to be created"},
+		{&protocol.Observed{}, "to be created"},
+		{&protocol.Observed{Exists: true}, "not Mamela's"},
+		{&protocol.Observed{Exists: true, Owned: true, Unfinished: true}, "did not finish"},
+		{&protocol.Observed{Exists: true, Owned: true}, ""},
+	} {
+		provided := map[string]state.Provided{}
+		if c.web != nil {
+			provided["KVItem web"] = state.Provided{Observed: *c.web}
+		}
+		got := waitsFor(d, provided)
+		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
+			t.Errorf("web %+v: %q, want %q", c.web, got, c.want)
 		}
 	}
 }

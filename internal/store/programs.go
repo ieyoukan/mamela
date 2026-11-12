@@ -8,7 +8,12 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
+	"time"
+
+	"github.com/ieyoukan/mamela/internal/state"
 )
 
 // Program is a provider program a plan was made with.
@@ -18,6 +23,8 @@ type Program struct {
 	Source   string // where it came from (the Pome's source path)
 	Digest   string // "sha256:..." of the program
 	Data     []byte
+	// Catalogs are the catalog files its Pome ships, by name (ADR 0008).
+	Catalogs map[string][]byte
 }
 
 // SavePlanPrograms stores the provider programs of a plan, content-addressed. Applying the plan
@@ -39,6 +46,19 @@ func (s *Store) SavePlanPrograms(ctx context.Context, planDigest string, program
 		if _, err := tx.ExecContext(ctx, `INSERT INTO plan_programs(plan_digest, provider, version, source, program_digest) VALUES(?, ?, ?, ?, ?)
 ON CONFLICT(plan_digest, provider) DO NOTHING`, planDigest, p.Provider, p.Version, p.Source, p.Digest); err != nil {
 			return err
+		}
+		for _, name := range slices.Sorted(maps.Keys(p.Catalogs)) {
+			// Catalogs are stored as the programs are: by their digest.
+			data := p.Catalogs[name]
+			d := programDigest(data)
+			if _, err := tx.ExecContext(ctx, `INSERT INTO provider_programs(digest, data, created_ms) VALUES(?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
+				d, data, s.nowMs()); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO plan_catalogs(plan_digest, provider, name, catalog_digest) VALUES(?, ?, ?, ?)
+ON CONFLICT(plan_digest, provider, name) DO NOTHING`, planDigest, p.Provider, name, d); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
@@ -62,6 +82,37 @@ FROM plan_programs pp JOIN provider_programs p ON p.digest = pp.program_digest W
 			return nil, fmt.Errorf("store: the stored program of %s is %s, not %s", p.Provider, got, p.Digest)
 		}
 		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range out {
+		if out[i].Catalogs, err = s.planCatalogs(ctx, planDigest, out[i].Provider); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) planCatalogs(ctx context.Context, planDigest, provider string) (map[string][]byte, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT pc.name, pc.catalog_digest, p.data FROM plan_catalogs pc
+JOIN provider_programs p ON p.digest = pc.catalog_digest WHERE pc.plan_digest = ? AND pc.provider = ? ORDER BY pc.name`, planDigest, provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]byte{}
+	for rows.Next() {
+		var name, digest string
+		var data []byte
+		if err := rows.Scan(&name, &digest, &data); err != nil {
+			return nil, err
+		}
+		if got := programDigest(data); got != digest {
+			return nil, fmt.Errorf("store: the stored catalog %s of %s is %s, not %s", name, provider, got, digest)
+		}
+		out[name] = data
 	}
 	return out, rows.Err()
 }
@@ -144,4 +195,83 @@ func (s *Store) NodeNumber(ctx context.Context, node string) (int64, error) {
 		return 0, err
 	}
 	return n, tx.Commit()
+}
+
+// StartExplicit records, before anything is sent, an explicit operation a person confirmed (ADR
+// 0006). The change is the provider's, as shown.
+func (s *Store) StartExplicit(ctx context.Context, id, provider, resource, op string, change []byte, confirmedBy string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO explicit_operations(id, provider, resource, op, change, confirmed_by, started_ms)
+VALUES(?, ?, ?, ?, ?, ?, ?)`, id, provider, resource, op, string(change), confirmedBy, s.nowMs())
+	return err
+}
+
+// FinishExplicit records how an explicit operation ended ("done", "failed", "partly-done",
+// "unknown").
+func (s *Store) FinishExplicit(ctx context.Context, id, outcome, detail string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE explicit_operations SET outcome = ?, detail = ?, finished_ms = ? WHERE id = ? AND outcome = 'started'`,
+		outcome, detail, s.nowMs(), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("store: explicit operation %s is not started", id)
+	}
+	return nil
+}
+
+// ExplicitOutcome is how an explicit operation ended ("started" while it has not).
+func (s *Store) ExplicitOutcome(ctx context.Context, id string) (string, error) {
+	var outcome string
+	err := s.db.QueryRowContext(ctx, `SELECT outcome FROM explicit_operations WHERE id = ?`, id).Scan(&outcome)
+	return outcome, notFound(err)
+}
+
+// ForgetCreations removes Mamela's records of creating a resource of a provider once its object is
+// deleted (ADR 0006): what remains with that resource's IDs is no longer Mamela's. A node's number
+// is kept, so that no number is ever given to two machines (a machine of the same name made again
+// gets its number back).
+func (s *Store) ForgetCreations(ctx context.Context, provider, resource string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource)
+	return err
+}
+
+// Claims are, by provider, the IDs of the objects that the plans made since a time (except one:
+// the plan being applied) are to create: the changes of resources that did not exist when each
+// was planned. Observing treats them as taken, so that plans made one after another and applied
+// together do not choose the same IDs (a Proxmox VMID). A plan that was applied created them, and
+// they are taken anyway; one that never is stops claiming them once it is older than since.
+func (s *Store) Claims(ctx context.Context, since time.Time, exceptPlan string) (map[string][]map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sn.canonical FROM plans p JOIN snapshots sn ON sn.digest = p.snapshot_digest
+WHERE p.created_ms >= ? AND p.digest != ? ORDER BY p.created_ms`, since.UnixMilli(), exceptPlan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]map[string]string{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var data []byte
+		if err := rows.Scan(&data); err != nil {
+			return nil, err
+		}
+		var snap state.Snapshot
+		if err := json.Unmarshal(data, &snap); err != nil {
+			return nil, err
+		}
+		for _, id := range slices.Sorted(maps.Keys(snap.Provided)) {
+			p := snap.Provided[id]
+			if p.Observed.Exists {
+				continue
+			}
+			for _, c := range p.Changes {
+				key, _ := json.Marshal(c.Change.IDs, json.Deterministic(true))
+				if len(c.Change.IDs) == 0 || seen[p.Provider+string(key)] {
+					continue
+				}
+				seen[p.Provider+string(key)] = true
+				out[p.Provider] = append(out[p.Provider], c.Change.IDs)
+			}
+		}
+	}
+	return out, rows.Err()
 }

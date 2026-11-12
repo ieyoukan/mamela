@@ -22,3 +22,12 @@ target/
 
 # Pinned toolchain (scripts/install-toolchain.sh)
 /.tools/
+
+# The site (mamela.site.example.toml is the template)
+/mamela.site.toml
+
+# Local builds of the CLI (go build ./cmd/mamela)
+/mamela
+
+# The providers' APIs and credential paths of a site (site-specific)
+/mamela.providers.toml

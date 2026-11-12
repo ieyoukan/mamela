@@ -1,7 +1,10 @@
 package protocol
 
 import (
+	"encoding/json/v2"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,13 +21,42 @@ const (
 	EffectLoseData Effect = "lose-data" // can destroy data (delete, shrink, overwrite)
 )
 
-// Catalog is what the host knows about an API: the effect of each call. It belongs to the host
-// (Mamela ships the catalogs of the APIs it knows), never to a provider: a provider's own word on
-// what its calls do is not used for safety. A call that is not in the catalog is unclassified:
-// an operation that sends one always needs a person's approval.
+// Catalog is what the host knows about an API: the effect of each call, what a call's parameters
+// must name (bind) or be (values), and how big what it makes is (measures). It is data
+// (mamela-catalog/v1, ADR 0008): the provider's author writes it and ships it in the provider's
+// Pome next to the program, and Mamela uses it only when the operator names it
+// (mamela.providers.toml: catalog = "pome:<name>", or a file of their own). The program never sees
+// or changes it: the host classifies every request the program sends with it. A call that is not
+// in the catalog is unclassified: an operation that sends one always needs a person's approval.
 type Catalog struct {
+	Schema  string  `json:"schema,omitempty"` // CatalogSchema, in a catalog file
 	API     string  `json:"api"`
 	Entries []Entry `json:"entries"`
+}
+
+// CatalogSchema is the schema of a catalog file.
+const CatalogSchema = "mamela-catalog/v1"
+
+// maxCatalog bounds a catalog file.
+const maxCatalog = 4 << 20
+
+// DecodeCatalog reads a catalog file: JSON of CatalogSchema, with no unknown member, that Check
+// accepts.
+func DecodeCatalog(data []byte) (Catalog, error) {
+	var c Catalog
+	if len(data) > maxCatalog {
+		return c, fmt.Errorf("a catalog is at most %d MiB", maxCatalog>>20)
+	}
+	if err := json.Unmarshal(data, &c, json.RejectUnknownMembers(true)); err != nil {
+		return c, err
+	}
+	if c.Schema != CatalogSchema {
+		return c, fmt.Errorf("schema %q is not %s", c.Schema, CatalogSchema)
+	}
+	if c.API == "" {
+		return c, errors.New("a catalog names its api")
+	}
+	return c, c.Check()
 }
 
 // Entry is one call of an API and its effect.
@@ -44,9 +76,20 @@ type Entry struct {
 	File string `json:"file,omitempty"`
 	// Fixed tells calls on the same method and path apart, as in Call.
 	Fixed map[string]string `json:"fixed,omitempty"`
+	// Header and JSON are where the API reads the other parameters, as in Call (ADR 0007).
+	Header []string `json:"header,omitempty"`
+	JSON   []string `json:"json,omitempty"`
 	// Measures are the parameters that size what the call makes or changes (vCPUs, memory, disk):
 	// the host checks their values against the site's limits, whatever the provider declares.
 	Measures []Measure `json:"measures,omitempty"`
+	// Values allow, for a parameter, only these values (as its text: a JSON string member without
+	// its quotes): IAM's AttachRolePolicy may attach only the policies Mamela knows (ADR 0007).
+	// The host refuses any other value, at plan and before sending.
+	Values map[string][]string `json:"values,omitempty"`
+	// Bind are the parameters that name the object a change acts on (EC2's "InstanceId.1"), when
+	// the path does not. In a change, each must be one of the permit's IDs, by the same name and
+	// with the same value: a provider cannot point an approved request at another object.
+	Bind []string `json:"bind,omitempty"`
 }
 
 // Measure is one parameter that sizes something.
@@ -74,11 +117,13 @@ const (
 	FormatSize  = "size"  // an absolute size: "10G", "512M", "1T" (in GiB, rounded up); "+5G" is refused
 	FormatDrive = "drive" // a new disk "<storage>:<GiB>[,options]" (Proxmox); an import is 0 here, its growth is a size
 	FormatTable = "table" // a name the measure's table gives a number ("t3.small" -> 2 vCPUs)
+	// FormatCPUUnits: ECS CPU units, 1024 to a vCPU ("256" is a quarter: 1 vCPU, rounded up).
+	FormatCPUUnits = "cpu-units"
 )
 
 // In says where the API reads a parameter of the call: "query", "form", or "".
 func (e Entry) In(param string) string {
-	return Call{Query: e.Query, Form: e.Form}.In(param)
+	return in(param, e.Query, e.Form, e.Header, e.JSON)
 }
 
 // Check verifies the catalog's own consistency.
@@ -86,7 +131,7 @@ func (c Catalog) Check() error {
 	seen := map[string]bool{}
 	byPath := map[string][]Call{}
 	for _, e := range c.Entries {
-		if err := checkCall(e.Method, e.Path, e.Query, e.Form); err != nil {
+		if err := checkCall(e.Method, e.Path, e.Query, e.Form, e.Header, e.JSON, e.Fixed); err != nil {
 			return fmt.Errorf("catalog %s: %w", c.API, err)
 		}
 		if err := checkFixed(e.Method, e.Path, e.Fixed, e.In); err != nil {
@@ -103,8 +148,18 @@ func (c Catalog) Check() error {
 		}
 		for _, m := range e.Measures {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
-				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
+				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable, FormatCPUUnits}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
 				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
+			}
+		}
+		for p, vs := range e.Values {
+			if e.In(p) == "" || len(vs) == 0 {
+				return fmt.Errorf("catalog %s: %s %s: values for %s, which is not one of its parameters", c.API, e.Method, e.Path, p)
+			}
+		}
+		for _, b := range e.Bind {
+			if e.In(b) == "" || e.Effect == EffectRead {
+				return fmt.Errorf("catalog %s: %s %s: bind %s must be a parameter of a call that changes something", c.API, e.Method, e.Path, b)
 			}
 		}
 		if e.Precondition != "" && e.In(e.Precondition) == "" {
@@ -132,6 +187,12 @@ func (m Measure) Read(value string) (int64, error) {
 // ReadMeasure reads a measure's value.
 func ReadMeasure(format, value string) (int64, error) {
 	switch format {
+	case FormatCPUUnits:
+		n, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%q is not a number of CPU units", value)
+		}
+		return (n + 1023) / 1024, nil
 	case FormatCount:
 		n, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || n < 0 {
@@ -171,11 +232,23 @@ func ReadMeasure(format, value string) (int64, error) {
 	return 0, fmt.Errorf("unknown measure format %q", format)
 }
 
+// ErrValueNotAllowed: a parameter has a value its catalog entry does not list (Values): Mamela
+// allows no other, whatever the change or the site's budget.
+var ErrValueNotAllowed = errors.New("not one of the values Mamela allows")
+
 // CheckLimits checks the measured parameters of a request to a call against limits (by measure
 // name; absent or 0: no limit). A measured value that does not read is refused, limit or not.
 func (e Entry) CheckLimits(params map[string][]string, limits map[string]int64) error {
+	for _, p := range slices.Sorted(maps.Keys(e.Values)) {
+		for _, v := range params[p] {
+			if !slices.Contains(e.Values[p], ParamText(e.In(p), v)) {
+				return fmt.Errorf("%s %s: %s=%s: %w (%s)", e.Method, e.Path, p, v, ErrValueNotAllowed, strings.Join(e.Values[p], ", "))
+			}
+		}
+	}
 	for _, m := range e.Measures {
 		for _, v := range params[m.Param] {
+			v = ParamText(e.In(m.Param), v)
 			n, err := m.Read(v)
 			if err != nil {
 				return fmt.Errorf("%s %s: %s: %v", e.Method, e.Path, m.Param, err)
@@ -195,6 +268,8 @@ func (c Catalog) Lookup(method, path string) (Entry, bool) {
 
 // LookupCall returns the entry of a declared call: the same method, path and fixed parameters.
 func (c Catalog) LookupCall(call Call) (Entry, bool) {
+	call.API = "" // a catalog is one API's
+
 	for _, e := range c.Entries {
 		if (Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed}).Same(call) {
 			return e, true
@@ -210,7 +285,7 @@ func (c Catalog) LookupApproved(a Approved) (Entry, bool) {
 	for _, e := range c.Entries {
 		calls = append(calls, Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
 	}
-	call, _, ok := FindCall(calls, a.Method, a.Path, a.Params, false)
+	call, _, ok := FindCall(calls, "", a.Method, a.Path, a.Params, false)
 	if !ok {
 		return Entry{}, false
 	}
@@ -241,6 +316,17 @@ func (c Catalog) Verify(o Operation) Verified {
 		}
 	}
 	return v
+}
+
+// SortEffects puts effects in the order of Effects (read to lose-data).
+func SortEffects(es []Effect) []Effect {
+	var out []Effect
+	for _, e := range []Effect{EffectRead, EffectCreate, EffectChange, EffectRestart, EffectLoseData} {
+		if containsEffect(es, e) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // MayLoseData reports whether a classified call may destroy data. Policy denies such an

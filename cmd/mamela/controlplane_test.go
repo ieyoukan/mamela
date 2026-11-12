@@ -5,9 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"github.com/ieyoukan/mamela/internal/seed"
-	"github.com/ieyoukan/mamela/internal/store"
-	"github.com/ieyoukan/mamela/provider/protocol"
 	"io"
 	"os"
 	"os/exec"
@@ -15,14 +12,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ieyoukan/mamela/internal/lab"
+	"github.com/ieyoukan/mamela/internal/provider/external"
+	"github.com/ieyoukan/mamela/internal/seed"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
+	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // The bundle holds what the host needs, rewritten for it, with secrets readable only by their
-// owner; the site in it is valid as is. It refuses a loopback URL.
+// owner; the site and the providers' APIs in it are valid as is. It refuses a loopback URL.
 func TestControlPlaneBundle(t *testing.T) {
 	dir := t.TempDir()
-	example, err := os.ReadFile(filepath.Join("..", "..", "lab", "site.example.toml"))
+	example, err := os.ReadFile(filepath.Join("..", "..", "mamela.site.example.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,18 +42,30 @@ func TestControlPlaneBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("cp/ca.pem", "CA", 0o600)
-	site := strings.NewReplacer(`"~/.config/mamela/lab-token"`, `"`+lt+`"`, `"~/.config/mamela/audit-token"`, `"`+at+`"`,
-		`"~/.ssh/id_ed25519.pub"`, `"`+key+`"`, `"~/.config/mamela/cp"`, `"`+cpDir+`"`,
-		`".mamela/bin/mamelet-linux-amd64"`, `"`+bin+`"`, `tls_ca_file = ""`, ``).Replace(string(example))
+	site := strings.NewReplacer(`"~/.ssh/id_ed25519.pub"`, `"`+key+`"`, `"~/.config/mamela/cp"`, `"`+cpDir+`"`,
+		`".mamela/bin/mamelet-linux-amd64"`, `"`+bin+`"`).Replace(string(example))
 	sitePath := write("site.toml", site, 0o600)
+	providers := write("providers.toml", `[provider.proxmox]
+api_url = "https://pve.example:8006/api2/json"
+auth = "proxmox"
+token_id = "mamela@pve!lab"
+token_file = "`+lt+`"
+catalog = "pome:proxmox"
+guard_token_id = "mamela-audit@pve!audit"
+guard_token_file = "`+at+`"
+
+[provider.proxmox.guard]
+node = "pve1"
+max_vms = 3
+`, 0o600)
 	db := filepath.Join(dir, "state.db")
 	out := filepath.Join(dir, "bundle.tar")
 
-	if code, _, stderr := runCLI("controlplane", "bundle", "--site", sitePath, "--db", db, "--out", out, "--url", "https://127.0.0.1:8443"); code == 0 ||
+	if code, _, stderr := runCLI("controlplane", "bundle", "--site", sitePath, "--providers", providers, "--db", db, "--out", out, "--url", "https://127.0.0.1:8443"); code == 0 ||
 		!strings.Contains(stderr, "loopback") {
 		t.Fatalf("a loopback URL: %d %s", code, stderr)
 	}
-	code, stdout, stderr := runCLI("controlplane", "bundle", "--site", sitePath, "--db", db, "--out", out,
+	code, stdout, stderr := runCLI("controlplane", "bundle", "--site", sitePath, "--providers", providers, "--db", db, "--out", out,
 		"--url", "https://10.0.0.45:8443", "--host", "mamela-cp")
 	if code != 0 {
 		t.Fatalf("%d %s %s", code, stdout, stderr)
@@ -76,33 +89,46 @@ func TestControlPlaneBundle(t *testing.T) {
 		b, _ := io.ReadAll(tr)
 		got[h.Name], modes[h.Name] = string(b), h.Mode
 	}
-	for _, name := range []string{"etc/site.toml", "etc/secrets/lab-token", "etc/secrets/audit-token", "etc/guest-ssh.pub",
+	for _, name := range []string{"etc/site.toml", "etc/providers.toml", "etc/secrets/proxmox-token", "etc/secrets/proxmox-guard-token", "etc/guest-ssh.pub",
 		"var/cp/ca.pem", "var/mamelet-linux-amd64", "var/state.db", "mamela-serve.service", "install.sh"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("bundle lacks %s", name)
 		}
 	}
-	if got["etc/secrets/lab-token"] != "secret-lab\n" || modes["etc/secrets/lab-token"] != 0o600 || modes["var/state.db"] != 0o600 {
-		t.Errorf("secrets: %q mode %o", got["etc/secrets/lab-token"], modes["etc/secrets/lab-token"])
+	if got["etc/secrets/proxmox-token"] != "secret-lab\n" || modes["etc/secrets/proxmox-token"] != 0o600 || modes["var/state.db"] != 0o600 ||
+		got["etc/secrets/proxmox-guard-token"] != "secret-audit\n" {
+		t.Errorf("secrets: %q mode %o", got["etc/secrets/proxmox-token"], modes["etc/secrets/proxmox-token"])
 	}
 	moved := filepath.Join(dir, "moved.toml")
 	if err := os.WriteFile(moved, []byte(got["etc/site.toml"]), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := lab.LoadSite(moved)
+	s, err := sitedef.Load(moved)
 	if err != nil {
 		t.Fatalf("the host's site is not valid: %v\n%s", err, got["etc/site.toml"])
 	}
 	c := s.ControlPlane
 	if c.URL != "https://10.0.0.45:8443" || c.Listen != "0.0.0.0:8443" || c.Host != "mamela-cp" || c.StateDir != "/var/lib/mamela/cp" ||
-		c.TunnelJump != "" || s.Proxmox.TokenSecretFile != "/etc/mamela/secrets/lab-token" || s.Guest.SSHPublicKeyFile != "/etc/mamela/guest-ssh.pub" {
-		t.Fatalf("host site: %+v %+v", c, s.Proxmox)
+		s.Guest.SSHPublicKeyFile != "/etc/mamela/guest-ssh.pub" {
+		t.Fatalf("host site: %+v %+v", c, s.Guest)
+	}
+	movedProviders := filepath.Join(dir, "moved-providers.toml")
+	if err := os.WriteFile(movedProviders, []byte(got["etc/providers.toml"]), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := external.LoadConfig(movedProviders)
+	if err != nil {
+		t.Fatalf("the host's providers are not valid: %v\n%s", err, got["etc/providers.toml"])
+	}
+	if a := cfg.Provider["proxmox"]; a.TokenFile != "/etc/mamela/secrets/proxmox-token" || a.GuardTokenFile != "/etc/mamela/secrets/proxmox-guard-token" ||
+		a.TokenID != "mamela@pve!lab" || a.Guard["node"] != "pve1" {
+		t.Fatalf("host providers: %+v", a)
 	}
 	if !strings.Contains(stdout, "move_to") {
 		t.Errorf("does not say how existing mamelets move:\n%s", stdout)
 	}
 	// Never overwrites an archive.
-	if code, _, _ := runCLI("controlplane", "bundle", "--site", sitePath, "--db", db, "--out", out, "--url", "https://10.0.0.45:8443"); code == 0 {
+	if code, _, _ := runCLI("controlplane", "bundle", "--site", sitePath, "--providers", providers, "--db", db, "--out", out, "--url", "https://10.0.0.45:8443"); code == 0 {
 		t.Fatal("overwrote an existing bundle")
 	}
 }
@@ -114,7 +140,7 @@ func TestInstallRefusesAnExistingControlPlane(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bundle, "install.sh"), []byte(installScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, existing := range []string{"var/lib/mamela/state.db", "var/lib/mamela/cp", "etc/mamela/site.toml", "etc/mamela/secrets"} {
+	for _, existing := range []string{"var/lib/mamela/state.db", "var/lib/mamela/cp", "etc/mamela/site.toml", "etc/mamela/providers.toml", "etc/mamela/secrets"} {
 		root := t.TempDir()
 		mustWrite := func(rel string, mode os.FileMode) {
 			p := filepath.Join(root, rel)
@@ -151,7 +177,7 @@ func TestInstallRefusesAnExistingControlPlane(t *testing.T) {
 // from the Control Plane by its sha256, with a fresh one-time token.
 func TestUserDataSeedArtifact(t *testing.T) {
 	ctx := context.Background()
-	site, err := lab.LoadSite(filepath.Join("..", "..", "lab", "site.example.toml"))
+	site, err := sitedef.Load(filepath.Join("..", "..", "mamela.site.example.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}

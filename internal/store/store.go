@@ -181,6 +181,33 @@ CREATE TABLE node_numbers (
   created_ms INTEGER NOT NULL
 );
 `,
+	// 10: explicit operations (ADR 0006: deleting, restarting, adopting), recorded before they are
+	// sent, with who confirmed them and how they ended.
+	`
+CREATE TABLE explicit_operations (
+  id           TEXT PRIMARY KEY,
+  provider     TEXT NOT NULL,
+  resource     TEXT NOT NULL,
+  op           TEXT NOT NULL,
+  change       TEXT NOT NULL,
+  confirmed_by TEXT NOT NULL,
+  started_ms   INTEGER NOT NULL,
+  outcome      TEXT NOT NULL DEFAULT 'started',
+  detail       TEXT NOT NULL DEFAULT '',
+  finished_ms  INTEGER
+);
+`,
+	// 11: the catalogs each plan's providers shipped in their Pomes (ADR 0008), content-addressed
+	// like the programs: applying the plan classifies requests with exactly these.
+	`
+CREATE TABLE plan_catalogs (
+  plan_digest    TEXT NOT NULL REFERENCES plans(digest),
+  provider       TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  catalog_digest TEXT NOT NULL REFERENCES provider_programs(digest),
+  PRIMARY KEY (plan_digest, provider, name)
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
@@ -584,59 +611,4 @@ func notFound(err error) error {
 		return ErrNotFound
 	}
 	return err
-}
-
-// VMID returns the VMID reserved for the VM name, if any.
-func (s *Store) VMID(ctx context.Context, name string) (int, bool, error) {
-	var vmid int
-	err := s.db.QueryRowContext(ctx, `SELECT vmid FROM vmids WHERE name = ?`, name).Scan(&vmid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	return vmid, err == nil, err
-}
-
-// AllocateVMID returns the VMID reserved for name, reserving one first if there is none: the lowest
-// ID in [min, max] that no other name holds and that free reports unused in the cluster.
-//
-// The reservation is written before the VM is created and never changes afterwards, so a create
-// that is retried after a timeout or a crash targets the same VMID and cannot make a second VM.
-func (s *Store) AllocateVMID(ctx context.Context, name string, min, max int, free func(context.Context, int) (bool, error)) (int, error) {
-	if vmid, ok, err := s.VMID(ctx, name); err != nil || ok {
-		return vmid, err
-	}
-	taken := map[int]bool{}
-	rows, err := s.db.QueryContext(ctx, `SELECT vmid FROM vmids WHERE vmid BETWEEN ? AND ?`, min, max)
-	if err != nil {
-		return 0, err
-	}
-	for rows.Next() {
-		var v int
-		if err := rows.Scan(&v); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		taken[v] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	for v := min; v <= max; v++ {
-		if taken[v] {
-			continue
-		}
-		ok, err := free(ctx, v)
-		if err != nil {
-			return 0, fmt.Errorf("check whether VMID %d is free: %w", v, err)
-		}
-		if !ok {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO vmids(name, vmid, allocated_ms) VALUES(?, ?, ?)`, name, v, s.nowMs()); err != nil {
-			return 0, err
-		}
-		return v, nil
-	}
-	return 0, fmt.Errorf("no free VMID in %d..%d for %s", min, max, name)
 }

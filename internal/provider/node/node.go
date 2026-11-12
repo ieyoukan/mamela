@@ -62,9 +62,8 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 // Publish writes each declared node's revision: which packages and services mamelet observes,
 // and the standing repairs the policy allows without approval (starting a service listed in
 // autoStartServices). One-time grants already in a revision are kept while their package or
-// service is still declared. Nodes without a reserved VMID (not created yet) are skipped.
-// nodeIDs are the IDs of providers' machines (ADR 0004), by name, from the observation; a
-// VirtualMachine's is its VMID reservation.
+// service is still declared. nodeIDs are the IDs of providers' machines (ADR 0004), by name, from
+// the observation; machines without one (not created yet) are skipped.
 func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, controlPlane string, nodeIDs map[string]int64) error {
 	type nodeRes struct {
 		pkgs []graph.NodePackageSpec
@@ -75,8 +74,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 	var names []string
 	// The nodes first (a provider's kind sorts after the node resources), then what is on them.
 	for _, r := range g.Sorted() {
-		_, providersNode := nodeIDs[r.Name]
-		if r.Kind == graph.KindVirtualMachine || providersNode && r.Provided != nil {
+		if _, providersNode := nodeIDs[r.Name]; providersNode && r.Provided != nil {
 			nodes[r.Name] = &nodeRes{}
 			names = append(names, r.Name)
 		}
@@ -98,14 +96,8 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		}
 	}
 	for _, name := range names {
-		vmid, ok, err := st.VMID(ctx, name)
-		if err != nil {
-			return err
-		}
-		if id, isNode := nodeIDs[name]; isNode && !ok {
-			vmid, ok = int(id), id > 0
-		}
-		if !ok {
+		vmid := int(nodeIDs[name])
+		if vmid <= 0 {
 			continue
 		}
 		n := nodes[name]
@@ -356,32 +348,4 @@ func (p *Provider) sleep(ctx context.Context, d time.Duration) error {
 	case <-t.C:
 		return nil
 	}
-}
-
-// Combined observes and changes both the VMs (vms) and what lives inside them (nodes).
-type Combined struct {
-	VMs   reconcile.Provider
-	Nodes reconcile.Provider
-}
-
-// Observe merges the VM snapshot with the node snapshot.
-func (c Combined) Observe(ctx context.Context) (state.Snapshot, error) {
-	vms, err := c.VMs.Observe(ctx)
-	if err != nil {
-		return state.Snapshot{}, err
-	}
-	nodes, err := c.Nodes.Observe(ctx)
-	if err != nil {
-		return state.Snapshot{}, err
-	}
-	vms.Packages, vms.Services, vms.K3s = nodes.Packages, nodes.Services, nodes.K3s
-	return vms, nil
-}
-
-// Apply sends VM operations to the VM provider and the rest to the node provider.
-func (c Combined) Apply(ctx context.Context, step reconcile.Step) error {
-	if step.Resource.Kind == graph.KindVirtualMachine {
-		return c.VMs.Apply(ctx, step)
-	}
-	return c.Nodes.Apply(ctx, step)
 }

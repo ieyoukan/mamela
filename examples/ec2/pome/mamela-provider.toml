@@ -3,4 +3,9 @@
 provider = "ec2-example"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "9c89b58072dda4ded2fb751030b33aad2a58bd4b19f5f8948e05507887a9f249"
+sha256 = "abe65b60fde49e417cdaf8d46ed3e2e3be216f830b534dad4888a0db31770333"
+
+# The catalogs of the APIs the provider calls (ADR 0008): the operator names one in
+# mamela.providers.toml (catalog = "pome:ec2") for Mamela to classify the provider's requests with.
+[catalogs]
+ec2 = "catalogs/ec2.json"

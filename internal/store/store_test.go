@@ -13,9 +13,10 @@ import (
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"TestVM","name":"app-server","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v2"}`
 
 // fakeClock is a settable clock safe for concurrent use.
 type fakeClock struct {
@@ -182,12 +183,12 @@ func TestJournalClaimIsExclusive(t *testing.T) {
 	ctx := context.Background()
 	s, clock, _ := open(t)
 	p := savedPlan(t, s, clock.Now())
-	o, err := s.Intend(ctx, "op1", p.Digest, "VirtualMachine app-server", "create-vm")
+	o, err := s.Intend(ctx, "op1", p.Digest, "TestVM app-server", "create-vm")
 	if err != nil || o.Stage != StageIntended {
 		t.Fatalf("Intend: %v %+v", err, o)
 	}
 	// Intend again keeps the existing entry.
-	if o, _ := s.Intend(ctx, "op1", p.Digest, "VirtualMachine app-server", "create-vm"); o.Stage != StageIntended {
+	if o, _ := s.Intend(ctx, "op1", p.Digest, "TestVM app-server", "create-vm"); o.Stage != StageIntended {
 		t.Fatalf("second Intend changed the entry: %+v", o)
 	}
 	if ok, _ := s.Claim(ctx, "op1", "worker-a", time.Minute); !ok {
@@ -284,39 +285,6 @@ func TestEventsAreOrdered(t *testing.T) {
 	}
 }
 
-func TestAllocateVMIDIsStableAndSkipsUsedIDs(t *testing.T) {
-	ctx := context.Background()
-	st, _, _ := open(t)
-	inCluster := map[int]bool{7000: true} // someone else's guest
-	asked := 0
-	free := func(_ context.Context, v int) (bool, error) { asked++; return !inCluster[v], nil }
-
-	a, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
-	if err != nil || a != 7001 {
-		t.Fatalf("first allocation: %d %v, want 7001", a, err)
-	}
-	// Once reserved, the same name always gets the same VMID, even if the cluster now says it is
-	// in use (by the VM this reservation created).
-	inCluster[7001] = true
-	again, err := st.AllocateVMID(ctx, "web", 7000, 7002, free)
-	if err != nil || again != 7001 {
-		t.Fatalf("second allocation: %d %v, want 7001", again, err)
-	}
-	b, err := st.AllocateVMID(ctx, "db", 7000, 7002, free)
-	if err != nil || b != 7002 {
-		t.Fatalf("other name: %d %v, want 7002", b, err)
-	}
-	if _, err := st.AllocateVMID(ctx, "cache", 7000, 7002, free); err == nil {
-		t.Fatal("allocated beyond the range")
-	}
-	if v, ok, err := st.VMID(ctx, "web"); err != nil || !ok || v != 7001 {
-		t.Fatalf("VMID(web) = %d %v %v", v, ok, err)
-	}
-	if _, ok, _ := st.VMID(ctx, "nothing"); ok {
-		t.Fatal("found a VMID for an unknown name")
-	}
-}
-
 func TestPlanProgramsAndPermits(t *testing.T) {
 	ctx := context.Background()
 	s, _, _ := open(t)
@@ -327,7 +295,8 @@ func TestPlanProgramsAndPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := []byte("\x00asm program")
-	prog := Program{Provider: "kv", Version: "0.1.0", Source: "example.com/kv", Digest: programDigest(data), Data: data}
+	prog := Program{Provider: "kv", Version: "0.1.0", Source: "example.com/kv", Digest: programDigest(data), Data: data,
+		Catalogs: map[string][]byte{"kv": []byte(`{"schema":"mamela-catalog/v1","api":"kv","entries":[]}`)}}
 	if err := s.SavePlanPrograms(ctx, p.Digest, []Program{{Provider: "kv", Digest: "sha256:00", Data: data}}); err == nil {
 		t.Error("a program with the wrong digest was stored")
 	}
@@ -335,7 +304,8 @@ func TestPlanProgramsAndPermits(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.PlanPrograms(ctx, p.Digest)
-	if err != nil || len(got) != 1 || string(got[0].Data) != string(data) || got[0].Source != prog.Source {
+	if err != nil || len(got) != 1 || string(got[0].Data) != string(data) || got[0].Source != prog.Source ||
+		string(got[0].Catalogs["kv"]) != string(prog.Catalogs["kv"]) || len(got[0].Catalogs) != 1 {
 		t.Fatalf("%+v %v", got, err)
 	}
 	if err := s.UsePermit(ctx, "op-1@1", "op-1", p.Digest); err != nil {
@@ -358,5 +328,92 @@ func TestNodeNumbers(t *testing.T) {
 	again, _ := st.NodeNumber(ctx, "web")
 	if b != a+1 || again != a {
 		t.Fatalf("db %d, web again %d", b, again)
+	}
+}
+
+// An explicit operation is recorded before it is sent and finished once; deleting forgets the
+// creation records of the resource, and never frees a node's number for another machine.
+func TestExplicitOperationsAndForgetting(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := open(t)
+	if err := st.StartExplicit(ctx, "act-1", "proxmox", "ProxmoxVM web", "delete-vm", []byte(`{}`), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.StartExplicit(ctx, "act-1", "proxmox", "ProxmoxVM web", "delete-vm", []byte(`{}`), "alice"); err == nil {
+		t.Fatal("the same operation was started twice")
+	}
+	if o, err := st.ExplicitOutcome(ctx, "act-1"); err != nil || o != "started" {
+		t.Fatalf("outcome %q %v", o, err)
+	}
+	if err := st.FinishExplicit(ctx, "act-1", "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.FinishExplicit(ctx, "act-1", "failed", "again"); err == nil {
+		t.Fatal("finished twice")
+	}
+	if o, _ := st.ExplicitOutcome(ctx, "act-1"); o != "done" {
+		t.Fatalf("outcome %q", o)
+	}
+	if _, err := st.ExplicitOutcome(ctx, "act-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown operation: %v", err)
+	}
+
+	st.RecordCreation(ctx, "proxmox", "ProxmoxVM web", map[string]string{"vmid": "7001"}, "p", "o")
+	st.RecordCreation(ctx, "proxmox", "ProxmoxVM db", map[string]string{"vmid": "7002"}, "p", "o")
+	n, _ := st.NodeNumber(ctx, "web")
+	if err := st.ForgetCreations(ctx, "proxmox", "ProxmoxVM web"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := st.Creations(ctx, "proxmox", "ProxmoxVM web"); len(got) != 0 {
+		t.Fatalf("still recorded: %v", got)
+	}
+	if got, _ := st.Creations(ctx, "proxmox", "ProxmoxVM db"); len(got) != 1 {
+		t.Fatalf("another resource's record was forgotten: %v", got)
+	}
+	if other, _ := st.NodeNumber(ctx, "db"); other == n {
+		t.Fatalf("number %d was given to another node", n)
+	}
+	if again, _ := st.NodeNumber(ctx, "web"); again != n {
+		t.Fatalf("web made again got %d, not its number %d", again, n)
+	}
+}
+
+// The IDs other plans are to create are claimed: the creates (changes of resources that did not
+// exist) of the plans made since a time, except the plan being applied.
+func TestClaims(t *testing.T) {
+	st, clock, _ := open(t)
+	ctx := context.Background()
+	g := graphFixture(t)
+	save := func(provided map[string]state.Provided) string {
+		snap := state.Empty(clock.Now())
+		snap.Provided = provided
+		p := plan.Build(g, snap, policy.Default)
+		if err := st.SavePlan(ctx, g, snap, policy.Default, p); err != nil {
+			t.Fatal(err)
+		}
+		return p.Digest
+	}
+	create := func(vmid string) state.Provided {
+		return state.Provided{Provider: "proxmox", Kind: "ProxmoxVM", Name: "vm" + vmid, Declared: true,
+			Changes: []state.ProvidedChange{{Change: protocol.Change{Op: "create-vm", IDs: map[string]string{"node": "pve1", "vmid": vmid}}}}}
+	}
+	old := save(map[string]state.Provided{"ProxmoxVM a": create("7000")})
+	clock.Advance(3 * time.Hour)
+	since := clock.Now().Add(-2 * time.Hour)
+	existing := create("7009")
+	existing.Observed.Exists = true // a change of what exists creates nothing
+	mine := save(map[string]state.Provided{"ProxmoxVM b": create("7001"), "ProxmoxVM c": existing})
+	clock.Advance(time.Minute)
+	other := save(map[string]state.Provided{"ProxmoxVM d": create("7002")})
+	_ = old
+	got, err := st.Claims(ctx, since, "")
+	if err != nil || len(got["proxmox"]) != 2 || got["proxmox"][0]["vmid"] != "7001" || got["proxmox"][1]["vmid"] != "7002" {
+		t.Fatalf("claims of the recent plans: %v %v", got, err)
+	}
+	if got, _ := st.Claims(ctx, since, mine); len(got["proxmox"]) != 1 || got["proxmox"][0]["vmid"] != "7002" {
+		t.Fatalf("claims except the plan being applied: %v", got)
+	}
+	if got, _ := st.Claims(ctx, since, other); len(got["proxmox"]) != 1 || got["proxmox"][0]["vmid"] != "7001" {
+		t.Fatalf("claims except the other: %v", got)
 	}
 }

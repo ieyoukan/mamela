@@ -16,17 +16,15 @@ pub const SCHEMA = "mamela-graph/v1"
 ## The schema of a graph with resources of providers.
 pub const SCHEMA_V2 = "mamela-graph/v2"
 
-## How a VM gets its IPv4 address, given to it when it is created. There is no default: a
+## How a machine gets its IPv4 address, given to it when it is created. There is no default: a
 ## declaration says `Dhcp` or `Static(...)`. `address` has its prefix length ("192.0.2.10/24"),
 ## `gateway` is in its subnet, and `dns` names 1 to 3 name servers. A site may allow static
-## addresses only from a range of its own.
+## addresses only from a range of its own. A provider's Pome writes it into its machine's spec as
+## `("network", Mamela.network_spec(network))`, where Mamela checks it.
 pub enum Network {
   Dhcp
   Static(address: String, gateway: String, dns: List[String])
 }
-
-## A virtual machine. `memory_mib` is in MiB and `disk_gib` in GiB.
-pub type Vm(name: String, cpu: Int, memory_mib: Int, disk_gib: Int, image: String, network: Network)
 
 ## An APT package that should be present on a node.
 pub type Package(node: String, name: String)
@@ -34,27 +32,34 @@ pub type Package(node: String, name: String)
 ## A systemd service on a node.
 pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 
-## k3s (a light Kubernetes) on a node, as a server or as an agent of a server: this exact release,
-## pinned by the sha256 of its binary for the node's architecture (from the release's sha256sum
-## file). Mamela writes the systemd unit itself and gives the cluster's nodes their join token;
-## start it with `service(graph, node, "k3s", True, True)`.
-pub type K3s(node: String, role: String, server: String, version: String, sha256: String)
+## A reference to a resource of a provider: its kind and name. A provider's Pome makes it from its
+## own typed values (`Aws.cluster_ref(c)`), so that a reference names something declared.
+pub type Ref(kind: String, name: String)
 
-## A resource of a provider's kind. A provider's Pome wraps `provided` in typed functions, so
-## that a declaration writes `Kv.item(...)`, not this.
-pub type Provided(provider: String, kind: String, name: String, spec: List[(String, Dynamic)])
+## A resource of a provider's kind, and the resources it needs first (`after`). A provider's Pome
+## wraps `provided` in typed functions, so that a declaration writes `Kv.item(...)`, not this.
+pub type Provided(
+  provider: String,
+  kind: String,
+  name: String,
+  spec: List[(String, Dynamic)],
+  after: List[Ref],
+)
+
+## A resource of a built-in kind that lives on a node (what mamelet does there), for Mamela's own
+## role Pomes such as `K3s`. Mamela accepts only the built-in kinds it knows.
+pub type OnNode(kind: String, name: String, spec: List[(String, Dynamic)])
 
 ## The desired state. Resources keep the order in which they were added.
 pub opaque type Graph(
-  vms: List[Vm],
   packages: List[Package],
   services: List[Service],
-  k3s_servers: List[K3s],
+  on_nodes: List[OnNode],
   by_providers: List[Provided],
 )
 
 pub fn empty() -> Graph {
-  Graph(vms: [], packages: [], services: [], k3s_servers: [], by_providers: [])
+  Graph(packages: [], services: [], on_nodes: [], by_providers: [])
 }
 
 ## Declares a resource of a provider: `kind` is a kind of the provider named `provider`, and
@@ -67,68 +72,48 @@ pub fn provided(
   name: String,
   spec: List[(String, Dynamic)],
 ) -> Graph {
-  r = Provided(provider:, kind:, name:, spec:)
+  provided_after(graph, provider, kind, name, spec, [])
+}
+
+## Declares a resource of a provider that needs other resources first: Mamela plans it once each
+## of them exists and is Mamela's, and gives the provider their IDs (a security group's, a
+## cluster's) to write into its changes.
+pub fn provided_after(
+  graph: Graph,
+  provider: String,
+  kind: String,
+  name: String,
+  spec: List[(String, Dynamic)],
+  after: List[Ref],
+) -> Graph {
+  r = Provided(provider:, kind:, name:, spec:, after:)
   Graph(by_providers: List.append(graph.by_providers, [r]), ..graph)
 }
 
-pub fn vm(graph: Graph, vm: Vm) -> Graph {
-  Graph(vms: List.append(graph.vms, [vm]), ..graph)
+## Declares a resource of a built-in kind on `node`, for Mamela's own role Pomes (`K3s`).
+pub fn on_node(
+  graph: Graph,
+  node: Node,
+  kind: String,
+  name: String,
+  spec: List[(String, Dynamic)],
+) -> Graph {
+  r = OnNode(kind:, name:, spec: List.append([("node", Text(node.name))], spec))
+  Graph(on_nodes: List.append(graph.on_nodes, [r]), ..graph)
 }
 
-## A machine mamelet runs on: a `Vm`, or a machine a provider makes (its Pome gives a function that
-## returns one, such as `Proxmox.node`). Taking a `Node` (not a name) keeps a reference from
-## pointing at a machine that was never declared by a typo.
+## A machine mamelet runs on: a machine a provider makes (its Pome gives a function that returns
+## one, such as `Proxmox.node`). Taking a `Node` (not a name) keeps a reference from pointing at a
+## machine that was never declared by a typo.
 pub type Node(name: String)
 
-## The node of a `Vm`.
-pub fn node(vm: Vm) -> Node {
-  Node(name: vm.name)
-}
-
 ## Declares that `name` is installed on `node`.
-pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
-  package_on(graph, Node(name: node.name), name)
-}
-
-## Declares that `name` is installed on a node.
-pub fn package_on(graph: Graph, node: Node, name: String) -> Graph {
+pub fn package(graph: Graph, node: Node, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
 }
 
-## Declares that `node` runs a k3s server of `version`, whose binary has `sha256`.
-pub fn k3s_server(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
-  k3s_server_on(graph, Node(name: node.name), version, sha256)
-}
-
-## Declares that a node runs a k3s server of `version`, whose binary has `sha256`.
-pub fn k3s_server_on(graph: Graph, node: Node, version: String, sha256: String) -> Graph {
-  k = K3s(node: node.name, role: "server", server: "", version:, sha256:)
-  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
-}
-
-## Declares that `node` runs a k3s agent of `version` that joins the server on `server`.
-pub fn k3s_agent(graph: Graph, node: Vm, server: Vm, version: String, sha256: String) -> Graph {
-  k3s_agent_on(graph, Node(name: node.name), Node(name: server.name), version, sha256)
-}
-
-## Declares that a node runs a k3s agent of `version` that joins the server on `server`.
-pub fn k3s_agent_on(
-  graph: Graph,
-  node: Node,
-  server: Node,
-  version: String,
-  sha256: String,
-) -> Graph {
-  k = K3s(node: node.name, role: "agent", server: server.name, version:, sha256:)
-  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
-}
-
-pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Bool) -> Graph {
-  service_on(graph, Node(name: node.name), name, enabled, running)
-}
-
-## Declares a systemd service on a node.
-pub fn service_on(graph: Graph, node: Node, name: String, enabled: Bool, running: Bool) -> Graph {
+## Declares a systemd service on `node`.
+pub fn service(graph: Graph, node: Node, name: String, enabled: Bool, running: Bool) -> Graph {
   s = Service(node: node.name, name:, enabled:, running:)
   Graph(services: List.append(graph.services, [s]), ..graph)
 }
@@ -145,21 +130,8 @@ fn resource(kind: String, name: String, spec: List[(String, Dynamic)]) -> Dynami
   Dynamic.object([("kind", Text(kind)), ("name", Text(name)), ("spec", Dynamic.object(spec))])
 }
 
-fn vm_json(v: Vm) -> Dynamic {
-  resource(
-    "VirtualMachine",
-    v.name,
-    [
-      ("cpu", integer(v.cpu)),
-      ("memoryMiB", integer(v.memory_mib)),
-      ("diskGiB", integer(v.disk_gib)),
-      ("image", Text(v.image)),
-      ("network", network_json(v.network)),
-    ],
-  )
-}
-
-fn network_json(n: Network) -> Dynamic {
+## A network as a machine's spec writes it, for a provider's Pome.
+pub fn network_spec(n: Network) -> Dynamic {
   n match {
     Dhcp -> Dynamic.object([("mode", Text("dhcp"))])
     Static(address: address, gateway: gateway, dns: dns) -> {
@@ -196,37 +168,35 @@ fn service_json(s: Service) -> Dynamic {
   )
 }
 
-fn k3s_json(k: K3s) -> Dynamic {
-  fields = [
-    ("node", Text(k.node)),
-    ("role", Text(k.role)),
-    ("version", Text(k.version)),
-    ("sha256", Text(k.sha256)),
-  ]
-  server = if k.server == "" { [] } else { [("server", Text(k.server))] }
-  resource("NodeK3s", "#{k.node}/k3s", List.append(fields, server))
+fn on_node_json(r: OnNode) -> Dynamic {
+  resource(r.kind, r.name, r.spec)
+}
+
+fn ref_text(r: Ref) -> Dynamic {
+  Text("#{r.kind} #{r.name}")
 }
 
 fn provided_json(p: Provided) -> Dynamic {
-  Dynamic.object(
-    [
-      ("kind", Text(p.kind)),
-      ("name", Text(p.name)),
-      ("provider", Text(p.provider)),
-      ("spec", Dynamic.object(p.spec)),
-    ],
-  )
+  fields = [
+    ("kind", Text(p.kind)),
+    ("name", Text(p.name)),
+    ("provider", Text(p.provider)),
+    ("spec", Dynamic.object(p.spec)),
+  ]
+  after = if List.is_empty(p.after) {
+    []
+  } else {
+    [("after", Items(p.after.map(ref_text)))]
+  }
+  Dynamic.object(List.append(fields, after))
 }
 
 fn graph_json(graph: Graph) -> Dynamic {
   resources = List.append(
-    graph.vms.map(vm_json),
+    graph.packages.map(package_json),
     List.append(
-      graph.packages.map(package_json),
-      List.append(
-        graph.services.map(service_json),
-        List.append(graph.k3s_servers.map(k3s_json), graph.by_providers.map(provided_json)),
-      ),
+      graph.services.map(service_json),
+      List.append(graph.on_nodes.map(on_node_json), graph.by_providers.map(provided_json)),
     ),
   )
   schema = if List.is_empty(graph.by_providers) { SCHEMA } else { SCHEMA_V2 }

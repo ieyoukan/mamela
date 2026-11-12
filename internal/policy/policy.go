@@ -38,24 +38,14 @@ func Stricter(a, b Verdict) Verdict {
 type Op = protocol.Op
 
 const (
-	OpCreateVM Op = "create-vm"
-	// OpStartVM starts a stopped VM. A new VM is created stopped and started only after every VM of
-	// the run is created, so that no first boot competes with another VM's disk import.
-	OpStartVM        Op = "start-vm"
-	OpResizeVMCPU    Op = "resize-vm-cpu"
-	OpResizeVMMemory Op = "resize-vm-memory"
-	OpGrowVMDisk     Op = "grow-vm-disk"
-	OpShrinkVMDisk   Op = "shrink-vm-disk"
-	OpReplaceVMImage Op = "replace-vm-image"
-	// OpChangeVMNetwork changes the network a VM was created with.
-	OpChangeVMNetwork Op = "change-vm-network"
-	OpChangeForeign   Op = "change-foreign"
-	OpInstallPackage  Op = "install-package"
-	OpEnableService   Op = "enable-service"
-	OpDisableService  Op = "disable-service"
-	OpStartService    Op = "start-service"
-	OpStopService     Op = "stop-service"
-	OpInstallK3s      Op = "install-k3s"
+	// OpChangeForeign is any change to a resource Mamela did not create: always denied.
+	OpChangeForeign  Op = "change-foreign"
+	OpInstallPackage Op = "install-package"
+	OpEnableService  Op = "enable-service"
+	OpDisableService Op = "disable-service"
+	OpStartService   Op = "start-service"
+	OpStopService    Op = "stop-service"
+	OpInstallK3s     Op = "install-k3s"
 )
 
 // Code is a stable reason code for a decision.
@@ -82,7 +72,7 @@ type Policy struct {
 	// AutoProviderEffects are the effects (from the host's catalog) that a provider's operation
 	// may have and still run without approval. Empty: every provider operation needs approval.
 	AutoProviderEffects []protocol.Effect `json:"autoProviderEffects,omitempty"`
-	// ProtectedNodes are VMs that this Control Plane never changes: its own host (site
+	// ProtectedNodes are machines that this Control Plane never changes: its own host (site
 	// controlplane.host). Every change to them, or to what runs on them, is denied (ADR 0003).
 	ProtectedNodes []string `json:"protectedNodes,omitempty"`
 }
@@ -93,7 +83,7 @@ func (p Policy) Protected(node string) bool {
 }
 
 // ProtectedDecision is the decision for any operation on a protected node.
-var ProtectedDecision = Decision{Denied, "MAM-POL-0308", "this VM is the Control Plane's own host; a Control Plane never changes the host it runs on (it could stop itself in the middle of an apply)",
+var ProtectedDecision = Decision{Denied, "MAM-POL-0308", "this machine is the Control Plane's own host; a Control Plane never changes the host it runs on (it could stop itself in the middle of an apply)",
 	"change it from another Control Plane, or by hand while this one is stopped (ADR 0003)"}
 
 // Default is the conservative policy used when nothing else is configured.
@@ -151,14 +141,6 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpInstallK3s:
 		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
 			"check the version and sha256 against the k3s release page before approving"}
-	case OpCreateVM:
-		return Decision{ApprovalRequired, "MAM-POL-0201", "creating a VM reserves host CPU, memory and disk",
-			"approve the plan if the host has room for it"}
-	case OpResizeVMCPU, OpResizeVMMemory:
-		return Decision{ApprovalRequired, "MAM-POL-0202", "changing vCPUs or memory restarts the VM if it is running (Proxmox applies it at the next start)",
-			"approve when a short outage of the VM is acceptable"}
-	case OpGrowVMDisk:
-		return Decision{ApprovalRequired, "MAM-POL-0203", "growing a disk uses shared storage and cannot be undone", ""}
 	case OpInstallPackage:
 		if s.Removes {
 			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",
@@ -182,17 +164,6 @@ func (p Policy) Decide(s Subject) Decision {
 			"add it to autoStartServices to repair this drift without approval"}
 	case OpStopService, OpDisableService:
 		return Decision{ApprovalRequired, "MAM-POL-0207", "stopping or disabling a service can cause an outage", ""}
-	case OpShrinkVMDisk:
-		return Decision{Denied, "MAM-POL-0301", "shrinking a disk can destroy data; Mamela never does it",
-			"shrink it by hand after a backup, or restore the declared size"}
-	case OpReplaceVMImage:
-		return Decision{Denied, "MAM-POL-0302", "changing the image would mean replacing the VM and its data; Mamela never does it",
-			"declare a new VM with the new image, move the workload, then retire the old VM by hand"}
-	case OpStartVM:
-		return Decision{ApprovalRequired, "MAM-POL-0211", "starting a VM runs its guest (for a new VM, its first boot)", ""}
-	case OpChangeVMNetwork:
-		return Decision{Denied, "MAM-POL-0307", "a VM gets its network once, when it is created; changing it in place could cut it off the network, so Mamela never does it",
-			"declare a new VM with the new network and move the workload, or restore the declared network"}
 	case OpChangeForeign:
 		return Decision{Denied, "MAM-POL-0303", "the resource exists but Mamela did not create it (Foreign); Mamela never changes it",
 			"rename the declaration, or adopt the resource by hand"}

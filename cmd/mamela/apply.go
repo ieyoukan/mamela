@@ -9,38 +9,38 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/cp"
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/provider/node"
-	"github.com/ieyoukan/mamela/internal/provider/pve"
 	"github.com/ieyoukan/mamela/internal/reconcile"
 	"github.com/ieyoukan/mamela/internal/seed"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/store"
+	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
-// runApply carries out an approved plan: through the providers the plan was made with and, when it
-// changes VMs or what runs on them, on the lab (preflight, reconcile, postflight).
+// runApply carries out an approved plan through the providers the plan was made with, between each
+// provider's guard (its safety check before and after, ADR 0006).
 func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
-	sitePath := fs.String("site", envOr("MAMELA_LAB_SITE", "lab/site.local.toml"), "lab site definition (needed when the plan changes VMs or what runs on them)")
-	imageCache := fs.String("image-cache", defaultImageCache(), "directory of downloaded, verified cloud images")
-	baseline := fs.String("baseline", ".mamela/lab-baseline.json", "where to record the guests outside the lab before applying")
+	sitePath := addSiteFlag(fs)
+	imageCache := fs.String("image-cache", defaultImageCache(), "directory of downloaded, verified files (images)")
 	providersFile := addProvidersFlag(fs)
 	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela apply [flags] <plan-digest>\n\n"+
 			"Carries out an approved plan. Resources of providers go through the providers the plan was made with\n"+
 			"(the same programs, stored with the plan), each change under a permit for exactly its approved requests.\n"+
-			"Changes to VMs and what runs on them go to the lab Proxmox (docs/lab.md): the read-only preflight runs\n"+
-			"first and stops if anything blocks, and the postflight checks that nothing outside the lab changed.\n"+
+			"Each provider's guard checks its infrastructure first: if anything blocks, nothing is sent. After, the\n"+
+			"guards check again (for example, that nothing outside the provider's boundary changed).\n"+
 			"The world is observed again first, and only what the plan expected is changed. Denied operations never run.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
@@ -50,6 +50,10 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if fs.NArg() != 1 {
 		fs.Usage()
 		return 2
+	}
+	site, err := loadSite(*sitePath)
+	if err != nil {
+		return report(stderr, err)
 	}
 	st, err := openStore(ctx, *db)
 	if err != nil {
@@ -69,7 +73,9 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return report(stderr, err)
 	}
+	nodes := &node.Provider{Store: st, Clock: wallClock}
 	var rt *external.Runtime
+	var prov reconcile.Provider = nodes
 	if len(programs) > 0 {
 		t, err := tf.find()
 		if err != nil {
@@ -78,80 +84,19 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		if rt, err = startPrograms(ctx, programs, t, *providersFile); err != nil {
 			return report(stderr, err)
 		}
-		rt.SetCreations(st)
 		defer rt.Close()
-	}
-	siteGiven := false
-	fs.Visit(func(f *flag.Flag) { siteGiven = siteGiven || f.Name == "site" })
-	if !builtinChanges(p) && !siteGiven && os.Getenv("MAMELA_LAB_SITE") == "" {
-		// Only resources of providers: no lab involved.
-		host, _ := os.Hostname()
-		var site *lab.Site
-		digest := site.Providers().DigestWith(rt.Refs())
-		rt.SetArtifacts(&artifacts{Cache: *imageCache})
-		prov := &external.Provider{Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
-		rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: time.Hour, Providers: digest}
-		fmt.Fprintf(stdout, "== apply %s\n", p.Digest)
-		rep, applyErr := rec.Apply(ctx, p.Digest)
-		if rep != nil {
-			printReport(stdout, rep)
+		rt.SetCreations(st)
+		// What the other plans of the last hour are to create is taken (not this plan's own).
+		claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), p.Digest)
+		if err != nil {
+			return report(stderr, err)
 		}
-		switch {
-		case applyErr != nil:
-			return report(stderr, applyErr)
-		case rep.Stopped != nil:
-			return 1
-		}
-		return 0
-	}
-
-	site, err := lab.LoadSite(*sitePath)
-	if err != nil {
-		return report(stderr, err)
-	}
-	audit, err := labClient(site, site.Proxmox.AuditTokenID, site.Proxmox.AuditTokenSecretFile)
-	if err != nil {
-		return report(stderr, err)
-	}
-	operating, err := labClient(site, site.Proxmox.TokenID, site.Proxmox.TokenSecretFile)
-	if err != nil {
-		return report(stderr, err)
-	}
-
-	// 1. Preflight for the VMs this plan may create.
-	fmt.Fprintln(stdout, "== preflight")
-	facts, err := lab.Gather(ctx, site, audit, operating)
-	if err != nil {
-		return report(stderr, err)
-	}
-	findings := lab.CheckFor(site, facts, creates(p))
-	printFindings(stdout, findings)
-	if lab.Blocked(findings) {
-		fmt.Fprintln(stdout, "\npreflight: BLOCKED. Nothing was changed.")
-		return 1
-	}
-	before := lab.NewBaseline(site, facts)
-	if err := os.MkdirAll(filepath.Dir(*baseline), 0o700); err != nil {
-		return report(stderr, err)
-	}
-	if err := os.WriteFile(*baseline, before.Encode(), 0o600); err != nil {
-		return report(stderr, err)
-	}
-
-	// 2. Reconcile.
-	fmt.Fprintf(stdout, "\n== apply %s\n", p.Digest)
-	labProv, err := labProvider(site, operating, st, *imageCache, true)
-	if err != nil {
-		return report(stderr, err)
-	}
-	digest := site.Providers().DigestWith(rt.Refs())
-	var prov reconcile.Provider = labProv
-	if rt != nil {
+		rt.SetClaims(claims)
 		made := &artifacts{Cache: *imageCache, Site: site, Nodes: st}
-		if site.ControlPlane.Enabled() {
+		if site != nil && site.ControlPlane.Enabled() {
 			keys, err := site.SSHPublicKeys()
 			if err != nil {
-				return report(stderr, err)
+				return report(stderr, fmt.Errorf("guest.ssh_public_key_file: %w", err))
 			}
 			if made.Seeds, err = seedMaker(site, st, keys); err != nil {
 				return report(stderr, err)
@@ -159,30 +104,54 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		}
 		rt.SetArtifacts(made)
 		rt.SetLimits(siteLimits(site))
-		prov = &external.Provider{Base: labProv, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
 	}
+	digest := site.Providers().DigestWith(rt.Refs())
+	if rt != nil {
+		prov = &external.Provider{Base: nodes, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
+	}
+
+	// 1. Each provider's guard, with the changes of it this plan may carry out. (A plan made for
+	// other providers is refused by the reconciler before anything is contacted: MAM-REC-0007.)
+	var before []external.GuardReport
+	if rt != nil && in.Providers == digest {
+		before = rt.Guard(ctx, protocol.GuardBefore, plannedChanges(p), nil)
+		if len(before) > 0 {
+			fmt.Fprintln(stdout, "== guard (before)")
+			printGuard(stdout, before)
+			if blocked(before) {
+				fmt.Fprintln(stdout, "\nguard: BLOCKED. Nothing was changed.")
+				return 1
+			}
+			fmt.Fprintln(stdout)
+		}
+	}
+
+	// 2. Reconcile.
+	fmt.Fprintf(stdout, "== apply %s\n", p.Digest)
 	host, _ := os.Hostname()
-	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour,
-		Providers: digest}
+	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour, Providers: digest}
 	rep, applyErr := rec.Apply(ctx, p.Digest)
 	if rep != nil {
 		printReport(stdout, rep)
 	}
 
-	// 3. Postflight, whatever happened above.
-	fmt.Fprintln(stdout, "\n== postflight")
-	after, err := lab.Gather(ctx, site, audit, operating)
-	if err != nil {
-		return report(stderr, fmt.Errorf("postflight: %w", err))
+	// 3. The guards again, whatever happened above.
+	var after []external.GuardReport
+	if len(before) > 0 {
+		baselines := map[string][]byte{}
+		for _, g := range before {
+			baselines[g.Provider] = g.Result.Baseline
+		}
+		after = rt.Guard(ctx, protocol.GuardAfter, nil, baselines)
+		fmt.Fprintln(stdout, "\n== guard (after)")
+		printGuard(stdout, after)
 	}
-	post := lab.Compare(site, before, after)
-	printFindings(stdout, post)
 
 	switch {
 	case applyErr != nil:
 		return report(stderr, applyErr)
-	case lab.Blocked(post):
-		fmt.Fprintln(stdout, "\npostflight: BLOCKED. Something outside the lab changed; investigate before any further live test.")
+	case blocked(after):
+		fmt.Fprintln(stdout, "\nguard: BLOCKED after the apply. Something the provider guards changed; investigate before any further apply.")
 		return 1
 	case rep.Stopped != nil:
 		return 1
@@ -190,41 +159,46 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-// builtinChanges reports whether the plan changes anything of the built-in kinds (the lab).
-func builtinChanges(p *plan.Plan) bool {
+// plannedChanges are, by provider, the changes of the plan that may run (denied ones never do).
+func plannedChanges(p *plan.Plan) map[string][]protocol.Change {
+	out := map[string][]protocol.Change{}
 	for _, c := range p.Changes {
-		if c.Provider == "" && c.Status == plan.StatusChange {
-			return true
-		}
-	}
-	return false
-}
-
-// creates counts the VMs the plan would create.
-func creates(p *plan.Plan) int {
-	n := 0
-	for _, c := range p.Changes {
-		if c.Status != plan.StatusChange {
+		if c.Status != plan.StatusChange || c.Provider == "" {
 			continue
 		}
-		for _, op := range c.Operations {
-			if op.Op == policy.OpCreateVM {
-				n++
+		for i, pc := range c.ProviderChanges {
+			if i < len(c.Operations) && c.Operations[i].Decision.Verdict == policy.Denied {
+				continue
 			}
+			out[c.Provider] = append(out[c.Provider], pc)
 		}
 	}
-	return n
+	return out
 }
 
-func printFindings(w io.Writer, fs []lab.Finding) {
-	for _, f := range fs {
-		fmt.Fprintf(w, "%-5s %s  %s\n", f.Severity, f.Code, f.Message)
+func blocked(rs []external.GuardReport) bool {
+	return slices.ContainsFunc(rs, external.GuardReport.Blocked)
+}
+
+func printGuard(w io.Writer, rs []external.GuardReport) {
+	for _, g := range rs {
+		if g.Err != nil {
+			fmt.Fprintf(w, "%-5s %s  the guard failed: %v\n", "BLOCK", g.Provider, g.Err)
+			continue
+		}
+		for _, f := range g.Result.Findings {
+			sev := f.Severity
+			if sev == protocol.SeverityBlock {
+				sev = "BLOCK"
+			}
+			fmt.Fprintf(w, "%-5s %s %s  %s\n", sev, g.Provider, f.Code, f.Message)
+		}
 	}
 }
 
 func printReport(w io.Writer, rep *reconcile.Report) {
 	if len(rep.Steps) == 0 && rep.Stopped == nil {
-		fmt.Fprintln(w, "nothing to do: the lab already matches the plan")
+		fmt.Fprintln(w, "nothing to do: the world already matches the plan")
 	}
 	for _, s := range rep.Steps {
 		line := fmt.Sprintf("%-14s %-16s %s", s.Outcome, s.Op, s.Resource)
@@ -238,47 +212,8 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 	}
 }
 
-// labProvider observes and changes the lab: VMs through the Proxmox API (operating token), and
-// what lives in them through mamelet. withSeeds makes new VMs install mamelet (apply only).
-func labProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string, withSeeds bool) (reconcile.Provider, error) {
-	vms, err := labVMProvider(site, api, st, imageCache, withSeeds)
-	if err != nil {
-		return nil, err
-	}
-	return node.Combined{VMs: vms, Nodes: &node.Provider{Store: st, Clock: wallClock}}, nil
-}
-
-// labVMProvider is the Proxmox provider for the lab's VMs.
-func labVMProvider(site *lab.Site, api pve.API, st *store.Store, imageCache string, withSeeds bool) (*pve.Provider, error) {
-	keys, err := site.SSHPublicKeys()
-	if err != nil {
-		return nil, fmt.Errorf("guest.ssh_public_key_file: %w", err)
-	}
-	vms := &pve.Provider{
-		Config: pve.Config{
-			Node: site.Proxmox.Node, Pool: site.Boundary.Pool, Tag: site.Boundary.Tag,
-			VMIDMin: site.Boundary.VMIDMin, VMIDMax: site.Boundary.VMIDMax,
-			DiskStorage: site.Placement.DiskStorage, ImageStorage: site.Placement.ImageStorage, Bridge: site.Placement.Bridge,
-			MaxVMs: site.Budget.MaxVMs, MaxCPU: int64(site.Budget.MaxVCPUPerVM),
-			MaxMemoryMiB: site.Budget.MaxMemoryMiBPerVM, MaxDiskGiB: site.Budget.MaxDiskGiBPerVM,
-			User: site.Guest.User, SSHPublicKeys: keys,
-			AllowDHCP: site.Network.DHCP != nil && *site.Network.DHCP,
-		},
-		API: api, VMIDs: st, Images: &pve.ImageCache{Dir: imageCache}, Clock: wallClock,
-	}
-	vms.Config.StaticFirst, vms.Config.StaticLast = site.Network.StaticRange()
-	if withSeeds && site.ControlPlane.Enabled() {
-		maker, err := seedMaker(site, st, keys)
-		if err != nil {
-			return nil, err
-		}
-		vms.Seeds = maker
-	}
-	return vms, nil
-}
-
 // seedMaker makes cloud-init seeds that install mamelet and point it at this Control Plane.
-func seedMaker(site *lab.Site, st *store.Store, keys string) (*seed.Maker, error) {
+func seedMaker(site *sitedef.Site, st *store.Store, keys string) (*seed.Maker, error) {
 	pki, err := loadPKI(site)
 	if err != nil {
 		return nil, err
@@ -287,7 +222,7 @@ func seedMaker(site *lab.Site, st *store.Store, keys string) (*seed.Maker, error
 	if err != nil {
 		return nil, fmt.Errorf("controlplane.mamelet_binary: %w (build it with scripts/build-mamelet.sh)", err)
 	}
-	// An ELF64 little-endian x86-64 executable: the lab VMs are amd64.
+	// An ELF64 little-endian x86-64 executable: the machines are amd64.
 	if len(bin) < 20 || string(bin[:4]) != "\x7fELF" || bin[4] != 2 || bin[5] != 1 || bin[18] != 0x3e {
 		return nil, fmt.Errorf("%s is not a linux/amd64 executable (build it with scripts/build-mamelet.sh)", site.ControlPlane.MameletBinary)
 	}
@@ -301,8 +236,8 @@ func seedMaker(site *lab.Site, st *store.Store, keys string) (*seed.Maker, error
 
 // loadPKI loads (creating on first use) the Control Plane's keys; the server certificate names the
 // host mamelet connects to.
-func loadPKI(site *lab.Site) (*cp.PKI, error) {
-	dir, err := lab.ExpandHome(site.ControlPlane.StateDir)
+func loadPKI(site *sitedef.Site) (*cp.PKI, error) {
+	dir, err := sitedef.ExpandHome(site.ControlPlane.StateDir)
 	if err != nil {
 		return nil, err
 	}

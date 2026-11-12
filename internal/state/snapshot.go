@@ -19,8 +19,6 @@ import (
 type Snapshot struct {
 	// AsOf is "now" for planning: observation ages are measured against it.
 	AsOf time.Time `json:"asOf"`
-	// VMs by name.
-	VMs map[string]VM `json:"vms"`
 	// Packages by "<node>/<package>". Absent means "not observed", not "not installed".
 	Packages map[string]Package `json:"packages"`
 	// Services by "<node>/<service>". Absent means "not observed".
@@ -87,7 +85,10 @@ type Provided struct {
 	// SpecDigest identifies the declared spec the changes were computed for (SpecDigest()).
 	SpecDigest string           `json:"specDigest,omitempty"`
 	Changes    []ProvidedChange `json:"changes,omitempty"`
-	ObservedAt time.Time        `json:"observedAt"`
+	// Waiting says which resource it needs first does not exist yet or is not Mamela's (ADR
+	// 0007): its changes are not computed until then.
+	Waiting    string    `json:"waiting,omitempty"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // ProvidedChange is one change a provider's diff computed, with what the host's catalog verifies
@@ -104,24 +105,6 @@ type ProvidedChange struct {
 func SpecDigest(spec []byte) string {
 	sum := sha256.Sum256(spec)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// VM is an observed virtual machine.
-type VM struct {
-	// Managed is true only when every ownership marker matches (pool, VMID range, tag, marker).
-	// Anything else is Foreign and is never changed.
-	Managed   bool   `json:"managed"`
-	CPU       int64  `json:"cpu"`
-	MemoryMiB int64  `json:"memoryMiB"`
-	DiskGiB   int64  `json:"diskGiB"`
-	Image     string `json:"image"`
-	// Network is how the VM was given its address at creation (graph.Network.String()).
-	Network string `json:"network,omitempty"`
-	// Stopped is true when the VM is not running (a VM made by an interrupted apply, or stopped by
-	// someone). UptimeSeconds is how long it has been running, as Proxmox reported it.
-	Stopped       bool      `json:"stopped,omitempty"`
-	UptimeSeconds int64     `json:"uptimeSeconds,omitempty"`
-	ObservedAt    time.Time `json:"observedAt"`
 }
 
 // Package is an observed APT package on a node.
@@ -146,7 +129,7 @@ type Service struct {
 
 // Empty is the snapshot of a world where nothing exists yet.
 func Empty(asOf time.Time) Snapshot {
-	return Snapshot{AsOf: asOf.UTC(), VMs: map[string]VM{}, Packages: map[string]Package{}, Services: map[string]Service{}}
+	return Snapshot{AsOf: asOf.UTC(), Packages: map[string]Package{}, Services: map[string]Service{}}
 }
 
 // Canonical is the deterministic JSON encoding (map keys sorted, times in UTC).
@@ -166,10 +149,6 @@ func (s Snapshot) Digest() string {
 
 func (s Snapshot) normalized() Snapshot {
 	n := Empty(s.AsOf)
-	for k, v := range s.VMs {
-		v.ObservedAt = v.ObservedAt.UTC()
-		n.VMs[k] = v
-	}
 	for k, v := range s.Packages {
 		v.ObservedAt = v.ObservedAt.UTC()
 		n.Packages[k] = v

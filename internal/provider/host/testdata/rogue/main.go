@@ -31,7 +31,25 @@ func (r rogue) Manifest() protocol.Manifest {
 	if readFile != nil {
 		m.Version = readFile()
 	}
+	m.Scripts = []protocol.Script{{Name: "setup", Description: "prints the settings it was given"}}
 	return m
+}
+
+// Script writes a script from its parameters; mode script-empty writes nothing.
+func (r rogue) Script(_ context.Context, p protocol.ScriptParams) (protocol.ScriptResult, error) {
+	if mode == "script-empty" {
+		return protocol.ScriptResult{}, nil
+	}
+	return protocol.ScriptResult{Text: fmt.Sprintf("# %s for %s\necho %s\n", p.Name, p.Credentials.TokenID, p.Settings)}, nil
+}
+
+// Prepare: mode prepare-other answers a delete of one item with the IDs of another.
+func (r rogue) Prepare(ctx context.Context, p protocol.PrepareParams) (protocol.PrepareResult, error) {
+	res, err := r.Provider.Prepare(ctx, p)
+	if mode == "prepare-other" {
+		res.Change.IDs = map[string]string{"item": "other"}
+	}
+	return res, err
 }
 
 func (r rogue) Observe(ctx context.Context, h *sdk.Host, p protocol.ObserveParams) (protocol.ObserveResult, error) {

@@ -2,7 +2,10 @@
 // (kvapi). Read it as a template for a provider; cmd/kv-provider builds it for WASI.
 //
 // Kind KVItem, spec {"value": "...", "labels": ["..."]}. It creates and updates items it owns
-// (owner "mamela"), never deletes, and never touches an item someone else created.
+// (owner "mamela") and never touches an item someone else created. Removing a declaration never
+// deletes an item: deleting one is an explicit operation (delete-item), which a person asks for by
+// name (mamela act). Its guard (ADR 0006) limits how many items there may be and checks that the
+// items of others are unchanged by an apply.
 package kvprovider
 
 import (
@@ -11,6 +14,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,10 +59,11 @@ type Spec struct {
 type Provider struct{}
 
 var (
-	getItem   = protocol.Call{Method: "GET", Path: "/items/{item}"}
-	putItem   = protocol.Call{Method: "PUT", Path: "/items/{item}", Form: []string{"value", "owner", "version"}}
-	putLabels = protocol.Call{Method: "PUT", Path: "/items/{item}/labels", Form: []string{"labels"}}
-	listItems = protocol.Call{Method: "GET", Path: "/items"}
+	getItem    = protocol.Call{Method: "GET", Path: "/items/{item}"}
+	putItem    = protocol.Call{Method: "PUT", Path: "/items/{item}", Form: []string{"value", "owner", "version"}}
+	putLabels  = protocol.Call{Method: "PUT", Path: "/items/{item}/labels", Form: []string{"labels"}}
+	listItems  = protocol.Call{Method: "GET", Path: "/items"}
+	deleteItem = protocol.Call{Method: "DELETE", Path: "/items/{item}"}
 )
 
 // Manifest implements sdk.Provider.
@@ -71,9 +76,88 @@ func (Provider) Manifest() protocol.Manifest {
 		Kinds: []protocol.Kind{{Kind: Kind, Operations: []protocol.Operation{
 			{Op: OpCreate, Support: protocol.Supported, Needs: []protocol.Need{write}, Calls: []protocol.Call{getItem, putItem, putLabels}},
 			{Op: OpUpdate, Support: protocol.Supported, Needs: []protocol.Need{write}, Calls: []protocol.Call{getItem, putItem, putLabels}},
-			{Op: OpDelete, Support: protocol.Unsupported, Why: "removing a declaration never deletes an item"},
+			{Op: OpDelete, Support: protocol.Supported, Explicit: true, Needs: []protocol.Need{write}, Calls: []protocol.Call{getItem, deleteItem}},
 		}}},
+		Guard: &protocol.Guard{Calls: []protocol.Call{listItems}},
 	}
+}
+
+// GuardSettings are the guard's settings ([provider.kv-example.guard]).
+type GuardSettings struct {
+	MaxItems int `json:"max_items"` // the most items the API may hold after an apply
+}
+
+// baseline is the items of others before an apply: name -> version.
+type baseline struct {
+	Others map[string]int `json:"others"`
+}
+
+// Guard implements sdk.Guarder: before, the items after the creates stay within max_items; after,
+// every item someone else owns is as it was.
+func (Provider) Guard(ctx context.Context, h *sdk.Host, p protocol.GuardParams) (protocol.GuardResult, error) {
+	var s GuardSettings
+	if err := json.Unmarshal(p.Settings, &s, json.RejectUnknownMembers(true)); err != nil || s.MaxItems < 1 {
+		return protocol.GuardResult{}, fmt.Errorf("[provider.kv-example.guard] needs max_items (1 or more): %v", err)
+	}
+	items, err := list(ctx, h)
+	if err != nil {
+		return protocol.GuardResult{}, err
+	}
+	var out protocol.GuardResult
+	switch p.Stage {
+	case protocol.GuardBefore:
+		creates := 0
+		for _, c := range p.Changes {
+			if c.Op == OpCreate {
+				creates++
+			}
+		}
+		if n := len(items) + creates; n > s.MaxItems {
+			out.Findings = append(out.Findings, protocol.Finding{Code: "KV-0001", Severity: protocol.SeverityBlock,
+				Message: fmt.Sprintf("%d items and %d creates would exceed max_items %d", len(items), creates, s.MaxItems)})
+		} else {
+			out.Findings = append(out.Findings, protocol.Finding{Code: "KV-0001", Severity: protocol.SeverityOK,
+				Message: fmt.Sprintf("%d items after the changes; max_items is %d", n, s.MaxItems)})
+		}
+		b := baseline{Others: map[string]int{}}
+		for name, it := range items {
+			if it.Owner != owner {
+				b.Others[name] = it.Version
+			}
+		}
+		out.Baseline, _ = json.Marshal(b, json.Deterministic(true))
+	case protocol.GuardAfter:
+		var b baseline
+		if err := json.Unmarshal(p.Baseline, &b, json.RejectUnknownMembers(true)); err != nil {
+			return out, fmt.Errorf("baseline: %w", err)
+		}
+		changed := 0
+		for _, name := range slices.Sorted(maps.Keys(b.Others)) {
+			if it, ok := items[name]; !ok || it.Version != b.Others[name] {
+				out.Findings = append(out.Findings, protocol.Finding{Code: "KV-0101", Severity: protocol.SeverityBlock,
+					Message: fmt.Sprintf("item %s of someone else changed or disappeared", name)})
+				changed++
+			}
+		}
+		if changed == 0 {
+			out.Findings = append(out.Findings, protocol.Finding{Code: "KV-0100", Severity: protocol.SeverityOK,
+				Message: fmt.Sprintf("the %d items of others are unchanged", len(b.Others))})
+		}
+	default:
+		return out, fmt.Errorf("guard stage %q", p.Stage)
+	}
+	return out, nil
+}
+
+// Prepare implements sdk.Preparer: delete-item, of an item Mamela owns, based on its version.
+func (Provider) Prepare(ctx context.Context, p protocol.PrepareParams) (protocol.PrepareResult, error) {
+	o := p.Observed
+	if p.Op != OpDelete || !o.Exists || !o.Owned {
+		return protocol.PrepareResult{}, fmt.Errorf("%s: only an existing item Mamela owns can be deleted", o.ID)
+	}
+	return protocol.PrepareResult{Change: protocol.Change{Resource: o.ID, Kind: Kind, Op: OpDelete, IDs: o.IDs,
+		Reasons:  []string{fmt.Sprintf("delete item %s (version %s): its value is lost", o.Name, o.Version)},
+		Requests: []protocol.Approved{{Method: deleteItem.Method, Path: deleteItem.Path}}}}, nil
 }
 
 // Observe implements sdk.Provider: one list of all items.
@@ -173,6 +257,19 @@ func (Provider) Apply(ctx context.Context, h *sdk.Host, p protocol.ApplyParams) 
 	if exists && it.Owner != owner {
 		return protocol.ApplyResult{}, fmt.Errorf("item %s exists and Mamela did not create it", name)
 	}
+	if p.Change.Op == OpDelete {
+		if !exists {
+			return protocol.ApplyResult{Message: "item " + name + " is gone"}, nil
+		}
+		resp, err := h.Request(ctx, protocol.HostRequest{Method: "DELETE", Path: "/items/" + name})
+		if err != nil {
+			return protocol.ApplyResult{}, err
+		}
+		if resp.Status != 200 {
+			return protocol.ApplyResult{}, fmt.Errorf("DELETE /items/%s: status %d: %s", name, resp.Status, resp.Body)
+		}
+		return protocol.ApplyResult{Message: "item " + name + " deleted"}, nil
+	}
 	for _, a := range p.Change.Requests {
 		if exists && inEffect(it, a) {
 			continue
@@ -205,6 +302,12 @@ func (Provider) Lookup(ctx context.Context, h *sdk.Host, p protocol.LookupParams
 	it, exists, err := get(ctx, h, p.Change.IDs["item"])
 	if err != nil {
 		return protocol.LookupResult{}, err
+	}
+	if p.Change.Op == OpDelete {
+		if !exists || it.Owner != owner {
+			return protocol.LookupResult{Status: protocol.LookupDone}, nil
+		}
+		return protocol.LookupResult{Status: protocol.LookupNotDone}, nil
 	}
 	done := 0
 	for _, a := range p.Change.Requests {

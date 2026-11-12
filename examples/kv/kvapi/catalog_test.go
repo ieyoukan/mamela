@@ -14,11 +14,13 @@ func TestCatalogFileIsTheCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c protocol.Catalog
-	if err := json.Unmarshal(data, &c, json.RejectUnknownMembers(true)); err != nil {
+	c, err := protocol.DecodeCatalog(data)
+	if err != nil {
 		t.Fatal(err)
 	}
-	want, _ := json.Marshal(Catalog, json.Deterministic(true))
+	file := Catalog
+	file.Schema = protocol.CatalogSchema
+	want, _ := json.Marshal(file, json.Deterministic(true))
 	got, _ := json.Marshal(c, json.Deterministic(true))
 	if string(got) != string(want) {
 		t.Errorf("examples/kv-demo/kv-catalog.json:\n%s\nwant\n%s", got, want)

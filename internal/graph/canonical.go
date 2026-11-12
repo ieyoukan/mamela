@@ -15,26 +15,13 @@ type canonGraph struct {
 	Schema    string          `json:"schema"`
 }
 
+// canonResource: members in sorted order, as the Emela writer (x/json) puts them.
 type canonResource struct {
-	Kind     string `json:"kind"`
-	Name     string `json:"name"`
-	Provider string `json:"provider,omitempty"`
-	Spec     any    `json:"spec"`
-}
-
-type canonVirtualMachine struct {
-	CPU       int64        `json:"cpu"`
-	DiskGiB   int64        `json:"diskGiB"`
-	Image     string       `json:"image"`
-	MemoryMiB int64        `json:"memoryMiB"`
-	Network   canonNetwork `json:"network"`
-}
-
-type canonNetwork struct {
-	Address string   `json:"address,omitempty"`
-	DNS     []string `json:"dns,omitempty"`
-	Gateway string   `json:"gateway,omitempty"`
-	Mode    string   `json:"mode"`
+	After    []string `json:"after,omitempty"`
+	Kind     string   `json:"kind"`
+	Name     string   `json:"name"`
+	Provider string   `json:"provider,omitempty"`
+	Spec     any      `json:"spec"`
 }
 
 type canonNodePackage struct {
@@ -101,16 +88,11 @@ func (g *Graph) Canonical() []byte {
 	for _, r := range g.Sorted() {
 		cr := canonResource{Kind: string(r.Kind), Name: r.Name}
 		if p := r.Provided; p != nil {
-			cr.Provider, cr.Spec = p.Provider, jsontext.Value(p.Spec)
+			cr.Provider, cr.Spec, cr.After = p.Provider, jsontext.Value(p.Spec), r.After
 			cg.Resources = append(cg.Resources, cr)
 			continue
 		}
 		switch r.Kind {
-		case KindVirtualMachine:
-			s := r.VirtualMachine
-			n := s.Network
-			cr.Spec = canonVirtualMachine{CPU: s.CPU, DiskGiB: s.DiskGiB, Image: s.Image, MemoryMiB: s.MemoryMiB,
-				Network: canonNetwork{Address: n.Address, DNS: n.DNS, Gateway: n.Gateway, Mode: string(n.Mode)}}
 		case KindNodePackage:
 			s := r.NodePackage
 			cr.Spec = canonNodePackage{Node: s.Node, Package: s.Package, State: string(s.State)}

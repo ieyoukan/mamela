@@ -1,4 +1,5 @@
 {
+  "schema": "mamela-catalog/v1",
   "api": "kv-example/v1",
   "entries": [
     {"method": "GET", "path": "/items", "effect": "read"},

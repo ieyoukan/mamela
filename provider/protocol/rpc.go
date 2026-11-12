@@ -27,7 +27,88 @@ const (
 	// MethodLookup says whether a change took effect, after an apply whose outcome is unknown.
 	// Reads only, like observe, plus the reads of the change's operation.
 	MethodLookup = "lookup"
+	// MethodGuard is the provider's safety check before and after an apply (ADR 0006): reads only,
+	// the manifest's Guard.Calls, with the guard's credentials when Mamela has some.
+	MethodGuard = "guard"
+	// MethodPrepare makes the change of an explicit operation (deleting, rebooting) on one observed
+	// resource, from its parameters alone: no host/request, like diff.
+	MethodPrepare = "prepare"
+	// MethodScript writes one of the provider's scripts (Manifest.Scripts) from the settings alone:
+	// no host/request.
+	MethodScript = "script"
 )
+
+// ScriptParams ask for a script. They hold what the user configured for the provider in
+// mamela.providers.toml, without any secret: the guard's settings, and the credentials' IDs and
+// where their secrets are kept.
+type ScriptParams struct {
+	Name        string            `json:"name"`
+	Settings    jsontext.Value    `json:"settings,omitempty"` // [provider.<name>.guard]
+	Credentials ScriptCredentials `json:"credentials"`
+}
+
+// ScriptCredentials name the provider's credentials; their secrets are never sent.
+type ScriptCredentials struct {
+	TokenID        string `json:"tokenId,omitempty"`
+	TokenFile      string `json:"tokenFile,omitempty"`
+	GuardTokenID   string `json:"guardTokenId,omitempty"`
+	GuardTokenFile string `json:"guardTokenFile,omitempty"`
+}
+
+// ScriptResult is the script's text.
+type ScriptResult struct {
+	Text string `json:"text"`
+}
+
+// GuardParams ask for a safety check.
+type GuardParams struct {
+	Stage string `json:"stage"` // GuardBefore or GuardAfter
+	// Settings are the guard's settings from mamela.providers.toml ([provider.<name>.guard]):
+	// the boundary it keeps (a pool, a VMID range), thresholds. No secret is in them.
+	Settings jsontext.Value `json:"settings,omitempty"`
+	// Baseline is what the check before returned, for the check after.
+	Baseline jsontext.Value `json:"baseline,omitempty"`
+	// Changes are what the apply is to carry out (before) or carried out (after).
+	Changes []Change `json:"changes"`
+}
+
+// Guard stages.
+const (
+	GuardBefore = "before"
+	GuardAfter  = "after"
+)
+
+// Severity of a guard finding.
+const (
+	SeverityOK    = "ok"
+	SeverityWarn  = "warn"
+	SeverityBlock = "block" // before: nothing of the provider's is applied; after: the apply failed
+)
+
+// Finding is one result of a safety check, for people: a stable code, how serious, and what.
+type Finding struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+// GuardResult is a safety check's result.
+type GuardResult struct {
+	Findings []Finding      `json:"findings"`
+	Baseline jsontext.Value `json:"baseline,omitempty"`
+}
+
+// PrepareParams ask for the change of an explicit operation on a resource Mamela owns.
+type PrepareParams struct {
+	Op       Op        `json:"op"`
+	Desired  *Resource `json:"desired,omitempty"`
+	Observed Observed  `json:"observed"`
+}
+
+// PrepareResult is the change.
+type PrepareResult struct {
+	Change Change `json:"change"`
+}
 
 // MethodHostRequest is the method the provider calls on the host to send an API request.
 const MethodHostRequest = "host/request"
@@ -90,12 +171,18 @@ type Resource struct {
 	Kind ResourceKind   `json:"kind"`
 	Name string         `json:"name"`
 	Spec jsontext.Value `json:"spec,omitempty"` // the declared fields, in the kind's format
+	// After are the IDs of the resources it needs first (ADR 0007).
+	After []string `json:"after,omitempty"`
 }
 
 // ObserveParams lists the declared resources. The provider also reports, from what it reads,
 // resources it created that are no longer declared (Owned), so that Mamela keeps them.
 type ObserveParams struct {
 	Resources []Resource `json:"resources"`
+	// Claimed are the IDs that other plans, made but maybe not applied yet, are to create through
+	// this provider (a VMID): a provider that chooses IDs treats them as taken, so that plans made
+	// one after another and applied together do not choose the same ones.
+	Claimed []map[string]string `json:"claimed,omitempty"`
 }
 
 // Observed is the real state of one resource.
@@ -110,6 +197,11 @@ type Observed struct {
 	// only if it matches what Mamela recorded it set out to create (ADR 0004).
 	Owned      bool `json:"owned"`
 	Unfinished bool `json:"unfinished,omitempty"`
+	// Adoptable is true for an object Mamela made in another way before (Proxmox: a VM of the old
+	// built-in provider, with its marker, in the pool and range): only an explicit operation that
+	// takes it over, confirmed by a person, may act on it; then Mamela records it as its own (ADR
+	// 0006).
+	Adoptable bool `json:"adoptable,omitempty"`
 	// IDs are the object's IDs in the API ({"item": "web"}).
 	IDs map[string]string `json:"ids,omitempty"`
 	// Version is the observed version (an ETag, Proxmox's config digest), the precondition of a
@@ -137,6 +229,10 @@ type ObserveResult struct {
 type DiffParams struct {
 	Desired  []Resource `json:"desired"`
 	Observed []Observed `json:"observed"`
+	// Dependencies are what was observed of the resources the desired ones need first (their
+	// After), by ID: each exists and is Mamela's (ADR 0007). A provider writes their IDs (a
+	// security group's, a cluster's) into its changes. A resource waiting for one is not desired.
+	Dependencies map[string]Observed `json:"dependencies,omitempty"`
 }
 
 // DiffResult lists the changes that make the world match the declaration, in order.
@@ -161,6 +257,10 @@ type Change struct {
 	// Precondition is the observed Version the change is based on.
 	Precondition string   `json:"precondition,omitempty"`
 	Reasons      []string `json:"reasons,omitempty"`
+	// Late changes run after every other change of the apply: starting a machine once every
+	// machine of the run is created, so that no first boot competes with another machine's disk
+	// import. It orders changes and grants nothing.
+	Late bool `json:"late,omitempty"`
 	// Artifacts are the files the change needs, which the host makes ready and sends; the
 	// provider never sees their content (ADR 0004).
 	Artifacts []Artifact `json:"artifacts,omitempty"`
@@ -171,6 +271,9 @@ type Change struct {
 // node number): the host fills them in when it makes the artifact ready, and the provider sends
 // them filled. ".base64" (its content) the provider sends as is, and the host fills it in.
 type Approved struct {
+	// API is which of the provider's APIs (Manifest.APIs) the request goes to; empty for a
+	// provider with one.
+	API    string              `json:"api,omitempty"`
 	Method string              `json:"method"`
 	Path   string              `json:"path"` // the call's template
 	Params map[string][]string `json:"params,omitempty"`
@@ -266,6 +369,9 @@ const (
 	LookupDone    LookupStatus = "done"        // the change is in effect
 	LookupNotDone LookupStatus = "not-done"    // nothing of it is in effect
 	LookupPartly  LookupStatus = "partly-done" // some of it is
+	// LookupUnknown: the provider cannot tell (a restart leaves no trace it can tie to this
+	// change). Mamela then keeps the outcome unknown; it never takes it for done.
+	LookupUnknown LookupStatus = "unknown"
 )
 
 // LookupResult is what a lookup found.
@@ -276,10 +382,16 @@ type LookupResult struct {
 // HostRequest is an API request the provider asks the host to send. The host adds the base URL
 // and the credentials; the provider never sees either.
 type HostRequest struct {
+	// API is which of the provider's APIs the request goes to (Manifest.APIs); empty for one.
+	API    string              `json:"api,omitempty"`
 	Method string              `json:"method"`
 	Path   string              `json:"path"`
 	Query  map[string][]string `json:"query,omitempty"`
 	Form   map[string][]string `json:"form,omitempty"` // sent as application/x-www-form-urlencoded
+	// Header are parameters sent as headers; JSON is the body, a JSON object, by member (an AWS
+	// JSON API: application/x-amz-json-1.1, ADR 0007).
+	Header map[string][]string       `json:"header,omitempty"`
+	JSON   map[string]jsontext.Value `json:"json,omitempty"`
 	// Upload names an artifact of the change: the host sends the form as multipart/form-data, with
 	// the artifact as the call's File parameter.
 	Upload string `json:"upload,omitempty"`

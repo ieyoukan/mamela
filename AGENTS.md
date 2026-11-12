@@ -16,9 +16,12 @@ Mamela is an early-stage, safety-first infrastructure controller, not the upstre
 - For external API operations, record intent first, re-observe after uncertain outcomes and avoid assuming exactly-once execution.
 - Agent must verify node identity, revision digest/signature, validity and local safety constraints before applying.
 - Test rejection cases and interrupted/retried operations, not only happy paths.
-- No live Proxmox or package-changing tests by default in CI. Require explicit opt-in (`MAMELA_LAB=1`).
-- The lab Proxmox cluster runs unrelated production guests. Only touch guests inside the Mamela pool, VMID range and tag; everything else is `Foreign` and read-only. Run preflight/postflight checks (docs/lab.md).
-- This repository is public: never commit lab hostnames, addresses, guest inventories or tokens. Site values live in gitignored `lab/site.local.toml`.
+- Mamela's core knows no particular infrastructure (ADR 0006). Machines are providers' node kinds; safety checks (guards), explicit operations (delete, reboot, adopt) and root setup scripts belong to the provider's contract, enforced by Mamela. Do not add infrastructure-specific code (Proxmox, AWS) to the core.
+- API catalogs (each call's effect, bind, values, measures) are data the provider's author writes and ships in the provider's Pome (ADR 0008, `mamela-catalog/v1`); the operator names one (`catalog = "pome:<name>"`) and the host classifies every request the program sends with it. The core ships none, and a provider program never classifies its own calls.
+- No live Proxmox, cloud or package-changing tests by default in CI. Require explicit opt-in (`MAMELA_LAB=1`).
+- The lab Proxmox cluster runs unrelated production guests. Live Proxmox tests go only through the mamela-proxmox provider (https://github.com/ieyoukan/mamela-proxmox) and its guard: only touch guests inside the Mamela pool, VMID range and tag; everything else is `Foreign` and read-only. Run `mamela guard` before, and let `mamela apply` / `mamela act` run the guard before and after (docs/lab.md; the Proxmox procedure is in mamela-proxmox's docs/lab.md).
+- Deleting, rebooting or adopting is never planned: only a provider's explicit operation through `mamela act --confirm <name>`.
+- This repository is public: never commit lab hostnames, addresses, guest inventories or tokens. Site values live in gitignored `mamela.site.toml`, `mamela.providers.toml` (provider endpoints, token IDs and secret file paths) and `lab/local/`.
 - Do not claim conceptual Emela DSL examples in docs are valid syntax or shipped APIs.
 
 ## Emela skills

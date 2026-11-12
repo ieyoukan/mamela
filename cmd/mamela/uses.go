@@ -7,11 +7,10 @@ import (
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/graph"
-	"github.com/ieyoukan/mamela/internal/lab"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
-	"github.com/ieyoukan/mamela/internal/proxmox"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 )
 
 // The requirement listings are rendered here, from spec.Requirement values; nothing below the CLI
@@ -156,9 +155,9 @@ func condition(c spec.Condition) string {
 }
 
 // renderPlanUses says, for each change, what applying the plan would use, concretely for the site.
-func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, pol policy.Policy, external spec.Providers) {
-	fmt.Fprintln(w, "\nWhat applying this plan uses (Proxmox privileges of the operating token, `mamela lab permissions` explains them;")
-	fmt.Fprintln(w, "mamelet actions granted in the node's signed revision):")
+func renderPlanUses(w io.Writer, site *sitedef.Site, p *plan.Plan, g *graph.Graph, pol policy.Policy, external spec.Providers) {
+	fmt.Fprintln(w, "\nWhat applying this plan uses (each provider's permissions on its API; mamelet actions granted in the")
+	fmt.Fprintln(w, "node's signed revision):")
 	reqs := append(append(site.Providers().Observation(site), external.Observation(site)...), site.PlannedRequirements(p, g, pol, external...)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases (for example an upload that is already done)")
@@ -166,15 +165,10 @@ func renderPlanUses(w io.Writer, site *lab.Site, p *plan.Plan, g *graph.Graph, p
 }
 
 // renderMayNeed says what each resource of the declaration may need, whatever the world is.
-func renderMayNeed(w io.Writer, site *lab.Site, ps spec.Providers, g *graph.Graph) {
-	fmt.Fprintln(w, "\nMay need when applied (every operation each resource can lead to; `mamela plan --site` says what a plan uses):")
+func renderMayNeed(w io.Writer, site *sitedef.Site, ps spec.Providers, g *graph.Graph) {
+	fmt.Fprintln(w, "\nMay need when applied (every operation each resource can lead to; `mamela plan` says what a plan uses):")
 	reqs := append(ps.Observation(site), ps.Analyze(g, site)...)
 	if writeRequirements(w, "  ", reqs) {
 		fmt.Fprintln(w, "  ? used only in some cases")
 	}
-}
-
-// renderProxmoxUses prints what a fixed list of Proxmox calls needs on the site.
-func renderProxmoxUses(w io.Writer, site *lab.Site, label string, calls []proxmox.Call) {
-	writeOp(w, "", label, site.Requirements(proxmox.NeedsFor(calls)))
 }

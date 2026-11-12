@@ -83,11 +83,15 @@ func TestEvaluateHomelab(t *testing.T) {
 	if got := len(res.Graph.Resources); got != 3 {
 		t.Errorf("got %d resources, want 3", got)
 	}
-	// The same digest as the Go-only fixture in internal/graph: Emela output and the Go
-	// canonical form agree byte for byte.
-	const want = "sha256:106ce1583fdfaf00e799f2ad39ebe7c94932c4856ca0a276c388c3a9a8ddd34c"
-	if res.Digest != want {
-		t.Errorf("digest = %s, want %s", res.Digest, want)
+	// A pinned digest and canonical form: the Mamela Pome and the example EC2 Pome write what Go
+	// decodes, and the same declaration always gives the same graph.
+	const want = "sha256:02847a3a813c86701f93cd72f654b30b321a6761d6d8797a90c7550ebbd7b0aa"
+	const canonical = `{"resources":[{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},` +
+		`{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}},` +
+		`{"kind":"Ec2Instance","name":"app-server","provider":"ec2-example","spec":{"diskGiB":10,"imageId":"ami-0123456789abcdef0","instanceType":"t3.small",` +
+		`"network":{"mode":"dhcp"},"rootDevice":"/dev/sda1","securityGroupId":"sg-0123456789abcdef0","subnetId":"subnet-0123456789abcdef0"}}],"schema":"mamela-graph/v2"}`
+	if res.Digest != want || string(res.Graph.Canonical()) != canonical {
+		t.Errorf("digest = %s, want %s\n%s", res.Digest, want, res.Graph.Canonical())
 	}
 	if res.Versions.Emela != PinnedEmela || res.Versions.Wasmtime != PinnedWasmtime {
 		t.Errorf("versions = %+v", res.Versions)

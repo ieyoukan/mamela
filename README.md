@@ -2,7 +2,7 @@
 
 Mamela is an experimental declarative infrastructure controller powered by [Emela](https://github.com/emela-lang/emela).
 
-It aims to reconcile Proxmox VMs and Linux node configuration safely through a Go control plane and pull-based agents.
+It aims to reconcile machines and Linux node configuration safely through a Go control plane and pull-based agents. Mamela itself knows no particular infrastructure: machines come from providers, untrusted WASM programs distributed as Pomes — Proxmox VE through [mamela-proxmox](https://github.com/ieyoukan/mamela-proxmox), AWS-style APIs as in [`examples/ec2`](examples/ec2). Each provider writes its own safety checks (guards), explicit operations (delete, reboot, adopt) and setup scripts, and Mamela enforces them ([ADR 0006](docs/adr/0006-proxmox-out-of-core.md)).
 
 Early design stage — no production-ready implementation yet. What works today is the evaluation path: an Emela declaration is compiled to WASM, its imports are checked, it runs in a sandbox, and its output is validated into a deterministic Resource Graph.
 
@@ -16,8 +16,8 @@ mamela toolchain install         # the pinned emela and wasmtime (sha256-checked
 export PATH="<the directory it printed>:$PATH"   # to run emela yourself
 
 emela new infra && cd infra      # a new Pome
-emela pome add github.com/ieyoukan/mamela/pome/mamela@v0.1.0
-# write src/main.emel (see examples/lab-l2/src/main.emel), then:
+emela pome add github.com/ieyoukan/mamela/pome/mamela@v0.3.0   # not published yet: until then, v0.2.0 (with Vm)
+# add a provider's Pome, write src/main.emel (see examples/homelab/src/main.emel), then:
 mamela eval .                    # evaluate it into a Resource Graph (read-only)
 ```
 
@@ -45,4 +45,4 @@ and `scripts/check.sh`.
 
 - [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
-- [Writing a provider](docs/provider-authoring.md) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md)
+- [Writing a provider](docs/provider-authoring.md) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md)

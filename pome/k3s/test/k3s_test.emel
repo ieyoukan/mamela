@@ -1,0 +1,17 @@
+import Lib
+import Mamela
+
+@test
+fn a_server_and_an_agent() {
+  s = Mamela.Node(name: "s")
+  a = Mamela.Node(name: "a")
+  json = Mamela.to_json(
+    Mamela.empty() |> Lib.server(s, "v1.33.5+k3s1", "00") |> Lib.agent(a, s, "v1.33.5+k3s1", "00"),
+  )
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"s/k3s\",\"spec\":{\"node\":\"s\",\"role\":\"server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"a/k3s\",\"spec\":{\"node\":\"a\",\"role\":\"agent\",\"server\":\"s\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+}

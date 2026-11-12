@@ -3,6 +3,8 @@ package host
 import (
 	"bytes"
 	"context"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -139,17 +141,52 @@ func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *Fil
 		return multipartRequest(ctx, u, r, *f)
 	}
 	var body io.Reader
-	if len(r.Form) > 0 {
-		body = strings.NewReader(url.Values(r.Form).Encode())
+	contentType := ""
+	switch {
+	case r.JSON != nil:
+		// An AWS JSON API: the members, each in canonical form (what was checked), as one object.
+		b, err := jsonBody(r.JSON)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+		}
+		body, contentType = bytes.NewReader(b), "application/x-amz-json-1.1"
+	case len(r.Form) > 0:
+		body, contentType = strings.NewReader(url.Values(r.Form).Encode()), "application/x-www-form-urlencoded"
 	}
 	req, err := http.NewRequestWithContext(ctx, r.Method, u, body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	for _, k := range slices.Sorted(maps.Keys(r.Header)) {
+		for _, v := range r.Header[k] {
+			req.Header.Add(k, v)
+		}
 	}
 	return req, nil
+}
+
+// jsonBody is a JSON object of the members, each in canonical form, in sorted order.
+func jsonBody(members map[string]jsontext.Value) ([]byte, error) {
+	params, err := protocol.JSONParams(members)
+	if err != nil {
+		return nil, err
+	}
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, k := range slices.Sorted(maps.Keys(params)) {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		key, _ := json.Marshal(k)
+		b.Write(key)
+		b.WriteByte(':')
+		b.WriteString(params[k][0])
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
 // multipartRequest streams the form fields, then the file, with its exact length (pveproxy and

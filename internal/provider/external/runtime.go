@@ -19,26 +19,30 @@ import (
 
 // Runtime is the running providers of one plan or apply.
 type Runtime struct {
+	claims   map[string][]map[string]string // IDs other plans are to create, by provider
 	sessions map[string]*host.Session
 	programs []store.Program
 	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
 	// catalog): an approval is for that API only.
 	endpoints map[string]string
 	creations Creations
+	// guardSettings are each provider's guard settings (mamela.providers.toml).
+	guardSettings map[string][]byte
 }
 
 // Programs converts discovered packages into the programs a plan stores.
 func Programs(pkgs []Package) []store.Program {
 	var out []store.Program
 	for _, p := range pkgs {
-		out = append(out, store.Program{Provider: p.Provider, Version: p.ProviderVersion, Source: p.Source, Digest: p.Digest, Data: p.Program})
+		out = append(out, store.Program{Provider: p.Provider, Version: p.ProviderVersion, Source: p.Source, Digest: p.Digest, Data: p.Program,
+			Catalogs: p.Catalogs})
 	}
 	return out
 }
 
 // Start runs each program (WASM, isolated) with its API from the configuration.
 func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime string) (*Runtime, error) {
-	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}}
+	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}, guardSettings: map[string][]byte{}}
 	for _, p := range programs {
 		exe, err := host.InspectBytes(p.Source+" ("+p.Provider+")", p.Data)
 		if err != nil {
@@ -49,31 +53,33 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: a provider from a Pome must be WASM", p.Provider)
 		}
-		up, catalog, endpoint, err := cfg.api(p.Provider)
+		pc := cfg.withShipped(p.Provider, p.Catalogs)
+		apis, endpoint, err := pc.apis(p.Provider)
+		if err != nil {
+			rt.Close()
+			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
+		}
+		_, settings, err := pc.guard(p.Provider)
 		if err != nil {
 			rt.Close()
 			return nil, err
 		}
-		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, Catalog: catalog, Upstream: up})
+		rt.guardSettings[p.Provider] = settings
+		s, err := host.Start(ctx, exe, host.Options{Wasmtime: wasmtime, APIs: apis})
 		if err != nil {
 			rt.Close()
 			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
 		m := s.Manifest()
-		switch {
-		case m.Provider != p.Provider || m.Version != p.Version:
+		if m.Provider != p.Provider || m.Version != p.Version {
 			s.Close()
 			rt.Close()
 			return nil, fmt.Errorf("the program of %s %s describes itself as %s %s", p.Provider, p.Version, m.Provider, m.Version)
-		case up != nil && catalog.API == "":
+		}
+		if err := checkEndpoints(m, apis); err != nil {
 			s.Close()
 			rt.Close()
-			return nil, fmt.Errorf("provider %s: its API %s has no catalog, so Mamela cannot tell its reads from its changes and allows neither; "+
-				"set catalog in the provider's section of mamela.providers.toml", p.Provider, m.API)
-		case catalog.API != "" && catalog.API != m.API:
-			s.Close()
-			rt.Close()
-			return nil, fmt.Errorf("provider %s: the configured catalog is for API %q, the provider talks to %q", p.Provider, catalog.API, m.API)
+			return nil, fmt.Errorf("provider %s: %w", p.Provider, err)
 		}
 		for _, k := range m.Kinds {
 			if graph.Builtin(k.Kind) {
@@ -99,6 +105,13 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 type Creations interface {
 	Creations(ctx context.Context, provider, resource string) ([]map[string]string, error)
 	RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error
+}
+
+// SetClaims sets, by provider, the IDs other plans are to create: observing treats them as taken.
+func (rt *Runtime) SetClaims(c map[string][]map[string]string) {
+	if rt != nil {
+		rt.claims = c
+	}
 }
 
 // SetCreations sets the record that vouches for providers' claims of ownership (required before
@@ -129,6 +142,37 @@ func (rt *Runtime) SetArtifacts(m host.ArtifactMaker) {
 		s.SetArtifacts(m)
 	}
 }
+
+// GuardReport is one provider's safety check.
+type GuardReport struct {
+	Provider string
+	Result   protocol.GuardResult
+	Err      error
+}
+
+// Blocked reports whether a check stops the apply: a block finding, or a check that failed.
+func (g GuardReport) Blocked() bool {
+	return g.Err != nil || slices.ContainsFunc(g.Result.Findings, func(f protocol.Finding) bool { return f.Severity == protocol.SeverityBlock })
+}
+
+// Guard runs the safety check of each provider with a guard (ADR 0006), with the changes of it
+// an apply carries out, and before's baselines for after.
+func (rt *Runtime) Guard(ctx context.Context, stage string, changes map[string][]protocol.Change, baselines map[string][]byte) []GuardReport {
+	var out []GuardReport
+	for _, name := range rt.names() {
+		s := rt.sessions[name]
+		if s.Manifest().Guard == nil {
+			continue
+		}
+		res, _, err := s.Guard(ctx, protocol.GuardParams{Stage: stage, Settings: rt.guardSettings[name], Baseline: baselines[name],
+			Changes: append([]protocol.Change{}, changes[name]...)})
+		out = append(out, GuardReport{Provider: name, Result: res, Err: err})
+	}
+	return out
+}
+
+// Session returns a running provider.
+func (rt *Runtime) Session(name string) (*host.Session, bool) { return rt.sessionOf(name) }
 
 // Close stops every provider.
 func (rt *Runtime) Close() {
@@ -216,8 +260,12 @@ func (rt *Runtime) CheckGraph(g *graph.Graph) error {
 		if !ok {
 			return fmt.Errorf("%s uses provider %s, which none of the declaration's dependencies provides (add the provider's Pome to Pome.toml)", r.ID(), r.Provided.Provider)
 		}
-		if !slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind }) {
+		i := slices.IndexFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind })
+		if i < 0 {
 			return fmt.Errorf("%s: provider %s does not handle kind %s", r.ID(), r.Provided.Provider, r.Kind)
+		}
+		if s.Manifest().Kinds[i].Node && !graph.ValidNodeName(r.Name) {
+			return fmt.Errorf("%s is a machine, and %q is not a valid hostname: use 1-63 lowercase letters, digits and '-', starting and ending with a letter or digit", r.ID(), r.Name)
 		}
 	}
 	return nil
@@ -231,8 +279,11 @@ func (rt *Runtime) sessionOf(name string) (*host.Session, bool) {
 	return s, ok
 }
 
+// Resource is a declared resource of a provider, as the provider receives it.
+func Resource(r graph.Resource) protocol.Resource { return resource(r) }
+
 func resource(r graph.Resource) protocol.Resource {
-	return protocol.Resource{ID: r.ID(), Kind: r.Kind, Name: r.Name, Spec: r.Provided.Spec}
+	return protocol.Resource{ID: r.ID(), Kind: r.Kind, Name: r.Name, Spec: r.Provided.Spec, After: r.After}
 }
 
 // Observe asks every provider for the state of its declared resources (and those it created
@@ -242,6 +293,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		return nil, err
 	}
 	out := map[string]state.Provided{}
+	declaredOf := map[string][]protocol.Resource{}
+	observedOf := map[string][]protocol.Observed{}
+	// 1. Every provider observes; its claims of ownership stand only if Mamela recorded that it
+	// set out to create the object: the diff, the plan and what is kept see only what Mamela
+	// vouches for.
 	for _, name := range rt.names() {
 		s := rt.sessions[name]
 		var declared []protocol.Resource
@@ -250,12 +306,14 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				declared = append(declared, resource(r))
 			}
 		}
-		observed, _, err := s.Observe(ctx, declared)
+		var claimed []map[string]string
+		if rt.claims != nil {
+			claimed = rt.claims[name]
+		}
+		observed, _, err := s.ObserveClaimed(ctx, declared, claimed)
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
 		}
-		// A provider's claim to own an object stands only if Mamela recorded that it set out to
-		// create it: the diff, the plan and what is kept see only what Mamela vouches for.
 		if rt.creations == nil {
 			return nil, fmt.Errorf("provider %s: no record of what Mamela created to check its claims against", name)
 		}
@@ -265,10 +323,6 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				return nil, err
 			}
 			observed[i] = protocol.Vouch(o, created)
-		}
-		changes, err := s.Diff(ctx, declared, observed)
-		if err != nil {
-			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
 		}
 		byID := map[string]protocol.Observed{}
 		for _, o := range observed {
@@ -301,16 +355,50 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			}
 			out[id] = state.Provided{Provider: name, Kind: o.Kind, Name: o.Name, Observed: o, ObservedAt: asOf}
 		}
+		declaredOf[name], observedOf[name] = declared, observed
+	}
+
+	// 2. A resource whose dependencies do not all exist as Mamela's waits (ADR 0007): no change
+	// of it is computed yet.
+	ready := func(d protocol.Resource) string { return waitsFor(d, out) }
+
+	// 3. Each provider computes the changes of what does not wait, with what its dependencies are.
+	for _, name := range rt.names() {
+		s := rt.sessions[name]
+		var desired []protocol.Resource
+		deps := map[string]protocol.Observed{}
+		for _, d := range declaredOf[name] {
+			if why := ready(d); why != "" {
+				p := out[d.ID]
+				p.Waiting = why
+				out[d.ID] = p
+				continue
+			}
+			desired = append(desired, d)
+			for _, a := range d.After {
+				deps[a] = out[a].Observed
+			}
+		}
+		if len(deps) == 0 {
+			deps = nil
+		}
+		changes, err := s.Diff(ctx, desired, observedOf[name], deps)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
+		}
 		seen := map[string]bool{}
 		for _, c := range changes {
 			p, ok := out[c.Resource]
-			if !ok || !p.Declared || p.Provider != name {
-				return nil, fmt.Errorf("provider %s: diff changes %s, which is not one of its declared resources", name, c.Resource)
+			if !ok || !p.Declared || p.Provider != name || p.Waiting != "" {
+				return nil, fmt.Errorf("provider %s: diff changes %s, which is not one of its declared resources ready to change", name, c.Resource)
 			}
 			if key := c.Resource + "\x00" + string(c.Op); seen[key] {
 				return nil, fmt.Errorf("provider %s: diff has %s on %s twice", name, c.Op, c.Resource)
 			} else {
 				seen[key] = true
+			}
+			if p.Observed.Exists && !protocol.Targets(p.Observed.IDs, c.IDs) {
+				return nil, fmt.Errorf("provider %s: the change of %s names objects %v, not the observed %v", name, c.Resource, c.IDs, p.Observed.IDs)
 			}
 			if c.Precondition != "" && c.Precondition != p.Observed.Version {
 				return nil, fmt.Errorf("provider %s: the change of %s is based on version %s, but it observed %s", name, c.Resource, c.Precondition, p.Observed.Version)
@@ -319,7 +407,11 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
 			}
 			if err := s.CheckLimits(c); err != nil {
-				return nil, fmt.Errorf("LAB-0305: provider %s: the change of %s: %w", name, c.Resource, err)
+				code := "MAM-SITE-0305" // over the site's budget
+				if errors.Is(err, protocol.ErrValueNotAllowed) {
+					code = "MAM-PRV-0008" // a value the catalog does not allow
+				}
+				return nil, fmt.Errorf("%s: provider %s: the change of %s: %w", code, name, c.Resource, err)
 			}
 			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
 			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
@@ -332,12 +424,21 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 	return out, nil
 }
 
+// Verify classifies the requests a change of provider name sends, with the host's catalog.
+func (rt *Runtime) Verify(name string, c protocol.Change) protocol.Verified {
+	s, ok := rt.sessionOf(name)
+	if !ok {
+		return protocol.Verified{}
+	}
+	return rt.verify(s, c)
+}
+
 // verify classifies the requests a change sends, with the host's catalog.
 func (rt *Runtime) verify(s *host.Session, c protocol.Change) protocol.Verified {
 	o, _ := s.Manifest().Operation(c.Kind, c.Op)
 	var calls []protocol.Call
 	for _, a := range c.Requests {
-		call, _, ok := protocol.FindCall(o.Calls, a.Method, a.Path, a.Params, false)
+		call, _, ok := protocol.FindCall(o.Calls, a.API, a.Method, a.Path, a.Params, false)
 		if ok && !slices.ContainsFunc(calls, call.Same) {
 			calls = append(calls, call)
 		}
@@ -447,4 +548,51 @@ func changed(r host.Result) string {
 		return "no change took effect"
 	}
 	return "sent: " + strings.Join(out, ", ")
+}
+
+// checkEndpoints: each API the provider talks to that is configured has a catalog for that API
+// (without one, Mamela cannot tell reads from changes and allows neither), and no API is
+// configured that the provider does not have.
+func checkEndpoints(m protocol.Manifest, apis map[string]host.API) error {
+	names := m.APIs
+	if len(names) == 0 && m.API != "" {
+		names = []string{m.API}
+	}
+	for key, ep := range apis {
+		name := key
+		if key == "" {
+			if len(m.APIs) > 0 {
+				return fmt.Errorf("it talks to several APIs (%v): configure each in [provider.%s.apis.<name>]", m.APIs, m.Provider)
+			}
+			name = m.API
+		}
+		switch {
+		case ep.Upstream != nil && !slices.Contains(names, name):
+			return fmt.Errorf("API %q is configured, and the provider talks to %v", name, names)
+		case ep.Upstream != nil && ep.Catalog.API == "":
+			return fmt.Errorf("its API %s has no catalog, so Mamela cannot tell its reads from its changes and allows neither; "+
+				"set catalog in the provider's section of mamela.providers.toml", name)
+		case ep.Catalog.API != "" && ep.Catalog.API != name:
+			return fmt.Errorf("the configured catalog is for API %q, the provider talks to %q", ep.Catalog.API, name)
+		}
+	}
+	return nil
+}
+
+// waitsFor says what a resource waits for (ADR 0007): a dependency that does not exist yet, is not
+// Mamela's, or whose creation did not finish (its IDs may not be all there: a create that was
+// interrupted and is finished by applying again). "" when it waits for nothing.
+func waitsFor(d protocol.Resource, provided map[string]state.Provided) string {
+	for _, a := range d.After {
+		dep, ok := provided[a]
+		switch {
+		case !ok || !dep.Observed.Exists:
+			return fmt.Sprintf("waits for %s to be created", a)
+		case !dep.Observed.Owned:
+			return fmt.Sprintf("waits for %s, which is not Mamela's (Foreign)", a)
+		case dep.Observed.Unfinished:
+			return fmt.Sprintf("waits for %s, whose creation did not finish (apply again to finish it)", a)
+		}
+	}
+	return ""
 }

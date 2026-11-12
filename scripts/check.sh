@@ -42,8 +42,10 @@ done
 step "go: test (race detector on)"
 go test -race -count=1 ./...
 
-step "emela: Mamela Pome (fmt, check, test on JS and WASM)"
-(cd pome/mamela && emela fmt --check && emela check && emela test && emela test --target wasm)
+step "emela: Mamela's Pomes (fmt, check, test on JS and WASM)"
+for dir in pome/mamela pome/k3s; do
+  (cd "$dir" && emela pome verify >/dev/null && emela fmt --check && emela check && emela test && emela test --target wasm)
+done
 
 step "emela: example and test Pomes (fmt)"
 # Only the directories that are Pomes: examples/kv is a provider written in Go, with its Pome in

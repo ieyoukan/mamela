@@ -19,7 +19,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/store"
 )
 
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"FakeVM","name":"app-server","provider":"fake","spec":{"cpu":1}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v2"}`
 
 type clock struct {
 	mu  sync.Mutex
@@ -53,8 +53,9 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &env{t: t, dbPath: path, ctx: context.Background(), clock: c, store: s,
-		world: fake.New(c.Now, "app-server/nginx"), g: g, pol: policy.Default}
+	w := fake.New(c.Now, "app-server/nginx")
+	w.Declare(g)
+	return &env{t: t, dbPath: path, ctx: context.Background(), clock: c, store: s, world: w, g: g, pol: policy.Default}
 }
 
 func (e *env) reconciler(owner string) *reconcile.Reconciler {
@@ -105,15 +106,15 @@ func TestConvergesWithApprovals(t *testing.T) {
 	// Round 1: only the VM can be planned; nothing runs without approval.
 	p1 := e.plan()
 	rep := e.apply(p1)
-	if got := outcomes(rep)[policy.OpCreateVM]; got != reconcile.OutcomeNeedsApproval {
+	if got := outcomes(rep)[fake.OpCreate]; got != reconcile.OutcomeNeedsApproval {
 		t.Fatalf("unapproved create: %s", got)
 	}
-	if e.world.Calls(policy.OpCreateVM) != 0 {
+	if e.world.Calls(fake.OpCreate) != 0 {
 		t.Fatal("created a VM without approval")
 	}
 	e.approve(p1)
 	rep = e.apply(p1)
-	if rep.Stopped != nil || outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeDone {
+	if rep.Stopped != nil || outcomes(rep)[fake.OpCreate] != reconcile.OutcomeDone {
 		t.Fatalf("approved create: %+v", rep)
 	}
 
@@ -144,8 +145,8 @@ func TestConvergesWithApprovals(t *testing.T) {
 	}
 	// Applying an already applied plan again does nothing new.
 	rep = e.apply(p1)
-	if outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeAlreadyDone || e.world.Calls(policy.OpCreateVM) != 1 {
-		t.Fatalf("re-apply: %+v, calls %d", rep, e.world.Calls(policy.OpCreateVM))
+	if outcomes(rep)[fake.OpCreate] != reconcile.OutcomeAlreadyDone || e.world.Calls(fake.OpCreate) != 1 {
+		t.Fatalf("re-apply: %+v, calls %d", rep, e.world.Calls(fake.OpCreate))
 	}
 	evs, _ := e.store.Events(e.ctx, p1.Digest)
 	if len(evs) == 0 {
@@ -155,7 +156,7 @@ func TestConvergesWithApprovals(t *testing.T) {
 
 func TestDriftRepairIsAutomaticOnlyWhenAllowed(t *testing.T) {
 	e := newEnv(t)
-	e.world.SetVM("app-server", state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04"})
+	e.world.SetMachine("app-server", fake.Machine{Owned: true, Running: true, CPU: 1})
 	p := e.plan()
 	e.approve(p)
 	e.apply(p)                                                                           // install + enable + start
@@ -174,11 +175,11 @@ func TestDriftRepairIsAutomaticOnlyWhenAllowed(t *testing.T) {
 
 func TestDeniedNeverRunsEvenIfApproved(t *testing.T) {
 	e := newEnv(t)
-	e.world.SetVM("app-server", state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 50, Image: "ubuntu-24.04"})
+	e.world.SetMachine("app-server", fake.Machine{Owned: true, Running: true, CPU: 4}) // declared: 1
 	p := e.plan()
 	e.approve(p)
 	rep := e.apply(p)
-	if outcomes(rep)[policy.OpShrinkVMDisk] != reconcile.OutcomeDenied || e.world.Calls(policy.OpShrinkVMDisk) != 0 {
+	if outcomes(rep)[fake.OpShrink] != reconcile.OutcomeDenied || e.world.Calls(fake.OpShrink) != 0 {
 		t.Fatalf("shrink: %+v", rep)
 	}
 }
@@ -192,14 +193,14 @@ func TestApprovalIsBoundToThePlanAndExpires(t *testing.T) {
 	if p1.Digest == p2.Digest {
 		t.Fatal("plans should differ")
 	}
-	if outcomes(e.apply(p2))[policy.OpCreateVM] != reconcile.OutcomeNeedsApproval {
+	if outcomes(e.apply(p2))[fake.OpCreate] != reconcile.OutcomeNeedsApproval {
 		t.Fatal("an approval of another plan authorized this one")
 	}
 	e.clock.Add(time.Hour)
-	if outcomes(e.apply(p1))[policy.OpCreateVM] != reconcile.OutcomeNeedsApproval {
+	if outcomes(e.apply(p1))[fake.OpCreate] != reconcile.OutcomeNeedsApproval {
 		t.Fatal("an expired approval authorized the plan")
 	}
-	if e.world.Calls(policy.OpCreateVM) != 0 {
+	if e.world.Calls(fake.OpCreate) != 0 {
 		t.Fatal("created a VM")
 	}
 }
@@ -208,20 +209,20 @@ func TestLostResponseIsConfirmedNotRepeated(t *testing.T) {
 	e := newEnv(t)
 	p := e.plan()
 	e.approve(p)
-	e.world.Inject(policy.OpCreateVM, fake.LoseResponse)
+	e.world.Inject(fake.OpCreate, fake.LoseResponse)
 	rep := e.apply(p)
 	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0003" {
 		t.Fatalf("lost response: %+v", rep)
 	}
-	op, _ := e.store.Operation(e.ctx, reconcile.OperationID(p.Digest, "VirtualMachine app-server", policy.OpCreateVM))
+	op, _ := e.store.Operation(e.ctx, reconcile.OperationID(p.Digest, "FakeVM app-server", fake.OpCreate))
 	if op.Stage != store.StageUnknown {
 		t.Fatalf("journal: %+v", op)
 	}
 	rep = e.apply(p)
-	if outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeAlreadyDone {
+	if outcomes(rep)[fake.OpCreate] != reconcile.OutcomeAlreadyDone {
 		t.Fatalf("resume: %+v", rep)
 	}
-	if n := e.world.Calls(policy.OpCreateVM); n != 1 || e.world.Duplicates != 0 {
+	if n := e.world.Calls(fake.OpCreate); n != 1 || e.world.Duplicates != 0 {
 		t.Fatalf("create called %d times, %d duplicates", n, e.world.Duplicates)
 	}
 }
@@ -230,16 +231,16 @@ func TestFailureIsRetried(t *testing.T) {
 	e := newEnv(t)
 	p := e.plan()
 	e.approve(p)
-	e.world.Inject(policy.OpCreateVM, fake.FailBefore)
+	e.world.Inject(fake.OpCreate, fake.FailBefore)
 	rep := e.apply(p)
 	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0004" {
 		t.Fatalf("failure: %+v", rep)
 	}
 	rep = e.apply(p)
-	if outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeDone {
+	if outcomes(rep)[fake.OpCreate] != reconcile.OutcomeDone {
 		t.Fatalf("retry: %+v", rep)
 	}
-	op, _ := e.store.Operation(e.ctx, reconcile.OperationID(p.Digest, "VirtualMachine app-server", policy.OpCreateVM))
+	op, _ := e.store.Operation(e.ctx, reconcile.OperationID(p.Digest, "FakeVM app-server", fake.OpCreate))
 	if op.Stage != store.StageSucceeded || op.Attempt != 2 {
 		t.Fatalf("journal: %+v", op)
 	}
@@ -250,20 +251,20 @@ func TestCrashAfterTheChangeIsConfirmed(t *testing.T) {
 	p := e.plan()
 	e.approve(p)
 	// A worker claimed the operation, created the VM, and died before recording the result.
-	id := reconcile.OperationID(p.Digest, "VirtualMachine app-server", policy.OpCreateVM)
-	e.store.Intend(e.ctx, id, p.Digest, "VirtualMachine app-server", string(policy.OpCreateVM))
+	id := reconcile.OperationID(p.Digest, "FakeVM app-server", fake.OpCreate)
+	e.store.Intend(e.ctx, id, p.Digest, "FakeVM app-server", string(fake.OpCreate))
 	e.store.Claim(e.ctx, id, "worker-dead", time.Minute)
-	e.world.SetVM("app-server", state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04"})
+	e.world.SetMachine("app-server", fake.Machine{Owned: true, Running: true, CPU: 1})
 
 	// While the dead worker's lease is live, nobody touches it.
 	if rep := e.apply(p); rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0005" {
 		t.Fatalf("live lease: %+v", rep)
 	}
 	e.clock.Add(time.Minute)
-	if rep := e.apply(p); outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeAlreadyDone {
+	if rep := e.apply(p); outcomes(rep)[fake.OpCreate] != reconcile.OutcomeAlreadyDone {
 		t.Fatalf("after lease expiry: %+v", rep)
 	}
-	if e.world.Calls(policy.OpCreateVM) != 0 {
+	if e.world.Calls(fake.OpCreate) != 0 {
 		t.Fatal("re-ran an operation whose effect was already visible")
 	}
 }
@@ -272,15 +273,15 @@ func TestCrashBeforeTheChangeIsRetriedOnce(t *testing.T) {
 	e := newEnv(t)
 	p := e.plan()
 	e.approve(p)
-	id := reconcile.OperationID(p.Digest, "VirtualMachine app-server", policy.OpCreateVM)
-	e.store.Intend(e.ctx, id, p.Digest, "VirtualMachine app-server", string(policy.OpCreateVM))
+	id := reconcile.OperationID(p.Digest, "FakeVM app-server", fake.OpCreate)
+	e.store.Intend(e.ctx, id, p.Digest, "FakeVM app-server", string(fake.OpCreate))
 	e.store.Claim(e.ctx, id, "worker-dead", time.Minute)
 	e.clock.Add(time.Minute)
-	if rep := e.apply(p); outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeDone {
+	if rep := e.apply(p); outcomes(rep)[fake.OpCreate] != reconcile.OutcomeDone {
 		t.Fatalf("%+v", rep)
 	}
-	if e.world.Calls(policy.OpCreateVM) != 1 {
-		t.Fatalf("create called %d times", e.world.Calls(policy.OpCreateVM))
+	if e.world.Calls(fake.OpCreate) != 1 {
+		t.Fatalf("create called %d times", e.world.Calls(fake.OpCreate))
 	}
 }
 
@@ -299,36 +300,42 @@ func TestConcurrentAppliesCreateOnce(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := e.world.Calls(policy.OpCreateVM); n != 1 || e.world.Duplicates != 0 {
+	if n := e.world.Calls(fake.OpCreate); n != 1 || e.world.Duplicates != 0 {
 		t.Fatalf("create called %d times, %d duplicates", n, e.world.Duplicates)
 	}
 }
 
 func TestWorldChangedSincePlanStops(t *testing.T) {
 	e := newEnv(t)
-	e.world.SetVM("app-server", state.VM{Managed: true, CPU: 2, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04"})
-	p := e.plan() // plans resize-vm-cpu 2 -> 1
+	g, err := graph.Decode([]byte(strings.Replace(homelab, `"spec":{"cpu":1}`, `"spec":{"cpu":4}`, 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.g = g
+	e.world.Declare(g)
+	e.world.SetMachine("app-server", fake.Machine{Owned: true, Running: true, CPU: 2})
+	p := e.plan() // plans resize-vm 2 -> 4, based on the observed version
 	e.approve(p)
-	e.world.SetVM("app-server", state.VM{Managed: true, CPU: 4, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04"})
+	e.world.SetMachine("app-server", fake.Machine{Owned: true, Running: true, CPU: 3})
 	rep := e.apply(p)
 	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0002" {
 		t.Fatalf("%+v", rep)
 	}
-	if e.world.Calls(policy.OpResizeVMCPU) != 0 {
+	if e.world.Calls(fake.OpResize) != 0 {
 		t.Fatal("acted on a resource that changed after planning")
 	}
 }
 
-func TestForeignVMIsNeverTouched(t *testing.T) {
+func TestForeignMachineIsNeverTouched(t *testing.T) {
 	e := newEnv(t)
-	e.world.SetVM("app-server", state.VM{Managed: false, CPU: 8, MemoryMiB: 16384, DiskGiB: 64, Image: "something"})
+	e.world.SetMachine("app-server", fake.Machine{Owned: false, Running: true, CPU: 8})
 	p := e.plan()
 	e.approve(p)
 	rep := e.apply(p)
 	if outcomes(rep)[policy.OpChangeForeign] != reconcile.OutcomeDenied {
 		t.Fatalf("%+v", rep)
 	}
-	for _, op := range []policy.Op{policy.OpCreateVM, policy.OpResizeVMCPU, policy.OpResizeVMMemory, policy.OpReplaceVMImage} {
+	for _, op := range []policy.Op{fake.OpCreate, fake.OpResize, fake.OpStart, fake.OpShrink} {
 		if e.world.Calls(op) != 0 {
 			t.Errorf("%s was called on a foreign VM", op)
 		}
@@ -355,7 +362,7 @@ func TestTamperedPlanIsRefused(t *testing.T) {
 	if !errors.Is(err, store.ErrPlanMismatch) {
 		t.Fatalf("got %v", err)
 	}
-	if e.world.Calls(policy.OpCreateVM) != 0 {
+	if e.world.Calls(fake.OpCreate) != 0 {
 		t.Fatal("acted on a tampered plan")
 	}
 }
@@ -365,16 +372,16 @@ func TestLiveClaimByAnotherWorkerIsRespected(t *testing.T) {
 	p := e.plan()
 	e.approve(p)
 	// Another worker has claimed the create and is still working on it (lease live, nothing visible yet).
-	id := reconcile.OperationID(p.Digest, "VirtualMachine app-server", policy.OpCreateVM)
-	e.store.Intend(e.ctx, id, p.Digest, "VirtualMachine app-server", string(policy.OpCreateVM))
+	id := reconcile.OperationID(p.Digest, "FakeVM app-server", fake.OpCreate)
+	e.store.Intend(e.ctx, id, p.Digest, "FakeVM app-server", string(fake.OpCreate))
 	if ok, _ := e.store.Claim(e.ctx, id, "worker-b", time.Minute); !ok {
 		t.Fatal("setup claim failed")
 	}
 	rep := e.apply(p)
-	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0005" || outcomes(rep)[policy.OpCreateVM] != reconcile.OutcomeBusy {
+	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0005" || outcomes(rep)[fake.OpCreate] != reconcile.OutcomeBusy {
 		t.Fatalf("%+v", rep)
 	}
-	if e.world.Calls(policy.OpCreateVM) != 0 {
+	if e.world.Calls(fake.OpCreate) != 0 {
 		t.Fatal("ran an operation another worker holds")
 	}
 }
@@ -440,7 +447,7 @@ func TestPlanForOtherProvidersIsNotApplied(t *testing.T) {
 			t.Fatalf("providers %q: %+v %v", current, rep, err)
 		}
 	}
-	if n := e.world.Calls(policy.OpCreateVM); n != 0 {
+	if n := e.world.Calls(fake.OpCreate); n != 0 {
 		t.Errorf("create-vm ran %d times", n)
 	}
 	r := e.reconciler("worker-a")
@@ -450,28 +457,29 @@ func TestPlanForOtherProvidersIsNotApplied(t *testing.T) {
 	}
 }
 
-// Every VM of a run is created before any is started: a first boot must not compete with another
-// VM's disk import. A create that fails starts nothing; the next run starts what was created.
-func TestVMsAreStartedAfterEveryCreate(t *testing.T) {
+// Every machine of a run is created before any is started (its provider marks the starts late): a
+// first boot must not compete with another machine's disk import. A create that fails starts nothing; the next run starts what was created.
+func TestMachinesAreStartedAfterEveryCreate(t *testing.T) {
 	e := newEnv(t)
 	vm := func(name string) string {
-		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
+		return `{"kind":"FakeVM","name":"` + name + `","provider":"fake","spec":{"cpu":1}}`
 	}
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` + vm("a") + `,` + vm("b") + `,` + vm("c") + `]}`))
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("a") + `,` + vm("b") + `,` + vm("c") + `]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.g = g
+	e.world.Declare(g)
 	p := e.plan()
 	e.approve(p)
-	e.world.Inject(policy.OpCreateVM, fake.Fault(0))   // a succeeds
-	e.world.Inject(policy.OpCreateVM, fake.FailBefore) // b fails
+	e.world.Inject(fake.OpCreate, fake.Fault(0))   // a succeeds
+	e.world.Inject(fake.OpCreate, fake.FailBefore) // b fails
 	rep := e.apply(p)
 	if rep.Stopped == nil || strings.Join(e.world.Applied, ",") != "create-vm a,create-vm b" {
 		t.Fatalf("applied %v, stopped %+v", e.world.Applied, rep.Stopped)
 	}
 	snap, _ := e.world.Observe(e.ctx)
-	if !snap.VMs["a"].Stopped {
+	if snap.Nodes["a"].Running {
 		t.Fatal("a VM was started although a create of the run failed")
 	}
 	// The next plan creates b and c and starts all three, creates first.

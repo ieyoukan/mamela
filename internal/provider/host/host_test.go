@@ -2,8 +2,10 @@ package host
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,7 +114,7 @@ func (w *world) plan(t *testing.T, opID string) (protocol.Change, protocol.Permi
 	if err != nil {
 		t.Fatal(err)
 	}
-	changes, err := w.s.Diff(t.Context(), []protocol.Resource{web}, obs)
+	changes, err := w.s.Diff(t.Context(), []protocol.Resource{web}, obs, nil)
 	if err != nil || len(changes) != 1 {
 		t.Fatalf("diff: %v %v", changes, err)
 	}
@@ -277,6 +279,75 @@ func TestObserveSendsOnlyDeclaredReads(t *testing.T) {
 	}
 }
 
+// A provider writes only the scripts it declares, from the settings it is given, and a script has
+// text.
+func TestScript(t *testing.T) {
+	w := must(t, rogue(t, "none"))
+	text, err := w.s.Script(t.Context(), protocol.ScriptParams{Name: "setup", Settings: []byte(`{"pool":"lab"}`),
+		Credentials: protocol.ScriptCredentials{TokenID: "mamela@pve!lab"}})
+	if err != nil || !strings.Contains(text, "mamela@pve!lab") || !strings.Contains(text, `{"pool":"lab"}`) {
+		t.Errorf("script: %q %v", text, err)
+	}
+	if _, err := w.s.Script(t.Context(), protocol.ScriptParams{Name: "teardown"}); code(err) != CodePermit {
+		t.Errorf("an undeclared script: %v", err)
+	}
+	empty := must(t, rogue(t, "script-empty"))
+	if _, err := empty.s.Script(t.Context(), protocol.ScriptParams{Name: "setup"}); code(err) != CodeProtocol {
+		t.Errorf("an empty script: %v", err)
+	}
+}
+
+// A parameter the catalog says names the object is bound to the permit's IDs, by the same name:
+// an approved-looking request cannot name another object, nor one the permit does not bind.
+func TestBoundParameters(t *testing.T) {
+	terminate := protocol.Call{Method: "POST", Path: "/", Form: []string{"Action", "InstanceId.1"}, Fixed: map[string]string{"Action": "Terminate"}}
+	req := func(id string) protocol.HostRequest {
+		return protocol.HostRequest{Method: "POST", Path: "/", Form: form("Action", "Terminate", "InstanceId.1", id)}
+	}
+	approve := func(id string) protocol.Approved {
+		return protocol.Approved{Method: "POST", Path: "/", Params: map[string][]string{"Action": {"Terminate"}, "InstanceId.1": {id}}}
+	}
+	for _, c := range []struct {
+		name    string
+		ids     map[string]string
+		approve string
+		send    string
+		refused string
+	}{
+		{"the bound object", map[string]string{"InstanceId.1": "i-1"}, "i-1", "i-1", ""},
+		{"another object, approved", map[string]string{"InstanceId.1": "i-1"}, "i-2", "i-2", "is not the approved i-1"},
+		{"an object the permit does not bind", map[string]string{"ClientToken": "t"}, "i-2", "i-2", "binds no InstanceId.1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &protocol.Permit{Op: "delete", Calls: []protocol.Call{terminate}, IDs: c.ids, Requests: []protocol.Approved{approve(c.approve)}, ExpiresAt: "2026-11-10T01:00:00Z"}
+			g := gate{phase: phaseApply, calls: p.Calls, permit: p, used: make([]bool, 1), catalog: testCatalog,
+				upstream: &stub{}, now: testNow}
+			_, perr := g.send(context.Background(), req(c.send))
+			switch {
+			case c.refused == "" && perr != nil:
+				t.Errorf("refused: %v", perr)
+			case c.refused != "" && (perr == nil || !strings.Contains(perr.Message, c.refused)):
+				t.Errorf("got %v, want a refusal with %q", perr, c.refused)
+			}
+		})
+	}
+}
+
+// The change of an explicit operation acts on the object Mamela observed, and nothing else: a
+// provider that answers with another object's IDs is refused before any permit exists.
+func TestPrepareActsOnTheObservedObject(t *testing.T) {
+	w := must(t, rogue(t, "prepare-other"))
+	obs := protocol.Observed{ID: "KVItem/web", Kind: "KVItem", Name: "web", Exists: true, Owned: true, Version: "1", IDs: map[string]string{"item": "web"}}
+	if _, err := w.s.Prepare(t.Context(), "delete-item", nil, obs); code(err) != CodeProtocol || !strings.Contains(err.Error(), "not the observed") {
+		t.Fatalf("prepare naming another object: %v", err)
+	}
+	good := must(t, rogue(t, "none"))
+	c, err := good.s.Prepare(t.Context(), "delete-item", nil, obs)
+	if err != nil || c.IDs["item"] != "web" {
+		t.Fatalf("prepare: %+v %v", c, err)
+	}
+}
+
 func TestApplyStaysWithinThePermit(t *testing.T) {
 	for _, mode := range []string{"other-object", "extra-param", "unapproved-value", "ignore-refusal"} {
 		t.Run(mode, func(t *testing.T) {
@@ -354,7 +425,7 @@ func TestBrokenProviderIsStopped(t *testing.T) {
 	if _, _, err := w.s.Observe(t.Context(), nil); code(err) != CodeProtocol {
 		t.Errorf("garbage on stdout: %v", err)
 	}
-	if _, err := w.s.Diff(t.Context(), nil, nil); code(err) != CodeProtocol {
+	if _, err := w.s.Diff(t.Context(), nil, nil, nil); code(err) != CodeProtocol {
 		t.Errorf("a call after the provider was stopped: %v", err)
 	}
 
@@ -374,6 +445,7 @@ var (
 		{Method: "POST", Path: "/vms/{vm}/resize", Effect: protocol.EffectChange, Form: []string{"cores", "digest", "vm"}, Precondition: "digest"},
 		{Method: "POST", Path: "/vms/{vm}/tags", Effect: protocol.EffectChange, Form: []string{"tags"}},
 		{Method: "POST", Path: "/vms/{vm}/sneaky", Effect: protocol.EffectChange, Form: []string{"digest"}},
+		{Method: "POST", Path: "/", Effect: protocol.EffectLoseData, Form: []string{"Action", "InstanceId.1"}, Fixed: map[string]string{"Action": "Terminate"}, Bind: []string{"InstanceId.1"}},
 	}}
 	readVM    = protocol.Call{Method: "GET", Path: "/vms/{vm}", Query: []string{"full"}}
 	resizeVM  = protocol.Call{Method: "POST", Path: "/vms/{vm}/resize", Form: []string{"cores", "digest", "vm"}}
@@ -412,6 +484,8 @@ func TestEachPhaseAllowsOnlyItsRequests(t *testing.T) {
 	}{
 		{"describe sends nothing", gate{phase: phaseDescribe}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during describe"},
 		{"diff sends nothing", gate{phase: phaseDiff, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during diff"},
+		{"prepare sends nothing", gate{phase: phasePrepare, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during prepare"},
+		{"a script sends nothing", gate{phase: phaseScript, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7"}, "during script"},
 		{"observe reads", gate{phase: phaseObserve, calls: []protocol.Call{readVM}}, protocol.HostRequest{Method: "GET", Path: "/vms/7", Query: form("full", "1")}, ""},
 		{"observe changes nothing", gate{phase: phaseObserve, calls: []protocol.Call{resizeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/resize"}, "only reads"},
 		{"an unclassified call is not a read", gate{phase: phaseLookup, calls: []protocol.Call{pokeVM}}, protocol.HostRequest{Method: "POST", Path: "/vms/7/poke"}, "unclassified"},
@@ -553,5 +627,106 @@ func TestOutcomeComesFromTheRecord(t *testing.T) {
 		if got := outcome(c.record, c.err); got.Outcome != c.want || (c.want != OutcomeDone) != (got.Err != nil) {
 			t.Errorf("%s: %s %v, want %s", c.name, got.Outcome, got.Err, c.want)
 		}
+	}
+}
+
+// An AWS JSON API call (ADR 0007): told apart by its X-Amz-Target header, its body's members are
+// its parameters, as canonical JSON. A change is sent only exactly as approved, member by member,
+// and a bound member names the permit's object.
+func TestJSONCalls(t *testing.T) {
+	cat := protocol.Catalog{API: "svc", Entries: []protocol.Entry{
+		{Method: "POST", Path: "/", Effect: protocol.EffectLoseData, Header: []string{"X-Amz-Target"}, JSON: []string{"cluster", "force"},
+			Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteCluster"}, Bind: []string{"cluster"}},
+		{Method: "POST", Path: "/", Effect: protocol.EffectRead, Header: []string{"X-Amz-Target"}, JSON: []string{"clusters"},
+			Fixed: map[string]string{"X-Amz-Target": "Svc.DescribeClusters"}},
+	}}
+	if err := cat.Check(); err != nil {
+		t.Fatal(err)
+	}
+	del := protocol.Call{Method: "POST", Path: "/", Header: []string{"X-Amz-Target"}, JSON: []string{"cluster", "force"}, Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteCluster"}}
+	approved := protocol.Approved{Method: "POST", Path: "/", Params: map[string][]string{"X-Amz-Target": {"Svc.DeleteCluster"}, "cluster": {`"c1"`}, "force": {"true"}}}
+	req := func(members map[string]string, form map[string][]string) protocol.HostRequest {
+		j := map[string]jsontext.Value{}
+		for k, v := range members {
+			j[k] = jsontext.Value(v)
+		}
+		return protocol.HostRequest{Method: "POST", Path: "/", Header: map[string][]string{"X-Amz-Target": {"Svc.DeleteCluster"}}, JSON: j, Form: form}
+	}
+	for _, c := range []struct {
+		name    string
+		r       protocol.HostRequest
+		refused string
+	}{
+		{"exactly as approved", req(map[string]string{"cluster": `"c1"`, "force": ` true `}, nil), ""},
+		{"another value", req(map[string]string{"cluster": `"c1"`, "force": `false`}, nil), "not the approved request"},
+		{"another object", req(map[string]string{"cluster": `"c2"`, "force": `true`}, nil), "not the approved c1"},
+		{"a member not declared", req(map[string]string{"cluster": `"c1"`, "force": `true`, "extra": `1`}, nil), "not declared"},
+		{"a member in the form", req(map[string]string{"force": `true`}, map[string][]string{"cluster": {"c1"}}), "not declared in the form"},
+		{"the string \"true\" for true", req(map[string]string{"cluster": `"c1"`, "force": `"true"`}, nil), "not the approved request"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &protocol.Permit{Op: "delete", Calls: []protocol.Call{del}, IDs: map[string]string{"cluster": "c1"}, Requests: []protocol.Approved{approved}, ExpiresAt: "2026-11-10T01:00:00Z"}
+			g := gate{phase: phaseApply, calls: p.Calls, permit: p, used: make([]bool, 1), catalog: cat, upstream: &stub{}, now: testNow}
+			_, perr := g.send(context.Background(), c.r)
+			switch {
+			case c.refused == "" && perr != nil:
+				t.Errorf("refused: %v", perr)
+			case c.refused != "" && (perr == nil || !strings.Contains(perr.Message, c.refused)):
+				t.Errorf("got %v, want a refusal with %q", perr, c.refused)
+			}
+		})
+	}
+	// What is sent: the target header, the AWS JSON content type, and the members in canonical form.
+	var got *http.Request
+	var body []byte
+	h := Handler{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r
+		body, _ = io.ReadAll(r.Body)
+	})}
+	h.Do(context.Background(), req(map[string]string{"force": ` true`, "cluster": `"c1"`}, nil))
+	if got.Header.Get("X-Amz-Target") != "Svc.DeleteCluster" || got.Header.Get("Content-Type") != "application/x-amz-json-1.1" || string(body) != `{"cluster":"c1","force":true}` {
+		t.Fatalf("sent %v %q", got.Header, body)
+	}
+	// A call with no member (the provider's empty object is lost on the way) still sends one.
+	list := protocol.Call{Method: "POST", Path: "/", Header: []string{"X-Amz-Target"}, JSON: []string{"clusters"}, Fixed: map[string]string{"X-Amz-Target": "Svc.DescribeClusters"}}
+	g := gate{phase: phaseObserve, calls: []protocol.Call{list}, catalog: cat, upstream: h, now: testNow}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{Method: "POST", Path: "/", Header: map[string][]string{"X-Amz-Target": {"Svc.DescribeClusters"}}}); perr != nil || string(body) != "{}" {
+		t.Fatalf("a JSON call with no member: %v, sent %q", perr, body)
+	}
+}
+
+// A provider with several APIs (ADR 0007): each request is classified by its own API's catalog and
+// sent to that API's endpoint; a call of an API the provider does not declare is not a call.
+func TestSeveralAPIs(t *testing.T) {
+	catA := protocol.Catalog{API: "a", Entries: []protocol.Entry{{Method: "GET", Path: "/x", Effect: protocol.EffectRead}}}
+	catB := protocol.Catalog{API: "b", Entries: []protocol.Entry{{Method: "GET", Path: "/x", Effect: protocol.EffectChange}}}
+	upA, upB := &stub{}, &stub{}
+	calls := []protocol.Call{{API: "a", Method: "GET", Path: "/x"}, {API: "b", Method: "GET", Path: "/x"}}
+	g := gate{phase: phaseObserve, calls: calls, apis: map[string]API{"a": {Catalog: catA, Upstream: upA}, "b": {Catalog: catB, Upstream: upB}}, now: testNow}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "a", Method: "GET", Path: "/x"}); perr != nil || upA.sent != 1 || upB.sent != 0 {
+		t.Fatalf("a read of a: %v (sent a %d, b %d)", perr, upA.sent, upB.sent)
+	}
+	// The same method and path on b is a change there: not during observe.
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "b", Method: "GET", Path: "/x"}); perr == nil || !strings.Contains(perr.Message, "only reads") || upB.sent != 0 {
+		t.Fatalf("a change of b during observe: %v", perr)
+	}
+	if _, perr := g.send(context.Background(), protocol.HostRequest{API: "c", Method: "GET", Path: "/x"}); perr == nil || !strings.Contains(perr.Message, "not a declared call") {
+		t.Fatalf("an undeclared API: %v", perr)
+	}
+}
+
+// IDs are names a path could carry: a cloud's names with slashes (a log group "/ecs/web") are
+// IDs; empty values, empty or dot segments and other characters are not.
+func TestValidIDs(t *testing.T) {
+	for v, want := range map[string]bool{
+		"vpc-0abc": true, "/mamela/locust/web": true, "family:3": true, "a/b": true,
+		"": false, "/": false, "//x": false, "/a/../b": false, "a b": false, "a?b": false, "x/": false,
+	} {
+		if got := validIDs(map[string]string{"id": v}); got != want {
+			t.Errorf("validIDs(%q) = %t, want %t", v, got, want)
+		}
+	}
+	if validIDs(map[string]string{"bad name": "x"}) {
+		t.Error("an ID name with a space is valid")
 	}
 }

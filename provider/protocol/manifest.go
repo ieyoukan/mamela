@@ -14,8 +14,12 @@
 package protocol
 
 import (
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -38,11 +42,35 @@ type Manifest struct {
 	// a provider that runs as a separate program. The host holds the API's catalog and
 	// credentials. Empty for providers built into Mamela.
 	API string `json:"api,omitempty"`
+	// APIs name the APIs of a provider that uses several (AWS: "ec2", "ecs", "logs", "iam"), each
+	// with its own endpoint, credentials and catalog on the host; then each call names its API
+	// (ADR 0007). A provider sets API or APIs, not both.
+	APIs []string `json:"apis,omitempty"`
 	// Observe is what every observation needs (each plan and each apply observes).
 	Observe []Need `json:"observe,omitempty"`
 	// ObserveCalls are the API calls an observation sends (reads only).
 	ObserveCalls []Call `json:"observeCalls,omitempty"`
 	Kinds        []Kind `json:"kinds"`
+	// Guard, when set, is the provider's safety check around every apply of its changes (ADR
+	// 0006): the reads it makes. Mamela runs it before applying (a block finding stops the apply)
+	// and after (comparing with what it found before).
+	Guard *Guard `json:"guard,omitempty"`
+	// Scripts are the setup and maintenance scripts the provider writes for a person to review and
+	// run with privileges Mamela never holds (ADR 0006): creating the identities and grants Mamela
+	// uses, removing what Mamela can no longer remove. The provider writes them from the settings
+	// alone (method script), so everyone needs only Mamela and the pinned provider to get them.
+	Scripts []Script `json:"scripts,omitempty"`
+}
+
+// Script is one script a provider writes.
+type Script struct {
+	Name        string `json:"name"`        // "bootstrap"
+	Description string `json:"description"` // what it does, and where and as whom it runs
+}
+
+// Guard declares a provider's safety check.
+type Guard struct {
+	Calls []Call `json:"calls"` // reads only
 }
 
 // Kind is one resource kind a provider handles.
@@ -71,6 +99,13 @@ type Operation struct {
 	// Calls are the API calls the operation may send through the host, reads included. The
 	// host refuses any other.
 	Calls []Call `json:"calls,omitempty"`
+	// Explicit operations (deleting, rebooting) are never planned: a person asks for one by name
+	// (mamela act) and confirms it by typing the resource's name (ADR 0006). Diff never returns
+	// them; prepare makes their change.
+	Explicit bool `json:"explicit,omitempty"`
+	// Adopts: the explicit operation takes over an Adoptable object (its only use); once it is done,
+	// Mamela records the object as its own.
+	Adopts bool `json:"adopts,omitempty"`
 }
 
 // Call is one API call: a method and a path template whose "{name}" segments are IDs ("/items/{item}"),
@@ -85,14 +120,59 @@ type Call struct {
 	File string `json:"file,omitempty"`
 	// Fixed are parameters the call always sends with exactly these values, and which tell it
 	// apart from other calls on the same method and path: a query API's "Action=RunInstances"
-	// (ADR 0005). Each is also one of Query or Form, where it is sent.
+	// (ADR 0005), or an AWS JSON API's "X-Amz-Target" header (ADR 0007). Each is also one of
+	// Query, Form or Header, where it is sent.
 	Fixed map[string]string `json:"fixed,omitempty"`
+	// API is which of the provider's APIs the call goes to, for a provider with several (APIs);
+	// empty for a provider with one.
+	API string `json:"api,omitempty"`
+	// Header are parameters sent as HTTP headers ("X-Amz-Target", ADR 0007).
+	Header []string `json:"header,omitempty"`
+	// JSON are the members of a JSON object the call sends as its body (an AWS JSON API, ADR
+	// 0007). A member's value, as a parameter, is its canonical JSON text ("\"locust\"", "1").
+	JSON []string `json:"json,omitempty"`
 }
 
-// Same reports whether two calls are the same call: method, path and fixed parameters.
+// Same reports whether two calls are the same call: API, method, path and fixed parameters.
 func (c Call) Same(o Call) bool {
-	return c.Method == o.Method && c.Path == o.Path && maps.Equal(c.Fixed, o.Fixed)
+	return c.API == o.API && c.Method == o.Method && c.Path == o.Path && maps.Equal(c.Fixed, o.Fixed)
 }
+
+// checkAPIs: a provider has one API (API) or several (APIs), and each call names one of them
+// exactly when there are several.
+func (m Manifest) checkAPIs() error {
+	if m.API != "" && len(m.APIs) > 0 {
+		return errors.New("api and apis are exclusive")
+	}
+	seen := map[string]bool{}
+	for _, a := range m.APIs {
+		if !validName(a) || seen[a] {
+			return fmt.Errorf("api %q is invalid or named twice", a)
+		}
+		seen[a] = true
+	}
+	calls := slices.Clone(m.ObserveCalls)
+	if m.Guard != nil {
+		calls = append(calls, m.Guard.Calls...)
+	}
+	for _, k := range m.Kinds {
+		for _, o := range k.Operations {
+			calls = append(calls, o.Calls...)
+		}
+	}
+	for _, c := range calls {
+		switch {
+		case len(m.APIs) > 0 && !seen[c.API]:
+			return fmt.Errorf("call %s %s names api %q, not one of %v", c.Method, c.Path, c.API, m.APIs)
+		case len(m.APIs) == 0 && c.API != "":
+			return fmt.Errorf("call %s %s names api %q, and the provider has one api", c.Method, c.Path, c.API)
+		}
+	}
+	return nil
+}
+
+// HasAPIs reports whether the provider uses any API (one, or several).
+func (m Manifest) HasAPIs() bool { return m.API != "" || len(m.APIs) > 0 }
 
 // Takes reports whether params (one value each) carry every fixed parameter of the call.
 func (c Call) Takes(params map[string][]string) bool {
@@ -107,12 +187,12 @@ func (c Call) Takes(params map[string][]string) bool {
 // FindCall is the declared call a request on method and a path template (or a concrete path,
 // when match is set) with params is: the one whose method, path and fixed parameters fit. ok is
 // false when none does, or more than one (an ambiguous declaration).
-func FindCall(calls []Call, method, path string, params map[string][]string, concrete bool) (Call, map[string]string, bool) {
+func FindCall(calls []Call, api, method, path string, params map[string][]string, concrete bool) (Call, map[string]string, bool) {
 	var found Call
 	var ids map[string]string
 	n := 0
 	for _, c := range calls {
-		if c.Method != method || !c.Takes(params) {
+		if c.API != api || c.Method != method || !c.Takes(params) {
 			continue
 		}
 		var m map[string]string
@@ -137,19 +217,37 @@ func FindCall(calls []Call, method, path string, params map[string][]string, con
 	return found, ids, n == 1
 }
 
+// CheckAdopts: only an explicit operation adopts.
+func (o Operation) checkAdopts() error {
+	if o.Adopts && !o.Explicit {
+		return fmt.Errorf("%s adopts, so it must be explicit", o.Op)
+	}
+	return nil
+}
+
 // In says where the call sends a parameter: "query", "form", or "" when it does not declare it.
 func (c Call) In(param string) string {
+	return in(param, c.Query, c.Form, c.Header, c.JSON)
+}
+
+func in(param string, query, form, header, json []string) string {
 	switch {
-	case slices.Contains(c.Query, param):
+	case slices.Contains(query, param):
 		return "query"
-	case slices.Contains(c.Form, param):
+	case slices.Contains(form, param):
 		return "form"
+	case slices.Contains(header, param):
+		return "header"
+	case slices.Contains(json, param):
+		return "json"
 	}
 	return ""
 }
 
 // Params are all the parameters the call may send.
-func (c Call) Params() []string { return append(slices.Clone(c.Query), c.Form...) }
+func (c Call) Params() []string {
+	return slices.Concat(c.Query, c.Form, c.Header, c.JSON)
+}
 
 // Need is one capability an operation needs.
 type Need struct {
@@ -250,6 +348,9 @@ type Target struct {
 
 // Check verifies a manifest's own consistency.
 func (m Manifest) Check() error {
+	if err := m.checkAPIs(); err != nil {
+		return fmt.Errorf("manifest %s: %w", m.Provider, err)
+	}
 	if m.Schema != Schema || m.Provider == "" || m.Version == "" {
 		return fmt.Errorf("manifest %q: schema %q, provider and version are required", m.Provider, Schema)
 	}
@@ -261,7 +362,27 @@ func (m Manifest) Check() error {
 	if err := checkCalls(m.ObserveCalls); err != nil {
 		return fmt.Errorf("manifest %s: observe: %w", m.Provider, err)
 	}
-	if len(m.ObserveCalls) > 0 && m.API == "" {
+	if m.Guard != nil {
+		if !m.HasAPIs() || len(m.Guard.Calls) == 0 {
+			return fmt.Errorf("manifest %s: a guard reads through an api, with calls", m.Provider)
+		}
+		if err := checkCalls(m.Guard.Calls); err != nil {
+			return fmt.Errorf("manifest %s: guard: %w", m.Provider, err)
+		}
+		for _, c := range m.Guard.Calls {
+			if c.File != "" {
+				return fmt.Errorf("manifest %s: guard call %s %s uploads a file", m.Provider, c.Method, c.Path)
+			}
+		}
+	}
+	seenScripts := map[string]bool{}
+	for _, sc := range m.Scripts {
+		if !scriptNameRe.MatchString(sc.Name) || sc.Description == "" || seenScripts[sc.Name] {
+			return fmt.Errorf("manifest %s: script %q: a unique name (lowercase letters, digits, '-') and a description are required", m.Provider, sc.Name)
+		}
+		seenScripts[sc.Name] = true
+	}
+	if len(m.ObserveCalls) > 0 && !m.HasAPIs() {
 		return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 	}
 	for _, k := range m.Kinds {
@@ -280,8 +401,8 @@ func (m Manifest) Check() error {
 					return fmt.Errorf("manifest %s: %s %s is supported but says why not", m.Provider, k.Kind, o.Op)
 				}
 			case Unsupported:
-				if o.Why == "" || len(o.Needs) > 0 || len(o.Calls) > 0 {
-					return fmt.Errorf("manifest %s: unsupported %s %s needs a reason and no capabilities or calls", m.Provider, k.Kind, o.Op)
+				if o.Why == "" || len(o.Needs) > 0 || len(o.Calls) > 0 || o.Explicit {
+					return fmt.Errorf("manifest %s: unsupported %s %s needs a reason and no capabilities, calls or explicit", m.Provider, k.Kind, o.Op)
 				}
 			default:
 				return fmt.Errorf("manifest %s: %s %s: unknown support %q", m.Provider, k.Kind, o.Op, o.Support)
@@ -289,7 +410,7 @@ func (m Manifest) Check() error {
 			if err := checkCalls(o.Calls); err != nil {
 				return fmt.Errorf("manifest %s: %s %s: %w", m.Provider, k.Kind, o.Op, err)
 			}
-			if len(o.Calls) > 0 && m.API == "" {
+			if len(o.Calls) > 0 && !m.HasAPIs() {
 				return fmt.Errorf("manifest %s: calls without an api", m.Provider)
 			}
 			for _, n := range o.Needs {
@@ -317,17 +438,17 @@ func checkCalls(calls []Call) error {
 	seen := map[string]bool{}
 	byPath := map[string][]Call{}
 	for _, c := range calls {
-		if err := checkCall(c.Method, c.Path, c.Query, c.Form); err != nil {
+		if err := checkCall(c.Method, c.Path, c.Query, c.Form, c.Header, c.JSON, c.Fixed); err != nil {
 			return err
 		}
 		if err := checkFixed(c.Method, c.Path, c.Fixed, c.In); err != nil {
 			return err
 		}
-		byPath[c.Method+" "+c.Path] = append(byPath[c.Method+" "+c.Path], c)
+		byPath[c.API+" "+c.Method+" "+c.Path] = append(byPath[c.API+" "+c.Method+" "+c.Path], c)
 		if c.File != "" && (!validName(c.File) || c.In(c.File) != "" || c.Method != "POST") {
 			return fmt.Errorf("call %s %s: file %q must be a POST parameter of its own", c.Method, c.Path, c.File)
 		}
-		key := c.Method + " " + c.Path + " " + fixedKey(c.Fixed)
+		key := c.API + " " + c.Method + " " + c.Path + " " + fixedKey(c.Fixed)
 		if seen[key] {
 			return fmt.Errorf("call %s %s %s is declared twice", c.Method, c.Path, fixedKey(c.Fixed))
 		}
@@ -381,7 +502,7 @@ func fixedKey(f map[string]string) string {
 	return strings.Join(parts, "&")
 }
 
-func checkCall(method, path string, query, form []string) error {
+func checkCall(method, path string, query, form, header, json []string, fixed map[string]string) error {
 	if !slices.Contains(Methods, method) {
 		return fmt.Errorf("call %s %s: unknown method", method, path)
 	}
@@ -389,13 +510,48 @@ func checkCall(method, path string, query, form []string) error {
 		return fmt.Errorf("call %s %s: %w", method, path, err)
 	}
 	names := map[string]bool{}
-	for _, n := range append(slices.Clone(query), form...) {
+	for _, n := range slices.Concat(query, form, header, json) {
 		if !validName(n) || names[n] {
-			return fmt.Errorf("call %s %s: parameter %q is invalid or declared twice (a name is in the query or the form, not both)", method, path, n)
+			return fmt.Errorf("call %s %s: parameter %q is invalid or declared twice (a name is in one place only)", method, path, n)
 		}
 		names[n] = true
 	}
+	if len(json) > 0 && len(form) > 0 {
+		return fmt.Errorf("call %s %s: a body is a form or a JSON object, not both", method, path)
+	}
+	for k := range fixed {
+		if slices.Contains(json, k) {
+			return fmt.Errorf("call %s %s: fixed parameter %s is a JSON member; fix a header (X-Amz-Target) instead", method, path, k)
+		}
+	}
 	return nil
+}
+
+// JSONParams are the members of a JSON object as parameters: each one's canonical JSON text
+// (RFC 8785), so that what is approved is exactly what is sent (ADR 0007).
+func JSONParams(members map[string]jsontext.Value) (map[string][]string, error) {
+	out := map[string][]string{}
+	for k, v := range members {
+		c := slices.Clone(v)
+		if err := (*jsontext.Value)(&c).Canonicalize(); err != nil {
+			return nil, fmt.Errorf("JSON member %s: %w", k, err)
+		}
+		out[k] = []string{string(c)}
+	}
+	return out, nil
+}
+
+// ParamText is a parameter's value as text: a JSON member that is a string, without its quotes
+// (to compare with an ID, or to read a measure); anything else as it is.
+func ParamText(where, value string) string {
+	if where != "json" {
+		return value
+	}
+	var s string
+	if json.Unmarshal([]byte(value), &s) == nil {
+		return s
+	}
+	return value
 }
 
 // Operation returns the declaration of an operation on a kind.
@@ -460,3 +616,5 @@ func (q *Requirement) Fill(facts map[string][]string) {
 	}
 	q.Conditions, q.StandingIf = fill(q.Conditions), fill(q.StandingIf)
 }
+
+var scriptNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)

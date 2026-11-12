@@ -18,7 +18,7 @@ func TestFixedParameters(t *testing.T) {
 		}
 		return m
 	}
-	if c, _, ok := FindCall(calls, "POST", "/", form("Action", "StartInstances", "InstanceId.1", "i-1"), true); !ok || !c.Same(start) {
+	if c, _, ok := FindCall(calls, "", "POST", "/", form("Action", "StartInstances", "InstanceId.1", "i-1"), true); !ok || !c.Same(start) {
 		t.Fatal("StartInstances")
 	}
 	for name, params := range map[string]map[string][]string{
@@ -27,7 +27,7 @@ func TestFixedParameters(t *testing.T) {
 		"a fixed value changed":    form("Action", "RunInstances", "MaxCount", "50", "ImageId", "ami-1"),
 		"a fixed value sent twice": form("Action", "RunInstances", "Action", "TerminateInstances"),
 	} {
-		if _, _, ok := FindCall(calls, "POST", "/", params, true); ok {
+		if _, _, ok := FindCall(calls, "", "POST", "/", params, true); ok {
 			t.Errorf("%s: found a call", name)
 		}
 	}

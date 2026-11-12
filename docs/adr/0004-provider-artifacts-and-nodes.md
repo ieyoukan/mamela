@@ -4,6 +4,9 @@
 - 日付: 2026-11-11
 - 対象: プロバイダーの契約（ADR 0002）。Proxmox のプロバイダーを Mamela の外（`github.com/ieyoukan/mamela-proxmox`）へ出すために必要な拡張
 
+
+> **後の変更（ADR 0008）:** Mamela 本体はカタログを持たなくなった。カタログはプロバイダーの作者が書き、プロバイダーの Pome に同梱する。運用者は `catalog = "pome:<名前>"` で選ぶ。この ADR の `builtin:` のカタログは、AWS は mamela-aws に、Proxmox は mamela-proxmox に移った。
+
 ## 文脈
 
 組み込みの Proxmox プロバイダー（`internal/provider/pve`）を、Pome で配る外部のプロバイダーに移したい。今の契約（ADR 0002）では、次の 3 つができない。

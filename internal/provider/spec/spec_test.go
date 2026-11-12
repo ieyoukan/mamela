@@ -53,9 +53,9 @@ func TestCheckRejectsInconsistentManifests(t *testing.T) {
 }
 
 func TestAnalyzeResolvesEachResource(t *testing.T) {
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[
-{"kind":"VirtualMachine","name":"a","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
-{"kind":"VirtualMachine","name":"b","spec":{"cpu":1,"memoryMiB":512,"diskGiB":8,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[
+{"kind":"TestVM","name":"a","provider":"vms","spec":{"cpu":1}},
+{"kind":"TestVM","name":"b","provider":"vms","spec":{"cpu":1}},
 {"kind":"NodePackage","name":"a/nginx","spec":{"node":"a","package":"nginx","state":"Present"}},
 {"kind":"NodePackage","name":"b/curl","spec":{"node":"b","package":"curl","state":"Present"}}]}`))
 	if err != nil {
@@ -78,8 +78,8 @@ func TestAnalyzeResolvesEachResource(t *testing.T) {
 			t.Errorf("%s %s: %+v", want.Resource, want.Capability, q)
 		}
 	}
-	// VMs have no provider here: said so, once per VM.
-	for _, id := range []string{"VirtualMachine a", "VirtualMachine b"} {
+	// The machines' provider is not among these: said so, once per machine.
+	for _, id := range []string{"TestVM a", "TestVM b"} {
 		if q := got[id+" "]; q.Support != Unsupported || !strings.Contains(q.Why, "no provider") {
 			t.Errorf("%s: %+v", id, q)
 		}
