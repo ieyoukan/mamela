@@ -84,8 +84,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if t == nil {
-			t = &Thing{Name: name, Owner: body.Owner}
+			t = &Thing{Name: name}
 			s.things[name] = t
+		}
+		if body.Owner != "" {
+			t.Owner = body.Owner // set when it is created, or when it is taken over
 		}
 		t.Value, t.Tags = body.Value, slices.Sorted(slices.Values(body.Tags))
 		t.Version++

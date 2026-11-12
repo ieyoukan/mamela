@@ -39,6 +39,7 @@ const (
 	OpCreate protocol.Op = "create-thing"
 	OpUpdate protocol.Op = "update-thing"
 	OpDelete protocol.Op = "delete-thing"
+	OpAdopt  protocol.Op = "adopt-thing"
 )
 
 // owner marks what Mamela created.
@@ -89,7 +90,28 @@ func (things) Operations() []protocol.Operation {
 		kit.Op(OpCreate, write, putThing),
 		kit.Op(OpUpdate, write, putThing),
 		kit.ExplicitOp(OpDelete, write, deleteThing),
+		kit.AdoptOp(OpAdopt, write, putThing),
 	}
+}
+
+// Imports are the Terraform types this kind imports (mamela import terraform): what someone
+// manages with Terraform moves to Mamela as declarations, each adopted with adopt-thing.
+func (things) Imports() []string { return []string{"<% .Pkg %>_thing"} }
+
+// Import declares a thing as Terraform records it (its attributes), and names it by its ID.
+func (things) Import(o protocol.ImportObject, _ kit.Resolver) (any, map[string]string, error) {
+	var v struct {
+		ID    string   `json:"id"`
+		Value string   `json:"value"`
+		Tags  []string `json:"tags"`
+	}
+	if err := kit.Values(o, &v); err != nil {
+		return nil, nil, err
+	}
+	if v.ID == "" {
+		return nil, nil, kit.Skip("no id: the state does not say which thing it is")
+	}
+	return ThingSpec{Value: v.Value, Tags: slices.Sorted(slices.Values(v.Tags))}, map[string]string{"thing": v.ID}, nil
 }
 
 // Absent: a thing that does not exist has version 0, which a create is based on.
@@ -162,6 +184,9 @@ func (things) Done(c *kit.Client, ch protocol.Change, a protocol.Approved) (bool
 		return false, nil
 	}
 	if t.Owner != owner {
+		if ch.Op == OpAdopt {
+			return false, nil // not taken over yet
+		}
 		return false, fmt.Errorf("thing %s exists and Mamela did not create it", t.Name)
 	}
 	var tags []string
@@ -173,8 +198,23 @@ func (things) Done(c *kit.Client, ch protocol.Change, a protocol.Approved) (bool
 	return kit.Param(a, "value") == t.Value && slices.Equal(slices.Sorted(slices.Values(tags)), slices.Sorted(slices.Values(t.Tags))), nil
 }
 
-// Prepare makes delete-thing: of a thing Mamela owns, based on its version.
+// Prepare makes delete-thing, of a thing Mamela owns, and adopt-thing, of an adoptable thing (an
+// import), which makes Mamela its owner and changes nothing else; both based on its version.
 func (things) Prepare(op protocol.Op, o protocol.Observed, _ *protocol.Resource) (protocol.Change, error) {
+	if op == OpAdopt {
+		var got ThingSpec
+		if !o.Adoptable || json.Unmarshal(o.State, &got) != nil {
+			return protocol.Change{}, fmt.Errorf("%s: only an adoptable thing (imported) can be adopted", o.ID)
+		}
+		body, err := kit.JSONMembers(map[string]any{"value": got.Value, "tags": got.Tags, "owner": owner})
+		if err != nil {
+			return protocol.Change{}, err
+		}
+		body["version"] = []string{o.Version}
+		return protocol.Change{Resource: o.ID, Kind: KindThing, Op: OpAdopt, IDs: o.IDs, Precondition: o.Version,
+			Reasons:  []string{fmt.Sprintf("adopt thing %s (version %s): Mamela becomes its owner; nothing else changes", o.Name, o.Version)},
+			Requests: []protocol.Approved{kit.Request(putThing, body)}}, nil
+	}
 	if op != OpDelete || !o.Owned {
 		return protocol.Change{}, fmt.Errorf("%s: only an existing thing Mamela owns can be deleted", o.ID)
 	}

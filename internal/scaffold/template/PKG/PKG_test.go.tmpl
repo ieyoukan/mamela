@@ -43,6 +43,13 @@ func TestConformance(t *testing.T) {
 				thing("db", `{"value":"v1","tags":["prod","eu"]}`),
 				thing("web", `{"value":"v2"}`),
 			}},
+			// Imported from Terraform: nothing is planned for it until adopt-thing makes it Mamela's.
+			{Name: "imported", Desired: []protocol.Resource{thing("old", `{"value":"v0","tags":["a"]}`)},
+				World: func(api http.Handler) {
+					api.(*fakeapi.Server).Put(fakeapi.Thing{Name: "old", Value: "v0", Tags: []string{"a"}, Owner: "terraform", Version: 2})
+				},
+				Adopting: []protocol.Adopting{{Resource: "<% .Prefix %>Thing old", IDs: map[string]string{"thing": "old"}}},
+				Explicit: []providertest.Explicit{{Op: <% .Pkg %>.OpAdopt, Resource: "<% .Prefix %>Thing old"}}},
 			{Name: "someone-elses", Desired: []protocol.Resource{thing("web", `{"value":"v1"}`)},
 				World: func(api http.Handler) {
 					api.(*fakeapi.Server).Put(fakeapi.Thing{Name: "other", Value: "theirs", Owner: "someone", Version: 3})
