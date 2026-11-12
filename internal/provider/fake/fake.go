@@ -41,6 +41,8 @@ type World struct {
 	calls   map[policy.Op]int
 	// Duplicates counts create-vm calls for a VM that already existed (the real API refuses them).
 	Duplicates int
+	// Applied lists every operation applied, in order ("create-vm web").
+	Applied []string
 }
 
 // New returns an empty world. catalog lists the "<node>/<name>" entries the agent reports.
@@ -117,6 +119,7 @@ func (w *World) Apply(ctx context.Context, step reconcile.Step) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.calls[step.Op]++
+	w.Applied = append(w.Applied, string(step.Op)+" "+step.Resource.Name)
 	var fault Fault
 	if q := w.faults[step.Op]; len(q) > 0 {
 		fault, w.faults[step.Op] = q[0], q[1:]
@@ -142,7 +145,16 @@ func (w *World) change(step reconcile.Step) error {
 			return fmt.Errorf("VM %s already exists", r.Name)
 		}
 		s := r.VirtualMachine
-		w.vms[r.Name] = state.VM{Managed: true, CPU: s.CPU, MemoryMiB: s.MemoryMiB, DiskGiB: s.DiskGiB, Image: s.Image}
+		// Created stopped, as the Proxmox provider does: start-vm starts it.
+		w.vms[r.Name] = state.VM{Managed: true, CPU: s.CPU, MemoryMiB: s.MemoryMiB, DiskGiB: s.DiskGiB, Image: s.Image,
+			Network: s.Network.String(), Stopped: true}
+	case policy.OpStartVM:
+		vm, ok := w.vms[r.Name]
+		if !ok {
+			return fmt.Errorf("VM %s does not exist", r.Name)
+		}
+		vm.Stopped = false
+		w.vms[r.Name] = vm
 	case policy.OpResizeVMCPU, policy.OpResizeVMMemory, policy.OpGrowVMDisk:
 		vm, ok := w.vms[r.Name]
 		if !ok {

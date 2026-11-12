@@ -81,8 +81,12 @@ type VM struct {
 	DiskGiB   int64  `json:"diskGiB"`
 	Image     string `json:"image"`
 	// Network is how the VM was given its address at creation (graph.Network.String()).
-	Network    string    `json:"network,omitempty"`
-	ObservedAt time.Time `json:"observedAt"`
+	Network string `json:"network,omitempty"`
+	// Stopped is true when the VM is not running (a VM made by an interrupted apply, or stopped by
+	// someone). UptimeSeconds is how long it has been running, as Proxmox reported it.
+	Stopped       bool      `json:"stopped,omitempty"`
+	UptimeSeconds int64     `json:"uptimeSeconds,omitempty"`
+	ObservedAt    time.Time `json:"observedAt"`
 }
 
 // Package is an observed APT package on a node.

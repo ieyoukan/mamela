@@ -542,6 +542,13 @@ func (c *Client) RebootVM(ctx context.Context, node string, vmid int) (string, e
 	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/reboot", nodePath(node), vmid), url.Values{}, &upid)
 }
 
+// ResetVM resets a VM at once, like pressing its reset button: for a guest that does not respond to
+// a reboot (for example one stuck in emergency mode). Returns the task ID.
+func (c *Client) ResetVM(ctx context.Context, node string, vmid int) (string, error) {
+	var upid string
+	return upid, c.form(ctx, http.MethodPost, fmt.Sprintf("%s/qemu/%d/status/reset", nodePath(node), vmid), url.Values{}, &upid)
+}
+
 // Upload sends a file of size bytes to a storage (POST .../upload) and returns the task ID.
 // Proxmox verifies the SHA-256 checksum before it keeps the file. pveproxy needs the exact length
 // of the multipart body, so it is computed up front. The request is bounded only by ctx.

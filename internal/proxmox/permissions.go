@@ -102,7 +102,8 @@ var Endpoints = []Endpoint{
 		vm("grow a lab VM's disk", "VM.Config.Disk"),
 		{Scope: ScopeDiskStorage, Privs: []string{"Datastore.AllocateSpace"}, Why: "grow a disk on the disk storage"}}},
 	{"POST", "/nodes/{node}/qemu/{vmid}/status/start", []Token{Operating}, []Need{vm("start a lab VM", "VM.PowerMgmt")}},
-	{"POST", "/nodes/{node}/qemu/{vmid}/status/reboot", []Token{Operating}, []Need{vm("restart a lab VM to apply a new size", "VM.PowerMgmt")}},
+	{"POST", "/nodes/{node}/qemu/{vmid}/status/reboot", []Token{Operating}, []Need{vm("restart a lab VM (to apply a new size, or mamela reboot)", "VM.PowerMgmt")}},
+	{"POST", "/nodes/{node}/qemu/{vmid}/status/reset", []Token{Operating}, []Need{vm("reset a lab VM whose guest does not respond (mamela reboot --hard)", "VM.PowerMgmt")}},
 	// mamela destroy only (a client from WithDestroy). Deleting uploaded files would need
 	// Datastore.Allocate on the whole storage (which also holds other guests' backups and
 	// templates), so Mamela never does it: a person removes them (mamela lab cleanup).

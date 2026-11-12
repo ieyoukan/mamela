@@ -145,129 +145,147 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 		desired[res.ID()] = res
 	}
 
-	for _, c := range p.Changes {
-		if c.Status != plan.StatusChange {
-			continue
-		}
-		id := c.ID()
-		switch {
-		case c.Verdict == policy.Denied:
-			r.addAll(rep, c, OutcomeDenied, "denied by policy; Mamela never runs it")
-			continue
-		case c.Verdict == policy.ApprovalRequired && approval == nil:
-			r.addAll(rep, c, OutcomeNeedsApproval, "approve plan "+planDigest+" to run it")
-			continue
-		}
+	// Operations run in phases: every VM of the run is created before any is started, so that no
+	// first boot competes with another VM's disk import (a boot that waits too long for its disk
+	// ends in emergency mode).
+	for phase := range 2 {
+		for _, full := range p.Changes {
+			if full.Status != plan.StatusChange {
+				continue
+			}
+			c := full
+			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(o.Op) != phase })
+			if len(c.Operations) == 0 {
+				continue
+			}
+			id := c.ID()
+			switch {
+			case c.Verdict == policy.Denied:
+				r.addAll(rep, c, OutcomeDenied, "denied by policy; Mamela never runs it")
+				continue
+			case c.Verdict == policy.ApprovalRequired && approval == nil:
+				r.addAll(rep, c, OutcomeNeedsApproval, "approve plan "+planDigest+" to run it")
+				continue
+			}
 
-		current, found := findChange(now, id)
-		if found && current.Status == plan.StatusInSync {
-			// The effect is already visible (a previous run finished, or its response was lost).
+			current, found := findChange(now, id)
+			if found && current.Status == plan.StatusInSync {
+				// The effect is already visible (a previous run finished, or its response was lost).
+				for _, op := range c.Operations {
+					opID := OperationID(planDigest, id, op.Op)
+					if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
+						return nil, err
+					}
+					if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
+						return nil, err
+					}
+					o, err := r.Store.Operation(ctx, opID)
+					if err != nil {
+						return nil, err
+					}
+					if o.Stage != store.StageSucceeded {
+						rep.add(id, op.Op, OutcomeBusy, "another worker holds this operation")
+						rep.Stopped = &Stop{Code: "MAM-REC-0005", Message: "another worker is applying this plan",
+							Hint: "wait for it to finish, then run apply again"}
+						return rep, nil
+					}
+					rep.add(id, op.Op, OutcomeAlreadyDone, "observation shows it is done")
+				}
+				continue
+			}
+			if !found || !partOf(current, full) {
+				rep.Stopped = &Stop{Code: "MAM-REC-0002",
+					Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
+					Hint:    "make a new plan from a fresh observation and review it"}
+				r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)
+				return rep, nil
+			}
+
 			for _, op := range c.Operations {
 				opID := OperationID(planDigest, id, op.Op)
-				if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
-					return nil, err
+				if !slices.ContainsFunc(current.Operations, func(o plan.Operation) bool { return o.Op == op.Op }) {
+					// Part of the approved change is already visible (an earlier run did it, or its
+					// answer was lost): confirm it by observation instead of doing it again.
+					if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
+						return nil, err
+					}
+					if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
+						return nil, err
+					}
+					rep.add(id, op.Op, OutcomeAlreadyDone, "observation shows it is done")
+					continue
 				}
-				if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
-					return nil, err
-				}
-				o, err := r.Store.Operation(ctx, opID)
+				o, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op))
 				if err != nil {
 					return nil, err
 				}
-				if o.Stage != store.StageSucceeded {
+				if o.Stage == store.StageSucceeded {
+					rep.add(id, op.Op, OutcomeAlreadyDone, "the journal shows it succeeded")
+					continue
+				}
+				claimed, err := r.Store.Claim(ctx, opID, r.Owner, r.Lease)
+				if err != nil {
+					return nil, err
+				}
+				if !claimed {
 					rep.add(id, op.Op, OutcomeBusy, "another worker holds this operation")
 					rep.Stopped = &Stop{Code: "MAM-REC-0005", Message: "another worker is applying this plan",
 						Hint: "wait for it to finish, then run apply again"}
 					return rep, nil
 				}
-				rep.add(id, op.Op, OutcomeAlreadyDone, "observation shows it is done")
-			}
-			continue
-		}
-		if !found || !partOf(current, c) {
-			rep.Stopped = &Stop{Code: "MAM-REC-0002",
-				Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
-				Hint:    "make a new plan from a fresh observation and review it"}
-			r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)
-			return rep, nil
-		}
-
-		for _, op := range c.Operations {
-			opID := OperationID(planDigest, id, op.Op)
-			if !slices.ContainsFunc(current.Operations, func(o plan.Operation) bool { return o.Op == op.Op }) {
-				// Part of the approved change is already visible (an earlier run did it, or its
-				// answer was lost): confirm it by observation instead of doing it again.
-				if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
-					return nil, err
+				r.event(ctx, planDigest, id, "started", fmt.Sprintf("%s started (operation %s)", op.Op, opID))
+				applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, PlanDigest: planDigest, Op: op.Op, Resource: desired[id], Approved: full})
+				switch {
+				case applyErr == nil:
+					if err := r.Store.Finish(ctx, opID, r.Owner, store.StageSucceeded, ""); err != nil {
+						return nil, err
+					}
+					rep.add(id, op.Op, OutcomeDone, "")
+					r.event(ctx, planDigest, id, "succeeded", string(op.Op)+" succeeded")
+				case errors.Is(applyErr, ErrPartlyDone):
+					// Recorded like an unknown outcome: it must be observed before it is retried.
+					if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
+						return nil, err
+					}
+					rep.add(id, op.Op, OutcomePartial, applyErr.Error())
+					rep.Stopped = &Stop{Code: "MAM-REC-0006",
+						Message: fmt.Sprintf("%s on %s failed after some of its changes took effect: %v", op.Op, id, applyErr),
+						Hint:    "fix the cause, then run apply again: it observes first and continues from what is there"}
+					r.event(ctx, planDigest, id, "partly-done", rep.Stopped.Message)
+					return rep, nil
+				case errors.Is(applyErr, ErrUnknownOutcome):
+					if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
+						return nil, err
+					}
+					rep.add(id, op.Op, OutcomeUnknown, applyErr.Error())
+					rep.Stopped = &Stop{Code: "MAM-REC-0003",
+						Message: fmt.Sprintf("the outcome of %s on %s is unknown; Mamela does not assume it succeeded", op.Op, id),
+						Hint:    "run apply again: it observes first and either confirms the result or retries"}
+					r.event(ctx, planDigest, id, "unknown", rep.Stopped.Message)
+					return rep, nil
+				default:
+					if err := r.Store.Finish(ctx, opID, r.Owner, store.StageFailed, applyErr.Error()); err != nil {
+						return nil, err
+					}
+					rep.add(id, op.Op, OutcomeFailed, applyErr.Error())
+					rep.Stopped = &Stop{Code: "MAM-REC-0004",
+						Message: fmt.Sprintf("%s on %s failed: %v", op.Op, id, applyErr),
+						Hint:    "fix the cause, then run apply again; the failed operation is retried"}
+					r.event(ctx, planDigest, id, "failed", rep.Stopped.Message)
+					return rep, nil
 				}
-				if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
-					return nil, err
-				}
-				rep.add(id, op.Op, OutcomeAlreadyDone, "observation shows it is done")
-				continue
-			}
-			o, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op))
-			if err != nil {
-				return nil, err
-			}
-			if o.Stage == store.StageSucceeded {
-				rep.add(id, op.Op, OutcomeAlreadyDone, "the journal shows it succeeded")
-				continue
-			}
-			claimed, err := r.Store.Claim(ctx, opID, r.Owner, r.Lease)
-			if err != nil {
-				return nil, err
-			}
-			if !claimed {
-				rep.add(id, op.Op, OutcomeBusy, "another worker holds this operation")
-				rep.Stopped = &Stop{Code: "MAM-REC-0005", Message: "another worker is applying this plan",
-					Hint: "wait for it to finish, then run apply again"}
-				return rep, nil
-			}
-			r.event(ctx, planDigest, id, "started", fmt.Sprintf("%s started (operation %s)", op.Op, opID))
-			applyErr := r.Provider.Apply(ctx, Step{OperationID: opID, PlanDigest: planDigest, Op: op.Op, Resource: desired[id], Approved: c})
-			switch {
-			case applyErr == nil:
-				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageSucceeded, ""); err != nil {
-					return nil, err
-				}
-				rep.add(id, op.Op, OutcomeDone, "")
-				r.event(ctx, planDigest, id, "succeeded", string(op.Op)+" succeeded")
-			case errors.Is(applyErr, ErrPartlyDone):
-				// Recorded like an unknown outcome: it must be observed before it is retried.
-				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
-					return nil, err
-				}
-				rep.add(id, op.Op, OutcomePartial, applyErr.Error())
-				rep.Stopped = &Stop{Code: "MAM-REC-0006",
-					Message: fmt.Sprintf("%s on %s failed after some of its changes took effect: %v", op.Op, id, applyErr),
-					Hint:    "fix the cause, then run apply again: it observes first and continues from what is there"}
-				r.event(ctx, planDigest, id, "partly-done", rep.Stopped.Message)
-				return rep, nil
-			case errors.Is(applyErr, ErrUnknownOutcome):
-				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageUnknown, applyErr.Error()); err != nil {
-					return nil, err
-				}
-				rep.add(id, op.Op, OutcomeUnknown, applyErr.Error())
-				rep.Stopped = &Stop{Code: "MAM-REC-0003",
-					Message: fmt.Sprintf("the outcome of %s on %s is unknown; Mamela does not assume it succeeded", op.Op, id),
-					Hint:    "run apply again: it observes first and either confirms the result or retries"}
-				r.event(ctx, planDigest, id, "unknown", rep.Stopped.Message)
-				return rep, nil
-			default:
-				if err := r.Store.Finish(ctx, opID, r.Owner, store.StageFailed, applyErr.Error()); err != nil {
-					return nil, err
-				}
-				rep.add(id, op.Op, OutcomeFailed, applyErr.Error())
-				rep.Stopped = &Stop{Code: "MAM-REC-0004",
-					Message: fmt.Sprintf("%s on %s failed: %v", op.Op, id, applyErr),
-					Hint:    "fix the cause, then run apply again; the failed operation is retried"}
-				r.event(ctx, planDigest, id, "failed", rep.Stopped.Message)
-				return rep, nil
 			}
 		}
 	}
 	return rep, nil
+}
+
+// opPhase is the phase an operation runs in: starting a VM comes after everything else.
+func opPhase(op policy.Op) int {
+	if op == policy.OpStartVM {
+		return 1
+	}
+	return 0
 }
 
 func (r *Reconciler) addAll(rep *Report, c plan.Change, outcome Outcome, detail string) {

@@ -39,6 +39,8 @@ type fakePVE struct {
 	// Faults.
 	loseCreateResponse bool // perform the create, then drop the connection before answering
 	createTaskFails    bool // the create task ends with an error (Proxmox removes the VM again)
+	resizeRefused      bool // a disk resize is refused (after the create took effect)
+	resets             int
 	createStaysRunning bool // the create task never finishes; the VM stays locked outside the pool
 	taskStatusErrors   int  // answer this many task status reads with 503
 	noPoolAudit        bool // the token lacks Pool.Audit: /cluster/resources leaves out the pool
@@ -108,7 +110,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 }
 
 var (
-	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|status/stop|status/reboot|resize|agent/network-get-interfaces)$`)
+	vmPath    = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)/(config|status/current|status/start|status/stop|status/reboot|status/reset|resize|agent/network-get-interfaces)$`)
 	tasksPath = "/api2/json/nodes/n1/tasks"
 	vmDelete  = regexp.MustCompile(`^/api2/json/nodes/n1/qemu/(\d+)$`)
 	taskPath  = regexp.MustCompile(`^/api2/json/nodes/n1/tasks/([^/]+)/status$`)
@@ -368,9 +370,13 @@ func (f *fakePVE) create(w http.ResponseWriter, r *http.Request) {
 
 func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what string) {
 	need := map[string][]string{"config GET": {"VM.Audit"}, "status/current GET": {"VM.Audit"}, "status/start POST": {"VM.PowerMgmt"},
-		"status/reboot POST": {"VM.PowerMgmt"}, "status/stop POST": {"VM.PowerMgmt"},
+		"status/reboot POST": {"VM.PowerMgmt"}, "status/reset POST": {"VM.PowerMgmt"}, "status/stop POST": {"VM.PowerMgmt"},
 		"resize PUT": {"VM.Config.Disk"}, "agent/network-get-interfaces GET": {"VM.GuestAgent.Audit", "VM.GuestAgent.Unrestricted"}}
 	if privs := need[what+" "+r.Method]; privs != nil && !f.checkVM(w, vm, len(privs) > 1, privs...) {
+		return
+	}
+	if what == "resize" && f.resizeRefused {
+		http.Error(w, `{"data":null,"message":"resize refused: storage full"}`, http.StatusBadRequest)
 		return
 	}
 	switch {
@@ -438,6 +444,9 @@ func (f *fakePVE) vm(w http.ResponseWriter, r *http.Request, vm *fakeVM, what st
 		vm.pending = nil
 		vm.version++
 		reply(w, f.task(1, "qmreboot", vm.vmid))
+	case what == "status/reset" && r.Method == http.MethodPost:
+		f.resets++
+		reply(w, f.task(1, "qmreset", vm.vmid))
 	case what == "status/start" && r.Method == http.MethodPost:
 		f.starts++
 		vm.status = "running"

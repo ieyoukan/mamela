@@ -219,7 +219,9 @@ mamelet の安全装置（k3s）:
 - sha256 が承認したものと違えば、何も置かない。導入は承認ごとに一度だけ行う。
 - unit の中身は mamelet が決める。手で変えられた unit は観測で報告し、plan は止まる（MAM-PLAN-0204）。
 
-既知の問題（VM を複数台まとめて作るとき）: apply は VM を 1 台ずつ「作成 → 起動」する。先に起動した VM の初回起動が、次の VM のディスクのインポートと同じストレージで重なると、I/O 待ちで `/boot` のデバイスが時間切れになり、緊急モード（sulogin）で止まることがある。このとき qemu-guest-agent も mamelet も動かないので、`mamela lab tunnel` は VM のアドレスを読めない。インポートが終わってから、その VM を再起動すれば続きから起動する（cloud-init は終わっていない段階から続ける）。全台を作ってから起動するように apply を直すまでは、台数の多い宣言では、この症状に気をつける。
+**VM を複数台まとめて作るとき:** apply は、全台を作り終えてから起動する（作成は `create-vm`、起動は `start-vm` という別の操作で、`start-vm` は実行の最後にまとめて行う）。以前は 1 台ずつ「作成 → 起動」していたため、先に起動した VM の初回起動が次の VM のディスクのインポートと同じストレージで重なり、I/O 待ちで `/boot` のデバイスが時間切れになって緊急モード（sulogin）で止まった。作成が 1 台でも失敗した実行では、どの VM も起動しない（次の apply が続きから作って起動する）。
+
+**起動で止まった VM:** VM が 15 分を超えて動いているのに mamelet が一度も報告しなければ、plan はその VM の上のリソースを MAM-PLAN-0110 で止め、理由と対処を示す。コンソールで状態を確かめてから、`mamela reboot` で再起動する。緊急モードのように ACPI の要求に応えない guest には `--hard`（リセット）を使う。
 
 ## 5. preflight / postflight
 
@@ -267,6 +269,19 @@ preflight / postflight はどちらも読み取りだけで、一つでも BLOCK
 | L3 | 検証環境の VM 自体を Emela で宣言し、Mamela で管理する（dogfooding） | L1 と同じ |
 
 ローカル（macOS の QEMU + HVF、Ubuntu arm64 cloud image + NoCloud seed ISO）でも cloud-init と Agent の多くは試せる。L2 の前にローカルで Agent を固めると、実機での試行回数を減らせる。
+
+## 6.5 再起動（`mamela reboot`）
+
+起動で止まった VM（MAM-PLAN-0110）などを、Mamela の記録の中で再起動する。`mamela destroy` と同じく plan の外の明示的なコマンドで、所有の確認（pool、VMID の範囲、タグ、マーカー、VMID の予約）、名前の打ち直し、preflight と postflight を行う。変えるのは VM の電源の状態だけである。
+
+~~~bash
+mamela reboot --site lab/site.local.toml k3s-agent-1                                  # 何をするかを表示するだけ
+mamela reboot --site lab/site.local.toml --confirm k3s-agent-1 k3s-agent-1            # guest に再起動を頼む（ACPI）
+mamela reboot --site lab/site.local.toml --hard --confirm k3s-agent-1 k3s-agent-1     # 応答しない guest をリセットする
+~~~
+
+- 動いている VM だけを再起動する。止まっている VM は、plan と apply が起動する（`start-vm`）。
+- 権限は `VM.PowerMgmt` で、増えない（`status/reboot` と `status/reset`）。
 
 ## 7. 後片付け（`mamela destroy` と `mamela lab cleanup`）
 

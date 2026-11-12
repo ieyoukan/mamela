@@ -336,3 +336,34 @@ func TestK3sAgentOfAStaticServer(t *testing.T) {
 		t.Fatalf("agent of a static server: %+v %+v", c.Diffs, c.Note)
 	}
 }
+
+// A stopped VM is started (with approval) and its node resources wait. A VM that has been running
+// long past a first boot without its agent ever reporting is called out, with what to do.
+func TestStoppedVMAndSilentAgent(t *testing.T) {
+	s := state.Empty(t0)
+	s.VMs["app-server"] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", Network: "dhcp",
+		Stopped: true, ObservedAt: t0}
+	p := Build(desired(t), s, policy.Default)
+	vm := find(t, p, "VirtualMachine app-server")
+	if len(vm.Operations) != 1 || vm.Operations[0].Op != policy.OpStartVM || vm.Verdict != policy.ApprovalRequired {
+		t.Fatalf("stopped VM: %+v", vm)
+	}
+	if c := find(t, p, "NodePackage app-server/nginx"); c.Note == nil || c.Note.Code != "MAM-PLAN-0111" {
+		t.Fatalf("package of a stopped VM: %+v", c.Note)
+	}
+
+	young := s.VMs["app-server"]
+	young.Stopped, young.UptimeSeconds = false, int64((5 * time.Minute).Seconds())
+	s.VMs["app-server"] = young
+	if c := find(t, Build(desired(t), s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Fatalf("young VM: %+v", c)
+	}
+	old := young
+	old.UptimeSeconds = int64((40 * time.Minute).Seconds())
+	s.VMs["app-server"] = old
+	c := find(t, Build(desired(t), s, policy.Default), "NodePackage app-server/nginx")
+	if c.Status != StatusBlocked || c.Note.Code != "MAM-PLAN-0110" || !strings.Contains(c.Note.Message, "40m") ||
+		!strings.Contains(c.Note.Hint, "mamela reboot app-server") {
+		t.Fatalf("silent agent: %+v", c.Note)
+	}
+}

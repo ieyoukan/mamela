@@ -29,6 +29,7 @@ Usage:
   mamela approve <plan-digest>        approve exactly that plan
   mamela apply --site <file> <plan-digest>  carry out an approved plan on the lab Proxmox
   mamela destroy --site <file> <vm>   destroy a VM Mamela created (shows it first; needs --confirm <vm>)
+  mamela reboot --site <file> <vm>    restart a VM Mamela created, for example one stuck at boot (--hard resets it; needs --confirm <vm>)
   mamela serve --site <file>          serve mamelet (the agent in lab VMs): enrollment, revisions, reports
   mamela lab <bootstrap|preflight|postflight|tunnel>  set up and check the live test lab (docs/lab.md)
   mamela provider <inspect|trust>     check a provider program; trust a native one
@@ -66,6 +67,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "destroy":
 		return runDestroy(ctx, args[1:], stdout, stderr)
+	case "reboot":
+		return runReboot(ctx, args[1:], stdout, stderr)
 	case "provider":
 		return runProvider(ctx, args[1:], stdout, stderr)
 	case "toolchain":

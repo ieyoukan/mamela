@@ -38,7 +38,10 @@ func Stricter(a, b Verdict) Verdict {
 type Op = protocol.Op
 
 const (
-	OpCreateVM       Op = "create-vm"
+	OpCreateVM Op = "create-vm"
+	// OpStartVM starts a stopped VM. A new VM is created stopped and started only after every VM of
+	// the run is created, so that no first boot competes with another VM's disk import.
+	OpStartVM        Op = "start-vm"
 	OpResizeVMCPU    Op = "resize-vm-cpu"
 	OpResizeVMMemory Op = "resize-vm-memory"
 	OpGrowVMDisk     Op = "grow-vm-disk"
@@ -173,6 +176,8 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpReplaceVMImage:
 		return Decision{Denied, "MAM-POL-0302", "changing the image would mean replacing the VM and its data; Mamela never does it",
 			"declare a new VM with the new image, move the workload, then retire the old VM by hand"}
+	case OpStartVM:
+		return Decision{ApprovalRequired, "MAM-POL-0211", "starting a VM runs its guest (for a new VM, its first boot)", ""}
 	case OpChangeVMNetwork:
 		return Decision{Denied, "MAM-POL-0307", "a VM gets its network once, when it is created; changing it in place could cut it off the network, so Mamela never does it",
 			"declare a new VM with the new network and move the workload, or restore the declared network"}
