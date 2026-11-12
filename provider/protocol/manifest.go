@@ -80,6 +80,9 @@ type Kind struct {
 	// Node: resources of this kind are machines mamelet runs on (ADR 0004). Their observation
 	// reports Observed.Node, and node resources (packages, services, k3s) may be declared on them.
 	Node bool `json:"node,omitempty"`
+	// Spec are the fields of the kind's spec (ADR 0009), when the provider gives them: its Pome's
+	// types and functions can then be generated.
+	Spec []Field `json:"spec,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -388,6 +391,9 @@ func (m Manifest) Check() error {
 	for _, k := range m.Kinds {
 		if k.Kind == "" {
 			return fmt.Errorf("manifest %s: a kind without a name", m.Provider)
+		}
+		if err := CheckFields(k.Spec); err != nil {
+			return fmt.Errorf("manifest %s: %s spec: %w", m.Provider, k.Kind, err)
 		}
 		seen := map[Op]bool{}
 		for _, o := range k.Operations {

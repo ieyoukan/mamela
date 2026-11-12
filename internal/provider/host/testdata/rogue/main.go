@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/examples/kv/kvprovider"
+	"github.com/ieyoukan/mamela/provider/kit"
 	"github.com/ieyoukan/mamela/provider/protocol"
 	"github.com/ieyoukan/mamela/provider/sdk"
 )
@@ -20,7 +21,7 @@ var mode string
 // readFile is set by readfile.go (build tag readfile): a provider that reads files.
 var readFile func() string
 
-type rogue struct{ kvprovider.Provider }
+type rogue struct{ *kit.Provider }
 
 func (r rogue) Manifest() protocol.Manifest {
 	m := r.Provider.Manifest()
@@ -115,8 +116,8 @@ func main() {
 	if mode == "deaf" {
 		// Answers describe, then never reads its input again.
 		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		sdk.ServeIO(rogue{}, strings.NewReader(line), os.Stdout)
+		sdk.ServeIO(rogue{kvprovider.Provider}, strings.NewReader(line), os.Stdout)
 		time.Sleep(time.Hour)
 	}
-	sdk.Serve(rogue{})
+	sdk.Serve(rogue{kvprovider.Provider})
 }
