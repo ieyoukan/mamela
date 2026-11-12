@@ -3,10 +3,17 @@
 # which packages apt would install.
 
 import Std.Console.{SystemConsole}
-import Mamela.{Vm}
+import Mamela.{Vm, Dhcp}
 
 fn infrastructure() -> Mamela.Graph {
-  web = Vm(name: "mamela-l2", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+  web = Vm(
+    name: "mamela-l2",
+    cpu: 1,
+    memory_mib: 1024,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
 
   Mamela.empty()
     |> Mamela.vm(web)

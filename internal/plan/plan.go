@@ -99,7 +99,7 @@ func Build(g *graph.Graph, snap state.Snapshot, pol policy.Policy) *Plan {
 
 // BuildFor computes the plan for the providers whose contracts have the given digest.
 func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers string) *Plan {
-	b := builder{snap: snap, pol: pol}
+	b := builder{snap: snap, pol: pol, g: g}
 	p := &Plan{Inputs: Inputs{
 		RevisionDigest:  g.Digest(),
 		SnapshotDigest:  snap.Digest(),
@@ -207,6 +207,7 @@ func SameProviderChanges(fresh, approved []protocol.Change) bool {
 type builder struct {
 	snap state.Snapshot
 	pol  policy.Policy
+	g    *graph.Graph
 }
 
 func (b builder) stale(observedAt time.Time) bool {
@@ -226,7 +227,7 @@ func (b builder) vm(r graph.Resource) Change {
 	if !exists {
 		c.Diffs = []Diff{
 			{"cpu", "", itoa(want.CPU)}, {"memoryMiB", "", itoa(want.MemoryMiB)},
-			{"diskGiB", "", itoa(want.DiskGiB)}, {"image", "", want.Image},
+			{"diskGiB", "", itoa(want.DiskGiB)}, {"image", "", want.Image}, {"network", "", want.Network.String()},
 		}
 		return b.withOps(c, policy.Subject{Op: policy.OpCreateVM})
 	}
@@ -260,6 +261,10 @@ func (b builder) vm(r graph.Resource) Change {
 	if got.Image != want.Image {
 		c.Diffs = append(c.Diffs, Diff{"image", got.Image, want.Image})
 		subjects = append(subjects, policy.Subject{Op: policy.OpReplaceVMImage})
+	}
+	if got.Network != "" && got.Network != want.Network.String() {
+		c.Diffs = append(c.Diffs, Diff{"network", got.Network, want.Network.String()})
+		subjects = append(subjects, policy.Subject{Op: policy.OpChangeVMNetwork})
 	}
 	return b.withOps(c, subjects...)
 }
@@ -396,7 +401,10 @@ func (b builder) k3s(r graph.Resource) Change {
 		return b.withOps(c)
 	}
 	server := ""
-	if want.Role == graph.K3sAgent {
+	if want.Role == graph.K3sAgent && b.g.StaticIP(want.Server) != "" {
+		// The server's declared address: an agent never waits for, or follows, what is reported.
+		server = graph.K3sServerURL(b.g.StaticIP(want.Server))
+	} else if want.Role == graph.K3sAgent {
 		srv := b.snap.K3s[want.Server+"/k3s"]
 		if len(srv.Addresses) == 0 {
 			c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0109",

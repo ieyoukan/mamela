@@ -51,7 +51,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0103 | 参照している node が Graph にない |
 | MAM-GRAPH-0104 | 名前が `<node>/<package>` などの形と合わない |
 | MAM-GRAPH-0105 | 値が範囲外 |
-| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、イメージ名、`Present` 以外の状態） |
+| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、イメージ名、`Present` 以外の状態、ネットワーク） |
+| MAM-GRAPH-0107 | 同じ固定アドレスが複数の VM に宣言されている |
 
 ## MAM-POL — ポリシーの判定
 
@@ -75,6 +76,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
 | MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
 | MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある |
+| MAM-POL-0307 | Denied | VM のネットワークの変更（作成時に一度だけ与える。その場で変えると VM が切り離されうる） |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 
 ## MAM-PLAN — 計画の状態
@@ -138,6 +140,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | LAB-0301 | BLOCK | VMID 予約範囲に、pool の外のゲストがいる（他人のゲストか、作成タスクが終わっていない） |
 | LAB-0302 | BLOCK | pool の中に、VMID 予約範囲外のゲストがいる |
 | LAB-0303 | BLOCK | VM 数の予算を超える |
+| LAB-0304 | BLOCK | 作る VM のネットワークを site が許さない（範囲外の固定アドレス、許されていない DHCP）。plan の時点で止める |
 | LAB-0400 | ok | 管理外のゲストはすべて変わっていない |
 | LAB-0401 | BLOCK | 管理外のゲストが消えた |
 | LAB-0402 | BLOCK | 管理外のゲストの状態（running / stopped）が変わった |

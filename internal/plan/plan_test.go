@@ -2,6 +2,7 @@ package plan
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,7 +13,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/state"
 )
 
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
 
 var t0 = time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 
@@ -282,5 +283,56 @@ func TestServiceWaitsForItsUnit(t *testing.T) {
 	c := find(t, Build(desired(t), s, policy.Default), "NodeService app-server/nginx")
 	if c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0106" || len(c.Operations) != 0 {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// A VM keeps the network it was created with: a declared change is shown and denied. VMs made
+// before networks were recorded observe as "dhcp".
+func TestNetworkChangeIsDenied(t *testing.T) {
+	s := converged()
+	vm := s.VMs["app-server"]
+	vm.Network = "static 192.0.2.10/24 via 192.0.2.1 dns 192.0.2.1"
+	s.VMs["app-server"] = vm
+	c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server")
+	if c.Verdict != policy.Denied || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpChangeVMNetwork ||
+		c.Operations[0].Decision.Code != "MAM-POL-0307" || len(c.Diffs) != 1 || c.Diffs[0].To != "dhcp" {
+		t.Fatalf("%+v", c)
+	}
+	vm.Network = "dhcp"
+	s.VMs["app-server"] = vm
+	if c := find(t, Build(desired(t), s, policy.Default), "VirtualMachine app-server"); c.Status != StatusInSync {
+		t.Fatalf("same network: %+v", c)
+	}
+	created := find(t, Build(desired(t), state.Empty(t0), policy.Default), "VirtualMachine app-server")
+	if !slices.ContainsFunc(created.Diffs, func(d Diff) bool { return d.Field == "network" && d.To == "dhcp" }) {
+		t.Fatalf("create does not show the network: %+v", created.Diffs)
+	}
+}
+
+// An agent of a server with a declared static address joins that address at once: it neither
+// waits for the server's report nor follows it.
+func TestK3sAgentOfAStaticServer(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	vm := func(name, network string) string {
+		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":` + network + `}}`
+	}
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v1","resources":[` +
+		vm("srv", `{"mode":"static","address":"192.0.2.40/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`) + `,` + vm("ag", `{"mode":"dhcp"}`) + `,` +
+		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3s","name":"ag/k3s","spec":{"node":"ag","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	for _, n := range []string{"srv", "ag"} {
+		s.VMs[n] = state.VM{Managed: true, CPU: 1, MemoryMiB: 1024, DiskGiB: 10, Image: "ubuntu-24.04", ObservedAt: t0}
+	}
+	s.K3s = map[string]state.K3s{
+		"srv/k3s": {Installed: true, SHA256: sha, Addresses: []string{"10.42.0.0", "192.0.2.77"}, ObservedAt: t0},
+		"ag/k3s":  {ObservedAt: t0},
+	}
+	c := find(t, Build(g, s, policy.Default), "NodeK3s ag/k3s")
+	if !slices.ContainsFunc(c.Diffs, func(d Diff) bool { return d.Field == "server" && d.To == "https://192.0.2.40:6443" }) {
+		t.Fatalf("agent of a static server: %+v %+v", c.Diffs, c.Note)
 	}
 }

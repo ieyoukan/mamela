@@ -85,7 +85,7 @@ func TestEvaluateHomelab(t *testing.T) {
 	}
 	// The same digest as the Go-only fixture in internal/graph: Emela output and the Go
 	// canonical form agree byte for byte.
-	const want = "sha256:d108bb2c17f95992ec7b6082f65ad9849fc2fd21f39be45b735ce18df41c2ad4"
+	const want = "sha256:106ce1583fdfaf00e799f2ad39ebe7c94932c4856ca0a276c388c3a9a8ddd34c"
 	if res.Digest != want {
 		t.Errorf("digest = %s, want %s", res.Digest, want)
 	}

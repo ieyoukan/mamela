@@ -115,7 +115,7 @@ Emela 側は「Graph を返す純粋な関数」と「それを stdout に書く
 import Mamela.{Graph, Vm, Service}
 
 fn infrastructure() -> Graph {
-  app = Vm(name: "app-server", cpu: 4, memory_mib: 8192, image: "ubuntu-24.04")
+  app = Vm(name: "app-server", cpu: 4, memory_mib: 8192, image: "ubuntu-24.04", network: Dhcp)
 
   Graph.empty()
     |> Graph.vm(app)

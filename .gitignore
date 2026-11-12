@@ -18,6 +18,7 @@ target/
 
 # Lab site-specific values (hostnames, addresses, token paths)
 /lab/*.local.toml
+/lab/local/
 
 # Pinned toolchain (scripts/install-toolchain.sh)
 /.tools/

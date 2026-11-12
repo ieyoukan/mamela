@@ -2,6 +2,7 @@ package graph
 
 import (
 	"fmt"
+	"net/netip"
 	"regexp"
 )
 
@@ -48,6 +49,7 @@ func Validate(g *Graph) error {
 	seen := map[string]bool{}
 	nodes := map[string]bool{}
 	k3sServers := map[string]bool{}
+	addresses := map[string]string{} // static address -> VM
 	for _, r := range g.Resources {
 		if seen[r.ID()] {
 			add(r, CodeDuplicateResource, "", fmt.Sprintf("%s is declared more than once", r.ID()),
@@ -91,6 +93,17 @@ func Validate(g *Graph) error {
 			if !imageRe.MatchString(s.Image) {
 				add(r, CodeInvalidValue, "spec.image", fmt.Sprintf("image %q is not a valid image name", s.Image),
 					"use a name such as \"ubuntu-24.04\"")
+			}
+			for _, p := range checkNetwork(s.Network) {
+				add(r, CodeInvalidValue, "spec.network", p, networkHint)
+			}
+			if ip := s.Network.IP(); ip != "" {
+				if other, dup := addresses[ip]; dup {
+					add(r, CodeDuplicateAddress, "spec.network.address", fmt.Sprintf("address %s is also declared for VM %s", ip, other),
+						"give each VM its own address")
+				} else {
+					addresses[ip] = r.Name
+				}
 			}
 		case KindNodePackage:
 			s := r.NodePackage
@@ -159,4 +172,57 @@ func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]bool) {
 		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared as a VirtualMachine in this graph", node),
 			"declare the VM in the same graph, or fix the node name")
 	}
+}
+
+const networkHint = "declare Dhcp, or Static(address: \"192.0.2.10/24\", gateway: \"192.0.2.1\", dns: [\"192.0.2.1\"])"
+
+// checkNetwork says what is wrong with a VM's network, if anything.
+func checkNetwork(n Network) []string {
+	switch n.Mode {
+	case NetworkDHCP:
+		return nil
+	case NetworkStatic:
+	default:
+		return []string{fmt.Sprintf("network mode %q is not dhcp or static", n.Mode)}
+	}
+	var out []string
+	prefix, err := netip.ParsePrefix(n.Address)
+	switch {
+	case err != nil || !prefix.Addr().Is4():
+		return []string{fmt.Sprintf("address %q is not an IPv4 address with a prefix length, such as 192.0.2.10/24", n.Address)}
+	case prefix.Bits() < 8 || prefix.Bits() > 30:
+		out = append(out, fmt.Sprintf("prefix length /%d is outside /8../30", prefix.Bits()))
+	}
+	addr, subnet := prefix.Addr(), prefix.Masked()
+	if !addr.IsGlobalUnicast() || addr.IsLoopback() {
+		out = append(out, fmt.Sprintf("address %s is not a unicast host address", addr))
+	} else if addr == subnet.Addr() || addr == lastAddr(subnet) {
+		out = append(out, fmt.Sprintf("address %s is the network or broadcast address of %s", addr, subnet))
+	}
+	gw, err := netip.ParseAddr(n.Gateway)
+	switch {
+	case err != nil || !gw.Is4():
+		out = append(out, fmt.Sprintf("gateway %q is not an IPv4 address", n.Gateway))
+	case !subnet.Contains(gw):
+		out = append(out, fmt.Sprintf("gateway %s is not in the address's subnet %s", gw, subnet))
+	case gw == addr:
+		out = append(out, fmt.Sprintf("gateway %s is the VM's own address", gw))
+	}
+	if len(n.DNS) < 1 || len(n.DNS) > 3 {
+		out = append(out, fmt.Sprintf("%d name servers; declare 1 to 3", len(n.DNS)))
+	}
+	for _, d := range n.DNS {
+		if a, err := netip.ParseAddr(d); err != nil || !a.Is4() {
+			out = append(out, fmt.Sprintf("name server %q is not an IPv4 address", d))
+		}
+	}
+	return out
+}
+
+// lastAddr is the last (broadcast) address of an IPv4 prefix.
+func lastAddr(p netip.Prefix) netip.Addr {
+	b := p.Addr().As4()
+	host := uint32(1)<<(32-p.Bits()) - 1
+	v := uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]) | host
+	return netip.AddrFrom4([4]byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)})
 }

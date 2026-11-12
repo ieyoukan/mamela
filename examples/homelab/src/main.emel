@@ -2,10 +2,17 @@
 # Evaluating it only prints the desired state; it changes nothing.
 
 import Std.Console.{SystemConsole}
-import Mamela.{Vm}
+import Mamela.{Vm, Dhcp}
 
 fn infrastructure() -> Mamela.Graph {
-  app = Vm(name: "app-server", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+  app = Vm(
+    name: "app-server",
+    cpu: 1,
+    memory_mib: 1024,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
 
   Mamela.empty()
     |> Mamela.vm(app)

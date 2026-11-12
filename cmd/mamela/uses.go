@@ -59,7 +59,7 @@ func writeOp(w io.Writer, indent, label string, reqs []spec.Requirement) bool {
 	const width = 17
 	pad := func(first bool) string {
 		if first {
-			return fmt.Sprintf("%s%-*s", indent, width, label)
+			return fmt.Sprintf("%s%-*s", indent, width, label+" ")
 		}
 		return indent + strings.Repeat(" ", width)
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
 )
 
@@ -55,7 +56,7 @@ func readISO(t *testing.T, img []byte) (string, map[string][]byte) {
 
 func params() Params {
 	return Params{Node: "web", VMID: 7001, User: "mamela", SSHPublicKeys: []string{"ssh-ed25519 AAAA alice@laptop"},
-		EnrollToken: "tok-123", MameletBinary: bytes.Repeat([]byte{0x7f, 'E', 'L', 'F'}, 1500),
+		EnrollToken: "tok-123", MameletBinary: bytes.Repeat([]byte{0x7f, 'E', 'L', 'F'}, 1500), Network: graph.Network{Mode: graph.NetworkDHCP},
 		Mamelet: mamelet.Config{Node: "web", VMID: 7001, Server: "https://127.0.0.1:8443", CA: "-----BEGIN CERTIFICATE-----\n",
 			RevisionKey: make([]byte, ed25519.PublicKeySize), StateDir: "/var/lib/mamelet", AllowedOrigins: []string{"Ubuntu:"}}}
 }
@@ -106,9 +107,33 @@ func TestSeedImage(t *testing.T) {
 	if !strings.Contains(string(ud), "sha256sum -c") {
 		t.Fatal("the binary is not verified before it is installed")
 	}
-	var netcfg map[string]any
-	if err := json.Unmarshal(got["network-config"], &netcfg); err != nil || netcfg["version"] != float64(2) {
+	if string(got["network-config"]) != `{"ethernets":{"primary":{"dhcp4":true,"match":{"name":"e*"}}},"version":2}` {
 		t.Fatalf("network-config %s", got["network-config"])
+	}
+}
+
+// A static network is written as netplan: the address, a default route and the name servers.
+func TestSeedStaticNetwork(t *testing.T) {
+	p := params()
+	p.Network = graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.10/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1", "198.51.100.1"}}
+	files, err := Files(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"ethernets":{"primary":{"addresses":["192.0.2.10/24"],"dhcp4":false,"match":{"name":"e*"},` +
+		`"nameservers":{"addresses":["192.0.2.1","198.51.100.1"]},"routes":[{"to":"default","via":"192.0.2.1"}]}},"version":2}`
+	for _, f := range files {
+		if f.Name == "network-config" && string(f.Data) != want {
+			t.Fatalf("network-config\n%s\nwant\n%s", f.Data, want)
+		}
+	}
+	p.Network = graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.10/24"}
+	if _, err := Files(p); err == nil {
+		t.Fatal("made a static network without a gateway and name servers")
+	}
+	p.Network = graph.Network{}
+	if _, err := Files(p); err == nil {
+		t.Fatal("made a seed without a network mode")
 	}
 }
 
@@ -132,8 +157,9 @@ func TestSeedRefusesBadInput(t *testing.T) {
 }
 
 type memStore struct {
-	seeds map[string]string
-	n     int
+	seeds    map[string]string
+	n        int
+	reusable string
 }
 
 func (m *memStore) IssueEnrollToken(_ context.Context, node string, vmid int, seed string, ttl time.Duration) (string, error) {
@@ -145,22 +171,32 @@ func (m *memStore) SetEnrollSeed(_ context.Context, token, seed string) error {
 	return nil
 }
 func (m *memStore) ReusableSeed(context.Context, string, int, time.Duration) (string, bool, error) {
-	return "", false, nil
+	return m.reusable, m.reusable != "", nil
 }
 
 func TestMakerNamesSeedsByContent(t *testing.T) {
 	st := &memStore{seeds: map[string]string{}}
 	m := &Maker{Store: st, Server: "https://127.0.0.1:8443", CA: []byte("ca"), RevisionKey: make([]byte, 32), User: "mamela",
 		AllowedOrigins: []string{"Ubuntu:"}, MameletBinary: []byte("bin")}
-	a, imgA, err := m.New(context.Background(), "web", 7001)
+	dhcp := graph.Network{Mode: graph.NetworkDHCP}
+	a, imgA, err := m.New(context.Background(), "web", 7001, dhcp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, _, _ := m.New(context.Background(), "web", 7001)
+	b, _, _ := m.New(context.Background(), "web", 7001, dhcp)
 	if a == b || !strings.HasPrefix(a, "mamela-seed-web-7001-") || !strings.HasSuffix(a, ".iso") {
 		t.Fatalf("names %s %s (each seed has its own token, so its own name)", a, b)
 	}
 	if st.seeds["token-b"] != a || len(imgA) == 0 {
 		t.Fatalf("seed not recorded with its token: %v", st.seeds)
+	}
+	// A seed made for one network is never reused for another.
+	st.reusable = a
+	if f, ok, _ := m.Reusable(context.Background(), "web", 7001, dhcp); !ok || f != a {
+		t.Fatalf("the seed for the same network is not reused: %q %v", f, ok)
+	}
+	static := graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.10/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}
+	if f, ok, _ := m.Reusable(context.Background(), "web", 7001, static); ok {
+		t.Fatalf("a DHCP seed %q is reused for a static network", f)
 	}
 }

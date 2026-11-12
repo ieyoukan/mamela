@@ -18,13 +18,15 @@ const (
 )
 
 type marker struct {
-	Name  string
-	Image string
-	State string
+	Name    string
+	Image   string
+	Network string // graph.Network.String(): how the VM was given its address at creation
+	State   string
 }
 
 func (m marker) String() string {
-	return fmt.Sprintf("%s\nmamela-name: %s\nmamela-image: %s\nmamela-state: %s\n", markerHeader, m.Name, m.Image, m.State)
+	return fmt.Sprintf("%s\nmamela-name: %s\nmamela-image: %s\nmamela-network: %s\nmamela-state: %s\n",
+		markerHeader, m.Name, m.Image, m.Network, m.State)
 }
 
 // parseMarker reads the marker from a description. ok is false if there is none or it is malformed.
@@ -47,9 +49,14 @@ func parseMarker(description string) (marker, bool) {
 			m.Name = value
 		case "mamela-image":
 			m.Image = value
+		case "mamela-network":
+			m.Network = value
 		case "mamela-state":
 			m.State = value
 		}
+	}
+	if m.Network == "" {
+		m.Network = "dhcp" // VMs made before networks were declared all used DHCP
 	}
 	ok := header && m.Name != "" && m.Image != "" && (m.State == stateCreating || m.State == stateReady)
 	return m, ok

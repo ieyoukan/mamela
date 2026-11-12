@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -72,10 +73,10 @@ type ImageFile interface {
 
 // Seeds makes the cloud-init seed images that install mamelet (implemented by seed.Maker).
 type Seeds interface {
-	// Reusable names a seed already made for the VM that can still be used.
-	Reusable(ctx context.Context, node string, vmid int) (string, bool, error)
+	// Reusable names a seed already made for the VM, with this network, that can still be used.
+	Reusable(ctx context.Context, node string, vmid int, network graph.Network) (string, bool, error)
 	// New makes a seed with a fresh one-time enrollment token and returns its file name and image.
-	New(ctx context.Context, node string, vmid int) (string, []byte, error)
+	New(ctx context.Context, node string, vmid int, network graph.Network) (string, []byte, error)
 }
 
 // Images opens verified image files (implemented by ImageCache).
@@ -97,6 +98,9 @@ type Config struct {
 	MaxCPU       int64
 	MaxMemoryMiB int64
 	MaxDiskGiB   int64
+	// Networks: DHCP allowed, and the range of static addresses (invalid when there is none).
+	AllowDHCP               bool
+	StaticFirst, StaticLast netip.Addr
 
 	// Cloud-init for new VMs: the login user and its SSH public keys (one per line; may be empty).
 	User           string
@@ -173,7 +177,7 @@ func (p *Provider) observed(v lab, managed bool, now time.Time) state.VM {
 		vm.DiskGiB = size >> 30
 	}
 	if v.hasMk {
-		vm.Image = v.marker.Image
+		vm.Image, vm.Network = v.marker.Image, v.marker.Network
 	}
 	return vm
 }
@@ -306,6 +310,9 @@ func (p *Provider) checkSpec(name string, s graph.VirtualMachineSpec) (Image, er
 	case s.DiskGiB < img.MinDiskGiB:
 		return img, fmt.Errorf("VM %s: image %s needs a disk of at least %d GiB, got %d", name, s.Image, img.MinDiskGiB, s.DiskGiB)
 	}
+	if err := s.Network.Allowed(c.AllowDHCP, c.StaticFirst, c.StaticLast); err != nil {
+		return img, fmt.Errorf("VM %s: %w", name, err)
+	}
 	return img, nil
 }
 
@@ -354,7 +361,7 @@ func (p *Provider) create(ctx context.Context, name string, spec graph.VirtualMa
 	}
 	seedVol := ""
 	if p.Seeds != nil {
-		if seedVol, err = p.ensureSeed(ctx, name, vmid); err != nil {
+		if seedVol, err = p.ensureSeed(ctx, name, vmid, spec.Network); err != nil {
 			return fmt.Errorf("VM %s: %w", name, err)
 		}
 	}
@@ -549,7 +556,7 @@ func (c Config) createParams(name string, spec graph.VirtualMachineSpec, vmid in
 		"name": {name},
 		"pool": {c.Pool},
 		// No tags: Proxmox checks them before the VM is in the pool. finish adds the tag.
-		"description": {marker{Name: name, Image: spec.Image, State: stateCreating}.String()},
+		"description": {marker{Name: name, Image: spec.Image, Network: spec.Network.String(), State: stateCreating}.String()},
 		"ostype":      {"l26"},
 		"cores":       {strconv.FormatInt(spec.CPU, 10)},
 		"memory":      {strconv.FormatInt(spec.MemoryMiB, 10)},
@@ -570,7 +577,12 @@ func (c Config) createParams(name string, spec graph.VirtualMachineSpec, vmid in
 		return params
 	}
 	params.Set("ide2", c.DiskStorage+":cloudinit")
-	params.Set("ipconfig0", "ip=dhcp")
+	if n := spec.Network; n.Mode == graph.NetworkStatic {
+		params.Set("ipconfig0", "ip="+n.Address+",gw="+n.Gateway)
+		params.Set("nameserver", strings.Join(n.DNS, " "))
+	} else {
+		params.Set("ipconfig0", "ip=dhcp")
+	}
 	params.Set("ciuser", c.User)
 	if keys := strings.TrimSpace(c.SSHPublicKeys); keys != "" {
 		// Proxmox expects the keys URL-encoded inside the (also encoded) form value.
@@ -586,14 +598,21 @@ func CreateParamNames(withSeed bool) []string {
 	if withSeed {
 		seed = "i:iso/s.iso"
 	}
-	return slices.Sorted(maps.Keys(c.createParams("n", graph.VirtualMachineSpec{CPU: 1, MemoryMiB: 1, Image: "x"}, 1, "v", seed)))
+	names := map[string]bool{}
+	for _, n := range []graph.Network{{Mode: graph.NetworkDHCP},
+		{Mode: graph.NetworkStatic, Address: "192.0.2.10/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}} {
+		for k := range c.createParams("n", graph.VirtualMachineSpec{CPU: 1, MemoryMiB: 1, Image: "x", Network: n}, 1, "v", seed) {
+			names[k] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(names))
 }
 
 // ensureSeed returns the seed volume for the VM, uploading a new seed unless one made for it earlier
 // (a retried create) is still on the storage and its token still good.
-func (p *Provider) ensureSeed(ctx context.Context, name string, vmid int) (string, error) {
+func (p *Provider) ensureSeed(ctx context.Context, name string, vmid int, network graph.Network) (string, error) {
 	volid := func(file string) string { return p.Config.ImageStorage + ":iso/" + file }
-	if file, ok, err := p.Seeds.Reusable(ctx, name, vmid); err != nil {
+	if file, ok, err := p.Seeds.Reusable(ctx, name, vmid, network); err != nil {
 		return "", err
 	} else if ok {
 		vols, err := p.API.StorageContent(ctx, p.Config.Node, p.Config.ImageStorage, "iso")
@@ -604,7 +623,7 @@ func (p *Provider) ensureSeed(ctx context.Context, name string, vmid int) (strin
 			return volid(file), nil
 		}
 	}
-	file, img, err := p.Seeds.New(ctx, name, vmid)
+	file, img, err := p.Seeds.New(ctx, name, vmid, network)
 	if err != nil {
 		return "", fmt.Errorf("make the cloud-init seed: %w", err)
 	}

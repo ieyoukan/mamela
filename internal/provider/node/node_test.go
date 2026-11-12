@@ -22,7 +22,7 @@ import (
 )
 
 const desiredJSON = `{"schema":"mamela-graph/v1","resources":[
-{"kind":"VirtualMachine","name":"app","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04"}},
+{"kind":"VirtualMachine","name":"app","spec":{"cpu":1,"memoryMiB":1024,"diskGiB":10,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}},
 {"kind":"NodePackage","name":"app/nginx","spec":{"node":"app","package":"nginx","state":"Present"}},
 {"kind":"NodeService","name":"app/nginx","spec":{"node":"app","service":"nginx","enabled":true,"running":true}}]}`
 

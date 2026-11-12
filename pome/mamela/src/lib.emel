@@ -16,8 +16,17 @@ pub const SCHEMA = "mamela-graph/v1"
 ## The schema of a graph with resources of providers.
 pub const SCHEMA_V2 = "mamela-graph/v2"
 
+## How a VM gets its IPv4 address, given to it when it is created. There is no default: a
+## declaration says `Dhcp` or `Static(...)`. `address` has its prefix length ("192.0.2.10/24"),
+## `gateway` is in its subnet, and `dns` names 1 to 3 name servers. A site may allow static
+## addresses only from a range of its own.
+pub enum Network {
+  Dhcp
+  Static(address: String, gateway: String, dns: List[String])
+}
+
 ## A virtual machine. `memory_mib` is in MiB and `disk_gib` in GiB.
-pub type Vm(name: String, cpu: Int, memory_mib: Int, disk_gib: Int, image: String)
+pub type Vm(name: String, cpu: Int, memory_mib: Int, disk_gib: Int, image: String, network: Network)
 
 ## An APT package that should be present on a node.
 pub type Package(node: String, name: String)
@@ -111,8 +120,25 @@ fn vm_json(v: Vm) -> Dynamic {
       ("memoryMiB", integer(v.memory_mib)),
       ("diskGiB", integer(v.disk_gib)),
       ("image", Text(v.image)),
+      ("network", network_json(v.network)),
     ],
   )
+}
+
+fn network_json(n: Network) -> Dynamic {
+  n match {
+    Dhcp -> Dynamic.object([("mode", Text("dhcp"))])
+    Static(address: address, gateway: gateway, dns: dns) -> {
+      Dynamic.object(
+        [
+          ("mode", Text("static")),
+          ("address", Text(address)),
+          ("gateway", Text(gateway)),
+          ("dns", Items(dns.map(Text))),
+        ],
+      )
+    }
+  }
 }
 
 fn package_json(p: Package) -> Dynamic {

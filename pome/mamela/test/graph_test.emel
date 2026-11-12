@@ -2,7 +2,14 @@ import Lib
 import Dynamic
 
 fn app() -> Lib.Vm {
-  Lib.Vm(name: "app-server", cpu: 2, memory_mib: 2048, disk_gib: 10, image: "ubuntu-24.04")
+  Lib.Vm(
+    name: "app-server",
+    cpu: 2,
+    memory_mib: 2048,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Lib.Dhcp,
+  )
 }
 
 @test
@@ -19,7 +26,7 @@ fn vm_package_and_service() {
   expected = String.concat(
     [
       "{\"resources\":[",
-      "{\"kind\":\"VirtualMachine\",\"name\":\"app-server\",\"spec\":{\"cpu\":2,\"diskGiB\":10,\"image\":\"ubuntu-24.04\",\"memoryMiB\":2048}},",
+      "{\"kind\":\"VirtualMachine\",\"name\":\"app-server\",\"spec\":{\"cpu\":2,\"diskGiB\":10,\"image\":\"ubuntu-24.04\",\"memoryMiB\":2048,\"network\":{\"mode\":\"dhcp\"}}},",
       "{\"kind\":\"NodePackage\",\"name\":\"app-server/nginx\",\"spec\":{\"node\":\"app-server\",\"package\":\"nginx\",\"state\":\"Present\"}},",
       "{\"kind\":\"NodeService\",\"name\":\"app-server/nginx\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"nginx\"}}",
       "],\"schema\":\"mamela-graph/v1\"}",
@@ -37,7 +44,14 @@ fn same_graph_same_text() {
 @test
 fn large_integers_are_written_as_integers() {
   # The Go side rejects floats and exponents, so integers must stay plain digits.
-  vm = Lib.Vm(name: "big", cpu: 64, memory_mib: 1048576, disk_gib: 16384, image: "ubuntu-24.04")
+  vm = Lib.Vm(
+    name: "big",
+    cpu: 64,
+    memory_mib: 1048576,
+    disk_gib: 16384,
+    image: "ubuntu-24.04",
+    network: Lib.Dhcp,
+  )
   json = Lib.to_json(Lib.empty() |> Lib.vm(vm))
   assert json.contains("\"memoryMiB\":1048576")
   assert json.contains("\"diskGiB\":16384")
@@ -67,7 +81,14 @@ fn provided_resources_make_a_v2_graph() {
 
 @test
 fn k3s_cluster() {
-  worker = Lib.Vm(name: "worker", cpu: 1, memory_mib: 1024, disk_gib: 10, image: "ubuntu-24.04")
+  worker = Lib.Vm(
+    name: "worker",
+    cpu: 1,
+    memory_mib: 1024,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Lib.Dhcp,
+  )
   g = Lib.empty()
     |> Lib.vm(app())
     |> Lib.vm(worker)
@@ -79,5 +100,25 @@ fn k3s_cluster() {
   )
   assert json.contains(
     "{\"kind\":\"NodeK3s\",\"name\":\"worker/k3s\",\"spec\":{\"node\":\"worker\",\"role\":\"agent\",\"server\":\"app-server\",\"sha256\":\"00\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+}
+
+@test
+fn static_network() {
+  vm = Lib.Vm(
+    name: "db",
+    cpu: 1,
+    memory_mib: 1024,
+    disk_gib: 10,
+    image: "ubuntu-24.04",
+    network: Lib.Static(
+      address: "192.0.2.10/24",
+      gateway: "192.0.2.1",
+      dns: ["192.0.2.1", "198.51.100.1"],
+    ),
+  )
+  json = Lib.to_json(Lib.empty() |> Lib.vm(vm))
+  assert json.contains(
+    "\"network\":{\"address\":\"192.0.2.10/24\",\"dns\":[\"192.0.2.1\",\"198.51.100.1\"],\"gateway\":\"192.0.2.1\",\"mode\":\"static\"}",
   )
 }

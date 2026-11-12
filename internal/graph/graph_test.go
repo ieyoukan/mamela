@@ -2,12 +2,13 @@ package graph
 
 import (
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 )
 
 // homelab is exactly what examples/homelab prints (Emela v0.27, WASM target).
-const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
+const homelab = `{"resources":[{"kind":"VirtualMachine","name":"app-server","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},{"kind":"NodePackage","name":"app-server/nginx","spec":{"node":"app-server","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}}],"schema":"mamela-graph/v1"}`
 
 func TestDecodeHomelab(t *testing.T) {
 	g, err := Decode([]byte(homelab + "\n"))
@@ -41,7 +42,7 @@ func TestDigestIgnoresDeclarationOrder(t *testing.T) {
 	reordered := `{"schema":"mamela-graph/v1","resources":[` +
 		`{"spec":{"running":true,"service":"nginx","node":"app-server","enabled":true},"name":"app-server/nginx","kind":"NodeService"},` +
 		`{"kind":"NodePackage","name":"app-server/nginx","spec":{"state":"Present","package":"nginx","node":"app-server"}},` +
-		`{"kind":"VirtualMachine","name":"app-server","spec":{"memoryMiB":1024,"image":"ubuntu-24.04","diskGiB":10,"cpu":1}}]}`
+		`{"kind":"VirtualMachine","name":"app-server","spec":{"network":{"mode":"dhcp"},"memoryMiB":1024,"image":"ubuntu-24.04","diskGiB":10,"cpu":1}}]}`
 	a, err := Decode([]byte(homelab))
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestDigestChangesWithContent(t *testing.T) {
 
 func TestDigestIsStable(t *testing.T) {
 	// A pinned value: if this changes, every stored revision digest changes. Update only on purpose.
-	const want = "sha256:d108bb2c17f95992ec7b6082f65ad9849fc2fd21f39be45b735ce18df41c2ad4"
+	const want = "sha256:106ce1583fdfaf00e799f2ad39ebe7c94932c4856ca0a276c388c3a9a8ddd34c"
 	for range 3 {
 		g, err := Decode([]byte(homelab))
 		if err != nil {
@@ -87,7 +88,7 @@ func TestDecodeRejects(t *testing.T) {
 	vm := func(spec string) string {
 		return `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"a","spec":` + spec + `}]}`
 	}
-	okVM := `{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`
+	okVM := `{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`
 	tests := []struct {
 		name string
 		in   string
@@ -118,13 +119,13 @@ func TestDecodeRejects(t *testing.T) {
 		{"unknown kind", `{"schema":"mamela-graph/v1","resources":[{"kind":"Shell","name":"a","spec":{}}]}`, CodeUnknownKind},
 		{"missing spec", `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"a"}]}`, CodeMissingField},
 		{"null spec", `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"a","spec":null}]}`, CodeMissingField},
-		{"unknown spec member", vm(`{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"command":"rm -rf /"}`), CodeUnknownField},
-		{"duplicate spec member", vm(`{"cpu":1,"cpu":64,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`), CodeDuplicateMember},
-		{"float", vm(`{"cpu":1.5,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`), CodeWrongType},
-		{"exponent", vm(`{"cpu":1,"diskGiB":1e1,"image":"ubuntu-24.04","memoryMiB":1024}`), CodeWrongType},
-		{"string for number", vm(`{"cpu":"1","diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`), CodeWrongType},
-		{"missing spec field", vm(`{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04"}`), CodeMissingField},
-		{"null spec field", vm(`{"cpu":null,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`), CodeMissingField},
+		{"unknown spec member", vm(`{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"},"command":"rm -rf /"}`), CodeUnknownField},
+		{"duplicate spec member", vm(`{"cpu":1,"cpu":64,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`), CodeDuplicateMember},
+		{"float", vm(`{"cpu":1.5,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`), CodeWrongType},
+		{"exponent", vm(`{"cpu":1,"diskGiB":1e1,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`), CodeWrongType},
+		{"string for number", vm(`{"cpu":"1","diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`), CodeWrongType},
+		{"missing spec field", vm(`{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","network":{"mode":"dhcp"}}`), CodeMissingField},
+		{"null spec field", vm(`{"cpu":null,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`), CodeMissingField},
 		{"invalid utf-8", "{\"schema\":\"mamela-graph/v1\",\"resources\":[{\"kind\":\"VirtualMachine\",\"name\":\"\xff\",\"spec\":" + okVM + "}]}", CodeInvalidJSON},
 		{"too large", `{"schema":"` + strings.Repeat("a", MaxDocumentBytes) + `"}`, CodeTooLarge},
 	}
@@ -136,7 +137,7 @@ func TestDecodeRejects(t *testing.T) {
 	}
 }
 
-const providedVM = `{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}`
+const providedVM = `{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}`
 
 func item(spec string) string {
 	return `{"schema":"mamela-graph/v2","resources":[{"kind":"KVItem","name":"web","provider":"kv-example","spec":` + spec + `}]}`
@@ -158,7 +159,7 @@ func TestProvidedResources(t *testing.T) {
 	if a.Digest() != b.Digest() {
 		t.Error("member order changed the digest")
 	}
-	want := `{"resources":[{"kind":"VirtualMachine","name":"vm","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
+	want := `{"resources":[{"kind":"VirtualMachine","name":"vm","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},` +
 		`{"kind":"KVItem","name":"web","provider":"kv-example","spec":{"labels":["b","a"],"n":3,"value":"v1"}}],"schema":"mamela-graph/v2"}`
 	if got := string(a.Canonical()); got != want {
 		t.Errorf("canonical:\n got %s\nwant %s", got, want)
@@ -176,7 +177,7 @@ func TestProvidedResources(t *testing.T) {
 
 func TestNodeK3s(t *testing.T) {
 	doc := func(name, version, sha string) string {
-		return `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
+		return `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},` +
 			`{"kind":"NodeK3s","name":"` + name + `","spec":{"node":"web","role":"server","sha256":"` + sha + `","version":"` + version + `"}}]}`
 	}
 	sha := strings.Repeat("ab", 32)
@@ -200,7 +201,7 @@ func TestNodeK3s(t *testing.T) {
 		t.Error("k3s on an undeclared node: accepted")
 	}
 	vm := func(n string) string {
-		return `{"kind":"VirtualMachine","name":"` + n + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}}`
+		return `{"kind":"VirtualMachine","name":"` + n + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}}`
 	}
 	k := func(node, role, server string) string {
 		srv := ""
@@ -234,7 +235,7 @@ func TestValidateRejects(t *testing.T) {
 	}
 	vm := func(name string, cpu, mem, disk int, image string) string {
 		return `{"kind":"VirtualMachine","name":"` + name + `","spec":{"cpu":` + itoa(cpu) + `,"diskGiB":` + itoa(disk) +
-			`,"image":"` + image + `","memoryMiB":` + itoa(mem) + `}}`
+			`,"image":"` + image + `","memoryMiB":` + itoa(mem) + `,"network":{"mode":"dhcp"}}}`
 	}
 	pkg := func(name, node, pkg, state string) string {
 		return `{"kind":"NodePackage","name":"` + name + `","spec":{"node":"` + node + `","package":"` + pkg + `","state":"` + state + `"}}`
@@ -274,7 +275,7 @@ func TestValidateRejects(t *testing.T) {
 
 func TestValidateReportsAllProblemsInOrder(t *testing.T) {
 	in := `{"schema":"mamela-graph/v1","resources":[` +
-		`{"kind":"VirtualMachine","name":"B","spec":{"cpu":0,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
+		`{"kind":"VirtualMachine","name":"B","spec":{"cpu":0,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":{"mode":"dhcp"}}},` +
 		`{"kind":"NodePackage","name":"x/nginx","spec":{"node":"x","package":"nginx","state":"Present"}}]}`
 	_, err := Decode([]byte(in))
 	var e *Error
@@ -318,4 +319,59 @@ func itoa(n int) string {
 		return string(rune('0' + n))
 	}
 	return itoa(n/10) + string(rune('0'+n%10))
+}
+
+// A VM's network is always declared, as DHCP or a complete, coherent static address.
+func TestNetworks(t *testing.T) {
+	doc := func(vms ...string) string {
+		var rs []string
+		for i, n := range vms {
+			rs = append(rs, `{"kind":"VirtualMachine","name":"vm`+itoa(i)+`","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024,"network":`+n+`}}`)
+		}
+		return `{"schema":"mamela-graph/v1","resources":[` + strings.Join(rs, ",") + `]}`
+	}
+	static := func(addr, gw string, dns ...string) string {
+		return `{"mode":"static","address":"` + addr + `","gateway":"` + gw + `","dns":["` + strings.Join(dns, `","`) + `"]}`
+	}
+	g, err := Decode([]byte(doc(static("192.0.2.10/24", "192.0.2.1", "192.0.2.1", "198.51.100.1"), `{"mode":"dhcp"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := g.Resources[0].VirtualMachine.Network
+	if n.String() != "static 192.0.2.10/24 via 192.0.2.1 dns 192.0.2.1,198.51.100.1" || g.StaticIP("vm0") != "192.0.2.10" || g.StaticIP("vm1") != "" {
+		t.Fatalf("network %q, static IPs %q %q", n, g.StaticIP("vm0"), g.StaticIP("vm1"))
+	}
+	for _, c := range []struct {
+		name, in string
+		code     Code
+	}{
+		{"no network", `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"vm","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}}]}`, CodeMissingField},
+		{"no mode", doc(`{}`), CodeMissingField},
+		{"unknown mode", doc(`{"mode":"slaac"}`), CodeInvalidValue},
+		{"dhcp with an address", doc(`{"mode":"dhcp","address":"192.0.2.10/24"}`), CodeUnknownField},
+		{"static without dns", doc(`{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1"}`), CodeMissingField},
+		{"no prefix", doc(static("192.0.2.10", "192.0.2.1", "192.0.2.1")), CodeInvalidValue},
+		{"ipv6", doc(static("2001:db8::10/64", "2001:db8::1", "2001:db8::1")), CodeInvalidValue},
+		{"network address", doc(static("192.0.2.0/24", "192.0.2.1", "192.0.2.1")), CodeInvalidValue},
+		{"broadcast address", doc(static("192.0.2.255/24", "192.0.2.1", "192.0.2.1")), CodeInvalidValue},
+		{"gateway in another subnet", doc(static("192.0.2.10/24", "198.51.100.1", "192.0.2.1")), CodeInvalidValue},
+		{"gateway is the VM", doc(static("192.0.2.10/24", "192.0.2.10", "192.0.2.1")), CodeInvalidValue},
+		{"bad dns", doc(static("192.0.2.10/24", "192.0.2.1", "dns.example")), CodeInvalidValue},
+		{"too many dns", doc(static("192.0.2.10/24", "192.0.2.1", "192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4")), CodeInvalidValue},
+		{"/31", doc(static("192.0.2.10/31", "192.0.2.11", "192.0.2.1")), CodeInvalidValue},
+		{"same address twice", doc(static("192.0.2.10/24", "192.0.2.1", "192.0.2.1"), static("192.0.2.10/24", "192.0.2.1", "192.0.2.1")), CodeDuplicateAddress},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := Decode([]byte(c.in))
+			assertCode(t, err, c.code)
+		})
+	}
+	// A site's range.
+	first, last := netip.MustParseAddr("192.0.2.40"), netip.MustParseAddr("192.0.2.49")
+	in := Network{Mode: NetworkStatic, Address: "192.0.2.49/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}
+	out := Network{Mode: NetworkStatic, Address: "192.0.2.50/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}
+	if in.Allowed(false, first, last) != nil || out.Allowed(true, first, last) == nil ||
+		(Network{Mode: NetworkDHCP}).Allowed(false, first, last) == nil || in.Allowed(true, netip.Addr{}, netip.Addr{}) == nil {
+		t.Fatal("site range not enforced")
+	}
 }

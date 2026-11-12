@@ -6,7 +6,13 @@
 // the same graph, the same problems and the same digest.
 package graph
 
-import "github.com/ieyoukan/mamela/provider/protocol"
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+
+	"github.com/ieyoukan/mamela/provider/protocol"
+)
 
 // Schema is the schema of a graph of built-in kinds only.
 const Schema = "mamela-graph/v1"
@@ -76,6 +82,63 @@ type VirtualMachineSpec struct {
 	MemoryMiB int64
 	DiskGiB   int64
 	Image     string
+	Network   Network
+}
+
+// NetworkMode is how a VM gets its IPv4 address. A declaration always says which: there is no
+// default.
+type NetworkMode string
+
+const (
+	NetworkDHCP   NetworkMode = "dhcp"
+	NetworkStatic NetworkMode = "static"
+)
+
+// Network is a VM's IPv4 configuration, given to it at creation (cloud-init).
+type Network struct {
+	Mode    NetworkMode
+	Address string   // static: the address with its prefix length, such as "192.0.2.10/24"
+	Gateway string   // static: the default gateway, in the address's subnet
+	DNS     []string // static: name servers, 1 to 3
+}
+
+// IP is a static network's address without the prefix length ("" for DHCP).
+func (n Network) IP() string {
+	ip, _, _ := strings.Cut(n.Address, "/")
+	return ip
+}
+
+// Allowed says whether a site that allows DHCP (dhcp) and static addresses from first to last
+// (both included; invalid when the site has no range) accepts this network, and why not.
+func (n Network) Allowed(dhcp bool, first, last netip.Addr) error {
+	switch n.Mode {
+	case NetworkDHCP:
+		if !dhcp {
+			return fmt.Errorf("the site does not allow DHCP (network.dhcp = false); declare a static address from its range")
+		}
+		return nil
+	case NetworkStatic:
+		ip, err := netip.ParseAddr(n.IP())
+		if err != nil {
+			return fmt.Errorf("address %q is not an IPv4 address", n.Address)
+		}
+		if !first.IsValid() || !last.IsValid() {
+			return fmt.Errorf("static address %s: the site has no range for static addresses (network.static_first and static_last)", ip)
+		}
+		if ip.Less(first) || last.Less(ip) {
+			return fmt.Errorf("static address %s is outside the site's range %s-%s", ip, first, last)
+		}
+		return nil
+	}
+	return fmt.Errorf("network mode %q is not dhcp or static", n.Mode)
+}
+
+// String is the network as one line, as plans show it and the ownership marker records it.
+func (n Network) String() string {
+	if n.Mode != NetworkStatic {
+		return string(n.Mode)
+	}
+	return fmt.Sprintf("static %s via %s dns %s", n.Address, n.Gateway, strings.Join(n.DNS, ","))
 }
 
 // PackageState is the desired state of a package. Only Present exists: removal is never declared.
@@ -117,3 +180,16 @@ type NodeServiceSpec struct {
 	Enabled bool
 	Running bool
 }
+
+// StaticIP is the declared static address of VM name, or "" when it uses DHCP or is not declared.
+func (g *Graph) StaticIP(name string) string {
+	for _, r := range g.Resources {
+		if r.Kind == KindVirtualMachine && r.Name == name && r.VirtualMachine != nil {
+			return r.VirtualMachine.Network.IP()
+		}
+	}
+	return ""
+}
+
+// K3sServerURL is the URL a k3s agent joins its server at, for a server with a static address.
+func K3sServerURL(ip string) string { return "https://" + ip + ":6443" }

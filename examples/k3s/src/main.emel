@@ -6,15 +6,36 @@
 # The sha256 is the release's, for linux/amd64 (sha256sum-amd64.txt of the release).
 
 import Std.Console.{SystemConsole}
-import Mamela.{Vm}
+import Mamela.{Vm, Dhcp}
 
 const K3S_VERSION = "v1.37.2+k3s1"
 const K3S_SHA256 = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
 
 fn infrastructure() -> Mamela.Graph {
-  server = Vm(name: "k3s-server", cpu: 2, memory_mib: 4096, disk_gib: 20, image: "ubuntu-24.04")
-  agent1 = Vm(name: "k3s-agent-1", cpu: 2, memory_mib: 2048, disk_gib: 20, image: "ubuntu-24.04")
-  agent2 = Vm(name: "k3s-agent-2", cpu: 2, memory_mib: 2048, disk_gib: 20, image: "ubuntu-24.04")
+  server = Vm(
+    name: "k3s-server",
+    cpu: 2,
+    memory_mib: 4096,
+    disk_gib: 20,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
+  agent1 = Vm(
+    name: "k3s-agent-1",
+    cpu: 2,
+    memory_mib: 2048,
+    disk_gib: 20,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
+  agent2 = Vm(
+    name: "k3s-agent-2",
+    cpu: 2,
+    memory_mib: 2048,
+    disk_gib: 20,
+    image: "ubuntu-24.04",
+    network: Dhcp,
+  )
 
   Mamela.empty()
     |> Mamela.vm(server)
