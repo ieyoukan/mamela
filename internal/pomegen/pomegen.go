@@ -29,6 +29,11 @@ func Generate(m protocol.Manifest, o Options) ([]byte, error) {
 	return g.run(o)
 }
 
+// Names are the Emela type and function a kind's Pome gets ("KVItem": KvItem, kv_item).
+func Names(kind protocol.ResourceKind) (typeName, fnName string) {
+	return upper(string(kind)), snake(string(kind))
+}
+
 type kindInfo struct {
 	kind     protocol.Kind
 	typeName string // KvItem

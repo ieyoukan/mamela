@@ -1,0 +1,77 @@
+package <% .Pkg %>_test
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"<% .GoModule %>/<% .Pkg %>"
+	"<% .GoModule %>/<% .Pkg %>/fakeapi"
+	"github.com/ieyoukan/mamela/provider/protocol"
+	"github.com/ieyoukan/mamela/provider/providertest"
+)
+
+func thing(name, spec string) protocol.Resource {
+	return protocol.Resource{ID: string(<% .Pkg %>.KindThing) + "/" + name, Kind: <% .Pkg %>.KindThing, Name: name, Spec: []byte(spec)}
+}
+
+// The provider passes Mamela's conformance suite, as the WASI program Mamela runs: it converges,
+// survives lost and retried requests, keeps what is no longer declared, and leaves others' things.
+func TestConformance(t *testing.T) {
+	data, err := os.ReadFile("../pome/catalogs/<% .CatalogFile %>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := protocol.DecodeCatalog(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providertest.Run(t, providertest.Suite{
+		Provider: providertest.BuildWASI(t, "../cmd/<% .Pkg %>-provider"),
+		Catalog:  catalog,
+		NewAPI:   func() http.Handler { return fakeapi.New() },
+		Cases: []providertest.Case{
+			{Name: "one-thing", Desired: []protocol.Resource{thing("web", `{"value":"v1"}`)},
+				Explicit: []providertest.Explicit{{Op: <% .Pkg %>.OpDelete, Resource: "<% .Prefix %>Thing/web"}}},
+			{Name: "things-with-tags", Desired: []protocol.Resource{
+				thing("db", `{"value":"v1","tags":["prod","eu"]}`),
+				thing("web", `{"value":"v2"}`),
+			}},
+			{Name: "someone-elses", Desired: []protocol.Resource{thing("web", `{"value":"v1"}`)},
+				World: func(api http.Handler) {
+					api.(*fakeapi.Server).Put(fakeapi.Thing{Name: "other", Value: "theirs", Owner: "someone", Version: 3})
+				}},
+		},
+	})
+}
+
+// The program in the Pome is exactly a build of this source (build.sh), mamela-provider.toml names
+// it, and the Pome's Emela is what its manifest generates.
+func TestPomeIsTheBuild(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "provider.wasm")
+	cmd := exec.Command("go", "build", "-trimpath", "-buildvcs=false", "-o", out, "../cmd/<% .Pkg %>-provider")
+	cmd.Env = append(os.Environ(), "GOOS=wasip1", "GOARCH=wasm")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, b)
+	}
+	built, _ := os.ReadFile(out)
+	committed, err := os.ReadFile("../pome/provider.wasm")
+	if err != nil || !bytes.Equal(built, committed) {
+		t.Fatal("pome/provider.wasm is not a build of this source: run ./build.sh")
+	}
+	sum := sha256.Sum256(committed)
+	toml, _ := os.ReadFile("../pome/mamela-provider.toml")
+	if !strings.Contains(string(toml), `sha256 = "`+hex.EncodeToString(sum[:])+`"`) {
+		t.Error("pome/mamela-provider.toml does not name the program: run ./build.sh")
+	}
+	check := exec.Command("go", "tool", "mamela", "provider", "pome", "--check", "../pome")
+	if b, err := check.CombinedOutput(); err != nil {
+		t.Errorf("%v\n%s", err, b)
+	}
+}

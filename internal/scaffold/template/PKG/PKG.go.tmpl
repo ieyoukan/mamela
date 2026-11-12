@@ -1,0 +1,196 @@
+// Package <% .Pkg %> is the Mamela provider "<% .Provider %>", written with provider/kit (Mamela's
+// ADR 0009). It manages things of the API <% .API %>: what Mamela creates carries the owner
+// "mamela", and nothing else is ever changed. Removing a declaration never deletes a thing:
+// deleting one is the explicit operation delete-thing (mamela act --confirm).
+//
+// Start here: replace the thing with what your API manages. For each kind, write how to list its
+// objects (List), what a declaration needs changed (Diff), and whether a request is already in
+// effect (Done); kit does the protocol. Every call the provider may send is declared below, and
+// pome/catalogs/<% .CatalogFile %> says what each one does: Mamela checks every request against both.
+package <% .Pkg %>
+
+import (
+	"encoding/json/v2"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+
+	"github.com/ieyoukan/mamela/provider/kit"
+	"github.com/ieyoukan/mamela/provider/protocol"
+)
+
+// Name and Version are the provider's, as its manifest gives them.
+const (
+	Name    = "<% .Provider %>"
+	Version = "0.1.0"
+)
+
+// API is the API the provider talks to (pome/catalogs/<% .CatalogFile %>; <% .Pkg %>/fakeapi fakes it
+// for tests). The provider must not import the fake: a provider program may import nothing that
+// opens files or sockets (net/http does), or Mamela refuses to run it.
+const API = "<% .API %>"
+
+// KindThing is the kind of a thing.
+const KindThing protocol.ResourceKind = "<% .Prefix %>Thing"
+
+// Operations on a thing.
+const (
+	OpCreate protocol.Op = "create-thing"
+	OpUpdate protocol.Op = "update-thing"
+	OpDelete protocol.Op = "delete-thing"
+)
+
+// owner marks what Mamela created.
+const owner = "mamela"
+
+// ThingSpec is a declared thing: the fields of its type in the generated Pome (mamela provider
+// pome). `doc` documents a field, `values:"a|b"` makes an enum, `mamela:"ref=Kind"` refers to
+// another kind of this provider, and omitempty makes a field optional.
+type ThingSpec struct {
+	Value string   `json:"value" doc:"the thing's value"`
+	Tags  []string `json:"tags,omitempty" doc:"its tags"`
+}
+
+// thing is a thing as the API returns it.
+type thing struct {
+	Name    string   `json:"name"`
+	Value   string   `json:"value"`
+	Tags    []string `json:"tags,omitempty"`
+	Owner   string   `json:"owner,omitempty"`
+	Version int      `json:"version"`
+}
+
+// The calls. A JSON body's members are listed (JSON); version, in the query, is the precondition:
+// the API refuses the request if the thing changed since it was observed.
+var (
+	listThings  = protocol.Call{Method: "GET", Path: "/things"}
+	putThing    = protocol.Call{Method: "PUT", Path: "/things/{thing}", Query: []string{"version"}, JSON: []string{"value", "tags", "owner"}}
+	deleteThing = protocol.Call{Method: "DELETE", Path: "/things/{thing}", Query: []string{"version"}}
+)
+
+// Provider is the provider (cmd/<% .Pkg %>-provider serves it).
+var Provider = &kit.Provider{
+	Name: Name, Version: Version, API: API,
+	ObserveNeeds: []protocol.Need{{Capability: "<% .Pkg %>:Read", Target: protocol.Target{Type: "<% .Pkg %>-things", Ref: "things"}, Always: true}},
+	Kinds:        []kit.Kind{things{}},
+}
+
+type things struct{}
+
+var write = []protocol.Need{{Capability: "<% .Pkg %>:Write", Target: protocol.Target{Type: "<% .Pkg %>-things", Ref: "things"}, Object: "{name}", Always: true}}
+
+func (things) Kind() protocol.ResourceKind { return KindThing }
+func (things) Doc() string                 { return "A thing of the API: its value and tags." }
+func (things) Spec() any                   { return ThingSpec{} }
+func (things) Reads() []protocol.Call      { return []protocol.Call{listThings} }
+func (things) Operations() []protocol.Operation {
+	return []protocol.Operation{
+		kit.Op(OpCreate, write, putThing),
+		kit.Op(OpUpdate, write, putThing),
+		kit.ExplicitOp(OpDelete, write, deleteThing),
+	}
+}
+
+// Absent: a thing that does not exist has version 0, which a create is based on.
+func (things) Absent(r protocol.Resource) (string, map[string]string) {
+	return "0", map[string]string{"thing": r.Name}
+}
+
+// List lists every thing: those Mamela did not create are Foreign (never changed).
+func (things) List(c *kit.Client) ([]kit.Object, error) {
+	all, err := list(c)
+	if err != nil {
+		return nil, err
+	}
+	var out []kit.Object
+	for _, name := range slices.Sorted(maps.Keys(all)) {
+		t := all[name]
+		out = append(out, kit.Object{Name: name, IDs: map[string]string{"thing": name}, Version: strconv.Itoa(t.Version),
+			State: ThingSpec{Value: t.Value, Tags: t.Tags}, Foreign: t.Owner != owner})
+	}
+	return out, nil
+}
+
+// Diff: a create, or an update of what differs; nothing when it is as declared.
+func (things) Diff(d kit.Desired) ([]protocol.Change, error) {
+	var want, got ThingSpec
+	if err := d.Spec(&want); err != nil {
+		return nil, err
+	}
+	if err := d.State(&got); err != nil {
+		return nil, err
+	}
+	want.Tags = slices.Sorted(slices.Values(want.Tags))
+	got.Tags = slices.Sorted(slices.Values(got.Tags))
+	c := protocol.Change{Resource: d.Resource.ID, Kind: KindThing, IDs: map[string]string{"thing": d.Resource.Name}, Precondition: d.Observed.Version}
+	switch {
+	case !d.Observed.Exists:
+		c.Op, c.Reasons = OpCreate, []string{"the thing does not exist"}
+	case got.Value == want.Value && slices.Equal(got.Tags, want.Tags):
+		return nil, nil
+	default:
+		c.Op = OpUpdate
+		if got.Value != want.Value {
+			c.Reasons = append(c.Reasons, fmt.Sprintf("value %q -> %q", got.Value, want.Value))
+		}
+		if !slices.Equal(got.Tags, want.Tags) {
+			c.Reasons = append(c.Reasons, fmt.Sprintf("tags %v -> %v", got.Tags, want.Tags))
+		}
+	}
+	body, err := kit.JSONMembers(map[string]any{"value": want.Value, "tags": want.Tags, "owner": owner})
+	if err != nil {
+		return nil, err
+	}
+	body["version"] = []string{d.Observed.Version}
+	c.Requests = []protocol.Approved{kit.Request(putThing, body)}
+	return []protocol.Change{c}, nil
+}
+
+// Done: the thing already is what the request makes it (a retry after an uncertain outcome must
+// not send it again).
+func (things) Done(c *kit.Client, ch protocol.Change, a protocol.Approved) (bool, error) {
+	all, err := list(c)
+	if err != nil {
+		return false, err
+	}
+	t, exists := all[ch.IDs["thing"]]
+	if a.Method == deleteThing.Method {
+		return !exists || t.Owner != owner, nil
+	}
+	if !exists {
+		return false, nil
+	}
+	if t.Owner != owner {
+		return false, fmt.Errorf("thing %s exists and Mamela did not create it", t.Name)
+	}
+	var tags []string
+	if v := a.Params["tags"]; len(v) == 1 {
+		if err := json.Unmarshal([]byte(v[0]), &tags); err != nil {
+			return false, err
+		}
+	}
+	return kit.Param(a, "value") == t.Value && slices.Equal(slices.Sorted(slices.Values(tags)), slices.Sorted(slices.Values(t.Tags))), nil
+}
+
+// Prepare makes delete-thing: of a thing Mamela owns, based on its version.
+func (things) Prepare(op protocol.Op, o protocol.Observed, _ *protocol.Resource) (protocol.Change, error) {
+	if op != OpDelete || !o.Owned {
+		return protocol.Change{}, fmt.Errorf("%s: only an existing thing Mamela owns can be deleted", o.ID)
+	}
+	return protocol.Change{Resource: o.ID, Kind: KindThing, Op: OpDelete, IDs: o.IDs, Precondition: o.Version,
+		Reasons:  []string{fmt.Sprintf("delete thing %s (version %s): its value is lost", o.Name, o.Version)},
+		Requests: []protocol.Approved{kit.Request(deleteThing, map[string][]string{"version": {o.Version}})}}, nil
+}
+
+func list(c *kit.Client) (map[string]thing, error) {
+	var all []thing
+	if err := c.ReadJSON(listThings, nil, nil, &all); err != nil {
+		return nil, fmt.Errorf("listing things: %w", err)
+	}
+	out := map[string]thing{}
+	for _, t := range all {
+		out[t.Name] = t
+	}
+	return out, nil
+}
