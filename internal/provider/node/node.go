@@ -101,6 +101,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			continue
 		}
 		n := nodes[name]
+		protected := pol.Protected(name)
 		// Read before publishing: the store has one connection, which publishing holds.
 		var k3s *noderev.K3s
 		if n.k3s != nil {
@@ -116,7 +117,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			r := noderev.Revision{VMID: vmid, Packages: []noderev.Package{}, Services: []noderev.Service{}, ControlPlane: controlPlane}
 			for _, pk := range n.pkgs {
 				np := noderev.Package{Name: pk.Package}
-				if prev != nil && prev.VMID == vmid {
+				if !protected && prev != nil && prev.VMID == vmid {
 					if old := findPackage(prev, pk.Package); old != nil {
 						np.Install = old.Install
 					}
@@ -125,10 +126,10 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			}
 			for _, sv := range n.svcs {
 				ns := noderev.Service{Name: sv.Service, Enabled: sv.Enabled, Running: sv.Running, Repair: []string{}, Once: []noderev.Once{}}
-				if sv.Running && pol.Decide(policy.Subject{Op: policy.OpStartService, Service: sv.Service}).Verdict == policy.Auto {
+				if !protected && sv.Running && pol.Decide(policy.Subject{Op: policy.OpStartService, Service: sv.Service}).Verdict == policy.Auto {
 					ns.Repair = []string{noderev.ActionStart}
 				}
-				if prev != nil && prev.VMID == vmid {
+				if !protected && prev != nil && prev.VMID == vmid {
 					if old := findService(prev, sv.Service); old != nil {
 						ns.Once = old.Once
 					}
@@ -139,7 +140,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				kr := *k3s
 				r.K3s = &kr
 				// An approved install stays granted while the node is to run the same.
-				if prev != nil && prev.VMID == vmid && prev.K3s != nil && prev.K3s.Version == kr.Version && prev.K3s.SHA256 == kr.SHA256 &&
+				if !protected && prev != nil && prev.VMID == vmid && prev.K3s != nil && prev.K3s.Version == kr.Version && prev.K3s.SHA256 == kr.SHA256 &&
 					prev.K3s.Role == kr.Role && prev.K3s.Server == kr.Server {
 					r.K3s.Install = prev.K3s.Install
 				}

@@ -184,6 +184,7 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	add("var/state.db", 0o600, dbBytes)
 	add("mamela-serve.service", 0o644, []byte(serveUnit))
+	add("mamela-gitops.service", 0o644, []byte(gitopsUnit))
 	add("install.sh", 0o755, []byte(installScript))
 
 	if err := writeBundle(*out, files); err != nil {
@@ -281,6 +282,33 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 `
 
+// gitopsUnit follows a repository of declarations (ADR 0010). It starts only once the operator
+// writes /etc/mamela/gitops.toml; /etc/mamela/gitops.env may set MAMELA_TOOLCHAIN_DIR and
+// EMELA_POME_CACHE.
+const gitopsUnit = `[Unit]
+Description=Mamela gitops (follows a repository of declarations)
+After=network-online.target mamela-serve.service
+Wants=network-online.target
+ConditionPathExists=/etc/mamela/gitops.toml
+
+[Service]
+User=mamela-cp
+Group=mamela-cp
+WorkingDirectory=/var/lib/mamela
+EnvironmentFile=-/etc/mamela/gitops.env
+ExecStart=/usr/local/bin/mamela gitops run --config /etc/mamela/gitops.toml --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --providers /etc/mamela/providers.toml
+Restart=always
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mamela
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+
 // installScript places the bundle's files on the host. It is short on purpose: review it first.
 const installScript = `#!/usr/bin/env bash
 # Installs a Mamela Control Plane bundle (written by ` + "`mamela controlplane bundle`" + `). Run as root,
@@ -312,6 +340,7 @@ for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
 install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
+if test -f "$b/mamela-gitops.service"; then install -m 0644 -o root -g root "$b/mamela-gitops.service" $r/etc/systemd/system/mamela-gitops.service; fi
 systemctl daemon-reload
 echo "installed; start it with: systemctl enable --now mamela-serve"
 `

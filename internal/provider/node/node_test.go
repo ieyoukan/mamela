@@ -330,3 +330,47 @@ func TestPublishOnAProvidersMachine(t *testing.T) {
 		t.Fatalf("revision %+v %v", rev, err)
 	}
 }
+
+// Publishing observation targets during plan must not bypass the denial on the Control Plane's
+// own host, even when the service policy otherwise allows automatic repairs.
+func TestPublishProtectedNodeCannotRepair(t *testing.T) {
+	e := newEnv(t)
+	e.os.installed, e.os.exists, e.os.enabled = true, true, true
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.pol.ProtectedNodes = []string{"app"}
+	e.publish()
+	e.round()
+	if e.os.starts != 0 || e.os.running {
+		t.Fatal("publishing a plan started a service on a protected node")
+	}
+	if got := change(t, e.plan(), "NodeService app/nginx"); got.Verdict != policy.Denied {
+		t.Fatalf("the protected service should remain denied: %+v", got)
+	}
+}
+
+// Moving a Control Plane onto a previously managed node must revoke pending grants too.
+func TestPublishProtectedNodeRevokesExistingGrants(t *testing.T) {
+	e := newEnv(t)
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.publish()
+	_, err := e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Packages = slices.Clone(prev.Packages)
+		r.Services = slices.Clone(prev.Services)
+		r.Packages[0].Install = &noderev.Install{Operation: "pending-install", Attempt: 1, ChangeSet: "pending"}
+		r.Services[0].Once = []noderev.Once{{Operation: "pending-start", Attempt: 1, Action: noderev.ActionStart}}
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.pol.ProtectedNodes = []string{"app"}
+	e.publish()
+	r, err := e.st.NodeRevision(e.ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Packages[0].Install != nil || len(r.Services[0].Once) != 0 || len(r.Services[0].Repair) != 0 {
+		t.Fatalf("protected node kept execution grants: %+v %+v", r.Packages, r.Services)
+	}
+}
