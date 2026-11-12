@@ -57,10 +57,18 @@ func TestSpecOf(t *testing.T) {
 // What a manifest cannot give as a spec is refused, with the field named.
 func TestSpecRefused(t *testing.T) {
 	for name, v := range map[string]any{
-		"name":   struct{ Name string `json:"name"` }{},
-		"map":    struct{ M map[string]string `json:"m"` }{},
-		"nested": struct{ L [][]string `json:"l"` }{},
-		"values": struct{ N int `json:"n" values:"1|2"` }{},
+		"name": struct {
+			Name string `json:"name"`
+		}{},
+		"map": struct {
+			M map[string]string `json:"m"`
+		}{},
+		"nested": struct {
+			L [][]string `json:"l"`
+		}{},
+		"values": struct {
+			N int `json:"n" values:"1|2"`
+		}{},
 	} {
 		if err := protocol.CheckFields(kit.SpecOf(v)); err == nil {
 			t.Errorf("%s: accepted", name)
