@@ -99,19 +99,19 @@ func (things) Operations() []protocol.Operation {
 func (things) Imports() []string { return []string{"<% .Pkg %>_thing"} }
 
 // Import declares a thing as Terraform records it (its attributes), and names it by its ID.
-func (things) Import(o protocol.ImportObject, _ kit.Resolver) (any, map[string]string, error) {
+func (things) Import(o protocol.ImportObject, _ kit.Resolver) (kit.Imported, error) {
 	var v struct {
 		ID    string   `json:"id"`
 		Value string   `json:"value"`
 		Tags  []string `json:"tags"`
 	}
 	if err := kit.Values(o, &v); err != nil {
-		return nil, nil, err
+		return kit.Imported{}, err
 	}
 	if v.ID == "" {
-		return nil, nil, kit.Skip("no id: the state does not say which thing it is")
+		return kit.Imported{}, kit.Skip("no id: the state does not say which thing it is")
 	}
-	return ThingSpec{Value: v.Value, Tags: slices.Sorted(slices.Values(v.Tags))}, map[string]string{"thing": v.ID}, nil
+	return kit.Imported{Spec: ThingSpec{Value: v.Value, Tags: slices.Sorted(slices.Values(v.Tags))}, IDs: map[string]string{"thing": v.ID}}, nil
 }
 
 // Absent: a thing that does not exist has version 0, which a create is based on.

@@ -94,19 +94,19 @@ func (items) Operations() []protocol.Operation {
 func (items) Imports() []string { return []string{"kv_item"} }
 
 // Import declares an item as it is: Mamela adopts it as such (adopt-item makes it Mamela's).
-func (items) Import(o protocol.ImportObject, _ kit.Resolver) (any, map[string]string, error) {
+func (items) Import(o protocol.ImportObject, _ kit.Resolver) (kit.Imported, error) {
 	var v struct {
 		ID     string   `json:"id"`
 		Value  string   `json:"value"`
 		Labels []string `json:"labels"`
 	}
 	if err := kit.Values(o, &v); err != nil {
-		return nil, nil, err
+		return kit.Imported{}, err
 	}
 	if v.ID == "" {
-		return nil, nil, kit.Skip("no id: the state does not say which item it is")
+		return kit.Imported{}, kit.Skip("no id: the state does not say which item it is")
 	}
-	return Spec{Value: v.Value, Labels: slices.Sorted(slices.Values(v.Labels))}, map[string]string{"item": v.ID}, nil
+	return kit.Imported{Spec: Spec{Value: v.Value, Labels: slices.Sorted(slices.Values(v.Labels))}, IDs: map[string]string{"item": v.ID}}, nil
 }
 
 // Absent: version "0" is the version of an item that does not exist (a create is based on it: the

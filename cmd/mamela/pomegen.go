@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -58,7 +59,13 @@ func runProviderPome(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	m := s.Manifest()
 	s.Close()
-	src, err := pomegen.Generate(m, pomegen.Options{Module: pome.Pome.Module})
+	module := pome.Pome.Module
+	if *out != "src/lib.emel" && module != "" {
+		// Another file of the Pome: its own module (src/kinds.emel is Aws.Kinds).
+		base := strings.TrimSuffix(filepath.Base(*out), ".emel")
+		module += "." + strings.ToUpper(base[:1]) + base[1:]
+	}
+	src, err := pomegen.Generate(m, pomegen.Options{Module: module})
 	if err != nil {
 		return report(stderr, fmt.Errorf("provider %s: %w", m.Provider, err))
 	}

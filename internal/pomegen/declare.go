@@ -16,7 +16,8 @@ import (
 // Imports are a provider's imported declarations (mamela import terraform, ADR 0009).
 type Imports struct {
 	Manifest protocol.Manifest
-	// Module is the provider Pome's Emela module ("Kv"), whose generated functions declare them.
+	// Module is the provider Pome's generated Emela module ("Kv", or "Aws.Kinds" when the root
+	// module is written by hand), whose functions declare them.
 	Module    string
 	Resources []protocol.Imported
 }
@@ -36,9 +37,16 @@ func Declarations(all []Imports, o DeclareOptions) ([]byte, error) {
 	byRef := map[string]*importDecl{} // "Kind name"
 	uses := map[string]map[string]bool{}
 	vars := map[string]bool{}
+	called := map[string]string{}
 	for _, p := range all {
-		if !validUpper(p.Module) {
-			return nil, fmt.Errorf("provider %s: module %q", p.Manifest.Provider, p.Module)
+		if other, ok := called[lastSegment(p.Module)]; ok && other != p.Module {
+			return nil, fmt.Errorf("modules %s and %s are both called %s: import them in two files", other, p.Module, lastSegment(p.Module))
+		}
+		called[lastSegment(p.Module)] = p.Module
+		for _, seg := range strings.Split(p.Module, ".") {
+			if !validUpper(seg) {
+				return nil, fmt.Errorf("provider %s: module %q", p.Manifest.Provider, p.Module)
+			}
 		}
 		for _, r := range p.Resources {
 			i := slices.IndexFunc(p.Manifest.Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind })
@@ -132,7 +140,7 @@ func Declarations(all []Imports, o DeclareOptions) ([]byte, error) {
 	b.WriteString("  graph")
 	for _, d := range order {
 		_, fn := Names(d.kind.Kind)
-		fmt.Fprintf(&b, "\n    |> %s.%s(%s)", d.module, fn, d.v)
+		fmt.Fprintf(&b, "\n    |> %s.%s(%s)", lastSegment(d.module), fn, d.v)
 	}
 	b.WriteString("\n}\n")
 	return []byte(b.String()), nil
@@ -300,4 +308,9 @@ func literal(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// lastSegment is the name a module is called by once imported ("Aws.Kinds": Kinds).
+func lastSegment(module string) string {
+	return module[strings.LastIndex(module, ".")+1:]
 }

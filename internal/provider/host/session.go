@@ -520,14 +520,14 @@ func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol
 // kinds (ADR 0009). It may send no request. Each declaration must be of a kind that imports the
 // object's type, for an object given, once, with a spec that is a JSON object and the IDs that
 // identify the object.
-func (s *Session) Import(ctx context.Context, objects []protocol.ImportObject) (protocol.ImportResult, error) {
+func (s *Session) Import(ctx context.Context, objects []protocol.ImportObject, settings []byte) (protocol.ImportResult, error) {
 	types := map[string]bool{}
 	for _, o := range objects {
 		types[o.Address] = true
 	}
 	g := s.gate(phaseImport, nil, nil)
 	var out protocol.ImportResult
-	err := s.call(ctx, g, protocol.MethodImport, protocol.ImportParams{Objects: objects}, &out)
+	err := s.call(ctx, g, protocol.MethodImport, protocol.ImportParams{Objects: objects, Settings: settings}, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return out, err
 	}
@@ -554,6 +554,15 @@ func (s *Session) Import(ctx context.Context, objects []protocol.ImportObject) (
 		}
 		seen[r.Address] = true
 		names[string(r.Kind)+" "+r.Name] = true
+	}
+	// What a declaration includes: given, and in no other declaration (checked once all are seen).
+	for _, r := range out.Resources {
+		for _, a := range r.Also {
+			if _, given := typeOf[a]; !given || seen[a] {
+				return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: it includes %q, which is not one object given, or is declared or included twice", r.Address, a)}
+			}
+			seen[a] = true
+		}
 	}
 	for _, sk := range out.Skipped {
 		if !types[sk.Address] || seen[sk.Address] || sk.Why == "" {

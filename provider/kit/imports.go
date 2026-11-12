@@ -17,15 +17,32 @@ type Importer interface {
 	// Imports are the Terraform types it imports ("aws_vpc").
 	Imports() []string
 	// Import makes the declaration of one object: its spec (the kind's Spec type) and the IDs
-	// that identify it at the API, which List gives it. The declaration's name is o.Name. Return
-	// Skip(why) for an object it cannot declare (say what to do instead).
-	Import(o protocol.ImportObject, r Resolver) (spec any, ids map[string]string, err error)
+	// that identify it at the API, which List (or Find) gives it. The declaration's name is
+	// o.Name. Return Skip(why) for an object it cannot declare (say what to do instead).
+	Import(o protocol.ImportObject, r Resolver) (Imported, error)
 }
 
-// Resolver names the declarations of the other imported objects, for references: a subnet's
-// vpc_id is the name of the VPC's declaration.
+// Imported is the declaration of one object.
+type Imported struct {
+	Spec any
+	IDs  map[string]string
+	// Also are the addresses of other imported objects the declaration includes (a route table's
+	// associations): they move to Mamela with it.
+	Also []string
+}
+
+// Finder is a kind that finds one object by its IDs, though List does not give it (List gives
+// what carries Mamela's marks; an imported object carries none until it is adopted).
+type Finder interface {
+	Find(c *Client, ids map[string]string) (*Object, error)
+}
+
+// Resolver names the declarations of the other imported objects, for references (a subnet's
+// vpc_id is the name of the VPC's declaration), and gives the objects and the settings.
 type Resolver struct {
-	names map[string]map[string]string // type -> id -> name
+	names    map[string]map[string]string // type -> id -> name
+	objects  []protocol.ImportObject
+	settings []byte
 }
 
 // Name is the name of the declaration of the imported object of a type with an ID (its "id"
@@ -33,6 +50,26 @@ type Resolver struct {
 func (r Resolver) Name(tfType, id string) (string, bool) {
 	n, ok := r.names[tfType][id]
 	return n, ok
+}
+
+// Objects are the imported objects of a type (a route table's associations, say).
+func (r Resolver) Objects(tfType string) []protocol.ImportObject {
+	var out []protocol.ImportObject
+	for _, o := range r.objects {
+		if o.Type == tfType {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// Settings decodes the provider's guard settings ([provider.<name>.guard]) into v; false when
+// there are none.
+func (r Resolver) Settings(v any) (bool, error) {
+	if len(r.settings) == 0 {
+		return false, nil
+	}
+	return true, json.Unmarshal(r.settings, v)
 }
 
 // ErrSkip is an object an importer does not declare.
@@ -51,7 +88,7 @@ func Values(o protocol.ImportObject, v any) error {
 
 // Import implements sdk.Importer.
 func (p *Provider) Import(_ context.Context, in protocol.ImportParams) (protocol.ImportResult, error) {
-	r := Resolver{names: map[string]map[string]string{}}
+	r := Resolver{names: map[string]map[string]string{}, objects: in.Objects, settings: in.Settings}
 	for _, o := range in.Objects {
 		var v struct {
 			ID string `json:"id"`
@@ -77,7 +114,7 @@ func (p *Provider) Import(_ context.Context, in protocol.ImportParams) (protocol
 			out.Skipped = append(out.Skipped, protocol.ImportSkip{Address: o.Address, Why: fmt.Sprintf("no kind of provider %s imports %s", p.Name, o.Type)})
 			continue
 		}
-		spec, ids, err := im.Import(o, r)
+		imp, err := im.Import(o, r)
 		var skip *ErrSkip
 		switch {
 		case errors.As(err, &skip):
@@ -86,12 +123,20 @@ func (p *Provider) Import(_ context.Context, in protocol.ImportParams) (protocol
 		case err != nil:
 			return out, fmt.Errorf("import of %s: %w", o.Address, err)
 		}
-		b, err := json.Marshal(spec, json.Deterministic(true))
+		b, err := json.Marshal(imp.Spec, json.Deterministic(true))
 		if err != nil {
 			return out, fmt.Errorf("import of %s: %w", o.Address, err)
 		}
-		out.Resources = append(out.Resources, protocol.Imported{Address: o.Address, Kind: kind, Name: o.Name, Spec: b, IDs: ids})
+		out.Resources = append(out.Resources, protocol.Imported{Address: o.Address, Kind: kind, Name: o.Name, Spec: b, IDs: imp.IDs, Also: imp.Also})
 	}
+	// What a declaration includes is not skipped (a route table's association moves with it).
+	included := map[string]bool{}
+	for _, r := range out.Resources {
+		for _, a := range r.Also {
+			included[a] = true
+		}
+	}
+	out.Skipped = slices.DeleteFunc(out.Skipped, func(s protocol.ImportSkip) bool { return included[s.Address] })
 	return out, nil
 }
 

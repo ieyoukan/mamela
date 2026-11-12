@@ -17,6 +17,10 @@ const MethodImport = "import"
 // turned into a reference between their declarations.
 type ImportParams struct {
 	Objects []ImportObject `json:"objects"`
+	// Settings are the provider's guard settings ([provider.<name>.guard] of mamela.providers.toml,
+	// without secrets): what a declaration of the site needs that the other tool does not say (an
+	// AWS boundary).
+	Settings jsontext.Value `json:"settings,omitempty"`
 }
 
 // ImportObject is one object of another tool.
@@ -45,6 +49,9 @@ type Imported struct {
 	Name    string            `json:"name"`
 	Spec    jsontext.Value    `json:"spec"`
 	IDs     map[string]string `json:"ids"`
+	// Also are the addresses of other objects this declaration includes (a route table's
+	// associations and routes): they move to Mamela with it.
+	Also []string `json:"also,omitempty"`
 }
 
 // ImportSkip is an object the provider does not import, and why (what to do about it).

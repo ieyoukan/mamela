@@ -97,12 +97,16 @@ kit が引き受けるのは次のことである。
 2. **宣言に変える:** 宣言が依存するプロバイダーのうち、その型を import する（`Kind.Imports`）ものが、新しい RPC `import` で、各リソースを自分の種類の宣言（spec と IDs）に変える。
    - `import` は、`diff` と同じく、要求を一切送れない。
    - 1 つのプロバイダーの物をまとめて渡す。サブネットの `vpc_id` のような参照を、取り込んだ宣言の名前に解決するためである（`kit.Resolver`）。
-   - host は結果を確かめる。種類がその型を import するか、物が 1 度ずつか、名前・IDs・spec が正しいか。
+   - guard の設定（`[provider.<name>.guard]`、秘密は含まない）も渡す。Terraform が言わず、サイトの宣言に要るもの（AWS の境界）をここから取る。
+   - 1 つの宣言が、ほかの物を含むことがある（ルートテーブルの関連付け、別リソースで書いたセキュリティグループのルール）。それらは `Also` に並べ、宣言と一緒に移す。
+   - host は結果を確かめる。種類がその型を import するか、物が 1 度ずつか（含まれる物も）、名前・IDs・spec が正しいか。
 3. **Emela に書く:** 宣言を、生成した Pome の型と関数を使う Emela（`src/imported.emel`、関数 `imported`）として書く。
+   - 生成した型と関数は、Pome の `src/lib.emel`（全体が生成物のとき）か `src/kinds.emel`（`lib.emel` を手で書くとき。モジュール `<Pome>.Kinds`）にある。
    - 参照される物を先に書く。
    - これは使う人のものになり、自由に直してよい。
 4. **記録する:** 各物を、引き継ぐ対象として SQLite に記録する（`adoptions`、migration 12）。
 5. **何も変えない:** 観測では、記録した IDs の物を、その宣言の `Adoptable` として報告する（`ObserveParams.Adopting`）。
+   - Mamela の印のない物は一覧に出ないことが多い（AWS はタグで探す）。kit の `Finder` は、IDs で 1 つ探す。
    - host は、報告された物の IDs が記録と一致することを確かめる。
    - plan は何も変えず、`MAM-PLAN-0114` で引き継ぎの手順を示す。
    - その物に `after` で依存する物は待つ。
@@ -122,6 +126,8 @@ kit が引き受けるのは次のことである。
   - 引き継ぎは人の明示操作である。
   - Foreign は変えない。
   - 要求は host が確かめる。
+- **mamela-aws:** kit に移した。ネットワーク（`aws_vpc`、`aws_internet_gateway`、`aws_subnet`、`aws_route_table` とその関連付け・経路、`aws_security_group` とそのルール）を取り込み、`adopt`（`CreateTags` で `mamela:name` と `mamela:boundary` を付ける）で引き継ぐ。guard は、引き継ぎが guard の境界に入ることを確かめる。
 - **これから:**
-  - mamela-aws と mamela-proxmox を kit に移し、`aws_vpc` などの取り込みを足す。
+  - mamela-aws の ECS・IAM・CloudWatch Logs・EC2 インスタンスの取り込み。名前の決まり（`/mamela/` の下など）があり、そのままでは引き継げない。
+  - mamela-proxmox を kit に移し、取り込みを足す。
   - OpenAPI などの API 定義から、カタログと呼び出しの宣言を起こす道具は、まだない。

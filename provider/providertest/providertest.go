@@ -413,14 +413,17 @@ func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([
 	deps := map[string]protocol.Observed{}
 	waiting := 0
 	for _, d := range desired {
-		ok := true
+		ok, adopt := true, false
 		for _, a := range d.After {
 			if o := byID[a]; !o.Exists || !o.Owned || o.Unfinished {
 				ok = false
+				adopt = adopt || o.Adoptable // waits for a person to adopt it: as it should
 			}
 		}
 		if !ok {
-			waiting++
+			if !adopt {
+				waiting++
+			}
 			continue
 		}
 		ready = append(ready, d)

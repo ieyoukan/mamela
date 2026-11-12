@@ -49,6 +49,7 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	force := fs.Bool("force", false, "replace the file if it exists")
 	dryRun := fs.Bool("dry-run", false, "show what would be imported; write and record nothing")
 	by := fs.String("by", envOr("USER", ""), "who imports")
+	providersFile := addProvidersFlag(fs)
 	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, importUsage)
@@ -96,6 +97,12 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return report(stderr, err)
 	}
 	defer rt.Close()
+	// The guard's settings say what the site's declarations need that Terraform does not (an AWS
+	// boundary); no API is contacted.
+	cfg, err := external.LoadConfig(*providersFile)
+	if err != nil {
+		return report(stderr, err)
+	}
 
 	// Which provider imports each type: one, or the import is ambiguous.
 	importer := map[string]string{}
@@ -124,6 +131,7 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		provider, resource, address string
 		ids                         map[string]string
 		op                          protocol.Op
+		also                        []string
 	}
 	var adoptions []adoption
 	var skipped []protocol.ImportSkip
@@ -133,13 +141,17 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			continue
 		}
 		s, _ := rt.Session(p.Provider)
-		res, err := s.Import(ctx, objs)
+		settings, _, err := cfg.ScriptInput(p.Provider)
+		if err != nil {
+			return report(stderr, err)
+		}
+		res, err := s.Import(ctx, objs, settings)
 		if err != nil {
 			return report(stderr, fmt.Errorf("provider %s: import: %w", p.Provider, err))
 		}
-		module, err := pomeModule(p.Dir)
+		module, err := generatedModule(p.Dir)
 		if err != nil {
-			return report(stderr, err)
+			return report(stderr, fmt.Errorf("provider %s: %w", p.Provider, err))
 		}
 		all = append(all, pomegen.Imports{Manifest: s.Manifest(), Module: module, Resources: res.Resources})
 		skipped = append(skipped, res.Skipped...)
@@ -152,8 +164,12 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 					}
 				}
 			}
-			adoptions = append(adoptions, adoption{p.Provider, string(r.Kind) + " " + r.Name, r.Address, r.IDs, op})
+			adoptions = append(adoptions, adoption{p.Provider, string(r.Kind) + " " + r.Name, r.Address, r.IDs, op, r.Also})
 		}
+	}
+	n := len(adoptions)
+	for _, a := range adoptions {
+		n += len(a.also)
 	}
 	if len(adoptions) == 0 {
 		fmt.Fprintf(stdout, "Nothing to import: no provider of the declaration imports these %d resources.\n", len(objects))
@@ -169,9 +185,12 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 		return report(stderr, err)
 	}
 	slices.SortFunc(adoptions, func(a, b adoption) int { return strings.Compare(a.address, b.address) })
-	fmt.Fprintf(stdout, "%d of %d resources import:\n", len(adoptions), len(objects))
+	fmt.Fprintf(stdout, "%d of %d resources import, as %d declarations:\n", n, len(objects), len(adoptions))
 	for _, a := range adoptions {
 		fmt.Fprintf(stdout, "  %-40s %s (provider %s)\n", a.address, a.resource, a.provider)
+		for _, x := range a.also {
+			fmt.Fprintf(stdout, "    with %s\n", x)
+		}
 	}
 	printNotImported(stdout, skipped, unknown)
 	if *dryRun {
@@ -213,6 +232,9 @@ func runImport(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	var addrs []string
 	for _, a := range adoptions {
 		addrs = append(addrs, "'"+a.address+"'")
+		for _, x := range a.also {
+			addrs = append(addrs, "'"+x+"'")
+		}
 	}
 	fmt.Fprintf(stdout, "       terraform state rm %s\n", strings.Join(addrs, " "))
 	return 0
@@ -236,8 +258,9 @@ func printNotImported(w io.Writer, skipped []protocol.ImportSkip, unknown []stri
 	}
 }
 
-// pomeModule is the Emela module of the Pome in dir.
-func pomeModule(dir string) (string, error) {
+// generatedModule is the module of a provider's Pome that mamela provider pome generated: its
+// root module (src/lib.emel), or, when the root is written by hand, Kinds (src/kinds.emel).
+func generatedModule(dir string) (string, error) {
 	var p struct {
 		Pome struct {
 			Module string `toml:"module"`
@@ -249,7 +272,13 @@ func pomeModule(dir string) (string, error) {
 	if p.Pome.Module == "" {
 		return "", fmt.Errorf("%s: the Pome names no module", filepath.Join(dir, "Pome.toml"))
 	}
-	return p.Pome.Module, nil
+	for _, f := range []struct{ file, module string }{{"src/lib.emel", p.Pome.Module}, {"src/kinds.emel", p.Pome.Module + ".Kinds"}} {
+		src, err := os.ReadFile(filepath.Join(dir, f.file))
+		if err == nil && bytes.Contains(src, []byte(pomegen.GeneratedMark)) {
+			return f.module, nil
+		}
+	}
+	return "", errors.New("its Pome has no generated module (src/lib.emel or src/kinds.emel by mamela provider pome) to declare what is imported with")
 }
 
 // emelaFmt formats Emela source as emela fmt does.

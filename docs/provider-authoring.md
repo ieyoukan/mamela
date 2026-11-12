@@ -449,12 +449,17 @@ mamela import terraform --state /tmp/state.json <pome-dir>      # --dry-run で�
 4. 1 つずつ引き継ぐ。`import` が表示する `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` を、まず `--confirm` なしで見てから実行する。
 5. 引き継いだら、`terraform state rm <address>` で Terraform に忘れさせる。Mamela だけが管理するようになる。
 
-作者は、種類に `kit.Importer` を実装する。
+作者は、種類に `kit.Importer` を実装する（例: mamela-aws の `aws/imports.go`）。
 
 - `Imports()`: 取り込む Terraform の型。
-- `Import(o, r)`: リソースの属性（`kit.Values`）から、spec と IDs を作る。
+- `Import(o, r)`: リソースの属性（`kit.Values`）から、`kit.Imported`（spec と IDs）を作る。
   - 参照は `r.Name("aws_vpc", vpcID)` で、取り込んだ宣言の名前にする。
+  - 宣言に含める別のリソース（ルートテーブルの関連付けなど）は `r.Objects("aws_route_table_association")` で探し、`Also` に並べる。
+  - サイトの値（境界など）は `r.Settings(&v)` で guard の設定から読む。
   - 取り込めないものは `kit.Skip(理由)` を返す。
+- 一覧（`List`）が Mamela の印のある物しか返さないなら、`kit.Finder` の `Find(c, ids)` で、IDs から物を 1 つ探す。
+
+`lib.emel` を手で書く Pome は、生成した型と関数を `src/kinds.emel` に置く（`mamela provider pome --out src/kinds.emel pome`）。取り込んだ宣言は、そのモジュール（`Aws.Kinds`）を使う。
 
 引き継ぎの操作（`kit.AdoptOp`）は、Mamela の印（タグ、所有者）を付けるだけにする。それ以外は変えない。
 

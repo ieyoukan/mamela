@@ -283,6 +283,17 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 		j := -1
 		if ids, ok := adopting[r.ID]; ok && (i < 0 || byKind[r.Kind][i].Foreign) {
 			j = adoptable(byKind[r.Kind], taken[r.Kind], ids)
+			if f, ok := k.(Finder); ok && j < 0 {
+				// Not listed (it carries no mark of Mamela's yet): found by its IDs.
+				x, err := f.Find(c, ids)
+				if err != nil {
+					return out, fmt.Errorf("%s: finding the imported object: %w", r.ID, err)
+				}
+				if x != nil && protocol.Targets(x.IDs, ids) {
+					byKind[r.Kind] = append(byKind[r.Kind], *x)
+					j = len(byKind[r.Kind]) - 1
+				}
+			}
 		}
 		switch {
 		case j >= 0:
