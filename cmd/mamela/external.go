@@ -70,3 +70,15 @@ func startPrograms(ctx context.Context, programs []store.Program, t tools, confi
 	}
 	return external.Start(ctx, programs, cfg, t.toolchain.Wasmtime)
 }
+
+// setRecords gives the providers' runtime Mamela's records: what Mamela created (which vouches for
+// a provider's claims of ownership) and what a person imported to adopt (ADR 0009).
+func setRecords(ctx context.Context, rt *external.Runtime, st *store.Store) error {
+	rt.SetCreations(st)
+	a, err := st.Adoptions(ctx)
+	if err != nil {
+		return err
+	}
+	rt.SetAdoptions(a)
+	return nil
+}

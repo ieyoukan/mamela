@@ -85,7 +85,9 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			return report(stderr, err)
 		}
 		defer rt.Close()
-		rt.SetCreations(st)
+		if err := setRecords(ctx, rt, st); err != nil {
+			return report(stderr, err)
+		}
 		// What the other plans of the last hour are to create is taken (not this plan's own).
 		claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), p.Digest)
 		if err != nil {

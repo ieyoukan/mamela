@@ -20,6 +20,7 @@ import (
 // Runtime is the running providers of one plan or apply.
 type Runtime struct {
 	claims   map[string][]map[string]string // IDs other plans are to create, by provider
+	adopting map[string][]protocol.Adopting // resources to adopt (imported), by provider
 	sessions map[string]*host.Session
 	programs []store.Program
 	// endpoints identify, per provider, the API a plan's changes go to (URL, credential,
@@ -111,6 +112,14 @@ type Creations interface {
 func (rt *Runtime) SetClaims(c map[string][]map[string]string) {
 	if rt != nil {
 		rt.claims = c
+	}
+}
+
+// SetAdoptions sets, by provider, the declared resources to adopt (imported, ADR 0009): observing
+// reports the imported object as adoptable for each.
+func (rt *Runtime) SetAdoptions(a map[string][]protocol.Adopting) {
+	if rt != nil {
+		rt.adopting = a
 	}
 }
 
@@ -310,7 +319,7 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		if rt.claims != nil {
 			claimed = rt.claims[name]
 		}
-		observed, _, err := s.ObserveClaimed(ctx, declared, claimed)
+		observed, _, err := s.ObserveWith(ctx, protocol.ObserveParams{Resources: declared, Claimed: claimed, Adopting: rt.adopting[name]})
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: observe: %w", name, err)
 		}
@@ -588,6 +597,8 @@ func waitsFor(d protocol.Resource, provided map[string]state.Provided) string {
 		switch {
 		case !ok || !dep.Observed.Exists:
 			return fmt.Sprintf("waits for %s to be created", a)
+		case !dep.Observed.Owned && dep.Observed.Adoptable:
+			return fmt.Sprintf("waits for %s, which is to be adopted (mamela act)", a)
 		case !dep.Observed.Owned:
 			return fmt.Sprintf("waits for %s, which is not Mamela's (Foreign)", a)
 		case dep.Observed.Unfinished:

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
@@ -64,17 +63,14 @@ func runProviderPome(ctx context.Context, args []string, stdout, stderr io.Write
 		return report(stderr, fmt.Errorf("provider %s: %w", m.Provider, err))
 	}
 	// Formatted as emela fmt formats it, so that the file is what an author would keep.
-	fmtCmd := exec.CommandContext(ctx, t.toolchain.Emela, "fmt", "-")
-	fmtCmd.Stdin = bytes.NewReader(src)
-	var formatted, ferr bytes.Buffer
-	fmtCmd.Stdout, fmtCmd.Stderr = &formatted, &ferr
-	if err := fmtCmd.Run(); err != nil {
-		return report(stderr, fmt.Errorf("emela fmt of the generated source: %v\n%s", err, ferr.String()))
+	formatted, err := emelaFmt(ctx, t.toolchain.Emela, src)
+	if err != nil {
+		return report(stderr, err)
 	}
 	path := filepath.Join(dir, *out)
 	if *check {
 		old, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(old, formatted.Bytes()) {
+		if err != nil || !bytes.Equal(old, formatted) {
 			fmt.Fprintf(stderr, "mamela: %s is not what the provider's manifest generates: run `mamela provider pome %s`\n", path, dir)
 			return 1
 		}
@@ -84,7 +80,7 @@ func runProviderPome(ctx context.Context, args []string, stdout, stderr io.Write
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return report(stderr, err)
 	}
-	if err := os.WriteFile(path, formatted.Bytes(), 0o644); err != nil {
+	if err := os.WriteFile(path, formatted, 0o644); err != nil {
 		return report(stderr, err)
 	}
 	n := 0

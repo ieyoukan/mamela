@@ -74,7 +74,9 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return report(stderr, errors.New("the declaration uses no provider"))
 	}
 	defer rt.Close()
-	rt.SetCreations(st)
+	if err := setRecords(ctx, rt, st); err != nil {
+		return report(stderr, err)
+	}
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
 	}
@@ -101,7 +103,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case o.Adopts && obs.Owned:
 		return report(stderr, fmt.Errorf("MAM-ACT-0103: %s is already Mamela's; nothing to adopt", obs.ID))
 	case o.Adopts && !obs.Adoptable:
-		return report(stderr, fmt.Errorf("MAM-ACT-0104: provider %s does not report %s as adoptable; Mamela adopts only what its provider recognizes as made by Mamela", pr.Provider, obs.ID))
+		return report(stderr, fmt.Errorf("MAM-ACT-0104: provider %s does not report %s as adoptable; Mamela adopts only what its provider recognizes as made by Mamela, or what was imported (mamela import terraform)", pr.Provider, obs.ID))
 	case !o.Adopts && !obs.Owned:
 		return report(stderr, fmt.Errorf("MAM-ACT-0105: Mamela has no record of creating %s (Foreign, or not finished); it acts only on its own resources", obs.ID))
 	}
@@ -193,8 +195,10 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if outcome == host.OutcomeDone {
 		switch {
 		case o.Adopts:
-			// Mamela's now: recorded as if it had created it.
-			err = st.RecordCreation(ctx, pr.Provider, obs.ID, change.IDs, "act:"+id, id)
+			// Mamela's now: recorded as if it had created it, and no longer one to adopt.
+			if err = st.RecordCreation(ctx, pr.Provider, obs.ID, change.IDs, "act:"+id, id); err == nil {
+				err = st.ForgetAdoption(ctx, pr.Provider, obs.ID)
+			}
 		case slices.Contains(v.Effects, protocol.EffectLoseData):
 			// Deleted: Mamela forgets it.
 			err = st.ForgetCreations(ctx, pr.Provider, obs.ID)

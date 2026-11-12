@@ -207,6 +207,9 @@ func (p *Provider) Manifest() protocol.Manifest {
 		if d, ok := k.(Documented); ok {
 			mk.Doc = d.Doc()
 		}
+		if im, ok := k.(Importer); ok {
+			mk.Imports = im.Imports()
+		}
 		if s, ok := k.(Specified); ok {
 			mk.Spec = SpecOf(s.Spec())
 		}
@@ -256,6 +259,10 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 	}
 	reported := map[string]bool{}
 	taken := map[protocol.ResourceKind]map[int]bool{}
+	adopting := map[string]map[string]string{}
+	for _, a := range in.Adopting {
+		adopting[a.Resource] = a.IDs
+	}
 	for _, r := range in.Resources {
 		k, ok := p.kind(r.Kind)
 		if !ok {
@@ -269,12 +276,21 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 			}
 		}
 		o := protocol.Observed{ID: r.ID, Kind: r.Kind, Name: r.Name}
+		if taken[r.Kind] == nil {
+			taken[r.Kind] = map[int]bool{}
+		}
 		i := slices.IndexFunc(byKind[r.Kind], func(x Object) bool { return x.Name == r.Name && x.Scope == scope })
+		j := -1
+		if ids, ok := adopting[r.ID]; ok && (i < 0 || byKind[r.Kind][i].Foreign) {
+			j = adoptable(byKind[r.Kind], taken[r.Kind], ids)
+		}
 		switch {
+		case j >= 0:
+			// Imported to adopt (ADR 0009): made by another tool, and Mamela's once adopted.
+			taken[r.Kind][j] = true
+			fill(&o, byKind[r.Kind][j])
+			o.Owned, o.Unfinished, o.Adoptable = false, false, true
 		case i >= 0:
-			if taken[r.Kind] == nil {
-				taken[r.Kind] = map[int]bool{}
-			}
 			taken[r.Kind][i] = true
 			fill(&o, byKind[r.Kind][i])
 		default:

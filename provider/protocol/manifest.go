@@ -85,6 +85,9 @@ type Kind struct {
 	Spec []Field `json:"spec,omitempty"`
 	// Doc says what a resource of the kind is, for its generated Pome.
 	Doc string `json:"doc,omitempty"`
+	// Imports are the types of Terraform and OpenTofu resources the provider turns into
+	// declarations of this kind (MethodImport, ADR 0009): "aws_vpc".
+	Imports []string `json:"imports,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -396,6 +399,9 @@ func (m Manifest) Check() error {
 		}
 		if err := CheckFields(k.Spec); err != nil {
 			return fmt.Errorf("manifest %s: %s spec: %w", m.Provider, k.Kind, err)
+		}
+		if err := checkImports(k); err != nil {
+			return fmt.Errorf("manifest %s: %w", m.Provider, err)
 		}
 		seen := map[Op]bool{}
 		for _, o := range k.Operations {

@@ -36,6 +36,7 @@ const (
 	OpCreate protocol.Op = "create-item"
 	OpUpdate protocol.Op = "update-item"
 	OpDelete protocol.Op = "delete-item"
+	OpAdopt  protocol.Op = "adopt-item"
 )
 
 const owner = "mamela"
@@ -85,7 +86,27 @@ func (items) Operations() []protocol.Operation {
 		kit.Op(OpCreate, write, putItem, putLabels),
 		kit.Op(OpUpdate, write, putItem, putLabels),
 		kit.ExplicitOp(OpDelete, write, deleteItem),
+		kit.AdoptOp(OpAdopt, write, putItem),
 	}
+}
+
+// Imports: the items of a Terraform provider of the API ("kv_item": its id is the item's name).
+func (items) Imports() []string { return []string{"kv_item"} }
+
+// Import declares an item as it is: Mamela adopts it as such (adopt-item makes it Mamela's).
+func (items) Import(o protocol.ImportObject, _ kit.Resolver) (any, map[string]string, error) {
+	var v struct {
+		ID     string   `json:"id"`
+		Value  string   `json:"value"`
+		Labels []string `json:"labels"`
+	}
+	if err := kit.Values(o, &v); err != nil {
+		return nil, nil, err
+	}
+	if v.ID == "" {
+		return nil, nil, kit.Skip("no id: the state does not say which item it is")
+	}
+	return Spec{Value: v.Value, Labels: slices.Sorted(slices.Values(v.Labels))}, map[string]string{"item": v.ID}, nil
 }
 
 // Absent: version "0" is the version of an item that does not exist (a create is based on it: the
@@ -153,9 +174,14 @@ func (items) Done(c *kit.Client, ch protocol.Change, a protocol.Approved) (bool,
 	}
 	it, exists := all[ch.IDs["item"]]
 	deleting := a.Method == deleteItem.Method && a.Path == deleteItem.Path
+	// Taking an item over: the request sets the owner of an item that exists (a create is based
+	// on version 0).
+	adopting := a.Path == putItem.Path && slices.Equal(a.Params["owner"], []string{owner}) && !slices.Equal(a.Params["version"], []string{"0"})
 	switch {
 	case !exists:
 		return deleting, nil
+	case it.Owner != owner && adopting:
+		return false, nil
 	case it.Owner != owner:
 		if deleting {
 			return true, nil // not Mamela's item any more: nothing of Mamela's to delete
@@ -173,8 +199,18 @@ func (items) Done(c *kit.Client, ch protocol.Change, a protocol.Approved) (bool,
 	return false, nil
 }
 
-// Prepare: delete-item, of an item Mamela owns, based on its version.
+// Prepare: delete-item, of an item Mamela owns, based on its version; adopt-item, of an
+// adoptable item (imported), which makes Mamela its owner and changes nothing else.
 func (items) Prepare(op protocol.Op, o protocol.Observed, _ *protocol.Resource) (protocol.Change, error) {
+	if op == OpAdopt {
+		var got Spec
+		if !o.Adoptable || json.Unmarshal(o.State, &got) != nil {
+			return protocol.Change{}, fmt.Errorf("%s: only an adoptable item (imported) can be adopted", o.ID)
+		}
+		return protocol.Change{Resource: o.ID, Kind: Kind, Op: OpAdopt, IDs: o.IDs, Precondition: o.Version,
+			Reasons:  []string{fmt.Sprintf("adopt item %s (version %s): Mamela becomes its owner; its value stays", o.Name, o.Version)},
+			Requests: []protocol.Approved{kit.Request(putItem, map[string][]string{"value": {got.Value}, "owner": {owner}, "version": {o.Version}})}}, nil
+	}
 	if op != OpDelete || !o.Owned {
 		return protocol.Change{}, fmt.Errorf("%s: only an existing item Mamela owns can be deleted", o.ID)
 	}
@@ -194,7 +230,7 @@ type baseline struct {
 }
 
 // guard: before, the items after the creates stay within max_items; after, every item someone else
-// owns is as it was.
+// owns is as it was (but one being adopted).
 func guard(c *kit.Client, p protocol.GuardParams) (protocol.GuardResult, error) {
 	var s GuardSettings
 	if err := json.Unmarshal(p.Settings, &s, json.RejectUnknownMembers(true)); err != nil || s.MaxItems < 1 {
@@ -221,9 +257,17 @@ func guard(c *kit.Client, p protocol.GuardParams) (protocol.GuardResult, error) 
 		} else {
 			add("KV-0001", protocol.SeverityOK, "%d items after the changes; max_items is %d", n, s.MaxItems)
 		}
+		// The items of others must stay as they are, except those being adopted (they become
+		// Mamela's).
+		adopting := map[string]bool{}
+		for _, ch := range p.Changes {
+			if ch.Op == OpAdopt {
+				adopting[ch.IDs["item"]] = true
+			}
+		}
 		b := baseline{Others: map[string]int{}}
 		for name, it := range all {
-			if it.Owner != owner {
+			if it.Owner != owner && !adopting[name] {
 				b.Others[name] = it.Version
 			}
 		}

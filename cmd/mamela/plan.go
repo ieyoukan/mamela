@@ -99,7 +99,9 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return report(stderr, err)
 	}
-	rt.SetCreations(st)
+	if err := setRecords(ctx, rt, st); err != nil {
+		return report(stderr, err)
+	}
 	defer rt.Close()
 	// What the other plans of the last hour are to create is taken: plans made one after another
 	// and applied together do not choose the same IDs (a VMID).
