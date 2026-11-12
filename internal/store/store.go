@@ -150,6 +150,14 @@ CREATE TABLE permits (
   issued_ms    INTEGER NOT NULL
 );
 `,
+	// 7: the join token of each k3s cluster, by its server node.
+	`
+CREATE TABLE k3s_tokens (
+  server     TEXT PRIMARY KEY,
+  token      TEXT NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

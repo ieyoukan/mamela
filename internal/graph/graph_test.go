@@ -174,6 +174,60 @@ func TestProvidedResources(t *testing.T) {
 	}
 }
 
+func TestNodeK3s(t *testing.T) {
+	doc := func(name, version, sha string) string {
+		return `{"schema":"mamela-graph/v1","resources":[{"kind":"VirtualMachine","name":"web","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}},` +
+			`{"kind":"NodeK3s","name":"` + name + `","spec":{"node":"web","role":"server","sha256":"` + sha + `","version":"` + version + `"}}]}`
+	}
+	sha := strings.Repeat("ab", 32)
+	g, err := Decode([]byte(doc("web/k3s", "v1.37.2+k3s1", sha)))
+	if err != nil || g.Resources[1].NodeK3s == nil || g.Resources[1].NodeK3s.SHA256 != sha {
+		t.Fatalf("%+v %v", g, err)
+	}
+	for name, d := range map[string]string{
+		"not a release":     doc("web/k3s", "latest", sha),
+		"an option":         doc("web/k3s", "--help", sha),
+		"a path":            doc("web/k3s", "v1.37.2+k3s1/../../x", sha),
+		"a short sha256":    doc("web/k3s", "v1.37.2+k3s1", "abc"),
+		"an uppercase hash": doc("web/k3s", "v1.37.2+k3s1", strings.ToUpper(sha)),
+		"another name":      doc("web/kube", "v1.37.2+k3s1", sha),
+	} {
+		if _, err := Decode([]byte(d)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if _, err := Decode([]byte(strings.Replace(doc("other/k3s", "v1.37.2+k3s1", sha), `"node":"web","role"`, `"node":"other","role"`, 1))); err == nil {
+		t.Error("k3s on an undeclared node: accepted")
+	}
+	vm := func(n string) string {
+		return `{"kind":"VirtualMachine","name":"` + n + `","spec":{"cpu":1,"diskGiB":10,"image":"ubuntu-24.04","memoryMiB":1024}}`
+	}
+	k := func(node, role, server string) string {
+		srv := ""
+		if server != "" {
+			srv = `"server":"` + server + `",`
+		}
+		return `{"kind":"NodeK3s","name":"` + node + `/k3s","spec":{"node":"` + node + `","role":"` + role + `",` + srv + `"sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	}
+	cluster := func(rs ...string) string {
+		return `{"schema":"mamela-graph/v1","resources":[` + strings.Join(rs, ",") + `]}`
+	}
+	if g, err := Decode([]byte(cluster(vm("s"), vm("a"), k("s", "server", ""), k("a", "agent", "s")))); err != nil || g.Sorted()[2].NodeK3s.Server != "s" {
+		t.Errorf("a server and an agent: %v", err)
+	}
+	for name, d := range map[string]string{
+		"an agent of no server":     cluster(vm("s"), vm("a"), k("a", "agent", "s")),
+		"an agent of an agent":      cluster(vm("s"), vm("a"), vm("b"), k("s", "server", ""), k("a", "agent", "s"), k("b", "agent", "a")),
+		"a server with a server":    cluster(vm("s"), vm("a"), k("s", "server", "a")),
+		"an unknown role":           cluster(vm("s"), k("s", "master", "")),
+		"an agent of an undeclared": cluster(vm("a"), k("a", "agent", "x")),
+	} {
+		if _, err := Decode([]byte(d)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	doc := func(resources ...string) string {
 		return `{"schema":"mamela-graph/v1","resources":[` + strings.Join(resources, ",") + `]}`

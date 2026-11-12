@@ -67,6 +67,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0206 | ApprovalRequired | サービスの起動（自動起動が許可されていない） |
 | MAM-POL-0207 | ApprovalRequired | サービスの停止・無効化 |
 | MAM-POL-0208 | ApprovalRequired | プロバイダーの変更に、host のカタログが知らない呼び出しの要求がある（要求をレビューする） |
+| MAM-POL-0210 | ApprovalRequired | k3s（Kubernetes）の導入。GitHub から取得し sha256 で固定したバイナリを、root で動かす |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0301 | Denied | ディスクの縮小 |
 | MAM-POL-0302 | Denied | イメージの変更（VM の置き換えになる） |
@@ -85,10 +86,13 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0103 | Agent からのパッケージの報告を待つ |
 | MAM-PLAN-0104 | Agent からのサービスの報告を待つ |
 | MAM-PLAN-0105 | mamelet が、インストールで何が変わるか（apt-get -s）を報告するのを待つ |
-| MAM-PLAN-0106 | サービスの unit がまだない（パッケージが入っていない）ので待つ |
+| MAM-PLAN-0106 | サービスの unit がまだない（それを入れるパッケージや k3s が入っていない）ので待つ |
+| MAM-PLAN-0108 | mamelet からの k3s の報告を待つ |
+| MAM-PLAN-0109 | k3s の agent が、server のアドレスの報告を待つ |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
+| MAM-PLAN-0204 | mamelet が k3s を観測できない（Blocked。例: unit が手で変えられた） |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 宣言から消えたが、削除せず保持する（Retain） |
 

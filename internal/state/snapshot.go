@@ -28,6 +28,18 @@ type Snapshot struct {
 	// Provided are resources of providers, by graph ID ("KVItem web"): the declared ones and
 	// those a provider found that Mamela created and that are no longer declared.
 	Provided map[string]Provided `json:"provided,omitempty"`
+	// K3s by "<node>/k3s". Absent means "not observed".
+	K3s map[string]K3s `json:"k3s,omitempty"`
+}
+
+// K3s is an observed k3s on a node: Mamela's unit installed, and the sha256 of the binary.
+type K3s struct {
+	Installed  bool      `json:"installed"`
+	SHA256     string    `json:"sha256,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	Addresses  []string  `json:"addresses,omitempty"` // the node's IPv4 addresses, sorted
+	Server     string    `json:"server,omitempty"`    // the server an installed agent joins
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // Provided is what a provider observed of one resource, and the changes its diff computed from
@@ -124,6 +136,13 @@ func (s Snapshot) normalized() Snapshot {
 	for k, v := range s.Services {
 		v.ObservedAt = v.ObservedAt.UTC()
 		n.Services[k] = v
+	}
+	if len(s.K3s) > 0 {
+		n.K3s = map[string]K3s{}
+		for k, v := range s.K3s {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.K3s[k] = v
+		}
 	}
 	if len(s.Provided) > 0 {
 		n.Provided = map[string]Provided{}

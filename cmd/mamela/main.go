@@ -181,6 +181,9 @@ func describe(r graph.Resource) string {
 		return fmt.Sprintf("service %s %s, %s on %s", s.Service,
 			choose(s.Enabled, "enabled", "disabled"), choose(s.Running, "running", "stopped"), s.Node)
 	}
+	if k := r.NodeK3s; k != nil {
+		return fmt.Sprintf("k3s %s (sha256 %s…) on %s", k.Version, k.SHA256[:12], k.Node)
+	}
 	if p := r.Provided; p != nil {
 		return fmt.Sprintf("via provider %s: %s", p.Provider, p.Spec)
 	}

@@ -25,6 +25,12 @@ pub type Package(node: String, name: String)
 ## A systemd service on a node.
 pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 
+## k3s (a light Kubernetes) on a node, as a server or as an agent of a server: this exact release,
+## pinned by the sha256 of its binary for the node's architecture (from the release's sha256sum
+## file). Mamela writes the systemd unit itself and gives the cluster's nodes their join token;
+## start it with `service(graph, node, "k3s", True, True)`.
+pub type K3s(node: String, role: String, server: String, version: String, sha256: String)
+
 ## A resource of a provider's kind. A provider's Pome wraps `provided` in typed functions, so
 ## that a declaration writes `Kv.item(...)`, not this.
 pub type Provided(provider: String, kind: String, name: String, spec: List[(String, Dynamic)])
@@ -34,11 +40,12 @@ pub opaque type Graph(
   vms: List[Vm],
   packages: List[Package],
   services: List[Service],
+  k3s_servers: List[K3s],
   by_providers: List[Provided],
 )
 
 pub fn empty() -> Graph {
-  Graph(vms: [], packages: [], services: [], by_providers: [])
+  Graph(vms: [], packages: [], services: [], k3s_servers: [], by_providers: [])
 }
 
 ## Declares a resource of a provider: `kind` is a kind of the provider named `provider`, and
@@ -63,6 +70,19 @@ pub fn vm(graph: Graph, vm: Vm) -> Graph {
 ## keeps the reference from pointing at a node that was never declared by a typo.
 pub fn package(graph: Graph, node: Vm, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)
+}
+
+## Declares that `node` runs a k3s server of `version`, whose binary has `sha256`.
+pub fn k3s_server(graph: Graph, node: Vm, version: String, sha256: String) -> Graph {
+  k = K3s(node: node.name, role: "server", server: "", version:, sha256:)
+  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
+}
+
+## Declares that `node` runs a k3s agent of `version` that joins the server on `server`. Taking the
+## server's `Vm` keeps the reference from pointing at a node that was never declared.
+pub fn k3s_agent(graph: Graph, node: Vm, server: Vm, version: String, sha256: String) -> Graph {
+  k = K3s(node: node.name, role: "agent", server: server.name, version:, sha256:)
+  Graph(k3s_servers: List.append(graph.k3s_servers, [k]), ..graph)
 }
 
 pub fn service(graph: Graph, node: Vm, name: String, enabled: Bool, running: Bool) -> Graph {
@@ -116,6 +136,17 @@ fn service_json(s: Service) -> Dynamic {
   )
 }
 
+fn k3s_json(k: K3s) -> Dynamic {
+  fields = [
+    ("node", Text(k.node)),
+    ("role", Text(k.role)),
+    ("version", Text(k.version)),
+    ("sha256", Text(k.sha256)),
+  ]
+  server = if k.server == "" { [] } else { [("server", Text(k.server))] }
+  resource("NodeK3s", "#{k.node}/k3s", List.append(fields, server))
+}
+
 fn provided_json(p: Provided) -> Dynamic {
   Dynamic.object(
     [
@@ -132,7 +163,10 @@ fn graph_json(graph: Graph) -> Dynamic {
     graph.vms.map(vm_json),
     List.append(
       graph.packages.map(package_json),
-      List.append(graph.services.map(service_json), graph.by_providers.map(provided_json)),
+      List.append(
+        graph.services.map(service_json),
+        List.append(graph.k3s_servers.map(k3s_json), graph.by_providers.map(provided_json)),
+      ),
     ),
   )
   schema = if List.is_empty(graph.by_providers) { SCHEMA } else { SCHEMA_V2 }

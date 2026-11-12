@@ -38,6 +38,51 @@ type Revision struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 	Packages  []Package `json:"packages"`
 	Services  []Service `json:"services"`
+	// K3s, when set, is the k3s server the node should run: mamelet observes it, and installs it
+	// only with an approved, one-time Install.
+	K3s *K3s `json:"k3s,omitempty"`
+}
+
+// K3s is a k3s release, pinned by the sha256 of its binary for the node's architecture, and the
+// node's place in its cluster.
+type K3s struct {
+	Version string `json:"version"`
+	SHA256  string `json:"sha256"`
+	Role    string `json:"role"` // "server" or "agent"
+	// Server is an agent's server ("https://<address>:6443").
+	Server string `json:"server,omitempty"`
+	// Token is the cluster's join token, made by the Control Plane and given only to the
+	// cluster's nodes (in their revisions, over their mutually authenticated connections). It is
+	// never in a declaration, a plan or a report.
+	Token string `json:"token"`
+	// Install is an approved installation of exactly this binary: mamelet downloads the release
+	// asset, and installs it (with Mamela's fixed systemd unit) only if its sha256 matches.
+	Install *Once `json:"install,omitempty"`
+}
+
+// K3sReleases is where k3s releases are downloaded from: <K3sReleases>/<version>/<asset>.
+const K3sReleases = "https://github.com/k3s-io/k3s/releases/download"
+
+// K3sTag is a release version as it appears in the release URL ("v1.33.5%2Bk3s1").
+func K3sTag(version string) string { return strings.ReplaceAll(version, "+", "%2B") }
+
+// K3s roles.
+const (
+	K3sServer = "server"
+	K3sAgent  = "agent"
+)
+
+// K3sTokenFile is where mamelet writes the cluster's join token (0600).
+const K3sTokenFile = "/etc/rancher/k3s/cluster-token"
+
+// K3sArgs are the arguments k3s runs with, fixed in Mamela (a declaration cannot change them): a
+// server as light as k3s goes (no ingress controller, no metrics server), its kubeconfig readable
+// by root only; an agent joins its server. Both take the join token from K3sTokenFile.
+func K3sArgs(role, server string) []string {
+	if role == K3sAgent {
+		return []string{"agent", "--server=" + server, "--token-file=" + K3sTokenFile}
+	}
+	return []string{"server", "--token-file=" + K3sTokenFile, "--disable=traefik", "--disable=metrics-server", "--write-kubeconfig-mode=0600"}
 }
 
 // Package is an APT package that should be installed.
@@ -82,6 +127,7 @@ const (
 	ActionStart   = "start"
 	ActionDisable = "disable"
 	ActionStop    = "stop"
+	ActionInstall = "install" // k3s only
 )
 
 var (
@@ -89,6 +135,9 @@ var (
 	packagePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
 	servicePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9@._-]{0,127}$`)
 	operationPattern = regexp.MustCompile(`^op-[0-9a-f]{24}$`)
+	k3sServerURL     = regexp.MustCompile(`^https://(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}:6443$`)
+	k3sVersion       = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
+	hexSHA256        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
@@ -164,6 +213,25 @@ func (r *Revision) Check() error {
 			if o.Action != ActionEnable && o.Action != ActionStart && o.Action != ActionDisable && o.Action != ActionStop {
 				add("service %s: action %q is not known", s.Name, o.Action)
 			}
+		}
+	}
+	if k := r.K3s; k != nil {
+		if !k3sVersion.MatchString(k.Version) || !hexSHA256.MatchString(k.SHA256) {
+			add("k3s %q / sha256 %q are not valid", k.Version, k.SHA256)
+		}
+		switch {
+		case k.Role == K3sServer && k.Server != "":
+			add("k3s: a server has no server")
+		case k.Role == K3sAgent && !k3sServerURL.MatchString(k.Server):
+			add("k3s: server %q is not https://<IPv4>:6443", k.Server)
+		case k.Role != K3sServer && k.Role != K3sAgent:
+			add("k3s: role %q", k.Role)
+		}
+		if !hexSHA256.MatchString(k.Token) {
+			add("k3s: the token is not 64 hex digits")
+		}
+		if in := k.Install; in != nil && (!operationPattern.MatchString(in.Operation) || in.Attempt < 1 || in.Action != ActionInstall) {
+			add("k3s: install grant %+v is not valid", *in)
 		}
 	}
 	if len(problems) > 0 {
@@ -275,6 +343,7 @@ type Report struct {
 	Version  string         `json:"version"`
 	Packages []PackageState `json:"packages"`
 	Services []ServiceState `json:"services"`
+	K3s      *K3sState      `json:"k3s,omitempty"`
 	Results  []Result       `json:"results"`
 	// Refused explains why the last revision received was not accepted, if it was not.
 	Refused string `json:"refused,omitempty"`
@@ -288,6 +357,18 @@ type PackageState struct {
 	Version   string     `json:"version,omitempty"`
 	ChangeSet *ChangeSet `json:"changeSet,omitempty"`
 	Error     string     `json:"error,omitempty"` // why it could not be observed or simulated
+}
+
+// K3sState is the observed k3s: whether Mamela's unit and a binary are installed, and the binary's
+// sha256.
+type K3sState struct {
+	Installed bool   `json:"installed"` // the binary, Mamela's unit and the token, as the revision says
+	SHA256    string `json:"sha256,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// Addresses are the node's IPv4 addresses (an agent's revision names its server by one).
+	Addresses []string `json:"addresses,omitempty"`
+	// Server is the server the installed agent's unit joins ("" for a server or when not installed).
+	Server string `json:"server,omitempty"`
 }
 
 // ServiceState is an observed service.

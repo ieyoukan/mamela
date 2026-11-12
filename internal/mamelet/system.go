@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -57,6 +58,13 @@ type System struct {
 	Runner Runner
 	// AllowedOrigins are the APT origins packages may come from (prefixes, e.g. "Ubuntu:").
 	AllowedOrigins []string
+	// Root prefixes the files mamelet writes (k3s); empty is "/". Tests use a directory.
+	Root string
+	// HTTP downloads k3s (nil: a client with a timeout); K3sReleases overrides where from (tests).
+	HTTP        *http.Client
+	K3sReleases string
+	// Addresses overrides how the node's IPv4 addresses are read (tests).
+	Addresses func() []string
 }
 
 func (s *System) run(ctx context.Context, program string, args []string, env ...string) (string, error) {
