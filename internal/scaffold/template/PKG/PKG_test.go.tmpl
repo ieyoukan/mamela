@@ -18,7 +18,7 @@ import (
 )
 
 func thing(name, spec string) protocol.Resource {
-	return protocol.Resource{ID: string(<% .Pkg %>.KindThing) + "/" + name, Kind: <% .Pkg %>.KindThing, Name: name, Spec: []byte(spec)}
+	return protocol.Resource{ID: string(<% .Pkg %>.KindThing) + " " + name, Kind: <% .Pkg %>.KindThing, Name: name, Spec: []byte(spec)}
 }
 
 // The provider passes Mamela's conformance suite, as the WASI program Mamela runs: it converges,
@@ -38,7 +38,7 @@ func TestConformance(t *testing.T) {
 		NewAPI:   func() http.Handler { return fakeapi.New() },
 		Cases: []providertest.Case{
 			{Name: "one-thing", Desired: []protocol.Resource{thing("web", `{"value":"v1"}`)},
-				Explicit: []providertest.Explicit{{Op: <% .Pkg %>.OpDelete, Resource: "<% .Prefix %>Thing/web"}}},
+				Explicit: []providertest.Explicit{{Op: <% .Pkg %>.OpDelete, Resource: "<% .Prefix %>Thing web"}}},
 			{Name: "things-with-tags", Desired: []protocol.Resource{
 				thing("db", `{"value":"v1","tags":["prod","eu"]}`),
 				thing("web", `{"value":"v2"}`),

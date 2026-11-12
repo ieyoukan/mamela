@@ -11,7 +11,7 @@ import (
 )
 
 func item(name, spec string) protocol.Resource {
-	return protocol.Resource{ID: string(kvprovider.Kind) + "/" + name, Kind: kvprovider.Kind, Name: name, Spec: []byte(spec)}
+	return protocol.Resource{ID: string(kvprovider.Kind) + " " + name, Kind: kvprovider.Kind, Name: name, Spec: []byte(spec)}
 }
 
 // The example provider passes the conformance suite, as a WASI program.
@@ -23,7 +23,7 @@ func TestConformance(t *testing.T) {
 		GuardSettings: []byte(`{"max_items":5}`),
 		Cases: []providertest.Case{
 			{Name: "one-item", Desired: []protocol.Resource{item("web", `{"value":"v1"}`)},
-				Explicit: []providertest.Explicit{{Op: kvprovider.OpDelete, Resource: "KVItem/web"}}},
+				Explicit: []providertest.Explicit{{Op: kvprovider.OpDelete, Resource: "KVItem web"}}},
 			{Name: "items-with-labels", Desired: []protocol.Resource{
 				item("db", `{"value":"v1","labels":["prod","eu"]}`),
 				item("web", `{"value":"v2"}`),

@@ -296,7 +296,7 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 	}
 	for _, k := range p.Kinds {
 		for i, x := range byKind[k.Kind()] {
-			id := string(k.Kind()) + "/" + x.Name
+			id := string(k.Kind()) + " " + x.Name
 			if taken[k.Kind()][i] || reported[id] || x.Adoptable || x.Foreign {
 				continue
 			}
