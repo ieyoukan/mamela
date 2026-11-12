@@ -141,6 +141,11 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
 		}
 	}
+	if site != nil && site.ControlPlane.Host != "" {
+		// This Control Plane's own host: shown, never changed (ADR 0003). The policy is stored with
+		// the plan, so apply derives the same denial.
+		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
+	}
 	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
 	if err != nil {
 		return report(stderr, err)
@@ -168,7 +173,9 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	if *sitePath != "" {
 		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
-		if err := node.Publish(ctx, st, res.Graph, pol); err != nil {
+		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
+		// refuses a revision with a member it does not know.
+		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.MoveTo); err != nil {
 			return report(stderr, err)
 		}
 	}

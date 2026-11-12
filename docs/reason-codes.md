@@ -77,6 +77,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
 | MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
 | MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある |
+| MAM-POL-0308 | Denied | Control Plane が自分の動くホスト（site の `controlplane.host`）を変える操作（ADR 0003） |
 | MAM-POL-0307 | Denied | VM のネットワークの変更（作成時に一度だけ与える。その場で変えると VM が切り離されうる） |
 | MAM-POL-0399 | Denied | ポリシーが知らない操作 |
 
@@ -94,6 +95,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0109 | k3s の agent が、server のアドレスの報告を待つ |
 | MAM-PLAN-0110 | VM が初回起動に十分な時間（15 分）を超えて動いているのに、mamelet が一度も報告していない。起動で止まっている（緊急モードなど）か、Control Plane に届かない。コンソールを確かめ、`mamela reboot`（応答しなければ `--hard`）で再起動する |
 | MAM-PLAN-0111 | VM が止まっているので、その上のリソースは起動を待つ |
+| MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |

@@ -270,6 +270,39 @@ preflight / postflight はどちらも読み取りだけで、一つでも BLOCK
 
 ローカル（macOS の QEMU + HVF、Ubuntu arm64 cloud image + NoCloud seed ISO）でも cloud-init と Agent の多くは試せる。L2 の前にローカルで Agent を固めると、実機での試行回数を減らせる。
 
+## 6.4 Control Plane を専用のホストに移す（ADR 0003）
+
+Mac で `mamela serve` とトンネルを動かす形は、Mac が寝る・LAN から外れる・端末が閉じると止まる。常用するときは、Control Plane（CP）を LAN の中の常駐ホストに移す。考え方は [ADR 0003](adr/0003-controlplane-host.md) にある。
+
+- **CP のホスト:** Linux（amd64）なら何でもよい。本番では、管理する基盤の外に置くことを勧める。lab では、Mamela で作った VM でもよい。その場合は `--host` にその VM の名前を渡す。移した後の CP は、その VM と、その上のリソースを変えない（MAM-POL-0308）。
+- **既存の mamelet を移す:** 移す前に、Mac の `site.local.toml` に `controlplane.move_to = "https://<ホストのアドレス>:8443"` を書いて、`mamela plan --site` を一度実行する。各 mamelet は、署名付き revision で新しい URL を受け取り、次の取得からそちらを使う。新しい URL が応えない間は、元の URL も試す。CA と署名鍵は変えないので、信頼の起点は変わらない。
+- **新しい VM:** 移した後に作る VM の seed は、最初から新しい URL を向く。トンネルは要らない。
+
+~~~bash
+# Mac で
+mamela plan --site lab/site.local.toml <宣言>          # move_to を載せた revision を出す。全ノードが取りに来るのを待つ
+mamela controlplane bundle --site lab/site.local.toml --url https://<ホストのアドレス>:8443 --host <CP の VM 名>
+GOOS=linux GOARCH=amd64 go build -o .mamela/bin/mamela-linux-amd64 ./cmd/mamela
+scp .mamela/controlplane-bundle.tar .mamela/bin/mamela-linux-amd64 <ホスト>:   # 秘密を含む。コピー後に消す
+# ホストで（root）
+install -m 0755 mamela-linux-amd64 /usr/local/bin/mamela
+mkdir b && tar -xf controlplane-bundle.tar -C b && less b/install.sh && b/install.sh b
+# Mac の mamela serve を止めてから
+systemctl enable --now mamela-serve
+~~~
+
+- **バンドルの中身:**
+  - 状態データベースの一貫したコピー（`VACUUM INTO`）
+  - CA と署名鍵
+  - Proxmox の Token
+  - ホスト用に書き換えた site
+  - mamelet のバイナリ
+  - systemd unit
+  - install.sh
+- **扱い:** バンドルは mode 0600 で書く。秘密を含むので、ホストに SSH でコピーした後に消す。
+- **ホストでの権限:** serve は、権限のない専用ユーザー `mamela-cp` で動く（lab の VM のログインユーザー `mamela` とは別にする。こちらは sudo できる）。書けるのは `/var/lib/mamela` だけである。
+- **移した後の plan と apply:** ホストの上で実行する（`sudo -u mamela mamela plan --site /etc/mamela/site.toml --db /var/lib/mamela/state.db <宣言>`）。宣言の評価には、ホストにリポジトリとツールチェーン（`scripts/install-toolchain.sh`）が要る。手元から CP に頼む API は、まだない（ADR 0003）。
+
 ## 6.5 再起動（`mamela reboot`）
 
 起動で止まった VM（MAM-PLAN-0110）などを、Mamela の記録の中で再起動する。`mamela destroy` と同じく plan の外の明示的なコマンドで、所有の確認（pool、VMID の範囲、タグ、マーカー、VMID の予約）、名前の打ち直し、preflight と postflight を行う。変えるのは VM の電源の状態だけである。

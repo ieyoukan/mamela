@@ -351,3 +351,30 @@ func TestBootstrapStaleACLFilter(t *testing.T) {
 		t.Fatalf("stale entries:\n%s\nwant:\n%s", out, want)
 	}
 }
+
+// The Control Plane listens off loopback only when mamelet reaches it directly (ADR 0003).
+func TestControlPlaneListen(t *testing.T) {
+	s, err := LoadSite("../../lab/site.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		url, listen, moveTo, host string
+		ok                        bool
+	}{
+		{"https://127.0.0.1:8443", "127.0.0.1:8443", "", "", true},
+		{"https://127.0.0.1:8443", "0.0.0.0:8443", "", "", false}, // tunnel mode, exposed for nothing
+		{"https://10.0.0.45:8443", "0.0.0.0:8443", "", "mamela-cp", true},
+		{"https://10.0.0.45:8443", "10.0.0.45:8443", "", "", true},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443", "https://10.0.0.45:8443", "", true},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443", "http://10.0.0.45:8443", "", false},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443", "https://10.0.0.45", "", false},
+		{"https://10.0.0.45:8443", "0.0.0.0:8443", "", "bad name!", false},
+	} {
+		v := *s
+		v.ControlPlane.URL, v.ControlPlane.Listen, v.ControlPlane.MoveTo, v.ControlPlane.Host = c.url, c.listen, c.moveTo, c.host
+		if err := v.Validate(); (err == nil) != c.ok {
+			t.Errorf("%+v: %v", c, err)
+		}
+	}
+}

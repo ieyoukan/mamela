@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/noderev"
 )
@@ -243,12 +244,22 @@ func (s *System) Enable(ctx context.Context, name string) error {
 	return err
 }
 
+// StartTimeout bounds how long mamelet waits for a service to start. A service that waits for
+// something else (a k3s agent for its server, with Type=notify) would otherwise hold mamelet, and
+// with it every report, for as long as that takes. systemd keeps starting it after the deadline.
+var StartTimeout = 2 * time.Minute
+
 // Start starts a service.
 func (s *System) Start(ctx context.Context, name string) error {
 	if !noderev.ValidService(name) {
 		return fmt.Errorf("invalid service name %q", name)
 	}
-	_, err := s.run(ctx, progSystemctl, []string{"start", "--", name})
+	sctx, cancel := context.WithTimeout(ctx, StartTimeout)
+	defer cancel()
+	_, err := s.run(sctx, progSystemctl, []string{"start", "--", name})
+	if err != nil && sctx.Err() != nil && ctx.Err() == nil {
+		return fmt.Errorf("%s did not finish starting within %s (systemd keeps starting it; the next observation shows whether it runs)", name, StartTimeout)
+	}
 	return err
 }
 

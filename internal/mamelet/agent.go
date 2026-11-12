@@ -65,6 +65,14 @@ type State struct {
 	// Attempts holds the outcome of each one-time operation attempt ("<operation>#<attempt>"):
 	// an attempt is never made twice.
 	Attempts map[string]noderev.Result `json:"attempts"`
+	// ControlPlane is the URL a verified revision told mamelet to use (ADR 0003): tried before the
+	// configured one, which stays the fallback.
+	ControlPlane string `json:"controlPlane,omitempty"`
+}
+
+// Mover is a ControlPlane that can be pointed at another URL of the same Control Plane.
+type Mover interface {
+	MoveTo(url string)
 }
 
 // StateStore keeps the state.
@@ -144,6 +152,10 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 
 	var rev *noderev.Revision
 	online := false
+	mover, canMove := a.CP.(Mover)
+	if canMove {
+		mover.MoveTo(st.ControlPlane)
+	}
 	signed, fetchErr := a.CP.Revision(ctx)
 	if fetchErr == nil {
 		r, err := noderev.Verify(key, signed, expect())
@@ -152,6 +164,15 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 		} else {
 			rev, online = &r, true
 			st.LastSerial, st.Revision = r.Serial, &signed
+			// The Control Plane moved: a signed revision says where to, and the same CA vouches for
+			// the new address. Reports go there from this round on.
+			if canMove && r.ControlPlane != "" && r.ControlPlane != st.ControlPlane {
+				st.ControlPlane = r.ControlPlane
+				if r.ControlPlane == a.Config.Server {
+					st.ControlPlane = ""
+				}
+				mover.MoveTo(st.ControlPlane)
+			}
 		}
 	}
 	if rev == nil && st.Revision != nil {

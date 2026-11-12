@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver ("sqlite")
@@ -178,6 +179,16 @@ func Open(ctx context.Context, path string, clock Clock) (*Store, error) {
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
+
+// CopyTo writes a consistent copy of the whole database to path (which must not exist), while the
+// database stays usable: for moving the Control Plane to its host (ADR 0003).
+func (s *Store) CopyTo(ctx context.Context, path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists", path)
+	}
+	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
+	return err
+}
 
 func (s *Store) migrate(ctx context.Context) error {
 	var version int

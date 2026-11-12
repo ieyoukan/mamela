@@ -17,6 +17,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"slices"
 	"strings"
@@ -41,6 +42,10 @@ type Revision struct {
 	// K3s, when set, is the k3s server the node should run: mamelet observes it, and installs it
 	// only with an approved, one-time Install.
 	K3s *K3s `json:"k3s,omitempty"`
+	// ControlPlane is the URL mamelet should reach the Control Plane at from now on
+	// ("https://host:port"), when the Control Plane moves (ADR 0003). The CA and the key that
+	// sign revisions stay the same, so the new address is trusted exactly as the old one was.
+	ControlPlane string `json:"controlPlane,omitempty"`
 }
 
 // K3s is a k3s release, pinned by the sha256 of its binary for the node's architecture, and the
@@ -141,6 +146,13 @@ var (
 	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
+// ValidControlPlane reports whether s is a Control Plane URL: https://host:port, nothing else.
+func ValidControlPlane(s string) bool {
+	u, err := url.Parse(s)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.Port() != "" && u.Path == "" &&
+		u.RawQuery == "" && u.Fragment == "" && u.User == nil && "https://"+u.Host == s
+}
+
 // ValidNode reports whether s can be a node name.
 func ValidNode(s string) bool { return nodePattern.MatchString(s) }
 
@@ -168,6 +180,9 @@ func (r *Revision) Check() error {
 	}
 	if !r.ExpiresAt.After(r.IssuedAt) {
 		add("expiresAt is not after issuedAt")
+	}
+	if r.ControlPlane != "" && !ValidControlPlane(r.ControlPlane) {
+		add("controlPlane %q is not https://host:port", r.ControlPlane)
 	}
 	seen := map[string]bool{}
 	for _, p := range r.Packages {

@@ -24,6 +24,7 @@ type env struct {
 	pki *PKI
 	srv *httptest.Server
 	now time.Time
+	dir string // the Control Plane's keys
 }
 
 func newEnv(t *testing.T) *env {
@@ -44,7 +45,7 @@ func newEnv(t *testing.T) *env {
 	srv.TLS = s.TLSConfig()
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	e.st, e.pki, e.srv = st, pki, srv
+	e.st, e.pki, e.srv, e.dir = st, pki, srv, dir
 	return e
 }
 
@@ -215,4 +216,71 @@ func TestPKIIsReusedAndProtected(t *testing.T) {
 	if _, err := LoadPKI(dir, []string{"127.0.0.1"}, now); err == nil {
 		t.Fatal("accepted a key directory readable by others")
 	}
+}
+
+// The Control Plane moves (ADR 0003): a signed revision names the new URL, mamelet goes there,
+// and falls back to the configured URL while the new one does not answer. The same CA vouches for
+// both, so nothing about mamelet's trust changes.
+func TestMameletFollowsTheControlPlane(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.enroll("web", 7001)
+	agent := e.agent(cfg)
+	// The new Control Plane: the same keys and database, another address (its certificate is
+	// issued for "localhost", the old one's for 127.0.0.1).
+	moved, err := LoadPKI(e.dir, []string{"localhost"}, e.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Store: e.st, PKI: moved, Now: func() time.Time { return e.now }, RevisionTTL: time.Hour}
+	newCP := httptest.NewUnstartedServer(s.Handler())
+	newCP.TLS = s.TLSConfig()
+	newCP.StartTLS()
+	defer newCP.Close()
+	newURL := strings.Replace(newCP.URL, "127.0.0.1", "localhost", 1)
+
+	publish := func(cp string, pkgs ...noderev.Package) {
+		t.Helper()
+		if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+			return noderev.Revision{VMID: 7001, ControlPlane: cp, Packages: pkgs}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reported := func() int64 {
+		t.Helper()
+		r, ok, err := e.st.NodeReportOf(e.ctx, "web")
+		if err != nil || !ok {
+			t.Fatalf("no report: %v", err)
+		}
+		return r.Report.Serial
+	}
+	publish("")
+	if _, err := agent.Round(e.ctx); err != nil || reported() != 1 {
+		t.Fatalf("before the move: %v", err)
+	}
+	publish(newURL)
+	if _, err := agent.Round(e.ctx); err != nil || reported() != 2 {
+		t.Fatalf("the round that learns the new URL: %v", err)
+	}
+	st, _ := agent.State.Load()
+	if st.ControlPlane != newURL {
+		t.Fatalf("state %q", st.ControlPlane)
+	}
+	// The old Control Plane stops; mamelet keeps working through the new one.
+	e.srv.Close()
+	publish(newURL, noderev.Package{Name: "curl"})
+	if rep, err := agent.Round(e.ctx); err != nil || rep.Serial != 3 || reported() != 3 {
+		t.Fatalf("after the move: %+v %v", rep, err)
+	}
+	// A revision with a URL that is not https://host:port is refused by mamelet, and changes nothing.
+	if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+		return noderev.Revision{VMID: 7001, ControlPlane: "http://evil.example:80"}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := agent.Round(e.ctx)
+	if st, _ := agent.State.Load(); (rep.Refused == "" && err == nil) || st.ControlPlane != newURL {
+		t.Fatalf("plain HTTP: refused %q, err %v, state %q", rep.Refused, err, st.ControlPlane)
+	}
+	t.Logf("plain HTTP: refused %q, err %v", rep.Refused, err)
 }
