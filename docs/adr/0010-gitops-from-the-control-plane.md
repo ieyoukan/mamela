@@ -1,6 +1,6 @@
 # ADR 0010 — Control Plane が Git を見る（CI からの plan・承認・apply）
 
-- 状態: Accepted（2026-11-12）
+- 状態: Accepted（2026-11-12）。一部を [ADR 0012](0012-mamelacd.md) で変えた: gitops は別のプログラム mamelacd になり、本体の局所 API（`mamela api`）を通して plan・承認・apply する。マージの後は、PR ごとではなく、ブランチの先頭の宣言だけを apply する。
 - 日付: 2026-11-12
 - 対象: 宣言のリポジトリと CI からの運用。ADR 0001（SQLite、1 つの Control Plane）、0003（Control Plane のホスト）、0006（明示操作）
 

@@ -90,7 +90,7 @@ max_vms = 3
 		got[h.Name], modes[h.Name] = string(b), h.Mode
 	}
 	for _, name := range []string{"etc/site.toml", "etc/providers.toml", "etc/secrets/proxmox-token", "etc/secrets/proxmox-guard-token", "etc/guest-ssh.pub",
-		"var/cp/ca.pem", "var/mamelet-linux-amd64", "var/state.db", "mamela-serve.service", "mamela-gitops.service", "install.sh"} {
+		"var/cp/ca.pem", "var/mamelet-linux-amd64", "var/state.db", "mamela-serve.service", "mamela-api.service", "mamelacd.service", "install.sh"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("bundle lacks %s", name)
 		}

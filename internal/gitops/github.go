@@ -1,26 +1,23 @@
-// Package gitops lets the Control Plane follow a repository of declarations on GitHub (ADR 0010):
-// it plans each pull request of a trusted author and comments the plan, approves a plan when an
-// approver comments `/mamela approve <digest>`, and applies it once the pull request is merged and
-// the merged declaration is the one approved. It reaches GitHub; nothing reaches it.
+// Package gitops is mamelacd (ADR 0010, 0012): it follows a repository of declarations on GitHub.
+// It plans each pull request of a trusted author and comments the plan, records an approval when
+// an approver comments `/mamela approve <digest>`, and applies an approved plan once it is the
+// declaration at the head of the branch. It holds a GitHub token and its own small database; it
+// asks the Control Plane's local API (internal/api) to plan, approve and apply, and holds no
+// credential of the infrastructure and none of Mamela's state. It reaches GitHub; nothing reaches it.
 package gitops
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path"
-	"path/filepath"
-	"slices"
 	"strings"
 	"time"
+
+	"github.com/ieyoukan/mamela/internal/tree"
 )
 
 // GitHub is the part of GitHub's REST API gitops uses.
@@ -86,7 +83,7 @@ func (g *GitHub) do(ctx context.Context, method, p string, query url.Values, bod
 	req.Header.Set("Authorization", "Bearer "+g.Token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", "mamela-gitops")
+	req.Header.Set("User-Agent", "mamelacd")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -144,130 +141,50 @@ func (g *GitHub) Status(ctx context.Context, sha, state, context, description st
 		map[string]string{"state": state, "context": context, "description": description}, nil)
 }
 
-// Limits on a fetched tree.
-const (
-	maxTarball = 64 << 20  // compressed
-	maxTree    = 256 << 20 // uncompressed
-	maxFiles   = 20000
-)
-
-// Checkout fetches the tree of a commit (its tarball) into dir, which must not exist. Only
-// regular files and directories are written, under dir: a path that leaves it, a link or any
-// other entry refuses the whole tree.
-func (g *GitHub) Checkout(ctx context.Context, sha, dir string) error {
+// Tarball fetches the tree of a commit: GitHub's gzipped tarball, at most tree.MaxTarball bytes.
+// It is not extracted here: the Control Plane's API extracts it (internal/tree).
+func (g *GitHub) Tarball(ctx context.Context, sha string) ([]byte, error) {
 	if !validSHA(sha) {
-		return fmt.Errorf("commit %q", sha)
+		return nil, fmt.Errorf("commit %q", sha)
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", strings.TrimSuffix(g.API, "/")+g.repoPath("/tarball/"+sha), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+g.Token)
-	req.Header.Set("User-Agent", "mamela-gitops")
+	req.Header.Set("User-Agent", "mamelacd")
 	resp, err := g.client().Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("GitHub tarball of %s: %s", sha, resp.Status)
+		return nil, fmt.Errorf("GitHub tarball of %s: %s", sha, resp.Status)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxTarball+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, tree.MaxTarball+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if len(data) > maxTarball {
-		return fmt.Errorf("the tarball of %s is over %d bytes", sha, maxTarball)
+	if len(data) > tree.MaxTarball {
+		return nil, fmt.Errorf("the tarball of %s is over %d bytes", sha, tree.MaxTarball)
 	}
-	return Extract(bytes.NewReader(data), dir)
+	return data, nil
 }
 
-// Extract writes a GitHub tarball (one top directory) into dir, which must not exist.
-func Extract(r io.Reader, dir string) error {
-	if _, err := os.Lstat(dir); err == nil {
-		return fmt.Errorf("%s exists", dir)
+// Branch returns the commit at the head of a branch.
+func (g *GitHub) Branch(ctx context.Context, name string) (string, error) {
+	var out struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
 	}
-	zr, err := gzip.NewReader(r)
-	if err != nil {
-		return err
+	if err := g.do(ctx, "GET", g.repoPath("/branches/"+url.PathEscape(name)), nil, nil, &out); err != nil {
+		return "", err
 	}
-	tr := tar.NewReader(zr)
-	tmp := dir + ".partial"
-	os.RemoveAll(tmp)
-	if err := os.MkdirAll(tmp, 0o755); err != nil {
-		return err
+	if !validSHA(out.Commit.SHA) {
+		return "", fmt.Errorf("the head of %s: commit %q", name, out.Commit.SHA)
 	}
-	done := false
-	defer func() {
-		if !done {
-			os.RemoveAll(tmp) // a refused or broken tree is not kept
-		}
-	}()
-	var total int64
-	files := 0
-	for {
-		h, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		if h.Typeflag == tar.TypeXGlobalHeader {
-			continue // GitHub's comment with the commit
-		}
-		// "<owner>-<repo>-<sha>/path": the top directory is dropped. No segment may climb.
-		if slices.Contains(strings.Split(h.Name, "/"), "..") || path.IsAbs(h.Name) {
-			return fmt.Errorf("tarball entry %q leaves the tree", h.Name)
-		}
-		name := path.Clean(h.Name)
-		_, rest, ok := strings.Cut(name, "/")
-		if !ok || rest == "" {
-			continue
-		}
-		if path.IsAbs(rest) || rest == ".." || strings.HasPrefix(rest, "../") || strings.Contains(rest, "\\") {
-			return fmt.Errorf("tarball entry %q leaves the tree", h.Name)
-		}
-		target := filepath.Join(tmp, filepath.FromSlash(rest))
-		if files++; files > maxFiles {
-			return fmt.Errorf("the tree has over %d files", maxFiles)
-		}
-		switch h.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if total += h.Size; total > maxTree {
-				return fmt.Errorf("the tree is over %d bytes", maxTree)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			mode := os.FileMode(0o644)
-			if h.Mode&0o111 != 0 {
-				mode = 0o755
-			}
-			f, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(f, io.LimitReader(tr, h.Size))
-			if cerr := f.Close(); err == nil {
-				err = cerr
-			}
-			if err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("tarball entry %q is a link or a special file: the tree is refused", h.Name)
-		}
-	}
-	if err := os.Rename(tmp, dir); err != nil {
-		return err
-	}
-	done = true
-	return nil
+	return out.Commit.SHA, nil
 }
 
 func validSHA(s string) bool {

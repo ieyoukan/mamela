@@ -35,8 +35,8 @@ Usage:
                                       resources of a state (terraform show -json), to adopt (ADR 0009)
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
   mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
-  mamela gitops run --config <file>   follow a repository of declarations on GitHub: plan pull requests,
-                                      approve by comment, apply merges (ADR 0010)
+  mamela api --socket <path>          serve the Control Plane's local API to mamelacd, which follows a
+                                      repository of declarations on GitHub (ADR 0010, 0012)
   mamela provider <new|pome|inspect|catalog|trust|script>
                                       write a new provider; generate its Pome's Emela; check a provider
                                       program; show its catalogs; trust a native one; print its scripts
@@ -76,8 +76,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runImport(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
+	case "api":
+		return runAPI(ctx, args[1:], stdout, stderr)
 	case "gitops":
-		return runGitops(ctx, args[1:], stdout, stderr)
+		fmt.Fprintln(stderr, "mamela gitops moved to its own program, mamelacd, which uses `mamela api` (ADR 0012)")
+		return 2
 	case "controlplane":
 		return runControlPlane(ctx, args[1:], stdout, stderr)
 	case "provider":
