@@ -200,7 +200,7 @@ func printGuard(w io.Writer, rs []external.GuardReport) {
 
 func printReport(w io.Writer, rep *reconcile.Report) {
 	if len(rep.Steps) == 0 && rep.Stopped == nil {
-		fmt.Fprintln(w, "nothing to do: the world already matches the plan")
+		fmt.Fprintln(w, "no operations were executed in this phase")
 	}
 	for _, s := range rep.Steps {
 		line := fmt.Sprintf("%-14s %-16s %s", s.Outcome, s.Op, s.Resource)
@@ -211,6 +211,18 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 	}
 	if s := rep.Stopped; s != nil {
 		fmt.Fprintf(w, "\nstopped: %s: %s\n  hint: %s\n", s.Code, s.Message, s.Hint)
+	}
+	if rep.RemainingErr != "" {
+		fmt.Fprintf(w, "\nMAM-REC-0102: could not observe after applying (%s); the outcomes above are recorded, but whether the declaration converged is not known. Make a new plan.\n", rep.RemainingErr)
+	}
+	if rep.Remaining != nil {
+		fmt.Fprintf(w, "\nAfter apply: %s\n", plan.Summary(rep.Remaining))
+		for _, c := range rep.Remaining.Changes {
+			if c.Status != plan.StatusInSync && c.Status != plan.StatusRetained {
+				fmt.Fprintln(w, "MAM-REC-0101: the declaration has not converged; make a new plan after the next observation. Any new changes need their own policy decision and approval.")
+				break
+			}
+		}
 	}
 }
 

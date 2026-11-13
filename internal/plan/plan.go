@@ -135,8 +135,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		if o := snap.Provided[id]; !o.Declared && !declared[id] && o.Observed.Exists && o.Observed.Owned {
 			p.Changes = append(p.Changes, Change{Kind: o.Kind, Name: o.Name, Status: StatusRetained, Provider: o.Provider,
 				Diffs: []Diff{}, Operations: []Operation{},
-				Note: &Note{Code: "MAM-PLAN-0301", Message: "removed from the declaration; Mamela keeps it and never deletes it",
-					Hint: "if it is no longer needed, delete it with its provider's explicit operation (mamela act), or by hand"}})
+				Note: &Note{Code: "MAM-PLAN-0301", Message: "not in this declaration; kept unchanged (it may belong to another configuration)",
+					Hint: "check which configuration manages it before using its provider's explicit delete operation (mamela act)"}})
 		}
 	}
 	p.Digest = digest(p)
@@ -380,6 +380,11 @@ func (b builder) service(r graph.Resource) Change {
 			op = policy.OpStopService
 		}
 		subjects = append(subjects, policy.Subject{Op: op, Service: want.Service})
+	}
+	repair := want.Running && b.pol.Decide(policy.Subject{Op: policy.OpStartService, Service: want.Service}).Verdict == policy.Auto
+	if got.RepairStart != repair {
+		c.Diffs = append(c.Diffs, Diff{"automaticStartRepair", btoa(got.RepairStart), btoa(repair)})
+		subjects = append(subjects, policy.Subject{Op: policy.OpConfigureService, Service: want.Service})
 	}
 	return b.withOps(c, subjects...)
 }

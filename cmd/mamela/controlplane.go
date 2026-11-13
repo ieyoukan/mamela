@@ -17,8 +17,10 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
+	"github.com/ieyoukan/mamela/internal/store"
 )
 
 // Where a Control Plane host keeps what the bundle holds (ADR 0003).
@@ -31,6 +33,9 @@ const (
 // runControlPlane moves the Control Plane to its own host (ADR 0003): `bundle` packs what that host
 // needs into one archive for a person to copy there and install with the script inside.
 func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "redirect" {
+		return runRedirect(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "bundle" {
 		fmt.Fprint(stderr, controlPlaneUsage)
 		return 2
@@ -178,12 +183,27 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if copyErr != nil {
 		return report(stderr, fmt.Errorf("copy the database: %w", copyErr))
 	}
+	// The destination already knows the redirect revision before agents move there. Otherwise
+	// their new serial from the source CP would be rejected by the older bundled database.
+	copyStore, err := store.Open(ctx, filepath.Join(tmp, "state.db"), wallClock)
+	if err != nil {
+		return report(stderr, err)
+	}
+	_, redirectErr := copyStore.RedirectAgents(ctx, *newURL)
+	closeErr := copyStore.Close()
+	if redirectErr != nil {
+		return report(stderr, redirectErr)
+	}
+	if closeErr != nil {
+		return report(stderr, closeErr)
+	}
 	dbBytes, err := os.ReadFile(filepath.Join(tmp, "state.db"))
 	if err != nil {
 		return report(stderr, err)
 	}
 	add("var/state.db", 0o600, dbBytes)
 	add("mamela-serve.service", 0o644, []byte(serveUnit))
+	add("mamela-gitops.service", 0o644, []byte(gitopsUnit))
 	add("install.sh", 0o755, []byte(installScript))
 
 	if err := writeBundle(*out, files); err != nil {
@@ -195,11 +215,34 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "  2. mkdir b && tar -xf %s -C b && b/install.sh b   (review install.sh first)\n", filepath.Base(*out))
 	fmt.Fprintf(stdout, "  3. stop `mamela serve` here, then: systemctl enable --now mamela-serve\n\n")
 	fmt.Fprintf(stdout, "Mamelets created from now on reach %s directly. Existing ones move when their revision says so:\n", *newURL)
-	fmt.Fprintf(stdout, "set controlplane.move_to = %q here and plan once before making this bundle (ADR 0003).\n", *newURL)
+	fmt.Fprintf(stdout, "once the new endpoint is ready, run: mamela controlplane redirect --db %s --url %s\n", shellQuote(*db), shellQuote(*newURL))
 	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
-	if site.ControlPlane.MoveTo != *newURL {
-		fmt.Fprintf(stdout, "\nnote: controlplane.move_to is %q here, not %q: existing mamelets have not been told to move.\n", site.ControlPlane.MoveTo, *newURL)
+	fmt.Fprintln(stdout, "\nnote: controlplane.move_to is no longer activated by plan; redirect is an explicit action.")
+	return 0
+}
+
+func runRedirect(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mamela controlplane redirect", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database")
+	url := fs.String("url", "", "new https://host:port endpoint, already serving the same CA and revision key")
+	if err := fs.Parse(args); err != nil {
+		return 2
 	}
+	if fs.NArg() != 0 || !noderev.ValidControlPlane(*url) {
+		fmt.Fprintln(stderr, "Usage: mamela controlplane redirect --db <state.db> --url https://host:port")
+		return 2
+	}
+	st, err := openStore(ctx, *db)
+	if err != nil {
+		return report(stderr, err)
+	}
+	defer st.Close()
+	n, err := st.RedirectAgents(ctx, *url)
+	if err != nil {
+		return report(stderr, err)
+	}
+	fmt.Fprintf(stdout, "redirected %d enrolled agents to %s; they move on their next successful pull\n", n, *url)
 	return 0
 }
 
@@ -249,6 +292,7 @@ func isLoopbackHost(h string) bool {
 }
 
 const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<address>:<port> [--host <vm>] [flags]
+       mamela controlplane redirect --db <state.db> --url https://<address>:<port>
 
 Packs what a Control Plane host needs (ADR 0003) into one archive: a consistent copy of the state
 database, the Control Plane's keys, the site and the providers' APIs (mamela.providers.toml, with
@@ -271,6 +315,33 @@ WorkingDirectory=/var/lib/mamela
 ExecStart=/usr/local/bin/mamela serve --site /etc/mamela/site.toml --db /var/lib/mamela/state.db
 Restart=always
 RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/mamela
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// gitopsUnit follows a repository of declarations (ADR 0010). It starts only once the operator
+// writes /etc/mamela/gitops.toml; /etc/mamela/gitops.env may set MAMELA_TOOLCHAIN_DIR and
+// EMELA_POME_CACHE.
+const gitopsUnit = `[Unit]
+Description=Mamela gitops (follows a repository of declarations)
+After=network-online.target mamela-serve.service
+Wants=network-online.target
+ConditionPathExists=/etc/mamela/gitops.toml
+
+[Service]
+User=mamela-cp
+Group=mamela-cp
+WorkingDirectory=/var/lib/mamela
+EnvironmentFile=-/etc/mamela/gitops.env
+ExecStart=/usr/local/bin/mamela gitops run --config /etc/mamela/gitops.toml --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --providers /etc/mamela/providers.toml
+Restart=always
+RestartSec=30
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -312,6 +383,7 @@ for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
 install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
+if test -f "$b/mamela-gitops.service"; then install -m 0644 -o root -g root "$b/mamela-gitops.service" $r/etc/systemd/system/mamela-gitops.service; fi
 systemctl daemon-reload
 echo "installed; start it with: systemctl enable --now mamela-serve"
 `

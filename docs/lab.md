@@ -114,7 +114,6 @@ max_disk_gib_per_vm = 20
 
 ~~~bash
 # 手元で
-mamela plan <宣言>                    # site に controlplane.move_to を書いてから。全ノードが revision を取りに来るのを待つ
 mamela controlplane bundle --url https://<ホストのアドレス>:8443 --host <CP のマシン名>
 GOOS=linux GOARCH=amd64 go build -o .mamela/bin/mamela-linux-amd64 ./cmd/mamela
 scp .mamela/controlplane-bundle.tar .mamela/bin/mamela-linux-amd64 <ホスト>:   # 秘密を含む。コピー後に消す
@@ -122,9 +121,13 @@ scp .mamela/controlplane-bundle.tar .mamela/bin/mamela-linux-amd64 <ホスト>: 
 install -m 0755 mamela-linux-amd64 /usr/local/bin/mamela
 mkdir b && tar -xf controlplane-bundle.tar -C b && less b/install.sh && b/install.sh b
 systemctl enable --now mamela-serve   # 手元の mamela serve を止めてから
+# 新しい CP が起動したら、元の DB に接続先の変更だけを記録する
+mamela controlplane redirect --db <元のstate.db> --url https://<ホストのアドレス>:8443
+# 元の serve を移行通知用に一時起動し、全ノードが新しい CP に接続したら停止する
 ~~~
 
 - **バンドルの中身:** 状態データベースの一貫したコピー、CA と署名鍵、ホスト用に書き換えた site、ホスト用に書き換えた `mamela.providers.toml`（秘密は `/etc/mamela/secrets/<provider>-token` と `<provider>-guard-token`）、mamelet のバイナリ、systemd unit、install.sh。
 - **扱い:** バンドルは mode 0600 で書く。秘密を含むので、ホストにコピーした後に消す。
 - **ホストでの権限:** serve は、権限のない専用ユーザー `mamela-cp` で動く。
 - **移した後の plan と apply:** ホストの上で `--site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db` を付けて実行する。CP のマシンとその上のリソースは変えない（MAM-POL-0308）。
+- **移行中:** bundle の作成後は元の CP で構成変更・登録を行わず、redirect だけを記録する。バンドルの DB には同じ接続先と revision が準備される。plan と `controlplane.move_to` はエージェントを移動させない。

@@ -222,6 +222,32 @@ CREATE TABLE adoptions (
   PRIMARY KEY (provider, resource)
 );
 `,
+	// 13: what gitops (ADR 0010) posted and did: the plans it made for a repository's pull requests
+	// and merges, and the comments and merges it handled, so that nothing is done twice.
+	`
+CREATE TABLE gitops_plans (
+  plan_digest TEXT PRIMARY KEY REFERENCES plans(digest),
+  repo        TEXT NOT NULL,
+  pr          INTEGER NOT NULL,
+  dir         TEXT NOT NULL,
+  sha         TEXT NOT NULL,
+  merged      INTEGER NOT NULL,
+  revision    TEXT NOT NULL,
+  changes     INTEGER NOT NULL,
+  posted_ms   INTEGER NOT NULL,
+  applied_ms  INTEGER NOT NULL DEFAULT 0,
+  outcome     TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE gitops_seen (
+  key     TEXT PRIMARY KEY,
+  seen_ms INTEGER NOT NULL
+);
+`,
+	// 14: waiting and blocked plans must never be reported as converged by GitOps.
+	`ALTER TABLE gitops_plans ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
+	// 15: explicit operations retain the identity needed for read-only recovery after a crash.
+	`ALTER TABLE explicit_operations ADD COLUMN context BLOB;`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

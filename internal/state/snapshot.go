@@ -30,6 +30,8 @@ type Snapshot struct {
 	K3s map[string]K3s `json:"k3s,omitempty"`
 	// Nodes are the machines of providers' node kinds, by resource name (ADR 0004).
 	Nodes map[string]Node `json:"nodes,omitempty"`
+	// AgentRegistrations binds node operations to the enrolled instance, even if a VMID is reused.
+	AgentRegistrations map[string]string `json:"agentRegistrations,omitempty"`
 }
 
 // AddProvided records providers' observations, and from them the machines of node kinds.
@@ -121,10 +123,11 @@ type Package struct {
 
 // Service is an observed systemd service on a node.
 type Service struct {
-	Exists     bool      `json:"exists"` // the unit is known to systemd (its package is installed)
-	Enabled    bool      `json:"enabled"`
-	Running    bool      `json:"running"`
-	ObservedAt time.Time `json:"observedAt"`
+	RepairStart bool      `json:"repairStart,omitempty"` // active standing permission, read from the CP's revision
+	Exists      bool      `json:"exists"`                // the unit is known to systemd (its package is installed)
+	Enabled     bool      `json:"enabled"`
+	Running     bool      `json:"running"`
+	ObservedAt  time.Time `json:"observedAt"`
 }
 
 // Empty is the snapshot of a world where nothing exists yet.
@@ -149,6 +152,7 @@ func (s Snapshot) Digest() string {
 
 func (s Snapshot) normalized() Snapshot {
 	n := Empty(s.AsOf)
+	n.AgentRegistrations = s.AgentRegistrations
 	for k, v := range s.Packages {
 		v.ObservedAt = v.ObservedAt.UTC()
 		n.Packages[k] = v

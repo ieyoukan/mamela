@@ -233,7 +233,7 @@ func TestRender(t *testing.T) {
 		"running: false -> true",
 		"MAM-POL-0206",
 		"hint: add it to autoStartServices",
-		"- TestVM old-db  [retained]  via test",
+		"= TestVM old-db  [retained]  via test",
 		"Summary: 1 needs approval, 1 retained, 2 in sync.",
 		"Nothing has been changed",
 	} {
