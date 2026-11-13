@@ -568,6 +568,23 @@ func ParamText(where, value string) string {
 	return value
 }
 
+// ObjectText is a parameter's value as the name of one object, to compare with a permit's ID: as
+// ParamText, and a JSON list of exactly one string as that string (an API that names the objects
+// it acts on in a list, as ECS's DeleteTaskDefinitions, names one). A list of several names no one
+// object, and never equals an ID.
+func ObjectText(where, value string) string {
+	if where == "json" {
+		var list []string
+		if json.Unmarshal([]byte(value), &list) == nil {
+			if len(list) == 1 {
+				return list[0]
+			}
+			return value
+		}
+	}
+	return ParamText(where, value)
+}
+
 // Operation returns the declaration of an operation on a kind.
 func (m Manifest) Operation(kind ResourceKind, op Op) (Operation, bool) {
 	for _, k := range m.Kinds {
