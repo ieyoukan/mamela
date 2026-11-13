@@ -149,7 +149,7 @@ VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(provider, resource, ids) DO NOTHING`, provi
 
 // Creations are the IDs of the objects Mamela set out to create for a resource through a provider.
 func (s *Store) Creations(ctx context.Context, provider, resource string) ([]map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT ids FROM provider_creations WHERE provider = ? AND resource = ? ORDER BY recorded_ms`, provider, resource)
+	rows, err := s.db.QueryContext(ctx, `SELECT ids FROM provider_creations WHERE provider = ? AND resource = ? ORDER BY recorded_ms, ids`, provider, resource)
 	if err != nil {
 		return nil, err
 	}

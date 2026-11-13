@@ -184,7 +184,11 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := s.Store.PutNodeReport(r.Context(), rep); err != nil {
+	if err := s.Store.PutAuthenticatedNodeReport(r.Context(), rep, a.CertSerial); err != nil {
+		if errors.Is(err, store.ErrAgentRevoked) {
+			fail(w, http.StatusForbidden, "agent registration changed")
+			return
+		}
 		fail(w, http.StatusInternalServerError, "could not store the report")
 		return
 	}

@@ -19,6 +19,8 @@ import (
 // Errors of enrollment. They are deliberately not specific to the caller (see Enroll).
 var ErrEnrollRefused = errors.New("enrollment refused: the token is unknown, used, expired or for another node")
 
+var ErrAgentRevoked = errors.New("the agent registration was revoked or replaced")
+
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
@@ -108,11 +110,23 @@ func (s *Store) Agent(ctx context.Context, node string) (Agent, bool, error) {
 // stores it. The serial increases only when the content changes, so publishing the same content
 // again is a no-op and mamelet sees no new revision.
 func (s *Store) PublishNodeRevision(ctx context.Context, node string, next func(prev *noderev.Revision) (noderev.Revision, error)) (noderev.Revision, error) {
+	return s.PublishNodeRevisionForAgent(ctx, node, "", next)
+}
+
+// PublishNodeRevisionForAgent rejects an approval for a replaced enrollment in the same
+// transaction that grants execution. An empty serial is used for observation-only publication.
+func (s *Store) PublishNodeRevisionForAgent(ctx context.Context, node, serial string, next func(prev *noderev.Revision) (noderev.Revision, error)) (noderev.Revision, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return noderev.Revision{}, err
 	}
 	defer tx.Rollback()
+	if serial != "" {
+		var current string
+		if err := tx.QueryRowContext(ctx, `SELECT cert_serial FROM agents WHERE node=?`, node).Scan(&current); err != nil || current != serial {
+			return noderev.Revision{}, ErrAgentRevoked
+		}
+	}
 	prev, err := latestNodeRevision(ctx, tx, node)
 	if err != nil {
 		return noderev.Revision{}, err
@@ -177,6 +191,25 @@ func (s *Store) PutNodeReport(ctx context.Context, r noderev.Report) error {
 	_, err = s.db.ExecContext(ctx, `INSERT INTO node_reports(node, received_ms, report) VALUES(?, ?, ?)
 ON CONFLICT(node) DO UPDATE SET received_ms = excluded.received_ms, report = excluded.report`, r.Node, s.nowMs(), data)
 	return err
+}
+
+// PutAuthenticatedNodeReport checks enrollment in the same statement as the write. A request
+// authenticated just before deletion cannot recreate an old report after registration is revoked.
+func (s *Store) PutAuthenticatedNodeReport(ctx context.Context, r noderev.Report, serial string) error {
+	data, err := json.Marshal(r, json.Deterministic(true))
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO node_reports(node,received_ms,report)
+SELECT node,?,? FROM agents WHERE node=? AND vmid=? AND cert_serial=?
+ON CONFLICT(node) DO UPDATE SET received_ms=excluded.received_ms,report=excluded.report`, s.nowMs(), data, r.Node, r.VMID, serial)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrAgentRevoked
+	}
+	return nil
 }
 
 // NodeReports returns the latest report of every node.

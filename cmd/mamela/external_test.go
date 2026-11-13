@@ -40,7 +40,7 @@ max_items = 10
 		code := run(context.Background(), args, &out, &out)
 		return code, out.String()
 	}
-	planDigest := regexp.MustCompile(`mamela approve (sha256:[0-9a-f]+)`)
+	planDigest := regexp.MustCompile(`To approve: mamela approve .* (sha256:[0-9a-f]+)`)
 	plan := func() (string, string) {
 		t.Helper()
 		code, out := mamela("plan", "--db", db, "--providers", config, "--toolchain", tools, "../../examples/kv-demo")
@@ -100,9 +100,19 @@ max_items = 10
 	if code, out := act("delete-item", "nothing", "../../examples/kv-demo"); code != 1 || !strings.Contains(out, "MAM-ACT-0100") {
 		t.Fatalf("an unknown resource: %d\n%s", code, out)
 	}
-	if code, out := act("--confirm", "web", "delete-item", "web", "../../examples/kv-demo"); code != 0 || !strings.Contains(out, "== guard (before)") ||
-		!strings.Contains(out, "KV-0100") {
-		t.Fatalf("act: %d\n%s", code, out)
+	deleteCode, deleteOut := act("--confirm", "web", "delete-item", "web", "../../examples/kv-demo")
+	if deleteCode != 0 || !strings.Contains(deleteOut, "== guard (before)") || !strings.Contains(deleteOut, "KV-0100") {
+		t.Fatalf("act: %d\n%s", deleteCode, deleteOut)
+	}
+	operation := regexp.MustCompile(`operation (act-delete-item-[0-9]+)`).FindStringSubmatch(deleteOut)
+	if len(operation) != 2 {
+		t.Fatalf("no recovery identity: %s", deleteOut)
+	}
+	if code, out := act("--recover", operation[1], "delete-item", "web", "../../examples/kv-demo"); code != 0 || !strings.Contains(out, "no requests were resent") {
+		t.Fatalf("recover: %d\n%s", code, out)
+	}
+	if code, _ := act("--recover", operation[1], "delete-item", "db", "../../examples/kv-demo"); code == 0 {
+		t.Fatal("recovered against another target")
 	}
 	if _, ok := api.Items()["web"]; ok {
 		t.Fatal("the item was not deleted")

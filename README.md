@@ -4,22 +4,19 @@ Mamela is an experimental declarative infrastructure controller powered by [Emel
 
 It aims to reconcile machines and Linux node configuration safely through a Go control plane and pull-based agents. Mamela itself knows no particular infrastructure: machines come from providers, untrusted WASM programs distributed as Pomes — Proxmox VE through [mamela-proxmox](https://github.com/ieyoukan/mamela-proxmox), AWS-style APIs as in [`examples/ec2`](examples/ec2). Each provider writes its own safety checks (guards), explicit operations (delete, reboot, adopt) and setup scripts, and Mamela enforces them ([ADR 0006](docs/adr/0006-proxmox-out-of-core.md)).
 
-Early design stage — no production-ready implementation yet. What works today is the evaluation path: an Emela declaration is compiled to WASM, its imports are checked, it runs in a sandbox, and its output is validated into a deterministic Resource Graph.
+Early development — no production-ready implementation yet. Evaluation, planning and approvals, the operation journal, isolated providers, and the pull-based mamelet are implemented. The development log records limited live infrastructure checks; these do not establish production readiness. See the [operator experience review](docs/reviews/2026-11-12-operator-experience.md) for current limitations.
 
-## Use it in your own project
+## Try the current implementation
 
-Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for).
+Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for). The current examples require Mamela Pome v0.3.0, which is not published yet. Use the checkout workflow below; v0.2.0 has the older `Vm` API and is not a compatible substitute for these examples.
 
 ```sh
-go install github.com/ieyoukan/mamela/cmd/mamela@latest
-mamela toolchain install         # the pinned emela and wasmtime (sha256-checked), into your user cache
-export PATH="<the directory it printed>:$PATH"   # to run emela yourself
-
-emela new infra && cd infra      # a new Pome
-emela pome add github.com/ieyoukan/mamela/pome/mamela@v0.3.0   # not published yet: until then, v0.2.0 (with Vm)
-# add a provider's Pome, write src/main.emel (see examples/homelab/src/main.emel), then:
-mamela eval .                    # evaluate it into a Resource Graph (read-only)
+# From a Mamela checkout:
+scripts/install-toolchain.sh
+go run ./cmd/mamela eval --twice examples/homelab
 ```
+
+For a separate project, use `emela new`, declare the Mamela and provider dependencies in `Pome.toml`, and use `[replace]` entries pointing at their local Pomes until compatible versions are published. The examples' `Pome.toml` files show the required dependencies. Evaluation alone does not create infrastructure.
 
 If you use mise, `mise use go@1.27.3 github:emela-lang/emela@0.27.0 wasmtime@50.0.1` gives you the
 same emela and wasmtime, and Mamela uses them from PATH. `mamela toolchain` shows which toolchain

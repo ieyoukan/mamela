@@ -39,13 +39,14 @@ type Op = protocol.Op
 
 const (
 	// OpChangeForeign is any change to a resource Mamela did not create: always denied.
-	OpChangeForeign  Op = "change-foreign"
-	OpInstallPackage Op = "install-package"
-	OpEnableService  Op = "enable-service"
-	OpDisableService Op = "disable-service"
-	OpStartService   Op = "start-service"
-	OpStopService    Op = "stop-service"
-	OpInstallK3s     Op = "install-k3s"
+	OpChangeForeign    Op = "change-foreign"
+	OpInstallPackage   Op = "install-package"
+	OpEnableService    Op = "enable-service"
+	OpDisableService   Op = "disable-service"
+	OpStartService     Op = "start-service"
+	OpStopService      Op = "stop-service"
+	OpConfigureService Op = "configure-service-repair"
+	OpInstallK3s       Op = "install-k3s"
 )
 
 // Code is a stable reason code for a decision.
@@ -138,6 +139,8 @@ func (p Policy) DecideProvided(v protocol.Verified) Decision {
 // Decide returns the decision for one operation. It is a pure function of the policy and subject.
 func (p Policy) Decide(s Subject) Decision {
 	switch s.Op {
+	case OpConfigureService:
+		return Decision{Auto, "MAM-POL-0103", "apply activates the service repair policy shown in this plan", ""}
 	case OpInstallK3s:
 		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
 			"check the version and sha256 against the k3s release page before approving"}

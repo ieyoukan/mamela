@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/plan"
@@ -46,6 +48,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tf := addToolFlags(fs)
 	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
 	providersFile := addProvidersFlag(fs)
+	jsonOutput := fs.Bool("json", false, "write the stored plan as JSON")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
 			"Shows what would change, why, and what needs approval. Saves the plan so it can be approved.\n"+
@@ -172,9 +175,10 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return report(stderr, err)
 	}
 	if site != nil && site.ControlPlane.Enabled() {
-		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
-		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
-		// refuses a revision with a member it does not know.
+		if site.ControlPlane.MoveTo != "" {
+			fmt.Fprintln(stderr, "MAM-NODE-0102: plan does not relocate agents; use mamela controlplane redirect --db <database> --url <new-endpoint> after the new Control Plane is ready")
+		}
+		// Observation targets only. Active values and grants are changed by apply, never plan.
 		ids := map[string]int64{}
 		for name, n := range snap.Nodes {
 			if n.Managed {
@@ -185,12 +189,27 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return report(stderr, err)
 		}
 	}
+	if *jsonOutput {
+		data, err := json.Marshal(planJSON{Digest: p.Digest, Plan: p}, json.Deterministic(true))
+		if err != nil {
+			return report(stderr, err)
+		}
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
 	plan.Render(stdout, p)
 	if site != nil {
 		renderPlanUses(stdout, site, p, res.Graph, pol, rt.Manifests())
 	}
-	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
+	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve --db %s %s\n", *db, shellQuote(*db), p.Digest)
 	return 0
+}
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
+
+type planJSON struct {
+	Digest string     `json:"digest"`
+	Plan   *plan.Plan `json:"plan"`
 }
 
 func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) int {

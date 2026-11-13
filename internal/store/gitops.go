@@ -17,15 +17,17 @@ type GitopsPlan struct {
 	Merged   bool
 	Revision string // the declaration's digest
 	Changes  int    // how many changes it makes
+	Waiting  int
+	Blocked  int
 	Applied  bool
 	Outcome  string
 }
 
 // SaveGitopsPlan records a plan gitops posted.
 func (s *Store) SaveGitopsPlan(ctx context.Context, p GitopsPlan) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO gitops_plans(plan_digest, repo, pr, dir, sha, merged, revision, changes, posted_ms)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(plan_digest) DO NOTHING`,
-		p.Digest, p.Repo, p.PR, p.Dir, p.SHA, boolInt(p.Merged), p.Revision, p.Changes, s.nowMs())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO gitops_plans(plan_digest, repo, pr, dir, sha, merged, revision, changes, waiting, blocked, posted_ms)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(plan_digest) DO NOTHING`,
+		p.Digest, p.Repo, p.PR, p.Dir, p.SHA, boolInt(p.Merged), p.Revision, p.Changes, p.Waiting, p.Blocked, s.nowMs())
 	return err
 }
 
@@ -40,11 +42,11 @@ func (s *Store) GitopsPlan(ctx context.Context, digest string) (GitopsPlan, bool
 
 // GitopsPlans returns the plans gitops posted for a pull request, newest first.
 func (s *Store) GitopsPlans(ctx context.Context, repo string, pr int) ([]GitopsPlan, error) {
-	return s.gitopsPlans(ctx, `WHERE repo = ? AND pr = ? ORDER BY posted_ms DESC, plan_digest`, repo, pr)
+	return s.gitopsPlans(ctx, `WHERE repo = ? AND pr = ? ORDER BY posted_ms DESC, rowid DESC`, repo, pr)
 }
 
 func (s *Store) gitopsPlans(ctx context.Context, where string, args ...any) ([]GitopsPlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT plan_digest, repo, pr, dir, sha, merged, revision, changes, applied_ms, outcome FROM gitops_plans `+where, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT plan_digest, repo, pr, dir, sha, merged, revision, changes, waiting, blocked, applied_ms, outcome FROM gitops_plans `+where, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +56,7 @@ func (s *Store) gitopsPlans(ctx context.Context, where string, args ...any) ([]G
 		var p GitopsPlan
 		var merged int
 		var applied int64
-		if err := rows.Scan(&p.Digest, &p.Repo, &p.PR, &p.Dir, &p.SHA, &merged, &p.Revision, &p.Changes, &applied, &p.Outcome); err != nil {
+		if err := rows.Scan(&p.Digest, &p.Repo, &p.PR, &p.Dir, &p.SHA, &merged, &p.Revision, &p.Changes, &p.Waiting, &p.Blocked, &applied, &p.Outcome); err != nil {
 			return nil, err
 		}
 		p.Merged, p.Applied = merged != 0, applied != 0

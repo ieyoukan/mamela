@@ -86,6 +86,10 @@ type Report struct {
 	PlanDigest string
 	Steps      []StepReport
 	Stopped    *Stop
+	Remaining  *plan.Plan // fresh observation after this phase; success is not necessarily convergence
+	// RemainingErr says why Remaining is missing: the observation after the operations failed.
+	// The operations' outcomes above stand; only whether the declaration converged is unknown.
+	RemainingErr string
 }
 
 // Reconciler applies plans.
@@ -277,6 +281,12 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 		}
 	}
+	fresh, err = r.Provider.Observe(ctx)
+	if err != nil {
+		rep.RemainingErr = err.Error()
+		return rep, nil
+	}
+	rep.Remaining = plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
 	return rep, nil
 }
 
