@@ -3,13 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -17,6 +17,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/gitops"
 	"github.com/ieyoukan/mamela/internal/plan"
+	"github.com/ieyoukan/mamela/internal/policy"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/store"
 )
@@ -128,8 +129,6 @@ type cliMamela struct {
 	imageCache string
 }
 
-var approveLine = regexp.MustCompile(`To approve: mamela approve (sha256:[0-9a-f]{64})`)
-
 func (m *cliMamela) run(ctx context.Context, args ...string) (int, string) {
 	var out bytes.Buffer
 	code := run(ctx, args, &out, &out)
@@ -137,22 +136,32 @@ func (m *cliMamela) run(ctx context.Context, args ...string) (int, string) {
 }
 
 func (m *cliMamela) Plan(ctx context.Context, dir string) (gitops.Planned, error) {
-	args := append([]string{"plan"}, m.common...)
+	args := append([]string{"plan", "--json"}, m.common...)
 	if m.policy != "" {
 		args = append(args, "--policy", m.policy)
 	}
-	code, out := m.run(ctx, append(args, dir)...)
-	match := approveLine.FindStringSubmatch(out)
-	if code != 0 || match == nil {
-		return gitops.Planned{}, errors.New(strings.TrimSpace(out))
+	var stdout, stderr bytes.Buffer
+	code := run(ctx, append(args, dir), &stdout, &stderr)
+	out := stdout.String()
+	if code != 0 {
+		return gitops.Planned{}, errors.New(strings.TrimSpace(out + stderr.String()))
 	}
-	p, _, err := m.st.LoadPlan(ctx, match[1])
+	var output planJSON
+	if err := json.Unmarshal([]byte(out), &output, json.RejectUnknownMembers(true)); err != nil {
+		return gitops.Planned{}, err
+	}
+	p, _, err := m.st.LoadPlan(ctx, output.Digest)
 	if err != nil {
 		return gitops.Planned{}, err
 	}
-	changes := 0
+	changes, waiting, blocked := 0, 0, 0
 	for _, c := range p.Changes {
-		if c.Status == plan.StatusChange {
+		switch {
+		case c.Status == plan.StatusBlocked || c.Verdict == policy.Denied:
+			blocked++
+		case c.Status == plan.StatusWaiting:
+			waiting++
+		case c.Status == plan.StatusChange:
 			changes++
 		}
 	}
@@ -165,8 +174,10 @@ func (m *cliMamela) Plan(ctx context.Context, dir string) (gitops.Planned, error
 		names = append(names, fmt.Sprintf("%s %s (%s, %s)", pr.Provider, pr.Version, pr.Source, pr.Digest))
 	}
 	// The text without the local paths of the Control Plane.
-	text := strings.ReplaceAll(out, dir, "<declaration>")
-	return gitops.Planned{Digest: p.Digest, Revision: p.Inputs.RevisionDigest, Changes: changes, Text: text, Programs: names}, nil
+	var rendered bytes.Buffer
+	plan.Render(&rendered, p)
+	text := strings.ReplaceAll(rendered.String(), dir, "<declaration>")
+	return gitops.Planned{Digest: p.Digest, Revision: p.Inputs.RevisionDigest, Changes: changes, Waiting: waiting, Blocked: blocked, Text: text, Programs: names}, nil
 }
 
 func (m *cliMamela) Revision(ctx context.Context, dir string) (string, error) {

@@ -40,13 +40,36 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 	}
 	for _, nr := range reports {
 		r := nr.Report
+		a, enrolled, err := p.Store.Agent(ctx, r.Node)
+		if err != nil {
+			return state.Snapshot{}, err
+		}
+		if enrolled {
+			if a.VMID != r.VMID || nr.Received.Before(a.Enrolled) {
+				continue
+			}
+			if snap.AgentRegistrations == nil {
+				snap.AgentRegistrations = map[string]string{}
+			}
+			snap.AgentRegistrations[r.Node] = a.CertSerial
+		}
+		rev, err := p.Store.NodeRevision(ctx, r.Node)
+		if err != nil {
+			return state.Snapshot{}, err
+		}
 		for _, pk := range r.Packages {
 			snap.Packages[r.Node+"/"+pk.Name] = state.Package{Installed: pk.Installed, Version: pk.Version,
 				ChangeSet: pk.ChangeSet, Error: pk.Error, ObservedAt: nr.Received}
 		}
 		for _, sv := range r.Services {
+			repair := false
+			if rev != nil && rev.VMID == r.VMID {
+				if active := findService(rev, sv.Name); active != nil {
+					repair = active.Running && slices.Contains(active.Repair, noderev.ActionStart)
+				}
+			}
 			snap.Services[r.Node+"/"+sv.Name] = state.Service{Exists: sv.Exists, Enabled: sv.Enabled, Running: sv.Running,
-				ObservedAt: nr.Received}
+				RepairStart: repair, ObservedAt: nr.Received}
 		}
 		if k := r.K3s; k != nil {
 			if snap.K3s == nil {
@@ -59,95 +82,75 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 	return snap, nil
 }
 
-// Publish writes each declared node's revision: which packages and services mamelet observes,
-// and the standing repairs the policy allows without approval (starting a service listed in
-// autoStartServices). One-time grants already in a revision are kept while their package or
-// service is still declared. nodeIDs are the IDs of providers' machines (ADR 0004), by name, from
-// the observation; machines without one (not created yet) are skipped.
-func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, controlPlane string, nodeIDs map[string]int64) error {
-	type nodeRes struct {
-		pkgs []graph.NodePackageSpec
-		svcs []graph.NodeServiceSpec
-		k3s  *graph.NodeK3sSpec
-	}
-	nodes := map[string]*nodeRes{}
-	var names []string
-	// The nodes first (a provider's kind sorts after the node resources), then what is on them.
-	for _, r := range g.Sorted() {
-		if _, providersNode := nodeIDs[r.Name]; providersNode && r.Provided != nil {
-			nodes[r.Name] = &nodeRes{}
-			names = append(names, r.Name)
-		}
-	}
-	for _, r := range g.Sorted() {
-		switch r.Kind {
-		case graph.KindNodePackage:
-			if n := nodes[r.NodePackage.Node]; n != nil {
-				n.pkgs = append(n.pkgs, *r.NodePackage)
-			}
-		case graph.KindNodeService:
-			if n := nodes[r.NodeService.Node]; n != nil {
-				n.svcs = append(n.svcs, *r.NodeService)
-			}
-		case graph.KindNodeK3s:
-			if n := nodes[r.NodeK3s.Node]; n != nil {
-				n.k3s = r.NodeK3s
-			}
-		}
-	}
-	for _, name := range names {
-		vmid := int(nodeIDs[name])
-		if vmid <= 0 {
+// Publish requests observations without activating a candidate declaration. Existing desired
+// values and grants survive unchanged; new targets have no permission to change the machine.
+// A protected node is the exception: local safety revokes all grants, including undeclared ones.
+// Control Plane relocation is not an observation and is never published by plan.
+func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, _ string, nodeIDs map[string]int64) error {
+	for _, machine := range g.Sorted() {
+		vmid := int(nodeIDs[machine.Name])
+		if machine.Provided == nil || vmid <= 0 {
 			continue
 		}
-		n := nodes[name]
-		protected := pol.Protected(name)
-		// Read before publishing: the store has one connection, which publishing holds.
+		name := machine.Name
+		var pkgs []noderev.Package
+		var svcs []noderev.Service
 		var k3s *noderev.K3s
-		if n.k3s != nil {
-			kr, ok, err := k3sRevision(ctx, st, *n.k3s, g.StaticIP(n.k3s.Server))
-			if err != nil {
-				return err
-			}
-			if ok {
-				k3s = &kr
+		for _, r := range g.Sorted() {
+			switch {
+			case r.NodePackage != nil && r.NodePackage.Node == name:
+				pkgs = append(pkgs, noderev.Package{Name: r.NodePackage.Package})
+			case r.NodeService != nil && r.NodeService.Node == name:
+				svcs = append(svcs, noderev.Service{Name: r.NodeService.Service})
+			case r.NodeK3s != nil && r.NodeK3s.Node == name:
+				kr, ok, err := k3sRevision(ctx, st, *r.NodeK3s, g.StaticIP(r.NodeK3s.Server))
+				if err != nil {
+					return err
+				}
+				if ok {
+					k3s = &kr
+				}
 			}
 		}
 		if _, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
-			r := noderev.Revision{VMID: vmid, Packages: []noderev.Package{}, Services: []noderev.Service{}, ControlPlane: controlPlane}
-			for _, pk := range n.pkgs {
-				np := noderev.Package{Name: pk.Package}
-				if !protected && prev != nil && prev.VMID == vmid {
-					if old := findPackage(prev, pk.Package); old != nil {
-						np.Install = old.Install
-					}
+			r := noderev.Revision{VMID: vmid}
+			if prev != nil {
+				if prev.VMID != vmid {
+					return r, fmt.Errorf("MAM-NODE-0101: node %s changed identity; revoke its old registration before reusing its name", name)
 				}
-				r.Packages = append(r.Packages, np)
+				r = *prev
+				r.Packages = slices.Clone(prev.Packages)
+				r.Services = slices.Clone(prev.Services)
 			}
-			for _, sv := range n.svcs {
-				ns := noderev.Service{Name: sv.Service, Enabled: sv.Enabled, Running: sv.Running, Repair: []string{}, Once: []noderev.Once{}}
-				if !protected && sv.Running && pol.Decide(policy.Subject{Op: policy.OpStartService, Service: sv.Service}).Verdict == policy.Auto {
-					ns.Repair = []string{noderev.ActionStart}
+			for _, p := range pkgs {
+				if findPackage(&r, p.Name) == nil {
+					r.Packages = append(r.Packages, p)
 				}
-				if !protected && prev != nil && prev.VMID == vmid {
-					if old := findService(prev, sv.Service); old != nil {
-						ns.Once = old.Once
-					}
-				}
-				r.Services = append(r.Services, ns)
 			}
-			if k3s != nil {
-				kr := *k3s
-				r.K3s = &kr
-				// An approved install stays granted while the node is to run the same.
-				if !protected && prev != nil && prev.VMID == vmid && prev.K3s != nil && prev.K3s.Version == kr.Version && prev.K3s.SHA256 == kr.SHA256 &&
-					prev.K3s.Role == kr.Role && prev.K3s.Server == kr.Server {
-					r.K3s.Install = prev.K3s.Install
+			for _, s := range svcs {
+				if findService(&r, s.Name) == nil {
+					r.Services = append(r.Services, s)
+				}
+			}
+			if r.K3s == nil {
+				r.K3s = k3s
+			}
+			if pol.Protected(name) {
+				for i := range r.Packages {
+					r.Packages[i].Install = nil
+				}
+				for i := range r.Services {
+					r.Services[i].Repair, r.Services[i].Once = nil, nil
+				}
+				if r.K3s != nil {
+					k := *r.K3s
+					k.Install = nil
+					r.K3s = &k
 				}
 			}
 			return r, nil
 		}); err != nil {
-			return fmt.Errorf("publish the revision of %s: %w", name, err)
+			return fmt.Errorf("observe node %s: %w", name, err)
 		}
 	}
 	return nil
@@ -215,7 +218,12 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	if attempt < 1 {
 		attempt = 1
 	}
+	_, inputs, err := p.Store.LoadPlan(ctx, step.PlanDigest)
+	if err != nil {
+		return err
+	}
 	var node, what string
+	configure := step.Op == policy.OpConfigureService
 	var grant func(r *noderev.Revision) error
 	switch r := step.Resource; {
 	case step.Op == policy.OpInstallPackage && r.NodePackage != nil:
@@ -233,21 +241,25 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			return nil
 		}
 	case step.Op == policy.OpInstallK3s && r.NodeK3s != nil:
+		kr, ok, err := k3sRevision(ctx, p.Store, *r.NodeK3s, inputs.Revision.StaticIP(r.NodeK3s.Server))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("k3s server address is not observed; plan again")
+		}
 		node, what = r.NodeK3s.Node, "install k3s "+r.NodeK3s.Version
 		grant = func(rev *noderev.Revision) error {
-			if rev.K3s == nil || rev.K3s.Version != r.NodeK3s.Version || rev.K3s.SHA256 != r.NodeK3s.SHA256 || rev.K3s.Role != string(r.NodeK3s.Role) {
-				return fmt.Errorf("k3s %s is not in the revision of %s (plan again)", r.NodeK3s.Version, node)
-			}
 			// An agent joins the server the approved plan named, or nothing happens.
-			if want := approvedDiff(step.Approved, "server"); rev.K3s.Server != want {
-				return fmt.Errorf("the revision of %s names server %q, the approved plan %q (plan again)", node, rev.K3s.Server, want)
+			if want := approvedDiff(step.Approved, "server"); kr.Server != want {
+				return fmt.Errorf("the revision of %s names server %q, the approved plan %q (plan again)", node, kr.Server, want)
 			}
-			k := *rev.K3s
+			k := kr
 			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall}
 			rev.K3s = &k
 			return nil
 		}
-	case serviceActions[step.Op] != "" && r.NodeService != nil:
+	case (serviceActions[step.Op] != "" || configure) && r.NodeService != nil:
 		action := serviceActions[step.Op]
 		node, what = r.NodeService.Node, action+" "+r.NodeService.Service
 		grant = func(rev *noderev.Revision) error {
@@ -255,7 +267,25 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			if sv == nil {
 				return fmt.Errorf("service %s is not in the revision of %s (plan again)", r.NodeService.Service, node)
 			}
-			sv.Once = slices.DeleteFunc(slices.Clone(sv.Once), func(o noderev.Once) bool { return o.Action == action })
+			if configure {
+				sv.Repair = nil
+				if r.NodeService.Running && inputs.Policy.Decide(policy.Subject{Op: policy.OpStartService, Service: sv.Name}).Verdict == policy.Auto {
+					sv.Running = true
+					sv.Repair = []string{noderev.ActionStart}
+				}
+				return nil
+			}
+			if action == noderev.ActionStart || action == noderev.ActionStop {
+				sv.Running = action == noderev.ActionStart
+				if !sv.Running {
+					sv.Repair = nil
+				}
+			} else {
+				sv.Enabled = action == noderev.ActionEnable
+			}
+			sv.Once = slices.DeleteFunc(slices.Clone(sv.Once), func(o noderev.Once) bool {
+				return (o.Action == noderev.ActionStart || o.Action == noderev.ActionStop) == (action == noderev.ActionStart || action == noderev.ActionStop)
+			})
 			sv.Once = append(sv.Once, noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: action})
 			return nil
 		}
@@ -263,9 +293,12 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return fmt.Errorf("mamelet does not carry out %s", step.Op)
 	}
 
-	if _, err := p.Store.PublishNodeRevision(ctx, node, func(prev *noderev.Revision) (noderev.Revision, error) {
+	if _, err := p.Store.PublishNodeRevisionForAgent(ctx, node, inputs.Snapshot.AgentRegistrations[node], func(prev *noderev.Revision) (noderev.Revision, error) {
 		if prev == nil {
 			return noderev.Revision{}, fmt.Errorf("node %s has no revision yet (plan with --site first)", node)
+		}
+		if expected := inputs.Snapshot.Nodes[node].ID; expected > 0 && int64(prev.VMID) != expected {
+			return noderev.Revision{}, fmt.Errorf("MAM-NODE-0101: node %s is a different machine; plan again", node)
 		}
 		r := *prev
 		r.Packages = slices.Clone(prev.Packages)
@@ -273,6 +306,9 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return r, grant(&r)
 	}); err != nil {
 		return fmt.Errorf("%s on %s: %w", what, node, err)
+	}
+	if configure {
+		return nil
 	}
 	return p.await(ctx, node, what, step.OperationID, attempt)
 }

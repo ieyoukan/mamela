@@ -96,6 +96,8 @@ type Planned struct {
 	Digest   string
 	Revision string // the declaration's digest
 	Changes  int    // changes to make (not in sync)
+	Waiting  int
+	Blocked  int
 	Text     string // the plan as people read it
 	Programs []string
 }
@@ -191,14 +193,36 @@ func (e *Engine) planHead(ctx context.Context, pr PR) error {
 		return nil
 	}
 	key := fmt.Sprintf("head %s %s", e.Config.Repo, pr.Head.SHA)
-	if seen, err := e.Store.GitopsSeen(ctx, key); err != nil || seen {
+	seen, err := e.Store.GitopsSeen(ctx, key)
+	if err != nil {
 		return err
+	}
+	pendingDirs := map[string]bool{}
+	if seen {
+		plans, err := e.Store.GitopsPlans(ctx, e.Config.Repo, pr.Number)
+		if err != nil {
+			return err
+		}
+		retry := false
+		for _, d := range e.Config.Dirs {
+			i := slices.IndexFunc(plans, func(p store.GitopsPlan) bool { return p.Dir == d })
+			if i >= 0 && plans[i].SHA == pr.Head.SHA && plans[i].Changes == 0 && (plans[i].Waiting > 0 || plans[i].Blocked > 0) {
+				retry = true
+				pendingDirs[d] = true
+			}
+		}
+		if !retry {
+			return nil
+		}
 	}
 	tree, err := e.checkout(ctx, pr.Head.SHA)
 	if err != nil {
 		return err
 	}
 	for _, d := range e.Config.Dirs {
+		if seen && !pendingDirs[d] {
+			continue
+		}
 		if err := e.planAndPost(ctx, pr, pr.Head.SHA, tree, d, false); err != nil {
 			return err
 		}
@@ -211,6 +235,10 @@ func statusContext(dir string) string { return "mamela/" + dir }
 
 // planAndPost plans one declaration of a tree and comments the plan on the pull request.
 func (e *Engine) planAndPost(ctx context.Context, pr PR, sha, tree, dir string, merged bool) error {
+	previous, err := e.Store.GitopsPlans(ctx, e.Config.Repo, pr.Number)
+	if err != nil {
+		return err
+	}
 	p, err := e.Mamela.Plan(ctx, filepath.Join(tree, dir))
 	if err != nil {
 		body := fmt.Sprintf("### Mamela: `%s` at %s could not be planned\n\n```text\n%s\n```\n", dir, short(sha), clip(err.Error()))
@@ -218,8 +246,17 @@ func (e *Engine) planAndPost(ctx context.Context, pr PR, sha, tree, dir string, 
 		return e.GitHub.Comment(ctx, pr.Number, body)
 	}
 	if err := e.Store.SaveGitopsPlan(ctx, store.GitopsPlan{Digest: p.Digest, Repo: e.Config.Repo, PR: pr.Number, Dir: dir, SHA: sha,
-		Merged: merged, Revision: p.Revision, Changes: p.Changes}); err != nil {
+		Merged: merged, Revision: p.Revision, Changes: p.Changes, Waiting: p.Waiting, Blocked: p.Blocked}); err != nil {
 		return err
+	}
+	// Re-observation can have a new timestamp while still waiting for the same thing. Keep the
+	// current plan, but do not post the same pending status/comment every poll.
+	if i := slices.IndexFunc(previous, func(old store.GitopsPlan) bool { return old.Dir == dir }); i >= 0 {
+		old := previous[i]
+		if !old.Applied && old.SHA == sha && old.Merged == merged && old.Revision == p.Revision &&
+			old.Changes == 0 && p.Changes == 0 && old.Waiting == p.Waiting && old.Blocked == p.Blocked {
+			return nil
+		}
 	}
 	var b strings.Builder
 	what := "head"
@@ -227,7 +264,7 @@ func (e *Engine) planAndPost(ctx context.Context, pr PR, sha, tree, dir string, 
 		what = "merge"
 	}
 	fmt.Fprintf(&b, "### Mamela plan: `%s` at %s (%s)\n\n", dir, short(sha), what)
-	if p.Changes == 0 {
+	if p.Changes == 0 && p.Waiting == 0 && p.Blocked == 0 {
 		b.WriteString("Nothing to change: the declaration is in sync.\n\n")
 	}
 	fmt.Fprintf(&b, "```text\n%s\n```\n\n", clip(p.Text))
@@ -243,8 +280,13 @@ func (e *Engine) planAndPost(ctx context.Context, pr PR, sha, tree, dir string, 
 		}
 	}
 	state, desc := "success", "in sync"
-	if p.Changes > 0 {
+	switch {
+	case p.Blocked > 0:
+		state, desc = "failure", fmt.Sprintf("%d blocked, %d waiting", p.Blocked, p.Waiting)
+	case p.Changes > 0:
 		state, desc = "pending", fmt.Sprintf("%d changes, approve %s", p.Changes, short(p.Digest))
+	case p.Waiting > 0:
+		state, desc = "pending", fmt.Sprintf("%d waiting for observation or dependencies", p.Waiting)
 	}
 	if err := e.GitHub.Status(ctx, sha, state, statusContext(dir), desc); err != nil {
 		e.logf("gitops: status of %s: %v", short(sha), err)
@@ -314,9 +356,6 @@ func (e *Engine) merged(ctx context.Context, pr PR) error {
 		return fmt.Errorf("merge commit %q", pr.MergeCommitSHA)
 	}
 	key := fmt.Sprintf("merge %s %d %s", e.Config.Repo, pr.Number, pr.MergeCommitSHA)
-	if seen, err := e.Store.GitopsSeen(ctx, key); err != nil || seen {
-		return err
-	}
 	plans, err := e.Store.GitopsPlans(ctx, e.Config.Repo, pr.Number)
 	if err != nil {
 		return err
@@ -341,8 +380,15 @@ func (e *Engine) merged(ctx context.Context, pr PR) error {
 			e.GitHub.Comment(ctx, pr.Number, fmt.Sprintf("The merged declaration `%s` is not the one planned at %s: planning the merge.", d, short(plans[i].SHA)))
 			err = e.planAndPost(ctx, pr, pr.MergeCommitSHA, tree, d, true)
 		case plans[i].Applied:
+			// Success of a phase is not convergence. Failed phases need investigation;
+			// successful ones always get a new plan, with its own approval.
+			if plans[i].Outcome == "applied" {
+				err = e.planAndPost(ctx, pr, pr.MergeCommitSHA, tree, d, true)
+			}
 		case plans[i].Changes == 0:
-			e.GitHub.Status(ctx, pr.MergeCommitSHA, "success", statusContext(d), "in sync")
+			if plans[i].Waiting > 0 || plans[i].Blocked > 0 || !plans[i].Merged {
+				err = e.planAndPost(ctx, pr, pr.MergeCommitSHA, tree, d, true)
+			}
 		default:
 			ok, err2 := e.approved(ctx, plans[i].Digest)
 			switch {
@@ -350,6 +396,8 @@ func (e *Engine) merged(ctx context.Context, pr PR) error {
 				err = err2
 			case ok:
 				err = e.apply(ctx, pr, plans[i])
+			case plans[i].Merged:
+				// Already posted the next phase; wait for its exact digest's approval.
 			default:
 				// Not approved (or the approval expired): plan the merge, which can be approved.
 				e.GitHub.Comment(ctx, pr.Number, fmt.Sprintf("Plan `%s` of `%s` was not approved (or its approval expired) when the pull request was merged: planning the merge.", plans[i].Digest, d))
@@ -380,7 +428,7 @@ func (e *Engine) apply(ctx context.Context, pr PR, gp store.GitopsPlan) error {
 	e.GitHub.Status(ctx, sha, "pending", statusContext(gp.Dir), "applying "+short(gp.Digest))
 	ok, text, err := e.Mamela.Apply(ctx, gp.Digest)
 	outcome := "applied"
-	state := "success"
+	state := "pending"
 	if err != nil || !ok {
 		outcome, state = "failed", "failure"
 	}
@@ -392,7 +440,17 @@ func (e *Engine) apply(ctx context.Context, pr PR, gp store.GitopsPlan) error {
 	}
 	e.GitHub.Status(ctx, sha, state, statusContext(gp.Dir), outcome+" "+short(gp.Digest))
 	e.logf("gitops: #%d plan %s %s", pr.Number, short(gp.Digest), outcome)
-	return e.GitHub.Comment(ctx, pr.Number, fmt.Sprintf("### Mamela apply: `%s` %s (plan `%s`)\n\n```text\n%s\n```\n", gp.Dir, outcome, gp.Digest, clip(text)))
+	if err := e.GitHub.Comment(ctx, pr.Number, fmt.Sprintf("### Mamela apply: `%s` %s (plan `%s`)\n\n```text\n%s\n```\n", gp.Dir, outcome, gp.Digest, clip(text))); err != nil {
+		return err
+	}
+	if outcome != "applied" {
+		return nil
+	}
+	tree, err := e.checkout(ctx, pr.MergeCommitSHA)
+	if err != nil {
+		return err
+	}
+	return e.planAndPost(ctx, pr, pr.MergeCommitSHA, tree, gp.Dir, true)
 }
 
 func short(s string) string {

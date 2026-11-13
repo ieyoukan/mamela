@@ -17,8 +17,10 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
+	"github.com/ieyoukan/mamela/internal/store"
 )
 
 // Where a Control Plane host keeps what the bundle holds (ADR 0003).
@@ -31,6 +33,9 @@ const (
 // runControlPlane moves the Control Plane to its own host (ADR 0003): `bundle` packs what that host
 // needs into one archive for a person to copy there and install with the script inside.
 func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "redirect" {
+		return runRedirect(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "bundle" {
 		fmt.Fprint(stderr, controlPlaneUsage)
 		return 2
@@ -178,6 +183,20 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if copyErr != nil {
 		return report(stderr, fmt.Errorf("copy the database: %w", copyErr))
 	}
+	// The destination already knows the redirect revision before agents move there. Otherwise
+	// their new serial from the source CP would be rejected by the older bundled database.
+	copyStore, err := store.Open(ctx, filepath.Join(tmp, "state.db"), wallClock)
+	if err != nil {
+		return report(stderr, err)
+	}
+	_, redirectErr := copyStore.RedirectAgents(ctx, *newURL)
+	closeErr := copyStore.Close()
+	if redirectErr != nil {
+		return report(stderr, redirectErr)
+	}
+	if closeErr != nil {
+		return report(stderr, closeErr)
+	}
 	dbBytes, err := os.ReadFile(filepath.Join(tmp, "state.db"))
 	if err != nil {
 		return report(stderr, err)
@@ -196,11 +215,34 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "  2. mkdir b && tar -xf %s -C b && b/install.sh b   (review install.sh first)\n", filepath.Base(*out))
 	fmt.Fprintf(stdout, "  3. stop `mamela serve` here, then: systemctl enable --now mamela-serve\n\n")
 	fmt.Fprintf(stdout, "Mamelets created from now on reach %s directly. Existing ones move when their revision says so:\n", *newURL)
-	fmt.Fprintf(stdout, "set controlplane.move_to = %q here and plan once before making this bundle (ADR 0003).\n", *newURL)
+	fmt.Fprintf(stdout, "once the new endpoint is ready, run: mamela controlplane redirect --db %s --url %s\n", shellQuote(*db), shellQuote(*newURL))
 	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
-	if site.ControlPlane.MoveTo != *newURL {
-		fmt.Fprintf(stdout, "\nnote: controlplane.move_to is %q here, not %q: existing mamelets have not been told to move.\n", site.ControlPlane.MoveTo, *newURL)
+	fmt.Fprintln(stdout, "\nnote: controlplane.move_to is no longer activated by plan; redirect is an explicit action.")
+	return 0
+}
+
+func runRedirect(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mamela controlplane redirect", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database")
+	url := fs.String("url", "", "new https://host:port endpoint, already serving the same CA and revision key")
+	if err := fs.Parse(args); err != nil {
+		return 2
 	}
+	if fs.NArg() != 0 || !noderev.ValidControlPlane(*url) {
+		fmt.Fprintln(stderr, "Usage: mamela controlplane redirect --db <state.db> --url https://host:port")
+		return 2
+	}
+	st, err := openStore(ctx, *db)
+	if err != nil {
+		return report(stderr, err)
+	}
+	defer st.Close()
+	n, err := st.RedirectAgents(ctx, *url)
+	if err != nil {
+		return report(stderr, err)
+	}
+	fmt.Fprintf(stdout, "redirected %d enrolled agents to %s; they move on their next successful pull\n", n, *url)
 	return 0
 }
 
@@ -250,6 +292,7 @@ func isLoopbackHost(h string) bool {
 }
 
 const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<address>:<port> [--host <vm>] [flags]
+       mamela controlplane redirect --db <state.db> --url https://<address>:<port>
 
 Packs what a Control Plane host needs (ADR 0003) into one archive: a consistent copy of the state
 database, the Control Plane's keys, the site and the providers' APIs (mamela.providers.toml, with

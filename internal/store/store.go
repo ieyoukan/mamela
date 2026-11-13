@@ -243,6 +243,11 @@ CREATE TABLE gitops_seen (
   seen_ms INTEGER NOT NULL
 );
 `,
+	// 14: waiting and blocked plans must never be reported as converged by GitOps.
+	`ALTER TABLE gitops_plans ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
+	// 15: explicit operations retain the identity needed for read-only recovery after a crash.
+	`ALTER TABLE explicit_operations ADD COLUMN context BLOB;`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

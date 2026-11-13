@@ -16,7 +16,7 @@ var symbols = map[Status]string{
 	StatusChange:   "~",
 	StatusWaiting:  ".",
 	StatusBlocked:  "!",
-	StatusRetained: "-",
+	StatusRetained: "=",
 }
 
 // Render writes the plan for a person: every resource, what would happen to it and why,
