@@ -166,6 +166,12 @@ func (b builder) provided(r graph.Resource) Change {
 		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0113", Message: got.Waiting,
 			Hint: "apply the plan that makes it, then plan again (ADR 0007)"}
 		return c
+	case got.Observed.Exists && got.Observed.Adoptable && !got.Observed.Owned:
+		// Imported (ADR 0009), or recognized by its provider: a person adopts it first.
+		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0114",
+			Message: "it exists and is to be adopted: Mamela changes nothing of it until a person adopts it",
+			Hint:    fmt.Sprintf("adopt it with its provider's adopt operation: mamela act --confirm %s <adopt-op> %q <pome-dir>", r.Name, r.ID())}
+		return c
 	case got.Observed.Exists && !got.Observed.Owned:
 		return b.withOps(c, policy.Subject{Op: policy.OpChangeForeign})
 	}

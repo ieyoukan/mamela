@@ -3,12 +3,12 @@
 
 import Std.Console.{SystemConsole}
 import Mamela
-import Kv.{Item}
+import Kv.{KvItem}
 
 fn infrastructure() -> Mamela.Graph {
   Mamela.empty()
-    |> Kv.item(Item(name: "web", value: "v1", labels: ["prod"]))
-    |> Kv.item(Item(name: "db", value: "v1", labels: []))
+    |> Kv.kv_item(KvItem(name: "web", value: "v1", labels: ["prod"]))
+    |> Kv.kv_item(KvItem(name: "db", value: "v1", labels: []))
 }
 
 fn main() {

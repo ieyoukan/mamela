@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -395,13 +396,27 @@ func (s *Session) Observe(ctx context.Context, resources []protocol.Resource) ([
 
 // ObserveClaimed observes, telling the provider the IDs other plans are to create (taken).
 func (s *Session) ObserveClaimed(ctx context.Context, resources []protocol.Resource, claimed []map[string]string) ([]protocol.Observed, []Request, error) {
+	return s.ObserveWith(ctx, protocol.ObserveParams{Resources: resources, Claimed: claimed})
+}
+
+// ObserveWith observes with all the parameters: the IDs other plans are to create, and the
+// resources to adopt (imported). The object the provider reports as adoptable for a resource to
+// adopt must be the one imported: its IDs include the imported ones.
+func (s *Session) ObserveWith(ctx context.Context, p protocol.ObserveParams) ([]protocol.Observed, []Request, error) {
 	g := s.gate(phaseObserve, s.manifest.ObserveCalls, nil)
 	var out protocol.ObserveResult
-	err := s.call(ctx, g, protocol.MethodObserve, protocol.ObserveParams{Resources: resources, Claimed: claimed}, &out)
+	err := s.call(ctx, g, protocol.MethodObserve, p, &out)
 	if err := firstRefusal(g, err); err != nil {
 		return nil, g.record, err
 	}
+	adopting := map[string]map[string]string{}
+	for _, a := range p.Adopting {
+		adopting[a.Resource] = a.IDs
+	}
 	for _, o := range out.Resources {
+		if ids, ok := adopting[o.ID]; ok && o.Adoptable && !protocol.Targets(o.IDs, ids) {
+			return nil, g.record, &Error{Code: CodeProtocol, Message: fmt.Sprintf("observed %s as adoptable with IDs %v, not the imported %v: Mamela adopts only the object imported", o.ID, o.IDs, ids)}
+		}
 		if err := s.checkKind(o.Kind); err != nil {
 			return nil, g.record, err
 		}
@@ -499,6 +514,74 @@ func (s *Session) Prepare(ctx context.Context, op protocol.Op, desired *protocol
 		return protocol.Change{}, &Error{Code: CodeProtocol, Message: fmt.Sprintf("prepare %s of %s: %v", op, observed.ID, err)}
 	}
 	return c, nil
+}
+
+// Import asks the provider to turn objects of another tool (Terraform) into declarations of its
+// kinds (ADR 0009). It may send no request. Each declaration must be of a kind that imports the
+// object's type, for an object given, once, with a spec that is a JSON object and the IDs that
+// identify the object.
+func (s *Session) Import(ctx context.Context, objects []protocol.ImportObject, settings []byte) (protocol.ImportResult, error) {
+	types := map[string]bool{}
+	for _, o := range objects {
+		types[o.Address] = true
+	}
+	g := s.gate(phaseImport, nil, nil)
+	var out protocol.ImportResult
+	err := s.call(ctx, g, protocol.MethodImport, protocol.ImportParams{Objects: objects, Settings: settings}, &out)
+	if err := firstRefusal(g, err); err != nil {
+		return out, err
+	}
+	typeOf := map[string]string{}
+	for _, o := range objects {
+		typeOf[o.Address] = o.Type
+	}
+	seen := map[string]bool{}
+	names := map[string]bool{}
+	for _, r := range out.Resources {
+		t, given := typeOf[r.Address]
+		k, ok := s.kind(r.Kind)
+		switch {
+		case !given || seen[r.Address]:
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import: %q is not one object given, or is declared twice", r.Address)}
+		case !ok || !slices.Contains(k.Imports, t):
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: kind %s does not import %s", r.Address, r.Kind, t)}
+		case !importNameRe.MatchString(r.Name) || names[string(r.Kind)+" "+r.Name]:
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: name %q is not valid, or two objects have it", r.Address, r.Name)}
+		case len(r.IDs) == 0 || !validIDs(r.IDs):
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: the IDs of the object are required", r.Address)}
+		case len(r.Spec) == 0 || r.Spec.Kind() != '{':
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: the spec must be a JSON object", r.Address)}
+		}
+		seen[r.Address] = true
+		names[string(r.Kind)+" "+r.Name] = true
+	}
+	// What a declaration includes: given, and in no other declaration (checked once all are seen).
+	for _, r := range out.Resources {
+		for _, a := range r.Also {
+			if _, given := typeOf[a]; !given || seen[a] {
+				return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import of %s: it includes %q, which is not one object given, or is declared or included twice", r.Address, a)}
+			}
+			seen[a] = true
+		}
+	}
+	for _, sk := range out.Skipped {
+		if !types[sk.Address] || seen[sk.Address] || sk.Why == "" {
+			return out, &Error{Code: CodeProtocol, Message: fmt.Sprintf("import: skipped %q is not one object given, is also declared, or says no why", sk.Address)}
+		}
+		seen[sk.Address] = true
+	}
+	return out, nil
+}
+
+// importNameRe is a declared resource's name, as a graph accepts it.
+var importNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
+
+func (s *Session) kind(k protocol.ResourceKind) (protocol.Kind, bool) {
+	i := slices.IndexFunc(s.manifest.Kinds, func(x protocol.Kind) bool { return x.Kind == k })
+	if i < 0 {
+		return protocol.Kind{}, false
+	}
+	return s.manifest.Kinds[i], true
 }
 
 // MaxScriptBytes bounds a script's text.

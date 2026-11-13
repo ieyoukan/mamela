@@ -31,9 +31,13 @@ Usage:
   mamela guard <pome-dir>             run the providers' safety checks, as before an apply (read-only)
   mamela act <op> <resource> <pome-dir>  an explicit operation of a provider (delete, reboot, adopt...);
                                       shows it, and does it only with --confirm <resource name>
+  mamela import terraform <pome-dir>  move what Terraform/OpenTofu manages to Mamela: declarations of the
+                                      resources of a state (terraform show -json), to adopt (ADR 0009)
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
   mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
-  mamela provider <inspect|trust|script>  check a provider program; trust a native one; print its setup scripts
+  mamela provider <new|pome|inspect|catalog|trust|script>
+                                      write a new provider; generate its Pome's Emela; check a provider
+                                      program; show its catalogs; trust a native one; print its scripts
   mamela toolchain [status|install]  check or install the pinned emela and wasmtime
   mamela version                      print the Mamela version and its pinned toolchain
 
@@ -66,6 +70,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runGuard(ctx, args[1:], stdout, stderr)
 	case "act":
 		return runAct(ctx, args[1:], stdout, stderr)
+	case "import":
+		return runImport(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "controlplane":

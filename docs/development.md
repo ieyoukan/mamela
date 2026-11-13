@@ -268,6 +268,22 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
   - Proxmox は mamela-proxmox の `catalogs` に移した。
   - 例の EC2 のプロバイダーは `examples/ec2/pome/catalogs/ec2.json` を同梱する。
 
+## provider kit、Pome の生成、Terraform からの乗り換え（ADR 0009、2026-11-12）
+
+設計は [ADR 0009](adr/0009-provider-kit-and-imports.md)。
+
+- **provider/kit:** 作者は種類ごとに、一覧（`List`）、差分（`Diff`）、効いているか（`Done`）を書く。プロトコルは kit が引き受ける。`examples/kv` は kit で書き直した。
+- **spec の型:** manifest に `Kind.Spec`（`protocol.Field`）・`Kind.Doc`・`Kind.Imports` が増えた。kit は Go の構造体から書き出す（`kit.SpecOf`）。
+- **`mamela provider pome`:** Pome の `src/lib.emel` を生成する（`internal/pomegen`）。`examples/kv/pome` は生成物で、`build.sh` が生成する。
+- **`mamela provider new`:** そのままテストが通る雛形を書く（`internal/scaffold`）。生成直後に `go mod tidy`・`build.sh`・`go vet`・`go test` が通ることを試験する。
+- **`mamela import terraform`:** `terraform show -json` の出力を読み（`internal/tfimport`）、プロバイダーの `import` で宣言に変え、Emela（`src/imported.emel`）に書き、引き継ぐ対象を記録する（migration 12 `adoptions`）。
+  - 観測は、記録した物を `Adoptable` と報告する。plan は何も変えない（MAM-PLAN-0114）。
+  - 引き継ぎは `mamela act --confirm` だけで行う。
+- **試験:** `providertest.Case.Adopting` で、取り込み→引き継ぎを fault の注入込みで確かめる。kv-demo で、import→plan→adopt→plan の通しを確かめる。
+- **残り:**
+  - mamela-aws と mamela-proxmox を kit に移し、取り込みを足す。
+  - OpenAPI などからカタログと呼び出しを起こす道具。
+
 ## テストの優先順位
 
 1. 非許可の操作と任意 shell コマンドを拒否する。

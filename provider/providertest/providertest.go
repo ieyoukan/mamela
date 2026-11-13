@@ -87,6 +87,10 @@ type Case struct {
 	// exist before Mamela (one to adopt, someone else's). A case with a world runs only its
 	// converge with the guard, and its explicit operations.
 	World func(api http.Handler)
+	// Adopting are resources a person imported to adopt (mamela import terraform, ADR 0009),
+	// with the IDs of the objects in World: observe must report each as adoptable (and nothing
+	// planned for it) until an adopt operation in Explicit makes it Mamela's.
+	Adopting []protocol.Adopting
 }
 
 // Explicit is one explicit operation on one declared resource.
@@ -172,6 +176,7 @@ func Run(t *testing.T, s Suite) {
 		}
 		t.Run(c.Name+"/converges", func(t *testing.T) {
 			e := s.start(t, -1, "")
+			e.adopting = slices.Clone(c.Adopting)
 			before := e.guard(protocol.GuardBefore, nil, s.GuardSettings)
 			e.converge(c.Desired, 1)
 			e.guard(protocol.GuardAfter, before, s.GuardSettings)
@@ -187,6 +192,7 @@ func Run(t *testing.T, s Suite) {
 				}
 				t.Run(name, func(t *testing.T) {
 					e := s.start(t, -1, "")
+					e.adopting = slices.Clone(c.Adopting)
 					e.converge(c.Desired, 1)
 					for _, x := range c.Explicit {
 						if !e.explicit(c, x, fault) {
@@ -201,6 +207,7 @@ func Run(t *testing.T, s Suite) {
 		}
 		t.Run(c.Name+"/keeps-undeclared", func(t *testing.T) {
 			e := s.start(t, -1, "")
+			e.adopting = slices.Clone(c.Adopting)
 			e.converge(c.Desired, 1)
 			observed := e.observe(nil)
 			for _, r := range c.Desired {
@@ -218,6 +225,7 @@ func Run(t *testing.T, s Suite) {
 		})
 		t.Run(c.Name+"/faults", func(t *testing.T) {
 			e := s.start(t, -1, "")
+			e.adopting = slices.Clone(c.Adopting)
 			e.converge(c.Desired, 1)
 			n := e.up.changes
 			if n == 0 {
@@ -250,6 +258,8 @@ type env struct {
 	created map[string][]map[string]string
 	// lookups, when set, checks each change before it is applied.
 	lookups func(protocol.Change)
+	// adopting are the resources to adopt (imported), until they are adopted.
+	adopting []protocol.Adopting
 }
 
 func (s Suite) start(t *testing.T, at int, kind string) *env {
@@ -350,6 +360,7 @@ func (e *env) explicit(c Case, x Explicit, fault string) bool {
 	switch {
 	case op.Adopts:
 		e.created[x.Resource] = append(e.created[x.Resource], change.IDs)
+		e.adopting = slices.DeleteFunc(e.adopting, func(a protocol.Adopting) bool { return a.Resource == x.Resource })
 		e.converge(c.Desired, 2)
 	case slices.ContainsFunc(change.Requests, func(a protocol.Approved) bool {
 		en, _ := e.up.catalogFor(a.API).LookupApproved(a)
@@ -380,7 +391,7 @@ func (e *env) guard(stage string, baseline []byte, settings []byte) []byte {
 // created through it (protocol.Vouch).
 func (e *env) observe(desired []protocol.Resource) []protocol.Observed {
 	e.t.Helper()
-	observed, _, err := e.s.Observe(e.ctx, desired)
+	observed, _, err := e.s.ObserveWith(e.ctx, protocol.ObserveParams{Resources: desired, Adopting: e.adopting})
 	if err != nil {
 		e.t.Fatalf("observe: %v", err)
 	}
@@ -402,14 +413,17 @@ func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([
 	deps := map[string]protocol.Observed{}
 	waiting := 0
 	for _, d := range desired {
-		ok := true
+		ok, adopt := true, false
 		for _, a := range d.After {
 			if o := byID[a]; !o.Exists || !o.Owned || o.Unfinished {
 				ok = false
+				adopt = adopt || o.Adoptable // waits for a person to adopt it: as it should
 			}
 		}
 		if !ok {
-			waiting++
+			if !adopt {
+				waiting++
+			}
 			continue
 		}
 		ready = append(ready, d)

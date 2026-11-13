@@ -103,6 +103,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0111 | マシンが止まっているので、その上のリソースは起動を待つ |
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
+| MAM-PLAN-0114 | プロバイダーのリソースが存在し、引き継ぐ対象（`adoptable`）である。`mamela import terraform` で取り込んだもの、またはプロバイダーが以前 Mamela の作ったものと認めたもの。人が引き継ぐまで、Mamela は何も変えない（ADR 0009） | プロバイダーの引き継ぎ操作を `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。そのあと plan すると、宣言との差分が出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
@@ -156,7 +157,7 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 | MAM-ACT-0101 | その操作は、そのプロバイダーのその kind の明示操作ではない | メッセージに出る、その kind の明示操作から選ぶ |
 | MAM-ACT-0102 | 対象が存在しない | 何もしなくてよい |
 | MAM-ACT-0103 | 引き継ぎの対象が、もう Mamela のもの | 何もしなくてよい |
-| MAM-ACT-0104 | プロバイダーが、対象を引き継げる（`adoptable`）と報告していない。Mamela は、プロバイダーが Mamela の作ったものと認めたものしか引き継がない | 対象が本当に Mamela の作ったものか確かめる。そうでなければ Foreign のまま |
+| MAM-ACT-0104 | プロバイダーが、対象を引き継げる（`adoptable`）と報告していない。Mamela は、プロバイダーが Mamela の作ったものと認めたものか、人が取り込んだもの（`mamela import terraform`）しか引き継がない | 対象が本当に Mamela の作ったものか確かめる。Terraform の管理下にあるなら `mamela import terraform` で取り込む。そうでなければ Foreign のまま |
 | MAM-ACT-0105 | Mamela に、対象を作った記録がない（Foreign、または作成が終わっていない）。Mamela は自分のものにしか明示操作をしない | 作成が途中なら、plan・apply で仕上げる |
 | MAM-ACT-0106 | `--confirm` の値が対象の名前と違う。何も変えていない | 名前を正しく打ち直す |
 | MAM-ACT-0201 | 操作が効いたかどうか分からない。lookup でも確かめられなかった | `--confirm` なしで `mamela act` をもう一度実行し、今の状態を見る。やみくもに繰り返さない |

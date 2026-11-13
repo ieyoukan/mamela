@@ -56,6 +56,12 @@ type Scripter interface {
 	Script(ctx context.Context, p protocol.ScriptParams) (protocol.ScriptResult, error)
 }
 
+// Importer is a provider that turns objects of another tool (Terraform) into declarations
+// (protocol.MethodImport) from its parameters alone (it has no Host).
+type Importer interface {
+	Import(ctx context.Context, p protocol.ImportParams) (protocol.ImportResult, error)
+}
+
 // Serve speaks the protocol on standard input and output until the host closes standard input.
 // It exits the program with status 1 if the conversation breaks.
 func Serve(p Provider) {
@@ -168,6 +174,16 @@ func dispatch(p Provider, c *conn, m protocol.Message) (jsontext.Value, error) {
 			return nil, err
 		}
 		return call(sc.Script(ctx, in))
+	case protocol.MethodImport:
+		im, ok := p.(Importer)
+		if !ok {
+			return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "this provider imports nothing"}
+		}
+		var in protocol.ImportParams
+		if err := decode(m.Params, &in); err != nil {
+			return nil, err
+		}
+		return call(im.Import(ctx, in))
 	default:
 		return nil, &protocol.Error{Code: protocol.CodeMethodNotFound, Message: "unknown method " + m.Method}
 	}

@@ -23,9 +23,75 @@ Mamela は、プロバイダーが正しく書かれていることを安全の�
 - **効果:** 呼び出しの効果（読み取り、作成、変更、再起動、データを失いうる）は、host のカタログで決める。プロバイダーの申告は使わない。カタログが知らない呼び出しを含む操作は、つねに人の承認が要る。
 - **結果:** apply の結果（done、failed、partly-done、unknown）は、host が自分の送った要求の記録から決める。プロバイダーが成功と答えても、許可を越える要求をしていれば失敗として扱う。
 
-## 何を作るか
+## 始め方: `mamela provider new`（ADR 0009）
 
-Go では `provider/sdk` を使う。
+```sh
+mamela provider new github.com/you/mamela-foo mamela-foo   # 公開前の Mamela なら --mamela <checkout>
+cd mamela-foo && go mod tidy && ./build.sh && go test ./...
+```
+
+次のものが書かれ、そのままテストが通る。
+
+| ファイル | 内容 |
+|---|---|
+| `foo/foo.go` | `provider/kit` で書いたプロバイダー。例の種類「thing」（作成・更新、明示操作の削除と引き継ぎ、Terraform からの取り込み） |
+| `foo/fakeapi` | API の fake（テスト用） |
+| `foo/foo_test.go` | 適合テスト（fault の注入、取り込み、他人の物を含む）と、Pome がビルドどおりかの確認 |
+| `pome/catalogs/foo.json` | API のカタログ（各呼び出しの効果） |
+| `pome/` | Pome。`build.sh` がプログラムを入れ、`src/lib.emel` を生成する |
+| `build.sh`・`.github/workflows/ci.yml` | 再現できるビルドと CI |
+
+例の種類を、自分の API が管理する物に置き換えていく。
+
+## provider/kit で書く（ADR 0009）
+
+`provider/kit` は、プロトコル（`observe`・`diff`・`apply`・`lookup`・`prepare`・`import`）を引き受ける。作者は、種類（`kit.Kind`）ごとに次のものを書く（[`examples/kv/kvprovider`](../examples/kv/kvprovider/kvprovider.go)）。
+
+| メソッド | 書くこと |
+|---|---|
+| `Kind`・`Reads`・`Operations` | 種類の名前、一覧の読み取り、操作ごとの呼び出し（`kit.Op`・`kit.ExplicitOp`・`kit.AdoptOp`） |
+| `List` | 物の一覧（`kit.Object`）: 名前、IDs、版、状態。他人の物は `Foreign: true`（宣言すると拒む） |
+| `Diff` | 宣言（`d.Spec`）と状態（`d.State`）の差を、変更と要求（`kit.Request`）にする。同じなら何も返さない |
+| `Done` | 要求がすでに効いているか。中断後の再開と `lookup` に使う |
+
+次のものは、必要なときだけ書く。
+
+| インターフェース | 使うとき |
+|---|---|
+| `Specified`（`Spec() any`） | spec の Go の構造体。manifest に型として載り、Pome の Emela の生成に使う |
+| `Documented`（`Doc() string`） | 種類の説明（生成する Emela のコメント） |
+| `Absent` | まだない物の版（作成の前提条件。kv の `"0"`） |
+| `Missing` | 作るのに要る観測（空いている ID など。`Client.Claimed` は他の plan が作る予定の ID） |
+| `Scoped` | 名前のほかに境界で区別する |
+| `Explicit`（`Prepare`） | 明示操作（削除・再起動・引き継ぎ）の変更 |
+| `Importer` | Terraform の型の取り込み（下の「Terraform からの乗り換え」） |
+| `Node` | mamelet が動くマシンの種類 |
+
+要求は `kit.Client` で送る（`Read`・`ReadJSON`・`Send`）。パスの `{x}` は IDs から埋まり、パラメータは呼び出しが宣言した場所（クエリ、フォーム、ヘッダー、JSON の本文）に置かれる。JSON の本文は `kit.JSONMembers` で作る。
+
+spec の構造体には、タグで型の情報を書く。
+
+```go
+type InstanceSpec struct {
+	Subnet string   `json:"subnet" mamela:"ref=AwsSubnet"`              // 参照: 生成した関数が after にも入れる
+	Groups []string `json:"groups,omitempty" mamela:"ref=AwsSecurityGroup"`
+	Size   string   `json:"size" values:"small|large" doc:"how big"`  // 列挙
+	CPUs   *int     `json:"cpus"`                                       // 省略できる（Option[Int]）
+}
+```
+
+## Pome の Emela を生成する: `mamela provider pome`
+
+```sh
+mamela provider pome pome            # pome/src/lib.emel を、プログラムの manifest から書く
+mamela provider pome --check pome    # 古ければ失敗する（CI）
+```
+
+種類ごとに、レコード型（`KVItem` なら `KvItem`）、宣言する関数（`kv_item`）、参照（`kv_item_ref`）、ノードの種類なら `kv_item_node` を生成する。参照のフィールドは参照先の型の値を取り、spec には名前を、`after` には参照を入れる。spec を持たない種類（kit を使わないプロバイダー）は、今までどおり手で書く。
+
+## kit を使わずに書く
+
+Go では `provider/sdk` を直接使ってもよい。
 
 ```go
 package main
@@ -307,7 +373,7 @@ func TestConformance(t *testing.T) {
 
 | ファイル | 内容 |
 |---|---|
-| `src/lib.emel` | 種類ごとの型と関数。`Mamela.provided(graph, "kv-example", "KVItem", name, spec)` を呼ぶ。使う人は `Kv.item(...)` と書くだけで、型の検査を受けられる |
+| `src/lib.emel` | 種類ごとの型と関数。`Mamela.provided(graph, "kv-example", "KVItem", name, spec)` を呼ぶ。使う人は `Kv.kv_item(...)` と書くだけで、型の検査を受けられる。kit の種類なら `mamela provider pome` で生成する |
 | `provider.wasm` | プロバイダーのプログラム（WASM）。再現できる build にする（`go build -trimpath -buildvcs=false`。例では `examples/kv/build.sh`） |
 | `mamela-provider.toml` | `provider`・`version`（マニフェストと同じ）、`program`（Pome の中のパス）、`sha256`（プログラムの）、`[catalogs]`（同梱するカタログの名前とファイル） |
 | `catalogs/*.json` | API のカタログ（`mamela-catalog/v1`。上の「カタログを書いて同梱する」） |
@@ -326,10 +392,10 @@ Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb 
 
    ```emela
    import Mamela
-   import Kv.{Item}
+   import Kv.{KvItem}
 
    fn infrastructure() -> Mamela.Graph {
-     Mamela.empty() |> Kv.item(Item(name: "web", value: "v1", labels: ["prod"]))
+     Mamela.empty() |> Kv.kv_item(KvItem(name: "web", value: "v1", labels: ["prod"]))
    }
    ```
 
@@ -365,6 +431,37 @@ apply は、plan のときに SQLite に保存したプログラムを動かす�
 削除や再起動は `mamela act [--confirm <name>] <op> <resource> <pome-dir>` で行う（[lab.md](lab.md)）。
 
 `examples/kv-demo` で試せる（`go run ./examples/kv/cmd/kv-api` が、ローカルの API になる）。
+
+### 使う人: Terraform・OpenTofu から乗り換える（ADR 0009）
+
+Terraform で管理している物を、宣言を書き直さずに Mamela へ移せる。Mamela は Terraform を実行せず、何も変えない。
+
+```sh
+cd terraform-dir && terraform show -json > /tmp/state.json     # OpenTofu なら tofu show -json
+mamela import terraform --state /tmp/state.json <pome-dir>      # --dry-run で、書かずに見る
+```
+
+1. 宣言が依存するプロバイダーが、自分の型（`aws_vpc` など）のリソースを宣言に変える。
+   - 宣言は `<pome-dir>/src/imported.emel` に書かれる（関数 `Imported.imported`）。使う人のものなので、直してよい。
+   - 取り込めなかったリソースは、理由とともに表示する。Terraform が管理し続ける。
+2. 宣言で `import Imported` し、グラフに `|> Imported.imported` を足す。
+3. `mamela plan` では、取り込んだ物を「引き継ぐ対象」として示す（MAM-PLAN-0114）。何も変えない。
+4. 1 つずつ引き継ぐ。`import` が表示する `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` を、まず `--confirm` なしで見てから実行する。
+5. 引き継いだら、`terraform state rm <address>` で Terraform に忘れさせる。Mamela だけが管理するようになる。
+
+作者は、種類に `kit.Importer` を実装する（例: mamela-aws の `aws/imports.go`）。
+
+- `Imports()`: 取り込む Terraform の型。
+- `Import(o, r)`: リソースの属性（`kit.Values`）から、`kit.Imported`（spec と IDs）を作る。
+  - 参照は `r.Name("aws_vpc", vpcID)` で、取り込んだ宣言の名前にする。
+  - 宣言に含める別のリソース（ルートテーブルの関連付けなど）は `r.Objects("aws_route_table_association")` で探し、`Also` に並べる。
+  - サイトの値（境界など）は `r.Settings(&v)` で guard の設定から読む。
+  - 取り込めないものは `kit.Skip(理由)` を返す。
+- 一覧（`List`）が Mamela の印のある物しか返さないなら、`kit.Finder` の `Find(c, ids)` で、IDs から物を 1 つ探す。
+
+`lib.emel` を手で書く Pome は、生成した型と関数を `src/kinds.emel` に置く（`mamela provider pome --out src/kinds.emel pome`）。取り込んだ宣言は、そのモジュール（`Aws.Kinds`）を使う。
+
+引き継ぎの操作（`kit.AdoptOp`）は、Mamela の印（タグ、所有者）を付けるだけにする。それ以外は変えない。
 
 ### Proxmox
 

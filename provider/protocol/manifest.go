@@ -80,6 +80,14 @@ type Kind struct {
 	// Node: resources of this kind are machines mamelet runs on (ADR 0004). Their observation
 	// reports Observed.Node, and node resources (packages, services, k3s) may be declared on them.
 	Node bool `json:"node,omitempty"`
+	// Spec are the fields of the kind's spec (ADR 0009), when the provider gives them: its Pome's
+	// types and functions can then be generated.
+	Spec []Field `json:"spec,omitempty"`
+	// Doc says what a resource of the kind is, for its generated Pome.
+	Doc string `json:"doc,omitempty"`
+	// Imports are the types of Terraform and OpenTofu resources the provider turns into
+	// declarations of this kind (MethodImport, ADR 0009): "aws_vpc".
+	Imports []string `json:"imports,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -389,6 +397,12 @@ func (m Manifest) Check() error {
 		if k.Kind == "" {
 			return fmt.Errorf("manifest %s: a kind without a name", m.Provider)
 		}
+		if err := CheckFields(k.Spec); err != nil {
+			return fmt.Errorf("manifest %s: %s spec: %w", m.Provider, k.Kind, err)
+		}
+		if err := checkImports(k); err != nil {
+			return fmt.Errorf("manifest %s: %w", m.Provider, err)
+		}
 		seen := map[Op]bool{}
 		for _, o := range k.Operations {
 			if o.Op == "" || seen[o.Op] {
@@ -552,6 +566,23 @@ func ParamText(where, value string) string {
 		return s
 	}
 	return value
+}
+
+// ObjectText is a parameter's value as the name of one object, to compare with a permit's ID: as
+// ParamText, and a JSON list of exactly one string as that string (an API that names the objects
+// it acts on in a list, as ECS's DeleteTaskDefinitions, names one). A list of several names no one
+// object, and never equals an ID.
+func ObjectText(where, value string) string {
+	if where == "json" {
+		var list []string
+		if json.Unmarshal([]byte(value), &list) == nil {
+			if len(list) == 1 {
+				return list[0]
+			}
+			return value
+		}
+	}
+	return ParamText(where, value)
 }
 
 // Operation returns the declaration of an operation on a kind.

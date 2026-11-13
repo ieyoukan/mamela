@@ -208,6 +208,20 @@ CREATE TABLE plan_catalogs (
   PRIMARY KEY (plan_digest, provider, name)
 );
 `,
+	// 12: the objects of another tool (Terraform) a person imported to adopt (ADR 0009): observing
+	// reports the object with these IDs as adoptable for the declared resource, until adopting it
+	// is done (mamela act) and it is recorded as Mamela's.
+	`
+CREATE TABLE adoptions (
+  provider    TEXT NOT NULL,
+  resource    TEXT NOT NULL,
+  ids         TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  imported_by TEXT NOT NULL,
+  recorded_ms INTEGER NOT NULL,
+  PRIMARY KEY (provider, resource)
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

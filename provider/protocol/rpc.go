@@ -183,6 +183,9 @@ type ObserveParams struct {
 	// this provider (a VMID): a provider that chooses IDs treats them as taken, so that plans made
 	// one after another and applied together do not choose the same ones.
 	Claimed []map[string]string `json:"claimed,omitempty"`
+	// Adopting are declared resources to adopt (imported, ADR 0009): the provider reports the
+	// object with the IDs as Adoptable for the resource, though it carries no mark of Mamela's.
+	Adopting []Adopting `json:"adopting,omitempty"`
 }
 
 // Observed is the real state of one resource.

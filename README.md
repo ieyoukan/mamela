@@ -45,4 +45,4 @@ and `scripts/check.sh`.
 
 - [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
-- [Writing a provider](docs/provider-authoring.md) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md)
+- [Writing a provider](docs/provider-authoring.md) (`mamela provider new` writes one that passes its tests) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md) / [ADR 0009: provider kit, generated Pomes, moving from Terraform](docs/adr/0009-provider-kit-and-imports.md)
