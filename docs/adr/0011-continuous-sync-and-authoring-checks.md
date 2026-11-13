@@ -2,7 +2,8 @@
 
 - 状態: Proposed（2026-11-13）
 - 日付: 2026-11-13
-- 対象: ADR 0010（gitops）、0002（provider の契約）、0008（カタログ）、0009（kit と Pome の生成）、設計案「宣言に追従する削除」
+- 対象: ADR 0010（gitops）、0012（mamelacd）、0002（provider の契約）、0008（カタログ）、0009（kit と Pome の生成）、設計案「宣言に追従する削除」
+- 分担: 同期（1〜3）と写しの公開（4）は mamelacd が、資格情報なしの確認（5）は mamela が、grants（6）・policy（7）・署名の検証（10）は本体（`mamela api` の裏）が受け持つ（[ADR 0012](0012-mamelacd.md)）。下の「Control Plane」は、mamelacd と本体を合わせたものを指す。
 
 ## 文脈
 

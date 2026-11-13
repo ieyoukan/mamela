@@ -1,5 +1,5 @@
-// Package fakegithub is an in-memory GitHub for gitops' tests: pull requests, their trees (as
-// tarballs), conversation comments and commit statuses.
+// Package fakegithub is an in-memory GitHub for mamelacd's tests: pull requests, their trees (as
+// tarballs), the heads of branches, conversation comments and commit statuses.
 package fakegithub
 
 import (
@@ -51,6 +51,7 @@ type GitHub struct {
 	mu       sync.Mutex
 	prs      []*PR
 	trees    map[string][]byte // sha -> tarball
+	branches map[string]string // name -> head
 	comments []Comment
 	statuses []Status
 	next     int64
@@ -58,7 +59,7 @@ type GitHub struct {
 
 // New returns an empty fake of a repository that accepts the token.
 func New(repo, token string) *GitHub {
-	return &GitHub{Repo: repo, Token: token, trees: map[string][]byte{}, next: 1000}
+	return &GitHub{Repo: repo, Token: token, trees: map[string][]byte{}, branches: map[string]string{}, next: 1000}
 }
 
 // AddTree makes a commit whose tree is the directory dir (files only), and returns its SHA.
@@ -125,15 +126,23 @@ func (g *GitHub) Push(number int, sha string) {
 	}
 }
 
-// Merge merges a pull request as the commit sha.
+// Merge merges a pull request as the commit sha, which becomes the head of its base.
 func (g *GitHub) Merge(number int, sha string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, p := range g.prs {
 		if p.Number == number {
 			p.Merged, p.MergeCommitSHA = true, sha
+			g.branches[p.Base] = sha
 		}
 	}
+}
+
+// SetBranch moves the head of a branch (a push that is no pull request's merge).
+func (g *GitHub) SetBranch(name, sha string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.branches[name] = sha
 }
 
 // Say comments on a pull request as someone.
@@ -213,6 +222,13 @@ func (g *GitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, m)
 		}
 		reply(out)
+	case r.Method == "GET" && strings.HasPrefix(p, "/branches/"):
+		sha, ok := g.branches[strings.TrimPrefix(p, "/branches/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		reply(map[string]any{"name": strings.TrimPrefix(p, "/branches/"), "commit": map[string]any{"sha": sha}})
 	case r.Method == "GET" && strings.HasPrefix(p, "/tarball/"):
 		data, ok := g.trees[strings.TrimPrefix(p, "/tarball/")]
 		if !ok {

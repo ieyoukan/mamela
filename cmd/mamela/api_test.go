@@ -9,15 +9,18 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ieyoukan/mamela/examples/kv/kvapi"
+	"github.com/ieyoukan/mamela/internal/gitops"
 	"github.com/ieyoukan/mamela/internal/gitops/fakegithub"
 )
 
-// A repository of declarations drives Mamela through pull requests (ADR 0010): the plan of a
-// trusted author's pull request is commented; only an approver's comment with its exact digest
-// approves it; merging applies it when the merged declaration is the one approved, and plans the
-// merge again when it is not; forks and other authors are ignored; nothing is done twice.
+// A repository of declarations drives Mamela through pull requests (ADR 0010, 0012), with mamelacd
+// asking `mamela api` over its socket: the plan of a trusted author's pull request is commented;
+// only an approver's comment with its exact digest approves it; merging applies it when the
+// declaration at the head of the branch is the one approved, and plans the head when it is not;
+// forks and other authors are ignored; nothing is done twice.
 func TestGitops(t *testing.T) {
 	tools := toolchainDir(t)
 	api := kvapi.New()
@@ -43,7 +46,32 @@ max_items = 10
 	// The kv Pome ships no catalog: point at the demo's file instead.
 	cat, _ := filepath.Abs("../../examples/kv-demo/kv-catalog.json")
 	os.WriteFile(providers, bytes.Replace(mustRead(t, providers), []byte(`"pome:kv"`), []byte(`"`+cat+`"`), 1), 0o600)
-	config := filepath.Join(dir, "gitops.toml")
+	// The Control Plane's API, on a socket (in a short directory: socket paths are limited).
+	sockDir, err := os.MkdirTemp("", "mapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockDir)
+	socket := filepath.Join(sockDir, "api.sock")
+	db := filepath.Join(dir, "state.db")
+	apiCtx, stopAPI := context.WithCancel(context.Background())
+	apiDone := make(chan string)
+	go func() {
+		var out bytes.Buffer
+		run(apiCtx, []string{"api", "--socket", socket, "--db", db, "--providers", providers, "--site", "", "--toolchain", tools}, &out, &out)
+		apiDone <- out.String()
+	}()
+	defer func() { stopAPI(); <-apiDone }()
+	for i := 0; ; i++ {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if i > 200 {
+			t.Fatal("mamela api did not start")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	config := filepath.Join(dir, "mamelacd.toml")
 	os.WriteFile(config, []byte(`repo = "me/infra"
 branch = "main"
 dirs = ["infra"]
@@ -51,7 +79,8 @@ api_url = "`+ghSrv.URL+`"
 token_file = "`+filepath.Join(dir, "gh-token")+`"
 authors = ["alice"]
 approvers = ["alice", "bob"]
-work_dir = "`+filepath.Join(dir, "work")+`"
+mamela_socket = "`+socket+`"
+state_db = "`+filepath.Join(dir, "mamelacd.db")+`"
 `), 0o600)
 
 	// A commit: the repository with the kv demo declaring web = value.
@@ -82,13 +111,16 @@ fn main() {
 		}
 		return sha
 	}
-	db := filepath.Join(dir, "state.db")
+	gh.SetBranch("main", commit("v0")) // pushed, not merged from a pull request: not planned
+	engine, closeEngine, err := gitops.Open(context.Background(), config, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeEngine()
 	once := func() {
 		t.Helper()
-		var out bytes.Buffer
-		if code := run(context.Background(), []string{"gitops", "once", "--config", config, "--db", db, "--providers", providers,
-			"--site", "", "--toolchain", tools}, &out, &out); code != 0 {
-			t.Fatalf("gitops once: %d\n%s", code, out.String())
+		if err := engine.Once(context.Background()); err != nil {
+			t.Fatalf("mamelacd once: %v", err)
 		}
 	}
 	digestRe := regexp.MustCompile(`/mamela approve (sha256:[0-9a-f]{64})`)
@@ -166,8 +198,8 @@ fn main() {
 		t.Fatal("the merge was applied twice")
 	}
 
-	// #4: approved at its head, but main moved: the merge is another declaration, planned again
-	// and applied once approved.
+	// #4: approved at its head, but main moved: the head is another declaration, planned and
+	// applied once approved.
 	gh.Open(fakegithub.PR{Number: 4, Author: "alice", Base: "main", HeadSHA: commit("v2")})
 	once()
 	gh.Say(4, "alice", "/mamela approve "+lastPlan(4))

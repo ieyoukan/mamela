@@ -203,7 +203,8 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	add("var/state.db", 0o600, dbBytes)
 	add("mamela-serve.service", 0o644, []byte(serveUnit))
-	add("mamela-gitops.service", 0o644, []byte(gitopsUnit))
+	add("mamela-api.service", 0o644, []byte(apiUnit))
+	add("mamelacd.service", 0o644, []byte(mamelacdUnit))
 	add("install.sh", 0o755, []byte(installScript))
 
 	if err := writeBundle(*out, files); err != nil {
@@ -213,7 +214,9 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "On the host (Linux, amd64), as root:\n")
 	fmt.Fprintf(stdout, "  1. put a linux/amd64 mamela at /usr/local/bin/mamela (GOOS=linux GOARCH=amd64 go build -o mamela ./cmd/mamela)\n")
 	fmt.Fprintf(stdout, "  2. mkdir b && tar -xf %s -C b && b/install.sh b   (review install.sh first)\n", filepath.Base(*out))
-	fmt.Fprintf(stdout, "  3. stop `mamela serve` here, then: systemctl enable --now mamela-serve\n\n")
+	fmt.Fprintf(stdout, "  3. stop `mamela serve` here, then: systemctl enable --now mamela-serve\n")
+	fmt.Fprintf(stdout, "  4. for gitops (optional): put a linux/amd64 mamelacd at /usr/local/bin/mamelacd, write /etc/mamelacd/mamelacd.toml\n"+
+		"     and its GitHub token (docs/gitops.md), then: systemctl enable --now mamela-api mamelacd\n\n")
 	fmt.Fprintf(stdout, "Mamelets created from now on reach %s directly. Existing ones move when their revision says so:\n", *newURL)
 	fmt.Fprintf(stdout, "once the new endpoint is ready, run: mamela controlplane redirect --db %s --url %s\n", shellQuote(*db), shellQuote(*newURL))
 	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
@@ -325,28 +328,61 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 `
 
-// gitopsUnit follows a repository of declarations (ADR 0010). It starts only once the operator
-// writes /etc/mamela/gitops.toml; /etc/mamela/gitops.env may set MAMELA_TOOLCHAIN_DIR and
-// EMELA_POME_CACHE.
-const gitopsUnit = `[Unit]
-Description=Mamela gitops (follows a repository of declarations)
-After=network-online.target mamela-serve.service
+// apiUnit serves the Control Plane's local API to mamelacd (ADR 0012), on a socket of the group
+// mamela-api. /etc/mamela/api.env may set MAMELA_TOOLCHAIN_DIR and EMELA_POME_CACHE. It is
+// enabled by hand, with mamelacd.
+const apiUnit = `[Unit]
+Description=Mamela Control Plane local API (mamela api, for mamelacd)
+After=network-online.target
 Wants=network-online.target
-ConditionPathExists=/etc/mamela/gitops.toml
 
 [Service]
 User=mamela-cp
 Group=mamela-cp
+SupplementaryGroups=mamela-api
 WorkingDirectory=/var/lib/mamela
-EnvironmentFile=-/etc/mamela/gitops.env
-ExecStart=/usr/local/bin/mamela gitops run --config /etc/mamela/gitops.toml --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --providers /etc/mamela/providers.toml
+EnvironmentFile=-/etc/mamela/api.env
+RuntimeDirectory=mamela
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/bin/mamela api --socket /run/mamela/api.sock --socket-group mamela-api --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --providers /etc/mamela/providers.toml
 Restart=always
-RestartSec=30
+RestartSec=10
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/mamela
 PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+`
+
+// mamelacdUnit follows a repository of declarations (ADR 0010, 0012) as its own user: it holds the
+// GitHub token and its database, reaches the Control Plane only through the API's socket, and
+// cannot read the Control Plane's configuration, secrets or database. It starts only once the
+// operator writes /etc/mamelacd/mamelacd.toml.
+const mamelacdUnit = `[Unit]
+Description=mamelacd (follows a repository of declarations through the Control Plane's API)
+After=network-online.target mamela-api.service
+Wants=network-online.target mamela-api.service
+ConditionPathExists=/etc/mamelacd/mamelacd.toml
+
+[Service]
+User=mamelacd
+Group=mamelacd
+SupplementaryGroups=mamela-api
+StateDirectory=mamelacd
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/mamelacd
+ExecStart=/usr/local/bin/mamelacd run --config /etc/mamelacd/mamelacd.toml
+Restart=always
+RestartSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/mamelacd
+InaccessiblePaths=-/etc/mamela -/var/lib/mamela
 
 [Install]
 WantedBy=multi-user.target
@@ -383,7 +419,14 @@ for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
 install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
-if test -f "$b/mamela-gitops.service"; then install -m 0644 -o root -g root "$b/mamela-gitops.service" $r/etc/systemd/system/mamela-gitops.service; fi
+# mamelacd (ADR 0012): a user of its own, which reaches the Control Plane only through the API's
+# socket (group mamela-api) and cannot read /etc/mamela or /var/lib/mamela.
+getent group mamela-api >/dev/null 2>&1 || groupadd --system mamela-api
+id mamelacd >/dev/null 2>&1 || useradd --system --user-group --groups mamela-api --home-dir /var/lib/mamelacd --shell /usr/sbin/nologin mamelacd
+install -d -m 0750 -o root -g mamelacd $r/etc/mamelacd
+for u in mamela-api.service mamelacd.service; do
+  if test -f "$b/$u"; then install -m 0644 -o root -g root "$b/$u" $r/etc/systemd/system/$u; fi
+done
 systemctl daemon-reload
-echo "installed; start it with: systemctl enable --now mamela-serve"
+echo "installed; start it with: systemctl enable --now mamela-serve (gitops: mamela-api and mamelacd, see docs/gitops.md)"
 `

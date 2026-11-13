@@ -248,6 +248,10 @@ CREATE TABLE gitops_seen (
 ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
 	// 15: explicit operations retain the identity needed for read-only recovery after a crash.
 	`ALTER TABLE explicit_operations ADD COLUMN context BLOB;`,
+	// 16: gitops keeps its own records in mamelacd's database (ADR 0012): the Control Plane's
+	// database holds none of GitHub's.
+	`DROP TABLE IF EXISTS gitops_plans;
+DROP TABLE IF EXISTS gitops_seen;`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
