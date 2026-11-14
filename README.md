@@ -4,7 +4,7 @@ Mamela is an experimental declarative infrastructure controller powered by [Emel
 
 It aims to reconcile machines and Linux node configuration safely through a Go control plane and pull-based agents. Mamela itself knows no particular infrastructure: machines come from providers, untrusted WASM programs distributed as Pomes — Proxmox VE through [mamela-proxmox](https://github.com/ieyoukan/mamela-proxmox), AWS-style APIs as in [`examples/ec2`](examples/ec2). Each provider writes its own safety checks (guards), explicit operations (delete, reboot, adopt) and setup scripts, and Mamela enforces them ([ADR 0006](docs/adr/0006-proxmox-out-of-core.md)).
 
-Early development — no production-ready implementation yet. Evaluation, planning and approvals, the operation journal, isolated providers, and the pull-based mamelet are implemented. The development log records limited live infrastructure checks; these do not establish production readiness. See the [operator experience review](docs/reviews/2026-11-12-operator-experience.md) for current limitations.
+Early development — no production-ready implementation yet. Evaluation, planning and approvals, the operation journal, isolated providers, the pull-based mamelet, and mamelacd (which follows a repository of declarations on GitHub) are implemented. The development log records limited live infrastructure checks; these do not establish production readiness. See the [operator experience review](docs/reviews/2026-11-12-operator-experience.md) for current limitations.
 
 ## Try the current implementation
 
@@ -43,4 +43,4 @@ and `scripts/check.sh`.
 - [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
 - [Writing a provider](docs/provider-authoring.md) (`mamela provider new` writes one that passes its tests) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md) / [ADR 0009: provider kit, generated Pomes, moving from Terraform](docs/adr/0009-provider-kit-and-imports.md)
-- [Running from a repository of declarations (pull requests, approval by comment)](docs/gitops.md) / [ADR 0010](docs/adr/0010-gitops-from-the-control-plane.md)
+- [Running from a repository of declarations with mamelacd (pull requests, approval by comment)](docs/gitops.md) / [ADR 0010](docs/adr/0010-gitops-from-the-control-plane.md), [ADR 0012](docs/adr/0012-mamelacd.md) (its trust boundary: section 6), [ADR 0011: continuous sync and checks while writing (proposal)](docs/adr/0011-continuous-sync-and-authoring-checks.md)

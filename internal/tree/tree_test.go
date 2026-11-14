@@ -1,4 +1,4 @@
-package gitops
+package tree
 
 import (
 	"archive/tar"
@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -65,32 +64,5 @@ func TestExtractRefused(t *testing.T) {
 		if _, err := os.Stat(dir); err == nil {
 			t.Errorf("%s: the refused tree is there", name)
 		}
-	}
-}
-
-func TestConfigCheck(t *testing.T) {
-	ok := Config{Repo: "me/infra", Branch: "main", Dirs: []string{"infra"}, TokenFile: "t", Authors: []string{"a"}, Approvers: []string{"a"}, WorkDir: "w"}
-	if err := ok.Check(); err != nil {
-		t.Fatal(err)
-	}
-	for name, f := range map[string]func(*Config){
-		"repo":      func(c *Config) { c.Repo = "infra" },
-		"dirs":      func(c *Config) { c.Dirs = nil },
-		"escape":    func(c *Config) { c.Dirs = []string{"../x"} },
-		"absolute":  func(c *Config) { c.Dirs = []string{"/etc"} },
-		"token":     func(c *Config) { c.TokenFile = "" },
-		"approvers": func(c *Config) { c.Approvers = nil },
-		"authors":   func(c *Config) { c.Authors = nil },
-		"ttl":       func(c *Config) { c.ApprovalTTL = "-1h" },
-		"interval":  func(c *Config) { c.Interval = "1s" },
-	} {
-		c := ok
-		f(&c)
-		if err := c.Check(); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
-	}
-	if !strings.Contains(clip(strings.Repeat("a", 60000)), "(cut)") || strings.Contains(clip("```x```"), "```") {
-		t.Error("clip")
 	}
 }

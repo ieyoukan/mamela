@@ -284,19 +284,21 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
   - mamela-aws と mamela-proxmox を kit に移し、取り込みを足す。
   - OpenAPI などからカタログと呼び出しを起こす道具。
 
-## 宣言のリポジトリで運用する（ADR 0010、2026-11-12）
+## 宣言のリポジトリで運用する（ADR 0010・0012、2026-11-12〜13）
 
-設計は [ADR 0010](adr/0010-gitops-from-the-control-plane.md)、使い方は [gitops.md](gitops.md)。
+設計は [ADR 0010](adr/0010-gitops-from-the-control-plane.md) と [ADR 0012](adr/0012-mamelacd.md)、使い方は [gitops.md](gitops.md)。
 
-- **`mamela gitops run|once`:** Control Plane のホストで動き、GitHub を読みに行く（`internal/gitops`）。
-  - PR の plan をコメントする。
-  - `/mamela approve <digest>` で承認する。
-  - マージした宣言が承認した plan と同じなら apply する。
-- **同じ処理:** plan・承認・apply は、CLI と同じ処理を同じ DB で行う。
-- **記録:** 出した plan と処理済みのものを記録する（migration 13）。
-- **tarball:** リンクとツリーの外を指すパスを拒む。
-- **unit:** `mamela controlplane bundle` が `mamela-gitops.service` を入れる。
-- **試験:** 偽の GitHub と kv で通しを確かめる。fork、ほかの作者、承認者でない人、違う digest、main が先に進んだマージ、二重の処理を含む。
+- **コード:**
+  - `cmd/mamelacd`・`internal/gitops`: mamelacd。GitHub を読み、自分の DB（`internal/gitops/state.go`）に記録する。
+  - `cmd/mamela/api.go`・`internal/api`: 本体の局所 API。
+  - `cmd/mamela/service.go`: plan・承認・apply の本体。CLI（`plan.go`・`apply.go`）と API が同じ関数を呼ぶ。
+  - `internal/tree`: tarball の展開。リンクと、ツリーの外を指すパスと、特殊ファイルを拒む。
+- **本体の DB:** gitops の表は migration 16 で消した。
+- **unit:** `mamela controlplane bundle` が `mamela-api.service` と `mamelacd.service` を入れる。
+- **試験:**
+  - `cmd/mamela/api_test.go`: 偽の GitHub と kv で、PR から apply までを `mamela api` と mamelacd の通しで確かめる。
+  - `internal/gitops`: 偽の API で、先頭の扱い（先頭だけを apply する、信頼できない先頭は plan しない、待ち・拒否・前提の違いは plan し直す、API が答えないとき）を確かめる。
+  - `internal/api`: API の拒否（リンク、ツリーの外、期限、未知の項目）を確かめる。
 
 ## テストの優先順位
 

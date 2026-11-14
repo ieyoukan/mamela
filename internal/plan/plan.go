@@ -30,7 +30,7 @@ const (
 	StatusChange   Status = "change"   // operations below
 	StatusWaiting  Status = "waiting"  // depends on something not ready yet
 	StatusBlocked  Status = "blocked"  // cannot decide safely (stale or missing observation)
-	StatusRetained Status = "retained" // removed from the declaration, kept as is
+	StatusRetained Status = "retained" // removed from the declaration, kept as is (Note says why)
 )
 
 // Inputs identify everything the plan was computed from.
@@ -84,6 +84,10 @@ type Change struct {
 	ProviderChanges []protocol.Change `json:"providerChanges,omitempty"`
 	// Creates: a provider's change to an object that does not exist yet.
 	Creates bool `json:"creates,omitempty"`
+	// Removes: the deletion of an object that no declaration has any more (ADR 0013). It runs after
+	// every other change, newest object first, and only a plan approved on the Control Plane's
+	// host runs it.
+	Removes bool `json:"removes,omitempty"`
 }
 
 // ID is the resource identity ("Kind name").
@@ -125,22 +129,71 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			}
 		}
 	}
-	// Resources of providers that are no longer declared are kept: removal is not deletion. A
-	// provider reports what Mamela created.
 	declared := map[string]bool{}
 	for _, r := range g.Resources {
 		declared[r.ID()] = true
 	}
-	for _, id := range slices.Sorted(maps.Keys(snap.Provided)) {
-		if o := snap.Provided[id]; !o.Declared && !declared[id] && o.Observed.Exists && o.Observed.Owned {
-			p.Changes = append(p.Changes, Change{Kind: o.Kind, Name: o.Name, Status: StatusRetained, Provider: o.Provider,
-				Diffs: []Diff{}, Operations: []Operation{},
-				Note: &Note{Code: "MAM-PLAN-0301", Message: "not in this declaration; kept unchanged (it may belong to another configuration)",
-					Hint: "check which configuration manages it before using its provider's explicit delete operation (mamela act)"}})
-		}
-	}
+	p.Changes = append(p.Changes, b.undeclared(declared)...)
 	p.Digest = digest(p)
 	return p
+}
+
+// undeclared plans what a provider found that Mamela made and no declaration has: the deletion of
+// what the declaration being planned made (ADR 0013), newest first; everything else is kept, and
+// the note says why.
+func (b builder) undeclared(declared map[string]bool) []Change {
+	var removals, kept []Change
+	for _, id := range slices.Sorted(maps.Keys(b.snap.Provided)) {
+		o := b.snap.Provided[id]
+		if o.Declared || declared[id] || !o.Observed.Exists || !o.Observed.Owned {
+			continue
+		}
+		c := Change{Kind: o.Kind, Name: o.Name, Provider: o.Provider, Diffs: []Diff{}, Operations: []Operation{}}
+		switch {
+		case o.Removal == nil:
+			c.Status = StatusRetained
+			c.Note = keptNote(o)
+			kept = append(kept, c)
+		case b.pol.Protected(o.Name):
+			c.Status, c.Note = StatusRetained, &Note{Code: string(policy.ProtectedDecision.Code), Message: policy.ProtectedDecision.Message, Hint: policy.ProtectedDecision.Hint}
+			kept = append(kept, c)
+		case !b.pol.Deletes():
+			c.Status = StatusRetained
+			c.Note = &Note{Code: "MAM-PLAN-0305", Message: "not in this declaration; kept: the policy retains what a declaration no longer has (removal = retain)"}
+			kept = append(kept, c)
+		default:
+			d := b.pol.DecideRemoval(o.Removal.Verified)
+			c.Status, c.Verdict, c.Removes = StatusChange, d.Verdict, true
+			c.Diffs = []Diff{{Field: "removed", To: "Mamela made it for this declaration (" + b.snap.Stack + "), which no longer has it"}}
+			c.Operations = []Operation{{Op: o.Removal.Change.Op, Decision: d}}
+			c.ProviderChanges = []protocol.Change{o.Removal.Change}
+			removals = append(removals, c)
+		}
+	}
+	// Newest object first: what depends on an object was made after it.
+	slices.SortStableFunc(removals, func(x, y Change) int {
+		return b.snap.Provided[y.ID()].RemovalOrder - b.snap.Provided[x.ID()].RemovalOrder
+	})
+	return append(removals, kept...)
+}
+
+func keptNote(o state.Provided) *Note {
+	if o.Kept != nil {
+		return &Note{Code: o.Kept.Code, Message: o.Kept.Message, Hint: o.Kept.Hint}
+	}
+	return &Note{Code: "MAM-PLAN-0301", Message: "not in this declaration; kept unchanged",
+		Hint: "its provider's explicit delete operation removes it (mamela act)"}
+}
+
+// Removals counts the deletions in the plan.
+func (p *Plan) Removals() int {
+	n := 0
+	for _, c := range p.Changes {
+		if c.Removes {
+			n++
+		}
+	}
+	return n
 }
 
 // provided plans a resource of a provider from the provider's observation and diff.

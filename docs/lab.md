@@ -66,7 +66,7 @@ guard の結果のコードはプロバイダーが決める（Proxmox は `PVE-
 
 ### 3.4 削除・再起動・引き継ぎ: `mamela act`
 
-宣言から消しても、実物は消えない（plan に削除は現れない）。削除や再起動は、プロバイダーが明示操作として宣言したものだけを、人が名前を打ち直したときだけ行う。
+宣言から消すと、その宣言が作った物は、plan に削除として現れる（[ADR 0013](adr/0013-removal-deletes.md)。ホストで `mamela approve` したあとに消える。別の宣言が作った物と、記録のない物は残る）。それ以外の削除と、再起動・引き継ぎは、プロバイダーが明示操作として宣言したものだけを、人が名前を打ち直したときだけ行う。
 
 ~~~bash
 mamela act <op> <resource> <pome-dir>                         # 送る要求を表示するだけ（何も変えない）
@@ -126,8 +126,8 @@ mamela controlplane redirect --db <元のstate.db> --url https://<ホストの�
 # 元の serve を移行通知用に一時起動し、全ノードが新しい CP に接続したら停止する
 ~~~
 
-- **バンドルの中身:** 状態データベースの一貫したコピー、CA と署名鍵、ホスト用に書き換えた site、ホスト用に書き換えた `mamela.providers.toml`（秘密は `/etc/mamela/secrets/<provider>-token` と `<provider>-guard-token`）、mamelet のバイナリ、systemd unit、install.sh。
+- **バンドルの中身:** 状態データベースの一貫したコピー、CA と署名鍵、ホスト用に書き換えた site、ホスト用に書き換えた `mamela.providers.toml`（秘密は `/etc/mamela/secrets/<provider>-token` と `<provider>-guard-token`）、mamelet のバイナリ、systemd unit（`mamela-serve`。宣言のリポジトリで運用するなら `mamela-api` と `mamelacd`。[gitops.md](gitops.md)）、install.sh。
 - **扱い:** バンドルは mode 0600 で書く。秘密を含むので、ホストにコピーした後に消す。
-- **ホストでの権限:** serve は、権限のない専用ユーザー `mamela-cp` で動く。
+- **ホストでの権限:** serve と `mamela api` は、権限のない専用ユーザー `mamela-cp` で動く（mamelacd は専用の `mamelacd`）。
 - **移した後の plan と apply:** ホストの上で `--site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db` を付けて実行する。CP のマシンとその上のリソースは変えない（MAM-POL-0308）。
 - **移行中:** bundle の作成後は元の CP で構成変更・登録を行わず、redirect だけを記録する。バンドルの DB には同じ接続先と revision が準備される。plan と `controlplane.move_to` はエージェントを移動させない。

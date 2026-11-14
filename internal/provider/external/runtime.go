@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/provider/host"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/reconcile"
@@ -29,6 +30,9 @@ type Runtime struct {
 	creations Creations
 	// guardSettings are each provider's guard settings (mamela.providers.toml).
 	guardSettings map[string][]byte
+	// stack is the declaration being planned or applied (ADR 0013): the objects created from now
+	// on are recorded for it, and only the objects it made are deleted when it no longer has them.
+	stack string
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -105,7 +109,9 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 // Creations is Mamela's record of what it set out to create through providers.
 type Creations interface {
 	Creations(ctx context.Context, provider, resource string) ([]map[string]string, error)
-	RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error
+	CreationStack(ctx context.Context, provider, resource string) (string, error)
+	CreationOrder(ctx context.Context, provider string) (map[string]int, error)
+	RecordCreation(ctx context.Context, stack, provider, resource string, ids map[string]string, planDigest, operationID string) error
 }
 
 // SetClaims sets, by provider, the IDs other plans are to create: observing treats them as taken.
@@ -113,6 +119,21 @@ func (rt *Runtime) SetClaims(c map[string][]map[string]string) {
 	if rt != nil {
 		rt.claims = c
 	}
+}
+
+// SetStack names the declaration being planned or applied.
+func (rt *Runtime) SetStack(stack string) {
+	if rt != nil {
+		rt.stack = stack
+	}
+}
+
+// Stack is the declaration being planned or applied.
+func (rt *Runtime) Stack() string {
+	if rt == nil {
+		return ""
+	}
+	return rt.stack
 }
 
 // SetAdoptions sets, by provider, the declared resources to adopt (imported, ADR 0009): observing
@@ -353,7 +374,12 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			out[d.ID] = state.Provided{Provider: name, Kind: d.Kind, Name: d.Name, Declared: true, Observed: o,
 				SpecDigest: state.SpecDigest(d.Spec), ObservedAt: asOf}
 		}
-		// What the provider found that is not declared: kept, never changed.
+		// What the provider found that is not declared: never changed. What Mamela made for this
+		// declaration is to be deleted (ADR 0013); the rest is kept.
+		order, err := rt.creations.CreationOrder(ctx, name)
+		if err != nil {
+			return nil, err
+		}
 		for _, o := range observed {
 			if isDeclared[o.ID] {
 				continue
@@ -362,7 +388,13 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			if _, taken := out[id]; taken || !o.Exists {
 				continue
 			}
-			out[id] = state.Provided{Provider: name, Kind: o.Kind, Name: o.Name, Observed: o, ObservedAt: asOf}
+			p := state.Provided{Provider: name, Kind: o.Kind, Name: o.Name, Observed: o, ObservedAt: asOf}
+			if o.Owned {
+				if err := rt.planRemoval(ctx, s, &p, order[o.ID]); err != nil {
+					return nil, err
+				}
+			}
+			out[id] = p
 		}
 		declaredOf[name], observedOf[name] = declared, observed
 	}
@@ -484,6 +516,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 	if err != nil {
 		return state.Snapshot{}, err
 	}
+	snap.Stack = p.Runtime.Stack()
 	snap.AddProvided(provided)
 	p.last = snap
 	return snap, nil
@@ -491,6 +524,9 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 
 // Apply implements reconcile.Provider.
 func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
+	if step.Approved.Removes {
+		return p.remove(ctx, step)
+	}
 	r := step.Resource
 	if r.Provided == nil {
 		if p.Base == nil {
@@ -524,7 +560,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	// before anything is sent, so that an object it leaves unfinished is still known to be
 	// Mamela's (and nothing else is).
 	if o, ok := p.last.Provided[r.ID()]; !ok || !o.Observed.Exists {
-		if err := p.Store.RecordCreation(ctx, r.Provided.Provider, r.ID(), change.IDs, step.PlanDigest, step.OperationID); err != nil {
+		if err := p.Store.RecordCreation(ctx, p.Runtime.Stack(), r.Provided.Provider, r.ID(), change.IDs, step.PlanDigest, step.OperationID); err != nil {
 			return err
 		}
 	}
@@ -544,6 +580,87 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	}
 	if res.Err == nil {
 		return errors.New("the provider's apply failed")
+	}
+	return res.Err
+}
+
+// remove carries out the approved deletion of an object that no declaration has any more (ADR
+// 0013). Like an explicit operation of a person (mamela act): the intent is recorded first, the
+// change goes under a permit for exactly it, and once the object is observed to be gone, Mamela's
+// records of it and the machine's registration end. An object that is gone already (an earlier run
+// did it, or its answer was lost) only has the records finished.
+func (p *Provider) remove(ctx context.Context, step reconcile.Step) error {
+	c := step.Approved
+	s, ok := p.Runtime.sessionOf(c.Provider)
+	if !ok {
+		return fmt.Errorf("%s: provider %s is not running", c.ID(), c.Provider)
+	}
+	i := slices.IndexFunc(c.ProviderChanges, func(x protocol.Change) bool { return x.Op == step.Op })
+	if i < 0 {
+		return fmt.Errorf("%s: the approved plan has no %s change", c.ID(), step.Op)
+	}
+	change := c.ProviderChanges[i]
+	now := p.Clock().UTC()
+	o, there := p.last.Provided[c.ID()]
+	if !there || !o.Observed.Exists {
+		return p.Store.FinishRemoval(ctx, c.Provider, c.ID(), string(step.Op))
+	}
+	if !o.Observed.Owned || o.Removal == nil || !plan.SameProviderChanges([]protocol.Change{o.Removal.Change}, []protocol.Change{change}) {
+		return fmt.Errorf("%s is no longer as the plan assumed; nothing was deleted", c.ID())
+	}
+	ttl := p.PermitTTL
+	if ttl == 0 {
+		ttl = 2 * time.Hour
+	}
+	id := step.OperationID + "@" + now.Format(time.RFC3339Nano)
+	if err := p.Store.StartObservedExplicit(ctx, id, c.Provider, string(step.Op), "plan "+step.PlanDigest, p.Providers, o.Observed, change); err != nil {
+		return err
+	}
+	permit, err := protocol.NewPermit(s.Manifest(), change, id, step.PlanDigest, p.Providers, now.Add(ttl).Format(time.RFC3339))
+	if err != nil {
+		return err
+	}
+	if err := p.Store.UsePermit(ctx, id, step.OperationID, step.PlanDigest); err != nil {
+		return err
+	}
+	res := s.Apply(ctx, permit, change, nil, &o.Observed)
+	outcome := res.Outcome
+	if outcome == host.OutcomeUnknown {
+		// Whether it took effect is not known: ask the provider, never send it again blindly.
+		if status, _, err := s.Lookup(ctx, change); err == nil && status == protocol.LookupDone {
+			outcome = host.OutcomeDone
+		}
+	}
+	detail := ""
+	if res.Err != nil {
+		detail = res.Err.Error()
+	}
+	recorded, err := p.Store.Explicit(ctx, id)
+	if err != nil {
+		return err
+	}
+	absent := false
+	if outcome == host.OutcomeDone {
+		if absent, err = Absent(ctx, s, p.Graph, c.Provider, c.ID()); err != nil {
+			outcome, detail = host.OutcomeUnknown, "completion could not be verified: "+err.Error()
+		}
+	}
+	if err := p.Store.CompleteExplicit(ctx, recorded, string(outcome), detail, absent); err != nil {
+		return err
+	}
+	switch outcome {
+	case host.OutcomeDone:
+		if !absent {
+			return fmt.Errorf("%s: the deletion was sent, but the object is still there", c.ID())
+		}
+		return nil
+	case host.OutcomePartly:
+		return fmt.Errorf("%v (%s): %w", res.Err, changed(res), reconcile.ErrPartlyDone)
+	case host.OutcomeUnknown:
+		return fmt.Errorf("%s (%s): %w", detail, changed(res), reconcile.ErrUnknownOutcome)
+	}
+	if res.Err == nil {
+		return errors.New("the provider's deletion failed")
 	}
 	return res.Err
 }
@@ -606,4 +723,65 @@ func waitsFor(d protocol.Resource, provided map[string]state.Provided) string {
 		}
 	}
 	return ""
+}
+
+// planRemoval decides what becomes of an object Mamela made that no declaration has any more (ADR
+// 0013): its deletion when it was made for the declaration being planned and its kind has a
+// removing operation; otherwise it is kept, with the reason.
+func (rt *Runtime) planRemoval(ctx context.Context, s *host.Session, p *state.Provided, order int) error {
+	keep := func(code, message, hint string) {
+		p.Kept = &state.Kept{Code: code, Message: "not in this declaration; kept: " + message, Hint: hint}
+	}
+	op, hasOp := s.Manifest().RemoveOp(p.Kind)
+	stack, err := rt.creations.CreationStack(ctx, p.Provider, p.Observed.ID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !hasOp:
+		keep("MAM-PLAN-0304", fmt.Sprintf("provider %s has no operation that deletes a %s", p.Provider, p.Kind),
+			"delete it by hand, or with the provider's explicit operation if it has one (mamela act)")
+	case stack == "":
+		keep("MAM-PLAN-0303", "Mamela made it before it recorded which declaration made it",
+			"claim it for the declaration that declares it (mamela claim), or delete it with its provider's explicit delete operation (mamela act)")
+	case stack != rt.stack:
+		keep("MAM-PLAN-0302", fmt.Sprintf("it was made for another declaration (%s), not for this one (%s)", stack, rt.stack),
+			"remove it from the declaration that made it")
+	default:
+		change, err := s.Prepare(ctx, op.Op, nil, p.Observed)
+		if err != nil {
+			keep("MAM-PLAN-0306", fmt.Sprintf("its provider could not prepare the deletion (%v)", err), "")
+			return nil
+		}
+		p.Removal = &state.ProvidedChange{Change: change, Verified: rt.verify(s, change)}
+		p.RemovalOrder = order
+	}
+	return nil
+}
+
+// Absent says, from the provider's inventory (which includes the objects it made that are no
+// longer declared), whether the object of a resource is gone. Not finding the resource at all
+// confirms it only when the declaration does not declare it.
+func Absent(ctx context.Context, session *host.Session, g *graph.Graph, provider, id string) (bool, error) {
+	var resources []protocol.Resource
+	declared := false
+	for _, r := range g.Sorted() {
+		if r.Provided != nil && r.Provided.Provider == provider {
+			resources = append(resources, resource(r))
+			declared = declared || r.ID() == id
+		}
+	}
+	observed, _, err := session.ObserveWith(ctx, protocol.ObserveParams{Resources: resources})
+	if err != nil {
+		return false, err
+	}
+	for _, o := range observed {
+		if o.ID == id {
+			return !o.Exists, nil
+		}
+	}
+	if declared {
+		return false, fmt.Errorf("provider omitted declared resource %s; absence is unconfirmed", id)
+	}
+	return true, nil
 }

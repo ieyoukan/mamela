@@ -23,6 +23,16 @@ func AdoptOp(op protocol.Op, needs []protocol.Need, calls ...protocol.Call) prot
 	return o
 }
 
+// RemoveOp is the explicit operation that deletes an object (a kind has one). Mamela plans it, with
+// an approval made on the Control Plane's host, for an object it made for a declaration that no
+// longer has the resource (ADR 0013); a kind without one is never deleted by removing it from a
+// declaration. It remains an explicit operation: a person may also ask for it (mamela act).
+func RemoveOp(op protocol.Op, needs []protocol.Need, calls ...protocol.Call) protocol.Operation {
+	o := ExplicitOp(op, needs, calls...)
+	o.Removes = true
+	return o
+}
+
 // Unsupported is a difference the provider never carries out: Mamela shows it, with why, and
 // denies it.
 func Unsupported(op protocol.Op, why string) protocol.Operation {

@@ -136,15 +136,63 @@ func (s *Store) UsePermit(ctx context.Context, id, operationID, planDigest strin
 }
 
 // RecordCreation records, before a creating change is sent, that Mamela creates the object with
-// these IDs for the resource through the provider.
-func (s *Store) RecordCreation(ctx context.Context, provider, resource string, ids map[string]string, planDigest, operationID string) error {
+// these IDs for the resource through the provider, for the declaration (stack) being applied.
+func (s *Store) RecordCreation(ctx context.Context, stack, provider, resource string, ids map[string]string, planDigest, operationID string) error {
 	b, err := json.Marshal(ids, json.Deterministic(true))
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO provider_creations(provider, resource, ids, plan_digest, operation_id, recorded_ms)
-VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(provider, resource, ids) DO NOTHING`, provider, resource, string(b), planDigest, operationID, s.nowMs())
+	_, err = s.db.ExecContext(ctx, `INSERT INTO provider_creations(provider, resource, ids, plan_digest, operation_id, recorded_ms, stack)
+VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, resource, ids) DO NOTHING`, provider, resource, string(b), planDigest, operationID, s.nowMs(), stack)
 	return err
+}
+
+// CreationStack is the declaration a resource's objects were created for: "" when none was
+// recorded, or when the records name more than one (then none is trusted).
+func (s *Store) CreationStack(ctx context.Context, provider, resource string) (string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT stack FROM provider_creations WHERE provider = ? AND resource = ?`, provider, resource)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var stacks []string
+	for rows.Next() {
+		var st string
+		if err := rows.Scan(&st); err != nil {
+			return "", err
+		}
+		stacks = append(stacks, st)
+	}
+	if err := rows.Err(); err != nil || len(stacks) != 1 {
+		return "", err
+	}
+	return stacks[0], nil
+}
+
+// ClaimCreations records that the declaration (stack) made an object whose creation was recorded
+// without one (ADR 0013). A record that names a declaration is never changed.
+func (s *Store) ClaimCreations(ctx context.Context, stack, provider, resource string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE provider_creations SET stack = ? WHERE provider = ? AND resource = ? AND stack = ''`, stack, provider, resource)
+	return err
+}
+
+// CreationOrder gives each resource of a provider that has creation records a number, the later
+// the creation the higher: what depends on an object is made after it, and is deleted before it.
+func (s *Store) CreationOrder(ctx context.Context, provider string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT resource FROM provider_creations WHERE provider = ? GROUP BY resource ORDER BY MIN(recorded_ms), resource`, provider)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	order := map[string]int{}
+	for rows.Next() {
+		var r string
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
+		order[r] = len(order) + 1
+	}
+	return order, rows.Err()
 }
 
 // Creations are the IDs of the objects Mamela set out to create for a resource through a provider.

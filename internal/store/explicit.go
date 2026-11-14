@@ -152,3 +152,32 @@ func (s *Store) CompleteExplicit(ctx context.Context, e Explicit, outcome, detai
 	}
 	return tx.Commit()
 }
+
+// FinishRemoval ends Mamela's records of an object that is gone: a deletion whose outcome was
+// unknown, or that was sent and answered after the run stopped, completes the way it would have
+// (the machine's registration ends too); an object that vanished without Mamela deleting it only
+// has its creation records forgotten, so that no later object with the same IDs is taken for
+// Mamela's.
+func (s *Store) FinishRemoval(ctx context.Context, provider, resource, op string) error {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM explicit_operations WHERE provider=? AND resource=? AND op=? AND outcome IN ('started','unknown') AND context IS NOT NULL
+ORDER BY started_ms DESC LIMIT 1`, provider, resource, op).Scan(&id)
+	switch {
+	case err == nil:
+		e, err := s.Explicit(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := s.CompleteExplicit(ctx, e, "done", "confirmed by observation: the object is gone", true); err != nil {
+			return err
+		}
+		// Earlier attempts that never ended (their worker was killed) are not left "started".
+		_, err = s.db.ExecContext(ctx, `UPDATE explicit_operations SET outcome = 'superseded', detail = ?, finished_ms = ?
+WHERE provider = ? AND resource = ? AND op = ? AND outcome = 'started' AND id <> ?`,
+			"a later attempt ("+id+") found the object gone", s.nowMs(), provider, resource, op, id)
+		return err
+	case notFound(err) == ErrNotFound:
+		return s.ForgetCreations(ctx, provider, resource)
+	}
+	return err
+}

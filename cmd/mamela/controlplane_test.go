@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -90,7 +91,7 @@ max_vms = 3
 		got[h.Name], modes[h.Name] = string(b), h.Mode
 	}
 	for _, name := range []string{"etc/site.toml", "etc/providers.toml", "etc/secrets/proxmox-token", "etc/secrets/proxmox-guard-token", "etc/guest-ssh.pub",
-		"var/cp/ca.pem", "var/mamelet-linux-amd64", "var/state.db", "mamela-serve.service", "mamela-gitops.service", "install.sh"} {
+		"var/cp/ca.pem", "var/mamelet-linux-amd64", "var/state.db", "mamela-serve.service", "mamela-api.service", "mamelacd.service", "install.sh"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("bundle lacks %s", name)
 		}
@@ -200,5 +201,33 @@ func TestUserDataSeedArtifact(t *testing.T) {
 	if p.Info.NodeID != store.FirstNodeNumber || !strings.Contains(string(ud), "https://cp.example:8443/v1/mamelet/"+hex.EncodeToString(sum[:])) ||
 		!strings.HasPrefix(string(ud), "#cloud-config") {
 		t.Fatalf("node %d, user-data:\n%s", p.Info.NodeID, ud)
+	}
+}
+
+// A host that has a Control Plane already gets mamelacd's units and a script that installs them,
+// without the rest of a bundle: the script is valid, and mamelacd's database is private to it.
+func TestGitopsUnits(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "units")
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"controlplane", "gitops-units", "--out", dir}, &out, &errb); code != 0 {
+		t.Fatalf("%d: %s", code, errb.String())
+	}
+	for _, f := range []string{"mamela-api.service", "mamelacd.service", "install-gitops.sh"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if b, err := exec.Command("bash", "-n", filepath.Join(dir, "install-gitops.sh")).CombinedOutput(); err != nil {
+		t.Fatalf("install-gitops.sh: %v\n%s", err, b)
+	}
+	script, _ := os.ReadFile(filepath.Join(dir, "install-gitops.sh"))
+	if !bytes.Contains(script, []byte("groupadd --system mamela-api")) || bytes.Contains(script, []byte("mamela-cp")) {
+		t.Errorf("the script prepares mamelacd only:\n%s", script)
+	}
+	unit, _ := os.ReadFile(filepath.Join(dir, "mamelacd.service"))
+	for _, want := range []string{"UMask=0077", "InaccessiblePaths=-/etc/mamela -/var/lib/mamela", "NoNewPrivileges=yes"} {
+		if !bytes.Contains(unit, []byte(want)) {
+			t.Errorf("mamelacd.service lacks %q", want)
+		}
 	}
 }

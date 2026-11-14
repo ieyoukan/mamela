@@ -248,6 +248,13 @@ CREATE TABLE gitops_seen (
 ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
 	// 15: explicit operations retain the identity needed for read-only recovery after a crash.
 	`ALTER TABLE explicit_operations ADD COLUMN context BLOB;`,
+	// 16: gitops keeps its own records in mamelacd's database (ADR 0012): the Control Plane's
+	// database holds none of GitHub's.
+	`DROP TABLE IF EXISTS gitops_plans;
+DROP TABLE IF EXISTS gitops_seen;`,
+	// 17: the declaration (stack, ADR 0013) each created object belongs to. Objects recorded before
+	// this have none ('') and are never deleted by removing them from a declaration.
+	`ALTER TABLE provider_creations ADD COLUMN stack TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
@@ -552,6 +559,14 @@ WHERE id = ? AND stage = 'Started' AND owner = ?`, string(stage), detail, s.nowM
 		return fmt.Errorf("store: operation %s is no longer claimed by %s", id, owner)
 	}
 	return nil
+}
+
+// Release makes an operation that owner claimed claimable again, as one whose outcome is unknown:
+// its worker is known to be gone, so its lease would only keep the next apply waiting.
+func (s *Store) Release(ctx context.Context, id, owner string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE operations SET stage = 'Unknown', detail = ?, lease_ms = 0, updated_ms = ?
+WHERE id = ? AND stage = 'Started' AND owner = ?`, "its worker "+owner+" is gone: the outcome is unknown", s.nowMs(), id, owner)
+	return err
 }
 
 // Confirm marks an operation Succeeded because observation shows its effect, without running it.

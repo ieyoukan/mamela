@@ -65,6 +65,9 @@ type Evaluator struct {
 
 // Result is a successful evaluation.
 type Result struct {
+	// Stack names the declaration (ADR 0013): the name its Pome.toml gives the Pome. Objects Mamela
+	// creates for it are its own, and are deleted when it no longer has them.
+	Stack      string
 	Graph      *graph.Graph
 	Digest     string // graph digest (canonical form)
 	WasmDigest string // sha256 of main.wasm
@@ -120,7 +123,12 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	stack, err := StackOf(dir)
+	if err != nil {
+		return nil, err
+	}
 	return &Result{
+		Stack:      stack,
 		Graph:      g,
 		Digest:     g.Digest(),
 		WasmDigest: "sha256:" + hex.EncodeToString(sum[:]),
@@ -128,6 +136,22 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 		Versions:   versions,
 		Stderr:     stderr,
 	}, nil
+}
+
+// StackOf is the name of the declaration in dir: its Pome's name, which its author chooses and
+// which stays the same wherever the declaration is checked out. A Pome without a name has no
+// stack: what Mamela creates for it is never deleted for being removed from it.
+func StackOf(dir string) (string, error) {
+	var pome struct {
+		Pome struct {
+			Name string `toml:"name"`
+		} `toml:"pome"`
+	}
+	if _, err := toml.DecodeFile(filepath.Join(dir, "Pome.toml"), &pome); err != nil {
+		return "", &Error{Code: CodeBuildFailed, Stage: StageBuild, Message: fmt.Sprintf("%s: %v", filepath.Join(dir, "Pome.toml"), err),
+			Hint: "pass the directory that contains Pome.toml and src/main.emel"}
+	}
+	return pome.Pome.Name, nil
 }
 
 // EvaluateTwice evaluates dir twice from scratch and fails unless both give the same graph digest.

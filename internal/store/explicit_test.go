@@ -30,7 +30,7 @@ func TestExplicitAbsenceRevokesOnlyOriginalNode(t *testing.T) {
 				}
 			}
 			ids := map[string]string{"machine": "web-1"}
-			if err := s.RecordCreation(ctx, "test", "Machine web", ids, "plan", "create"); err != nil {
+			if err := s.RecordCreation(ctx, "", "test", "Machine web", ids, "plan", "create"); err != nil {
 				t.Fatal(err)
 			}
 			o := protocol.Observed{ID: "Machine web", Kind: "Machine", Name: "web", Exists: true, Owned: true, IDs: ids, Node: &protocol.ObservedNode{ID: 7001}}
