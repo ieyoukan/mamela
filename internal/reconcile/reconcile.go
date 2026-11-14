@@ -16,7 +16,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -186,6 +190,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 					if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
 						return nil, err
 					}
+					if err := r.releaseIfWorkerGone(ctx, planDigest, id, opID); err != nil {
+						return nil, err
+					}
 					if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
 						return nil, err
 					}
@@ -227,6 +234,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				}
 				o, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op))
 				if err != nil {
+					return nil, err
+				}
+				if err := r.releaseIfWorkerGone(ctx, planDigest, id, opID); err != nil {
 					return nil, err
 				}
 				if o.Stage == store.StageSucceeded {
@@ -294,6 +304,36 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 	}
 	rep.Remaining = plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
 	return rep, nil
+}
+
+// releaseIfWorkerGone frees an operation claimed by a worker that no longer exists, so that a
+// crashed apply does not keep the next one waiting for the claim's lease (hours: an apply can wait
+// for an image import). Its outcome is unknown, and the apply observes before it does anything.
+func (r *Reconciler) releaseIfWorkerGone(ctx context.Context, planDigest, resource, opID string) error {
+	o, err := r.Store.Operation(ctx, opID)
+	if err != nil || o.Stage != store.StageStarted || !workerGone(o.Owner) {
+		return err
+	}
+	if err := r.Store.Release(ctx, opID, o.Owner); err != nil {
+		return err
+	}
+	r.event(ctx, planDigest, resource, "released", "the worker "+o.Owner+" is gone: its claim on "+opID+" was released")
+	return nil
+}
+
+// workerGone reports whether owner, a worker's name ("host/pid", as mamela writes it), is a process
+// of this host that no longer exists. Any other owner may be alive.
+func workerGone(owner string) bool {
+	i := strings.LastIndex(owner, "/")
+	if i < 0 {
+		return false
+	}
+	host, _ := os.Hostname()
+	pid, err := strconv.Atoi(owner[i+1:])
+	if owner[:i] != host || err != nil || pid <= 0 || pid == os.Getpid() {
+		return false
+	}
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
 // opPhase is the phase an operation runs in: late ones after everything else but the deletions,

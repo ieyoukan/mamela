@@ -561,6 +561,14 @@ WHERE id = ? AND stage = 'Started' AND owner = ?`, string(stage), detail, s.nowM
 	return nil
 }
 
+// Release makes an operation that owner claimed claimable again, as one whose outcome is unknown:
+// its worker is known to be gone, so its lease would only keep the next apply waiting.
+func (s *Store) Release(ctx context.Context, id, owner string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE operations SET stage = 'Unknown', detail = ?, lease_ms = 0, updated_ms = ?
+WHERE id = ? AND stage = 'Started' AND owner = ?`, "its worker "+owner+" is gone: the outcome is unknown", s.nowMs(), id, owner)
+	return err
+}
+
 // Confirm marks an operation Succeeded because observation shows its effect, without running it.
 // Used after a crash or a lost response.
 func (s *Store) Confirm(ctx context.Context, id, detail string) error {
