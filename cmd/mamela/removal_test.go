@@ -165,12 +165,36 @@ fn main() {
 	if _, out := plan(declaration("github.com/example/infra", "web", "db")); !strings.Contains(out, "+ KVItem db") {
 		t.Errorf("db is not created again after its deletion:\n%s", out)
 	}
-	// An item made before stacks were recorded (its record names none) is kept, with that reason.
+	// An item made before stacks were recorded (its record names none) is kept, with that reason,
+	// until a person claims it for the declaration that declares it.
 	kv.Put(kvapi.Item{Name: "older", Value: "v1", Owner: "mamela", Version: 1})
 	if err := b.StoreForTest().RecordCreation(context.Background(), "", "kv-example", "KVItem older", map[string]string{"item": "older"}, "plan", "op"); err != nil {
 		t.Fatal(err)
 	}
 	if _, out := plan(infra); !strings.Contains(out, "= KVItem older  [retained]") || !strings.Contains(out, "MAM-PLAN-0303") {
 		t.Errorf("an item without a recorded declaration is not kept with its reason:\n%s", out)
+	}
+
+	// Claiming: listed without --confirm, recorded with it; then removing it deletes it.
+	older := declaration("github.com/example/infra", "web", "older")
+	if code, out := mamela("claim", "--db", db, "--providers", providers, "--toolchain", tools, older); code != 0 || !strings.Contains(out, "KVItem older") ||
+		!strings.Contains(out, "Nothing was changed") {
+		t.Fatalf("claim without --confirm: %d\n%s", code, out)
+	}
+	if stack, _ := b.StoreForTest().CreationStack(context.Background(), "kv-example", "KVItem older"); stack != "" {
+		t.Fatalf("recorded without --confirm: %q", stack)
+	}
+	if code, out := mamela("claim", "--confirm", "--db", db, "--providers", providers, "--toolchain", tools, older); code != 0 || !strings.Contains(out, "recorded 1 object") {
+		t.Fatalf("claim --confirm: %d\n%s", code, out)
+	}
+	if _, out := mamela("claim", "--db", db, "--providers", providers, "--toolchain", tools, older); !strings.Contains(out, "nothing to claim") {
+		t.Errorf("claiming twice:\n%s", out)
+	}
+	if _, out := plan(declaration("github.com/example/infra", "web")); !strings.Contains(out, "- KVItem older  [needs approval]") {
+		t.Errorf("a claimed item removed from the declaration is not planned for deletion:\n%s", out)
+	}
+	// The items of another declaration are never claimed by this one.
+	if _, out := mamela("claim", "--confirm", "--db", db, "--providers", providers, "--toolchain", tools, declaration("github.com/example/infra", "web", "theirs")); !strings.Contains(out, "nothing to claim") {
+		t.Errorf("claimed an item of another declaration:\n%s", out)
 	}
 }

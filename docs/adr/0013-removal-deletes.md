@@ -39,7 +39,7 @@
 
 stack は、宣言の Pome の名前（`Pome.toml` の `[pome] name`）である。書き手が決め、どこに checkout しても変わらない。ディレクトリの名前やパスからは作らない。
 
-- 作成の記録（`provider_creations`）に stack を持たせる（migration 17）。以前の記録は stack を持たず、削除の対象にならない。
+- 作成の記録（`provider_creations`）に stack を持たせる（migration 17）。以前の記録は stack を持たず、削除の対象にならない。人が `mamela claim <dir> --confirm` で、その宣言が宣言している物のうち stack の無いものに、宣言の名前を記録できる（`--confirm` なしでは一覧だけ）。別の宣言の物は変えない。
 - 同じ Control Plane の宣言には、互いに違う Pome の名前を付ける。同じ名前なら、同じ宣言として扱う。
 - Pome の名前を変えると、それまでの物は残る（消えない）。
 - 名前の無い Pome の物は、stack を持たず、削除の対象にならない。
@@ -90,4 +90,4 @@ stack は、宣言の Pome の名前（`Pome.toml` の `[pome] name`）である
 - 宣言を実物に揃える道具になる。消す範囲は、宣言が作った物に限る。
 - 削除の承認だけは、GitHub の外にある。PR は削除を提案でき、Control Plane の人が承認する。
 - provider は、削除する種類に `removes` を付ける。付けない種類は消えない。
-- 以前の物（stack を記録する前に作った物）は、`mamela act` で消す。
+- 以前の物（stack を記録する前に作った物）は、`mamela claim` でその宣言の物にするか、`mamela act` で消す。

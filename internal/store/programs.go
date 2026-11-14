@@ -169,6 +169,13 @@ func (s *Store) CreationStack(ctx context.Context, provider, resource string) (s
 	return stacks[0], nil
 }
 
+// ClaimCreations records that the declaration (stack) made an object whose creation was recorded
+// without one (ADR 0013). A record that names a declaration is never changed.
+func (s *Store) ClaimCreations(ctx context.Context, stack, provider, resource string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE provider_creations SET stack = ? WHERE provider = ? AND resource = ? AND stack = ''`, stack, provider, resource)
+	return err
+}
+
 // CreationOrder gives each resource of a provider that has creation records a number, the later
 // the creation the higher: what depends on an object is made after it, and is deleted before it.
 func (s *Store) CreationOrder(ctx context.Context, provider string) (map[string]int, error) {

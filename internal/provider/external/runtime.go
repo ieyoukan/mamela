@@ -743,7 +743,7 @@ func (rt *Runtime) planRemoval(ctx context.Context, s *host.Session, p *state.Pr
 			"delete it by hand, or with the provider's explicit operation if it has one (mamela act)")
 	case stack == "":
 		keep("MAM-PLAN-0303", "Mamela made it before it recorded which declaration made it",
-			"delete it with its provider's explicit delete operation (mamela act)")
+			"claim it for the declaration that declares it (mamela claim), or delete it with its provider's explicit delete operation (mamela act)")
 	case stack != rt.stack:
 		keep("MAM-PLAN-0302", fmt.Sprintf("it was made for another declaration (%s), not for this one (%s)", stack, rt.stack),
 			"remove it from the declaration that made it")
