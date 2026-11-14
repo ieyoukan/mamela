@@ -1,11 +1,10 @@
 // Package api is the Control Plane's local API (ADR 0012): what `mamela api` serves on a Unix
-// socket to mamelacd, and the client mamelacd uses. It offers exactly what a person does with the
-// CLI on the Control Plane's host for gitops: plan a declaration of a commit's tree, approve a plan
-// by its digest, ask whether a plan is approved, and apply an approved plan. Nothing else: no
-// explicit operation (delete, reboot, adopt), no import, no state, no credential.
+// socket to mamelacd, and the client mamelacd uses. It plans the declaration of a commit's tree,
+// approves a plan by its digest, says whether a plan is approved, and applies an approved plan.
+// Nothing else: no explicit operation, no import, no state, no credential.
 //
-// Whoever can reach the socket can plan, approve and apply within the policy, the providers'
-// guards and the catalogs, as the CLI can; the socket is therefore only for mamelacd's group.
+// Whoever reaches the socket can plan, approve (as anyone) and apply within the policy, the guards
+// and the catalogs, as the CLI can: the socket is for mamelacd's group only.
 package api
 
 import (
@@ -35,7 +34,6 @@ import (
 // Version names the API. A client refuses a server of another version.
 const Version = "mamela-api/v1"
 
-// Info is what GET /v1/info says.
 type Info struct {
 	API    string `json:"api"`
 	Mamela string `json:"mamela"`
@@ -72,7 +70,6 @@ type Backend interface {
 	Apply(ctx context.Context, digest string) (Applied, error)
 }
 
-// Requests.
 type (
 	TreeRef struct {
 		Tree string `json:"tree"` // "sha256:..." of the tarball, from POST /v1/trees
@@ -109,7 +106,6 @@ type Server struct {
 	mu sync.Mutex
 }
 
-// Handler routes the API.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, r *http.Request) {
@@ -394,7 +390,6 @@ type Client struct {
 	HTTP   *http.Client
 }
 
-// NewClient returns a client of the socket at path.
 func NewClient(path string) *Client {
 	tr := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		var d net.Dialer
@@ -490,7 +485,6 @@ func (c *Client) Revision(ctx context.Context, tree, dir string) (string, error)
 	return d.Digest, err
 }
 
-// Approve approves a saved plan by someone, for ttl.
 func (c *Client) Approve(ctx context.Context, digest, by string, ttl time.Duration) error {
 	return c.post(ctx, "/v1/approve", ApproveRequest{Digest: digest, By: by, TTL: ttl.String()}, nil)
 }
@@ -504,7 +498,6 @@ func (c *Client) Approved(ctx context.Context, digest string) (bool, error) {
 	return out.Approved, err
 }
 
-// Apply applies an approved plan.
 func (c *Client) Apply(ctx context.Context, digest string) (Applied, error) {
 	var a Applied
 	err := c.post(ctx, "/v1/apply", DigestRequest{Digest: digest}, &a)

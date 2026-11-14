@@ -1,9 +1,7 @@
-// Package gitops is mamelacd (ADR 0010, 0012): it follows a repository of declarations on GitHub.
-// It plans each pull request of a trusted author and comments the plan, records an approval when
-// an approver comments `/mamela approve <digest>`, and applies an approved plan once it is the
-// declaration at the head of the branch. It holds a GitHub token and its own small database; it
-// asks the Control Plane's local API (internal/api) to plan, approve and apply, and holds no
-// credential of the infrastructure and none of Mamela's state. It reaches GitHub; nothing reaches it.
+// Package gitops is mamelacd (ADR 0012; docs/gitops.md): it follows a repository of declarations
+// on GitHub, and asks the Control Plane's local API (internal/api) to plan, approve and apply.
+// It holds a GitHub token and its own small database, and no credential of the infrastructure
+// and none of Mamela's state. It reaches GitHub; nothing reaches it.
 package gitops
 
 import (
@@ -28,7 +26,6 @@ type GitHub struct {
 	HTTP  *http.Client
 }
 
-// PR is a pull request.
 type PR struct {
 	Number int  `json:"number"`
 	User   User `json:"user"`
@@ -39,7 +36,6 @@ type PR struct {
 	MergeCommitSHA string     `json:"merge_commit_sha"`
 }
 
-// Ref is a pull request's head or base.
 type Ref struct {
 	Ref  string `json:"ref"`
 	SHA  string `json:"sha"`
@@ -48,13 +44,11 @@ type Ref struct {
 	} `json:"repo"`
 }
 
-// User is a GitHub account.
 type User struct {
 	Login string `json:"login"`
 	Type  string `json:"type"` // "User", "Bot", ...
 }
 
-// Comment is a comment on a pull request's conversation.
 type Comment struct {
 	ID   int64  `json:"id"`
 	User User   `json:"user"`
@@ -125,7 +119,6 @@ func (g *GitHub) Comments(ctx context.Context, pr int) ([]Comment, error) {
 	return out, g.do(ctx, "GET", g.repoPath(fmt.Sprintf("/issues/%d/comments", pr)), url.Values{"per_page": {"100"}}, nil, &out)
 }
 
-// Comment comments on a pull request.
 func (g *GitHub) Comment(ctx context.Context, pr int, body string) error {
 	return g.do(ctx, "POST", g.repoPath(fmt.Sprintf("/issues/%d/comments", pr)), nil, map[string]string{"body": body}, nil)
 }
@@ -169,7 +162,6 @@ func (g *GitHub) Tarball(ctx context.Context, sha string) ([]byte, error) {
 	return data, nil
 }
 
-// Branch returns the commit at the head of a branch.
 func (g *GitHub) Branch(ctx context.Context, name string) (string, error) {
 	var out struct {
 		Commit struct {

@@ -1,9 +1,5 @@
-// Command mamelacd follows a repository of declarations on GitHub (ADR 0010, 0012): it plans each
-// pull request of a trusted author and comments the plan, records an approval when an approver
-// comments `/mamela approve <digest>`, and applies an approved plan once it is the declaration at
-// the head of the branch. It asks the Control Plane's local API (`mamela api`) for all of that,
-// and holds only a GitHub token and its own small database: no credential of the infrastructure,
-// none of Mamela's state. It never runs explicit operations (delete, reboot, adopt) or imports.
+// Command mamelacd follows a repository of declarations on GitHub (ADR 0012; docs/gitops.md). See
+// package internal/gitops.
 package main
 
 import (
@@ -22,15 +18,15 @@ import (
 	"github.com/ieyoukan/mamela/internal/version"
 )
 
-const usage = `mamelacd - follow a repository of declarations on GitHub (ADR 0010, 0012)
+const usage = `mamelacd - follow a repository of declarations on GitHub (ADR 0012)
 
 Usage:
   mamelacd run --config <mamelacd.toml>    read GitHub every interval, until stopped
   mamelacd once --config <mamelacd.toml>   read GitHub once
   mamelacd version
 
-It plans each pull request of a trusted author and comments the plan; an approver approves a plan
-by commenting "/mamela approve <digest>"; an approved plan is applied once it is the declaration at
+It comments the plan of each pull request of a trusted author. An approver approves a plan by
+commenting "/mamela approve <digest>". An approved plan is applied once it is the declaration at
 the head of the branch. Planning, approving and applying are the Control Plane's (mamela api).
 `
 

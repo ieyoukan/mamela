@@ -21,10 +21,9 @@ import (
 
 const apiUsage = `Usage: mamela api --socket <path> [flags]
 
-Serves the Control Plane's local API (ADR 0012) on a Unix socket, for mamelacd: plan a declaration
-of a commit's tree, approve a plan by its digest, and apply an approved plan, exactly as the CLI
-does (the same database, guards, policy and catalogs). Nothing else: no explicit operation, no
-import. The socket is mode 0660; give it to mamelacd's group with --socket-group.
+Serves the Control Plane's local API (ADR 0012) on a Unix socket, for mamelacd: plan, approve and
+apply, as the CLI does (the same database, guards, policy and catalogs), and nothing else. The
+socket is mode 0660; give it to mamelacd's group with --socket-group.
 
 Flags:
 `
