@@ -11,8 +11,8 @@ import (
 )
 
 // Store is mamelacd's own database: the plans it posted, what it handled (comments, heads), and
-// what it last did with the head of the branch. It holds none of Mamela's state: plans, approvals
-// and the operation journal are the Control Plane's (asked through its API).
+// what it last did with the head of the branch. Mamela's state (plans, approvals, the journal) is
+// the Control Plane's, asked through its API.
 type Store struct {
 	db    *sql.DB
 	clock func() time.Time
@@ -91,7 +91,6 @@ func OpenStore(ctx context.Context, path string, clock func() time.Time) (*Store
 	return s, nil
 }
 
-// Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) nowMs() int64 { return s.clock().UnixMilli() }
@@ -142,7 +141,6 @@ func (s *Store) plans(ctx context.Context, where string, args ...any) ([]Plan, e
 	return out, rows.Err()
 }
 
-// Plan returns a plan by its digest.
 func (s *Store) Plan(ctx context.Context, digest string) (Plan, bool, error) {
 	ps, err := s.plans(ctx, `WHERE digest = ?`, digest)
 	if err != nil || len(ps) == 0 {

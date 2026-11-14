@@ -438,12 +438,8 @@ func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([
 	return changes, waiting, err
 }
 
-// round observes, diffs and applies every change once.
-func (e *env) round(desired []protocol.Resource) ([]protocol.Change, []host.Result) {
-	changes, results, _ := e.roundWaiting(desired)
-	return changes, results
-}
-
+// roundWaiting observes, diffs and applies every change once; waiting is how many resources the
+// diff held back for their dependencies.
 func (e *env) roundWaiting(desired []protocol.Resource) ([]protocol.Change, []host.Result, int) {
 	e.t.Helper()
 	observed := e.observe(desired)

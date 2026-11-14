@@ -1,6 +1,6 @@
 # ADR 0010 — Control Plane が Git を見る（CI からの plan・承認・apply）
 
-- 状態: Accepted（2026-11-12）。一部を [ADR 0012](0012-mamelacd.md) で変えた: gitops は別のプログラム mamelacd になり、本体の局所 API（`mamela api`）を通して plan・承認・apply する。マージの後は、PR ごとではなく、ブランチの先頭の宣言だけを apply する。
+- 状態: Accepted（2026-11-12）。一部を [ADR 0012](0012-mamelacd.md) が置き換える。置き換わった記述には「〔0012 で置換〕」と印を付けた。要点は二つ: gitops は別のプログラム mamelacd になり、本体の局所 API（`mamela api`）を通して plan・承認・apply する。マージの後は、PR ごとでなく、ブランチの先頭の宣言だけを apply する。
 - 日付: 2026-11-12
 - 対象: 宣言のリポジトリと CI からの運用。ADR 0001（SQLite、1 つの Control Plane）、0003（Control Plane のホスト）、0006（明示操作）
 
@@ -17,10 +17,10 @@
 
 ### 1. Control Plane が GitHub を見に行く（pull）
 
-`mamela gitops run --config <file>` を、Control Plane のホストで `mamela serve` と並べて動かす（systemd）。
+〔0012 で置換: `mamela gitops` はなく、別のプログラム `mamelacd` を `mamela api` と並べて動かす〕`mamela gitops run --config <file>` を、Control Plane のホストで `mamela serve` と並べて動かす（systemd）。
 
 - **見に行く:** 一定の間隔で GitHub の API を読み、PR と承認のコメントを見る。外から Control Plane へ入る道は要らない。mamelet が Control Plane から revision を取りに行くのと同じ向きである。
-- **計画と記録:** plan・承認・apply は、人が CLI で行うのとまったく同じ処理（同じ DB、同じ guard、同じ許可）で行う。
+- **計画と記録:** 〔0012 で置換: mamelacd は本体の局所 API を通して頼み、DB には触れない〕plan・承認・apply は、人が CLI で行うのとまったく同じ処理（同じ DB、同じ guard、同じ許可）で行う。
 - **資格情報は動かない:** API の資格情報は Control Plane のホストから出ない。GitHub に渡すのは、plan の表示と結果だけである。
 - **GitHub のトークン:** そのリポジトリだけに限った fine-grained token を使う。権限は次のものだけである。
   - Contents: read
@@ -29,7 +29,7 @@
 
 ### 2. 流れ
 
-1. **PR で plan:** 開いている PR のうち、次のものの head を取ってきて（tarball）、設定した宣言のディレクトリを plan する。
+1. **PR で plan:** 開いている PR のうち、次のものの head を取ってきて（tarball。〔0012 で置換: 取ってくるのは mamelacd で、展開と plan は本体の API〕）、設定した宣言のディレクトリを plan する。
    - 同じリポジトリのブランチから（fork からは扱わない）。
    - 作者が `authors` にいる。
    
@@ -41,10 +41,10 @@
    ```
 
    Mamela は、そのコメントの GitHub 上の作者を承認者として記録する（`github:<login>`）。承認できるのは、gitops がその PR に出した plan だけである。digest が合わなければ、何も承認しない。
-3. **マージで apply:** PR が設定したブランチにマージされたら、マージコミットの宣言を評価する。
+3. **マージで apply:** 〔0012 で置換: apply するのは、ブランチの先頭の宣言だけ。後のマージの変更を戻さないため〕PR が設定したブランチにマージされたら、マージコミットの宣言を評価する。
    - **宣言が同じとき:** 宣言の digest（revision）が承認した plan と同じなら、その plan を apply する。apply は今までどおり、観測し直し、承認したときと変更が同じことを確かめる（MAM-REC-0002）。guard は前後に走る。
    - **宣言が違うとき:** 例えば main が先に進んでいたときである。マージコミットで plan し直してコメントし、もう一度承認を求める。この承認があれば、すぐに apply する。
-4. **結果:** apply の結果を PR にコメントし、マージコミットの commit status にする。
+4. **結果:** apply の結果を PR にコメントし、マージコミット（〔0012 で置換: ブランチの先頭のコミット〕）の commit status にする。
 
 ### 3. 任せないこと
 
@@ -61,7 +61,7 @@
 
 ### 5. 記録
 
-gitops が出した plan と処理済みのコメント・マージは、SQLite に記録する（migration 13）。そのため、何度起動し直しても、同じ PR に同じ plan を二度コメントせず、同じコメントで二度承認せず、同じマージで二度 apply しない。
+〔0012 で置換: mamelacd が自分の DB に記録する。本体の DB の表は migration 16 で消した〕gitops が出した plan と処理済みのコメント・マージは、SQLite に記録する（migration 13）。そのため、何度起動し直しても、同じ PR に同じ plan を二度コメントせず、同じコメントで二度承認せず、同じマージで二度 apply しない。
 
 ## 検討したが採らなかったもの
 
@@ -73,4 +73,4 @@ gitops が出した plan と処理済みのコメント・マージは、SQLite 
 - **使う人:** 宣言を PR で変え、plan を PR で読み、1 行のコメントで承認し、マージで反映できる。
 - **資格情報と状態:** Control Plane から動かない。
 - **GitHub が落ちても:** 何も変わらない。CLI での運用は今までどおりである。
-- **増えるもの:** GitHub の API の読み書き（`internal/gitops`）、tarball の展開（パスを検査し、リンクを拒み、大きさを制限する）、記録の表、`mamela gitops`。
+- **増えるもの:** GitHub の API の読み書き（`internal/gitops`）、tarball の展開（パスを検査し、リンクを拒み、大きさを制限する。`internal/tree`）、記録の表、〔0012 で置換: `mamela gitops` でなく、`mamelacd` と `mamela api`〕。

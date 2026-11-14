@@ -4,6 +4,7 @@
 - 日付: 2026-11-13
 - 対象: ADR 0010（gitops）、0012（mamelacd）、0002（provider の契約）、0008（カタログ）、0009（kit と Pome の生成）、設計案「宣言に追従する削除」
 - 分担: 同期（1〜3）と写しの公開（4）は mamelacd が、資格情報なしの確認（5）は mamela が、grants（6）・policy（7）・署名の検証（10）は本体（`mamela api` の裏）が受け持つ（[ADR 0012](0012-mamelacd.md)）。下の「Control Plane」は、mamelacd と本体を合わせたものを指す。
+- コマンド: 下の `mamelacd status`・`mamelacd sync` は、この案が足す mamelacd のコマンドである（今の mamelacd は `run`・`once`・`version` だけ）。`mamela gitops` は ADR 0012 でなくなった。
 
 ## 文脈
 
@@ -20,14 +21,14 @@
 
 ### Mamela にすでにあるもの
 
-- 資格情報と状態は、Control Plane にだけある（ADR 0010）。Mamela には、state を手で書き換えるコマンドがない。所有の記録が変わるのは、apply と、人が `--confirm` する明示操作（`adopt` など）だけである。
+- 資格情報と状態は、Control Plane の本体にだけある（ADR 0010、0012。mamelacd も読めない）。Mamela には、state を手で書き換えるコマンドがない。所有の記録が変わるのは、apply と、人が `--confirm` する明示操作（`adopt` など）だけである。
 - `mamela check` は、資格情報なしで宣言を評価する。各リソースが至りうる操作と、それに要る権限（AWS の IAM アクション、Proxmox の権限）を列挙する。
 - provider の `diff` は、観測と宣言から変更を作る純粋な処理である。観測は `observe` が別に行う。
 - ホストのカタログは、送る要求ごとに効果（read / create / change / restart / lose-data）を分類する。policy はその効果から、自動・承認・拒否を決める（`autoProviderEffects`）。
 
 ### 足りないもの
 
-- **同期を続けること:** 今の gitops は、PR とマージのときだけ動く。マージの後で実物がずれても、誰も気づかない。
+- **同期を続けること:** 今の mamelacd が先頭を plan するのは、新しい先頭のときと、待ち・拒否のとき、apply の後だけである。同期済み（in sync）の先頭は、plan し直さない。マージの後で実物がずれても、誰も気づかない。
 - **書く側が、資格情報なしで知る手段:** 「今の実物」と「許されていること」を、書く側（人・AI・CI）が知る手段がない。
 
 ## 決定
@@ -57,7 +58,7 @@ Control Plane は `interval` ごとに、設定したブランチの先頭を、
 - **見せる場所:**
   - ブランチの先頭のコミットの commit status（`mamela/<dir>`）。
   - ディレクトリごとに 1 つの GitHub issue（「同期の issue」）。Control Plane が作り、本文を今の状態に保つ。
-  - Control Plane のホストの `mamela gitops status`。
+  - Control Plane のホストの `mamelacd status`（mamelacd 自身の DB にある状態を出す）。
   - 4 の写し。
 - **書く頻度:** 状態が変わったときだけ書く。同じ状態を poll のたびにコメントしない。
 
@@ -69,12 +70,12 @@ Control Plane は `interval` ごとに、設定したブランチの先頭を、
 2. 承認者が `/mamela approve sha256:<digest>` と書く。宣言はすでにブランチにあるので、すぐに apply する。
 
 - **承認の規則:** PR のときと同じである（承認者に限る、Bot は不可、期限、10 の署名）。
-- **CLI:** Control Plane のホストでは、`mamela gitops sync <dir>` で同じことができる。plan を出し、`mamela approve` と `mamela apply` で進める。
+- **CLI:** Control Plane のホストでは、`mamelacd sync <dir>` で同じことができる。先頭を plan して digest を出し、承認と apply は、コメントのほか、本体の `mamela approve` と `mamela apply` でもできる。
 - **戻すとき:** 古いコミットに戻すときも Git で行う（revert の PR）。Git にない宣言には同期しない。正は Git である。
 
 ### 3. 自動同期（オンにしたときだけ）
 
-ディレクトリごとに設定する。既定はオフである。
+ディレクトリごとに `mamelacd.toml` に書く。既定はオフである。
 
 ```toml
 [[sync]]
@@ -99,6 +100,7 @@ max_applies = "4/h"  # 自動の apply の上限
 
 その他:
 - **記録:** 承認者は `policy:auto-sync` と policy の digest として残す。人の承認と区別できる。
+- **判定は本体がする:** 自動同期の承認は、本体が policy で「すべて自動」と判定したときだけ記録する。mamelacd が `by` を名乗るだけでは、乗っ取られたときに破られる（ADR 0012 の 6）。そのため、API に自動同期の apply を足す。
 - **自動同期でも決してしないこと:**
   - 明示操作（削除・再起動・引き継ぎ）
   - 取り込み
@@ -108,6 +110,8 @@ max_applies = "4/h"  # 自動の apply の上限
 ### 4. 状態の写し（view）を、資格情報なしで読めるようにする
 
 Control Plane は plan のたびに、ディレクトリごとの「状態の写し」（`mamela-view/v1`）を公開する。書く側（人・AI・CI）は、これを読んで今の実物を知る。資格情報も、Control Plane への道も要らない。
+
+写しは本体が作り、mamelacd が GitHub に書く。そのため API に、写しを返す呼び出しを足す必要がある。これは ADR 0012 の「状態を返さない」の例外になる。返すのは、秘密を伏せた観測と許されていること（下）だけで、資格情報も状態の全体も返さない。実装するときに、ADR 0012 を改める。
 
 写しに入れるもの:
 - **宣言した物ごと:**
@@ -218,7 +222,7 @@ provider の spec の項目（`protocol.Field`）に、変えたときの性質�
 
 - **状態を書き換える道がない:** Mamela には state を編集するコマンドがない。写しを変えても、何も変わらない。
 - **インフラを直接変える道がない:** AI の作業場所にも CI にも、クラウドや Proxmox の資格情報を置かない。
-- **AI 向けの手引き:** 宣言のリポジトリに、AI 向けの短い手引き（`AGENTS.md`）を置ける（`mamela gitops init` が書く）。何を実行すればよいか（`mamela check --view`）と、承認は人がすることを書く。ただし、これは助けであって、安全の根拠ではない。
+- **AI 向けの手引き:** 宣言のリポジトリに、AI 向けの短い手引き（`AGENTS.md`）を置ける。何を実行すればよいか（`mamela check --view`）と、承認は人がすることを書く。ただし、これは助けであって、安全の根拠ではない。
 
 ### 10. 承認の本人性: 物理キーの署名
 
@@ -233,7 +237,7 @@ alice = ["sk-ssh-ed25519@openssh.com AAAA..."]
 
 - **署名がなければ受け付けない:** 鍵を設定した承認者の承認は、署名がなければ受け付けない。承認のコメントには、digest への署名を添える（`ssh-keygen -Y sign -n mamela-approve`、または `mamela approve --sign`）。
 - **署名する内容:** リポジトリ、ディレクトリ、plan の digest。別の plan、別のリポジトリには使えない。
-- **キーに触れたことを確かめる:** Control Plane は、署名に user presence のフラグがあることを確かめる。触れずに作った署名は受け付けない。ソフトウェアだけでは署名できないので、人のトークンを持つ AI にも承認はできない。
+- **キーに触れたことを確かめる:** 本体は（mamelacd を信じずに）、署名に user presence のフラグがあることを確かめる。触れずに作った署名は受け付けない。ソフトウェアだけでは署名できないので、人のトークンを持つ AI にも承認はできない。
 - **鍵を設定しない運用:** AI には別の GitHub アカウント（承認者に入れない）を使わせる。Bot の種類のアカウントは、今も承認できない。
 
 ## 検討したが採らなかったもの
@@ -252,7 +256,7 @@ alice = ["sk-ssh-ed25519@openssh.com AAAA..."]
 
 ## 実装の順番
 
-1. 同期の状態（先頭の定期的な plan、commit status、同期の issue、`/mamela sync`、`mamela gitops status`）
+1. 同期の状態（先頭の定期的な plan、commit status、同期の issue、`/mamela sync`、`mamelacd status`・`mamelacd sync`）
 2. 写し（`mamela-view/v1`）と `mamela check --view`（差分・要求・policy）
 3. `grants`（AWS・Proxmox）と、plan の Blocked、check の権限の誤り
 4. spec の `Change`・`Sensitive`、Pome の生成、kit の `Diff`

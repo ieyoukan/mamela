@@ -288,23 +288,17 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
 
 設計は [ADR 0010](adr/0010-gitops-from-the-control-plane.md) と [ADR 0012](adr/0012-mamelacd.md)、使い方は [gitops.md](gitops.md)。
 
-- **`mamelacd`（`cmd/mamelacd`、`internal/gitops`）:** GitHub を読みに行く別のプログラム。GitHub のトークンと自分の DB だけを持つ。
-  - PR の plan をコメントする。
-  - `/mamela approve <digest>` で承認する。
-  - ブランチの先頭の宣言と同じ宣言の、承認された plan だけを apply する。古いマージは apply しない。
-- **`mamela api`（`cmd/mamela/api.go`、`internal/api`）:** 本体の局所 API。Unix ソケットで plan・承認・apply だけを受け付ける。中身は CLI と同じ処理を同じ DB で行う。
-- **記録:** mamelacd は自分の DB に、出した plan・処理済みのもの・先頭の状態を記録する。本体の DB の gitops の表は migration 16 で消した。
-- **tarball:** `internal/tree` が、リンクとツリーの外を指すパスと特殊ファイルを拒む。展開するのは API（本体）である。
-- **unit:** `mamela controlplane bundle` が `mamela-api.service` と `mamelacd.service` を入れる。mamelacd は専用のユーザーで動き、`/etc/mamela` と `/var/lib/mamela` を読めない。
+- **コード:**
+  - `cmd/mamelacd`・`internal/gitops`: mamelacd。GitHub を読み、自分の DB（`internal/gitops/state.go`）に記録する。
+  - `cmd/mamela/api.go`・`internal/api`: 本体の局所 API。
+  - `cmd/mamela/service.go`: plan・承認・apply の本体。CLI（`plan.go`・`apply.go`）と API が同じ関数を呼ぶ。
+  - `internal/tree`: tarball の展開。リンクと、ツリーの外を指すパスと、特殊ファイルを拒む。
+- **本体の DB:** gitops の表は migration 16 で消した。
+- **unit:** `mamela controlplane bundle` が `mamela-api.service` と `mamelacd.service` を入れる。
 - **試験:**
-  - 偽の GitHub と kv で、`mamela api` と mamelacd の通しを確かめる。
-  - 偽の API で、次を確かめる。
-    - 先頭だけを apply する
-    - 信頼できない先頭は plan しない
-    - 待ち・拒否は plan し直す
-    - 前提が違えば plan し直す
-    - API が答えないときの扱い
-  - API の拒否（リンク、ツリーの外、期限、未知の項目）を確かめる。
+  - `cmd/mamela/api_test.go`: 偽の GitHub と kv で、PR から apply までを `mamela api` と mamelacd の通しで確かめる。
+  - `internal/gitops`: 偽の API で、先頭の扱い（先頭だけを apply する、信頼できない先頭は plan しない、待ち・拒否・前提の違いは plan し直す、API が答えないとき）を確かめる。
+  - `internal/api`: API の拒否（リンク、ツリーの外、期限、未知の項目）を確かめる。
 
 ## テストの優先順位
 

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,10 +21,9 @@ import (
 
 const apiUsage = `Usage: mamela api --socket <path> [flags]
 
-Serves the Control Plane's local API (ADR 0012) on a Unix socket, for mamelacd: plan a declaration
-of a commit's tree, approve a plan by its digest, and apply an approved plan, exactly as the CLI
-does (the same database, guards, policy and catalogs). Nothing else: no explicit operation, no
-import. The socket is mode 0660; give it to mamelacd's group with --socket-group.
+Serves the Control Plane's local API (ADR 0012) on a Unix socket, for mamelacd: plan, approve and
+apply, as the CLI does (the same database, guards, policy and catalogs), and nothing else. The
+socket is mode 0660; give it to mamelacd's group with --socket-group.
 
 Flags:
 `
@@ -65,9 +63,7 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return report(stderr, err)
 	}
 	defer st.Close()
-	tools := []string{"--toolchain", t.dir, "--pome-cache", t.pomeCache}
-	b := &cliBackend{st: st, tools: t, db: *db, common: append([]string{"--db", *db, "--site", *sitePath, "--providers", *providersFile}, tools...),
-		policy: *policyFile, imageCache: *imageCache}
+	b := &apiBackend{st: st, tools: t, sitePath: *sitePath, providers: *providersFile, policy: *policyFile, imageCache: *imageCache}
 	logger := log.New(stderr, "mamela api: ", log.LstdFlags)
 	srv := &api.Server{Backend: b, WorkDir: *workDir, Mamela: version.Current(), Logf: logger.Printf}
 	l, err := api.Listen(*socket, *group)
@@ -88,84 +84,67 @@ func runAPI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// cliBackend does what the API is asked exactly as the CLI does it (the same commands, in process).
-type cliBackend struct {
+// apiBackend answers the API with the same operations the CLI runs (service.go), against the
+// Control Plane's open database. What it returns is read by mamelacd and posted on GitHub, so
+// the Control Plane's local paths do not leave through it (hidden).
+type apiBackend struct {
 	st         *store.Store
 	tools      tools
-	db         string
-	common     []string
+	sitePath   string
+	providers  string
 	policy     string
 	imageCache string
 }
 
-func (b *cliBackend) run(ctx context.Context, args ...string) (int, string) {
-	var out bytes.Buffer
-	code := run(ctx, args, &out, &out)
-	return code, out.String()
-}
+func (b *apiBackend) findTools() (tools, error) { return b.tools, nil }
 
-func (b *cliBackend) Plan(ctx context.Context, dir string) (api.Planned, error) {
-	args := append([]string{"plan", "--json"}, b.common...)
-	if b.policy != "" {
-		args = append(args, "--policy", b.policy)
-	}
-	var stdout, stderr bytes.Buffer
-	code := run(ctx, append(args, dir), &stdout, &stderr)
-	out := stdout.String()
-	if code != 0 {
-		return api.Planned{}, errors.New(strings.ReplaceAll(strings.TrimSpace(out+stderr.String()), dir, "<declaration>"))
-	}
-	var output planJSON
-	if err := json.Unmarshal([]byte(out), &output, json.RejectUnknownMembers(true)); err != nil {
-		return api.Planned{}, err
-	}
-	p, _, err := b.st.LoadPlan(ctx, output.Digest)
+// hidden is s without the path of the declaration's directory in the extracted tree: evaluating
+// it can name the path in the toolchain's own messages.
+func hidden(s, dir string) string { return strings.ReplaceAll(s, dir, "<declaration>") }
+
+func (b *apiBackend) Plan(ctx context.Context, dir string) (api.Planned, error) {
+	res, err := planDeclaration(ctx, b.st, dir, planOptions{SitePath: b.sitePath, ProvidersFile: b.providers,
+		PolicyFile: b.policy, Tools: b.findTools})
 	if err != nil {
-		return api.Planned{}, err
+		return api.Planned{}, errors.New(hidden(rendered(err), dir))
 	}
-	changes, waiting, blocked := 0, 0, 0
+	p := res.Plan
+	out := api.Planned{Digest: p.Digest, Revision: p.Inputs.RevisionDigest}
 	for _, c := range p.Changes {
 		switch {
 		case c.Status == plan.StatusBlocked || c.Verdict == policy.Denied:
-			blocked++
+			out.Blocked++
 		case c.Status == plan.StatusWaiting:
-			waiting++
+			out.Waiting++
 		case c.Status == plan.StatusChange:
-			changes++
+			out.Changes++
 		}
 	}
-	progs, err := b.st.PlanPrograms(ctx, p.Digest)
-	if err != nil {
-		return api.Planned{}, err
+	for _, pr := range res.Programs {
+		out.Programs = append(out.Programs, fmt.Sprintf("%s %s (%s, %s)", pr.Provider, pr.Version, pr.Source, pr.Digest))
 	}
-	var names []string
-	for _, pr := range progs {
-		names = append(names, fmt.Sprintf("%s %s (%s, %s)", pr.Provider, pr.Version, pr.Source, pr.Digest))
-	}
-	// The text without the local paths of the Control Plane.
-	var rendered bytes.Buffer
-	plan.Render(&rendered, p)
-	text := strings.ReplaceAll(rendered.String(), dir, "<declaration>")
-	return api.Planned{Digest: p.Digest, Revision: p.Inputs.RevisionDigest, Changes: changes, Waiting: waiting, Blocked: blocked, Text: text, Programs: names}, nil
+	var text bytes.Buffer
+	plan.Render(&text, p)
+	out.Text = hidden(text.String(), dir)
+	return out, nil
 }
 
-func (b *cliBackend) Revision(ctx context.Context, dir string) (string, error) {
+func (b *apiBackend) Revision(ctx context.Context, dir string) (string, error) {
 	res, err := b.tools.evaluator().Evaluate(ctx, dir)
 	if err != nil {
-		return "", errors.New(strings.ReplaceAll(err.Error(), dir, "<declaration>"))
+		return "", errors.New(hidden(err.Error(), dir))
 	}
 	return res.Graph.Digest(), nil
 }
 
-func (b *cliBackend) Approve(ctx context.Context, digest, by string, ttl time.Duration) error {
-	code, out := b.run(ctx, "approve", "--db", b.db, "--by", by, "--ttl", ttl.String(), digest)
-	if code != 0 {
-		return errors.New(strings.TrimSpace(out))
+func (b *apiBackend) Approve(ctx context.Context, digest, by string, ttl time.Duration) error {
+	if _, err := approvePlan(ctx, b.st, digest, by, ttl); err != nil {
+		return errors.New(rendered(err))
 	}
 	return nil
 }
 
-func (b *cliBackend) Approved(ctx context.Context, digest string) (bool, error) {
+func (b *apiBackend) Approved(ctx context.Context, digest string) (bool, error) {
 	a, err := b.st.ValidApproval(ctx, digest)
 	if err != nil {
 		return false, err
@@ -173,10 +152,18 @@ func (b *cliBackend) Approved(ctx context.Context, digest string) (bool, error) 
 	return a != nil, nil
 }
 
-func (b *cliBackend) Apply(ctx context.Context, digest string) (api.Applied, error) {
-	args := append([]string{"apply", "--image-cache", b.imageCache}, b.common...)
-	code, out := b.run(ctx, append(args, digest)...)
-	// The world was not what the plan assumed: nothing was done for it (reason codes are stable).
-	stale := code != 0 && strings.Contains(out, "stopped: MAM-REC-0002")
-	return api.Applied{OK: code == 0, Text: out, Stale: stale}, nil
+// Apply reports a failed apply in Applied (OK false, its text), not as an error: the API itself
+// worked.
+func (b *apiBackend) Apply(ctx context.Context, digest string) (api.Applied, error) {
+	var text bytes.Buffer
+	site, err := loadSite(b.sitePath)
+	if err == nil {
+		var res applyResult
+		res, err = applyPlan(ctx, b.st, site, digest, applyOptions{ProvidersFile: b.providers, ImageCache: b.imageCache, Tools: b.findTools}, &text)
+		if err == nil {
+			return api.Applied{OK: res.OK(), Text: text.String(), Stale: res.Stale()}, nil
+		}
+	}
+	report(&text, err)
+	return api.Applied{Text: text.String()}, nil
 }

@@ -106,6 +106,8 @@ AI / Human / Git
 
 初期リリースは **単一プロセス/単一アクティブ Control Plane + SQLite**。API と Reconciler は同一バイナリに統合可能。SQLite を複数の独立ノードで共有しない。HA と分散ロックが必要になった場合は、ストレージとリーダー選出を別途再設計する（初期段階から PostgreSQL 移行を前提にはしない）。
 
+プログラムは三つに分ける（ADR 0012）。mamelet はマシンのエージェント、mamela は宣言・plan・承認・apply・明示操作・取り込み（Control Plane のホストでは `mamela serve` と、mamelacd 向けの局所 API `mamela api`）、mamelacd は Git の宣言に揃え続ける。mamelacd は GitHub のトークンと自分の DB だけを持ち、plan・承認・apply は `mamela api` に頼む。
+
 ## 4. リソースモデル
 
 ### Emela の宣言

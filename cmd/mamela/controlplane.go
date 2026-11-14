@@ -220,7 +220,7 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "Mamelets created from now on reach %s directly. Existing ones move when their revision says so:\n", *newURL)
 	fmt.Fprintf(stdout, "once the new endpoint is ready, run: mamela controlplane redirect --db %s --url %s\n", shellQuote(*db), shellQuote(*newURL))
 	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
-	fmt.Fprintln(stdout, "\nnote: controlplane.move_to is no longer activated by plan; redirect is an explicit action.")
+	fmt.Fprintln(stdout, "\nnote: plan does not move the agents (controlplane.move_to); redirect is an explicit action.")
 	return 0
 }
 
@@ -299,8 +299,9 @@ const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<addr
 
 Packs what a Control Plane host needs (ADR 0003) into one archive: a consistent copy of the state
 database, the Control Plane's keys, the site and the providers' APIs (mamela.providers.toml, with
-their tokens) rewritten for the host, the mamelet binary, a systemd unit and an install script. The archive holds secrets: copy it only to
-the host, over SSH, and delete it afterwards.
+their tokens) rewritten for the host, the mamelet binary, the systemd units (mamela serve, mamela api,
+mamelacd) and an install script. The archive holds secrets: copy it only to the host, over SSH, and
+delete it afterwards.
 
 Flags:
 `
@@ -328,9 +329,9 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 `
 
-// apiUnit serves the Control Plane's local API to mamelacd (ADR 0012), on a socket of the group
-// mamela-api. /etc/mamela/api.env may set MAMELA_TOOLCHAIN_DIR and EMELA_POME_CACHE. It is
-// enabled by hand, with mamelacd.
+// apiUnit serves the Control Plane's local API (ADR 0012) on a socket of the group mamela-api.
+// /etc/mamela/api.env may set MAMELA_TOOLCHAIN_DIR and EMELA_POME_CACHE. It is enabled by hand,
+// with mamelacd.
 const apiUnit = `[Unit]
 Description=Mamela Control Plane local API (mamela api, for mamelacd)
 After=network-online.target
@@ -357,9 +358,8 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 `
 
-// mamelacdUnit follows a repository of declarations (ADR 0010, 0012) as its own user: it holds the
-// GitHub token and its database, reaches the Control Plane only through the API's socket, and
-// cannot read the Control Plane's configuration, secrets or database. It starts only once the
+// mamelacdUnit runs mamelacd (ADR 0012) as its own user, which reaches the Control Plane only
+// through the API's socket and cannot read /etc/mamela or /var/lib/mamela. It starts only once the
 // operator writes /etc/mamelacd/mamelacd.toml.
 const mamelacdUnit = `[Unit]
 Description=mamelacd (follows a repository of declarations through the Control Plane's API)
@@ -419,8 +419,7 @@ for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
 install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
-# mamelacd (ADR 0012): a user of its own, which reaches the Control Plane only through the API's
-# socket (group mamela-api) and cannot read /etc/mamela or /var/lib/mamela.
+# mamelacd (ADR 0012): a user of its own, in the group of the API's socket.
 getent group mamela-api >/dev/null 2>&1 || groupadd --system mamela-api
 id mamelacd >/dev/null 2>&1 || useradd --system --user-group --groups mamela-api --home-dir /var/lib/mamelacd --shell /usr/sbin/nologin mamelacd
 install -d -m 0750 -o root -g mamelacd $r/etc/mamelacd
