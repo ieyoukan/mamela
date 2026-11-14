@@ -44,6 +44,7 @@ type Planned struct {
 	Digest   string `json:"digest"`
 	Revision string `json:"revision"` // the declaration's digest
 	Changes  int    `json:"changes"`  // changes to make
+	Removals int    `json:"removals"` // of them, the deletions (ADR 0013): approved only on the Control Plane's host
 	Waiting  int    `json:"waiting"`  // waiting for observation or dependencies
 	Blocked  int    `json:"blocked"`  // refused (blocked or denied)
 	Text     string `json:"text"`     // the plan as people read it, without the host's paths
@@ -84,6 +85,11 @@ type (
 		Digest string `json:"digest"`
 	}
 )
+
+// ErrNeedsHost is the refusal to approve a plan that deletes objects (ADR 0013): GitHub's side, which
+// reaches this API, must not be able to delete anything, so a person approves such a plan on the
+// Control Plane's host.
+var ErrNeedsHost = errors.New("MAM-API-0201: this API does not approve a plan that deletes objects")
 
 // MaxTTL is the longest approval the API records.
 const MaxTTL = 7 * 24 * time.Hour
@@ -260,7 +266,11 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Backend.Approve(r.Context(), req.Digest, req.By, ttl); err != nil {
-		fail(w, http.StatusUnprocessableEntity, err)
+		code := http.StatusUnprocessableEntity
+		if errors.Is(err, ErrNeedsHost) {
+			code = http.StatusForbidden
+		}
+		fail(w, code, err)
 		return
 	}
 	s.logf("api: %s approved by %s for %s", req.Digest, req.By, ttl)

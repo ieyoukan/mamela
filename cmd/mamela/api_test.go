@@ -83,7 +83,7 @@ mamela_socket = "`+socket+`"
 state_db = "`+filepath.Join(dir, "mamelacd.db")+`"
 `), 0o600)
 
-	// A commit: the repository with the kv demo declaring web = value.
+	// A commit: the repository with the kv demo declaring web = value ("": declaring nothing).
 	commit := func(value string) string {
 		t.Helper()
 		tree := filepath.Join(t.TempDir(), "repo")
@@ -95,13 +95,17 @@ state_db = "`+filepath.Join(dir, "mamelacd.db")+`"
 		pome = bytes.ReplaceAll(pome, []byte(`"../../pome/mamela"`), []byte(`"`+filepath.Join(repo, "pome/mamela")+`"`))
 		pome = bytes.ReplaceAll(pome, []byte(`"../kv/pome"`), []byte(`"`+filepath.Join(repo, "examples/kv/pome")+`"`))
 		os.WriteFile(filepath.Join(tree, "infra/Pome.toml"), pome, 0o644)
+		items := ""
+		if value != "" {
+			items = `|> Kv.kv_item(KvItem(name: "web", value: "` + value + `", labels: []))`
+		}
 		os.WriteFile(filepath.Join(tree, "infra/src/main.emel"), []byte(`import Std.Console.{SystemConsole}
 import Mamela
 import Kv.{KvItem}
 
 fn main() {
   with SystemConsole {
-    Mamela.empty() |> Kv.kv_item(KvItem(name: "web", value: "`+value+`", labels: [])) |> Mamela.print
+    Mamela.empty() `+items+` |> Mamela.print
   }
 }
 `), 0o644)
@@ -219,6 +223,43 @@ fn main() {
 	once()
 	if !said(4, "it was applied already") {
 		t.Fatalf("approving an applied plan: %+v", gh.Comments(4))
+	}
+
+	// #5 takes web out of the declaration: a deletion (ADR 0013). GitHub's side cannot approve it,
+	// whoever comments; a person on the Control Plane's host can, and then the merge applies it.
+	gh.Open(fakegithub.PR{Number: 5, Author: "alice", Base: "main", HeadSHA: commit("")})
+	once()
+	removalDigest := regexp.MustCompile("mamela approve (sha256:[0-9a-f]{64})")
+	var deletion string
+	for _, c := range gh.Comments(5) {
+		if m := removalDigest.FindStringSubmatch(c.Body); m != nil && c.Bot {
+			deletion = m[1]
+		}
+	}
+	if deletion == "" || !said(5, "This plan deletes 1 object") || !said(5, "A comment cannot approve it") || !said(5, "- KVItem web") {
+		t.Fatalf("the plan of a deletion: %+v", gh.Comments(5))
+	}
+	if strings.Contains(gh.Comments(5)[0].Body, "/mamela approve") {
+		t.Fatal("the plan of a deletion offers to be approved by a comment")
+	}
+	gh.Say(5, "bob", "/mamela approve "+deletion)
+	once()
+	if !said(5, "MAM-API-0201") || !said(5, "mamela approve "+deletion) {
+		t.Fatalf("an approver's comment approved a deletion: %+v", gh.Comments(5))
+	}
+	merge = commit("")
+	gh.Merge(5, merge)
+	once()
+	if _, ok := api.Items()["web"]; !ok || said(5, "### Mamela apply") {
+		t.Fatalf("deleted without an approval: %+v\n%+v", api.Items(), gh.Comments(5))
+	}
+	var out bytes.Buffer
+	if code := run(context.Background(), []string{"approve", "--db", db, "--by", "host-admin", deletion}, &out, &out); code != 0 {
+		t.Fatalf("approve on the host: %s", out.String())
+	}
+	once()
+	if _, ok := api.Items()["web"]; ok || !said(5, "### Mamela apply: `infra` applied") {
+		t.Fatalf("after the host's approval: %+v\n%+v", api.Items(), gh.Comments(5))
 	}
 }
 

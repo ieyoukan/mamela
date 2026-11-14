@@ -126,11 +126,14 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return report(stderr, err)
 	}
 	defer st.Close()
-	res, err := approvePlan(ctx, st, fs.Arg(0), *by, *ttl)
+	res, err := approvePlan(ctx, st, fs.Arg(0), *by, *ttl, true)
 	if err != nil {
 		return report(stderr, err)
 	}
 	fmt.Fprintf(stdout, "approved %s by %s until %s\n", res.Approval.PlanDigest, res.Approval.Approver, res.Approval.ExpiresAt.Format(time.RFC3339))
+	if n := len(res.Removed); n > 0 {
+		fmt.Fprintf(stdout, "note: this plan DELETES %d object%s once applied: %s\n", n, plural(n), strings.Join(res.Removed, ", "))
+	}
 	if n := res.Denied; n > 0 {
 		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run\n", n, plural(n), choose(n == 1, "is", "are"))
 	}

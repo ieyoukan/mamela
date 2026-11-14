@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ieyoukan/mamela/internal/reconcile"
+	"github.com/ieyoukan/mamela/internal/store"
 )
 
 // The API reads how an apply ended from the result, not from the text it printed.
@@ -62,6 +63,9 @@ func testBackend(t *testing.T, db, providers string) *apiBackend {
 	t.Cleanup(func() { st.Close() })
 	return &apiBackend{st: st, tools: found, providers: providers}
 }
+
+// StoreForTest is the backend's database.
+func (b *apiBackend) StoreForTest() *store.Store { return b.st }
 
 // What the API returns is posted on GitHub: the Control Plane's local path of the declaration
 // stays out of it, whether planning or evaluating fails.

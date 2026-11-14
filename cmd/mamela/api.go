@@ -119,6 +119,9 @@ func (b *apiBackend) Plan(ctx context.Context, dir string) (api.Planned, error) 
 		case c.Status == plan.StatusChange:
 			out.Changes++
 		}
+		if c.Removes {
+			out.Removals++
+		}
 	}
 	for _, pr := range res.Programs {
 		out.Programs = append(out.Programs, fmt.Sprintf("%s %s (%s, %s)", pr.Provider, pr.Version, pr.Source, pr.Digest))
@@ -138,7 +141,10 @@ func (b *apiBackend) Revision(ctx context.Context, dir string) (string, error) {
 }
 
 func (b *apiBackend) Approve(ctx context.Context, digest, by string, ttl time.Duration) error {
-	if _, err := approvePlan(ctx, b.st, digest, by, ttl); err != nil {
+	if _, err := approvePlan(ctx, b.st, digest, by, ttl, false); err != nil {
+		if errors.Is(err, api.ErrNeedsHost) {
+			return fmt.Errorf("%w; approve it on the Control Plane's host: mamela approve %s", err, digest)
+		}
 		return errors.New(rendered(err))
 	}
 	return nil

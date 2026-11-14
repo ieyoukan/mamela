@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/api"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
@@ -82,6 +83,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 	if err := setRecords(ctx, rt, st); err != nil {
 		return nil, err
 	}
+	// The declaration's name: what is created is recorded for it, and only what it made is deleted
+	// when it no longer has it (ADR 0013).
+	rt.SetStack(res.Stack)
 	// What the other plans of the last hour are to create is taken: plans made one after another
 	// and applied together do not choose the same IDs (a VMID).
 	claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), "")
@@ -131,6 +135,7 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 	if err != nil {
 		return nil, err
 	}
+	snap.Stack = res.Stack
 	snap.AddProvided(provided)
 	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
 	if site != nil {
@@ -173,25 +178,33 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 // approved is what an approval recorded.
 type approved struct {
 	Approval store.Approval
-	Denied   int // changes of the plan that will not run, approved or not
+	Denied   int      // changes of the plan that will not run, approved or not
+	Removed  []string // the objects the plan deletes
 }
 
 // approvePlan approves exactly the saved plan with this digest. Any change to the declaration, the
-// observation or the policy makes a different plan, which needs its own approval.
-func approvePlan(ctx context.Context, st *store.Store, digest, by string, ttl time.Duration) (approved, error) {
+// observation or the policy makes a different plan, which needs its own approval. A plan that
+// deletes objects (ADR 0013) is approved only on the Control Plane's host (host): what reaches the
+// local API comes from GitHub's side, which must not be able to delete anything.
+func approvePlan(ctx context.Context, st *store.Store, digest, by string, ttl time.Duration, host bool) (approved, error) {
 	p, _, err := st.LoadPlan(ctx, digest)
 	if err != nil {
 		return approved{}, told{fmt.Sprintf("cannot approve %s: %v", digest, err)}
 	}
-	a, err := st.Approve(ctx, p.Digest, by, ttl)
-	if err != nil {
-		return approved{}, err
-	}
-	out := approved{Approval: a}
+	out := approved{}
 	for _, c := range p.Changes {
 		if c.Verdict == policy.Denied {
 			out.Denied++
 		}
+		if c.Removes {
+			out.Removed = append(out.Removed, c.ID())
+		}
+	}
+	if len(out.Removed) > 0 && !host {
+		return approved{}, fmt.Errorf("%w: plan %s deletes %s", api.ErrNeedsHost, digest, strings.Join(out.Removed, ", "))
+	}
+	if out.Approval, err = st.Approve(ctx, p.Digest, by, ttl); err != nil {
+		return approved{}, err
 	}
 	return out, nil
 }
@@ -255,6 +268,7 @@ func applyPlan(ctx context.Context, st *store.Store, site *sitedef.Site, digest 
 		if err := setRecords(ctx, rt, st); err != nil {
 			return applyResult{}, err
 		}
+		rt.SetStack(in.Snapshot.Stack)
 		// What the other plans of the last hour are to create is taken (not this plan's own).
 		claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), p.Digest)
 		if err != nil {

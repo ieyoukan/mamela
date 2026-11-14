@@ -143,7 +143,12 @@ func (e *Engine) planComment(p api.Planned, dir, sha string, atHead bool) string
 		fmt.Fprintf(&b, "Provider programs: %s\n\n", strings.Join(p.Programs, ", "))
 	}
 	if p.Changes > 0 {
-		fmt.Fprintf(&b, "To approve exactly this plan, an approver comments:\n\n```\n/mamela approve %s\n```\n\n", p.Digest)
+		if p.Removals > 0 {
+			// ADR 0013: a comment from GitHub's side cannot approve a deletion.
+			fmt.Fprintf(&b, "**This plan deletes %d object(s).** A comment cannot approve it: a person approves it on the Control Plane's host, with\n\n```\nmamela approve %s\n```\n\n", p.Removals, p.Digest)
+		} else {
+			fmt.Fprintf(&b, "To approve exactly this plan, an approver comments:\n\n```\n/mamela approve %s\n```\n\n", p.Digest)
+		}
 		if atHead {
 			fmt.Fprintf(&b, "It is the declaration at the head of `%s`: it is applied as soon as it is approved.\n", e.Config.Branch)
 		} else {
