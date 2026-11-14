@@ -37,7 +37,7 @@ pub type Service(node: String, name: String, enabled: Bool, running: Bool)
 pub type Ref(kind: String, name: String)
 
 ## A resource of a provider's kind, and the resources it needs first (`after`). A provider's Pome
-## wraps `provided` in typed functions, so that a declaration writes `Kv.item(...)`, not this.
+## wraps `provided` in typed functions, so that a declaration writes `Kv.kv_item(...)`, not this.
 pub type Provided(
   provider: String,
   kind: String,

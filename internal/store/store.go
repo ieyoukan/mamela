@@ -208,6 +208,53 @@ CREATE TABLE plan_catalogs (
   PRIMARY KEY (plan_digest, provider, name)
 );
 `,
+	// 12: the objects of another tool (Terraform) a person imported to adopt (ADR 0009): observing
+	// reports the object with these IDs as adoptable for the declared resource, until adopting it
+	// is done (mamela act) and it is recorded as Mamela's.
+	`
+CREATE TABLE adoptions (
+  provider    TEXT NOT NULL,
+  resource    TEXT NOT NULL,
+  ids         TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  imported_by TEXT NOT NULL,
+  recorded_ms INTEGER NOT NULL,
+  PRIMARY KEY (provider, resource)
+);
+`,
+	// 13: what gitops (ADR 0010) posted and did: the plans it made for a repository's pull requests
+	// and merges, and the comments and merges it handled, so that nothing is done twice.
+	`
+CREATE TABLE gitops_plans (
+  plan_digest TEXT PRIMARY KEY REFERENCES plans(digest),
+  repo        TEXT NOT NULL,
+  pr          INTEGER NOT NULL,
+  dir         TEXT NOT NULL,
+  sha         TEXT NOT NULL,
+  merged      INTEGER NOT NULL,
+  revision    TEXT NOT NULL,
+  changes     INTEGER NOT NULL,
+  posted_ms   INTEGER NOT NULL,
+  applied_ms  INTEGER NOT NULL DEFAULT 0,
+  outcome     TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE gitops_seen (
+  key     TEXT PRIMARY KEY,
+  seen_ms INTEGER NOT NULL
+);
+`,
+	// 14: waiting and blocked plans must never be reported as converged by GitOps.
+	`ALTER TABLE gitops_plans ADD COLUMN waiting INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
+	// 15: explicit operations retain the identity needed for read-only recovery after a crash.
+	`ALTER TABLE explicit_operations ADD COLUMN context BLOB;`,
+	// 16: gitops keeps its own records in mamelacd's database (ADR 0012): the Control Plane's
+	// database holds none of GitHub's.
+	`DROP TABLE IF EXISTS gitops_plans;
+DROP TABLE IF EXISTS gitops_seen;`,
+	// 17: the declaration (stack, ADR 0013) each created object belongs to. Objects recorded before
+	// this have none ('') and are never deleted by removing them from a declaration.
+	`ALTER TABLE provider_creations ADD COLUMN stack TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
@@ -512,6 +559,14 @@ WHERE id = ? AND stage = 'Started' AND owner = ?`, string(stage), detail, s.nowM
 		return fmt.Errorf("store: operation %s is no longer claimed by %s", id, owner)
 	}
 	return nil
+}
+
+// Release makes an operation that owner claimed claimable again, as one whose outcome is unknown:
+// its worker is known to be gone, so its lease would only keep the next apply waiting.
+func (s *Store) Release(ctx context.Context, id, owner string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE operations SET stage = 'Unknown', detail = ?, lease_ms = 0, updated_ms = ?
+WHERE id = ? AND stage = 'Started' AND owner = ?`, "its worker "+owner+" is gone: the outcome is unknown", s.nowMs(), id, owner)
+	return err
 }
 
 // Confirm marks an operation Succeeded because observation shows its effect, without running it.

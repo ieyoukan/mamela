@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`cmd/mamela/plan.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -65,6 +65,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 |---|---|---|
 | MAM-POL-0101 | Auto | `autoStartServices` にあるサービスの起動（ドリフト修復） |
 | MAM-POL-0102 | Auto | プロバイダーの変更で、host のカタログが分類した効果がすべて policy の `autoProviderEffects` にある |
+| MAM-POL-0103 | Auto | plan に表示したサービスの自動修復設定を apply で有効化・解除する。plan 自体は許可を配らない |
 | MAM-POL-0201 | — | 廃止（ADR 0006）。VM の作成（組み込みの VirtualMachine）。今はプロバイダーの変更（MAM-POL-0102、0208、0209） |
 | MAM-POL-0202 | — | 廃止（ADR 0006）。VM の CPU / メモリの変更 |
 | MAM-POL-0203 | — | 廃止（ADR 0006）。ディスクの拡張 |
@@ -76,6 +77,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0210 | ApprovalRequired | k3s（Kubernetes）の導入。GitHub から取得し sha256 で固定したバイナリを、root で動かす |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
+| MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
+| MAM-POL-0311 | Denied | 削除の要求に、host のカタログが知らない呼び出しがある。分類できない呼び出しでは削除しない |
 | MAM-POL-0301 | — | 廃止（ADR 0006）。ディスクの縮小。今はプロバイダーが unsupported とした操作（MAM-POL-0309） |
 | MAM-POL-0302 | — | 廃止（ADR 0006）。イメージの変更。今は MAM-POL-0309 |
 | MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更。プロバイダーが引き継ぎ（adopt）の明示操作を持つなら、`mamela act` で引き継げる |
@@ -103,12 +106,18 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0111 | マシンが止まっているので、その上のリソースは起動を待つ |
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
+| MAM-PLAN-0114 | プロバイダーのリソースが存在し、引き継ぐ対象（`adoptable`）である。`mamela import terraform` で取り込んだもの、またはプロバイダーが以前 Mamela の作ったものと認めたもの。人が引き継ぐまで、Mamela は何も変えない（ADR 0009） | プロバイダーの引き継ぎ操作を `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。そのあと plan すると、宣言との差分が出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
 | MAM-PLAN-0204 | mamelet が k3s を観測できない（Blocked。例: unit が手で変えられた） |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
-| MAM-PLAN-0301 | 宣言から消えたが、削除せず保持する（Retain） |
+| MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306 が詳しい） |
+| MAM-PLAN-0302 | 現在の宣言にないが、別の宣言（stack）が作った物なので保持する（ADR 0013）。作った宣言から消す |
+| MAM-PLAN-0303 | 現在の宣言にないが、どの宣言が作ったかを記録する前に作った物なので保持する。`mamela claim <dir> --confirm` でその宣言の物にするか、プロバイダーの明示操作（`mamela act`）で消す |
+| MAM-PLAN-0304 | 現在の宣言にないが、プロバイダーにその種類を削除する操作（`removes`）がないので保持する |
+| MAM-PLAN-0305 | 現在の宣言にないが、policy の `removal = "retain"` なので保持する |
+| MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
 
 ## MAM-REC — 実行
 
@@ -120,7 +129,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-REC-0004 | 操作が失敗した | 原因を直して apply する（失敗した操作は再試行される） |
 | MAM-REC-0005 | 別の worker がこの操作を実行中 | 終わるのを待つ |
 | MAM-REC-0006 | 操作の一部が効いたあとで失敗した（部分的な成功） | 原因を直して apply する（観測してから、残りを続ける） |
+| MAM-API-0201 | `mamela api` が、物の削除を含む plan の承認を断った（GitHub の側から削除は承認できない）。HTTP 403 | Control Plane のホストで `mamela approve <digest>` を実行する |
 | MAM-REC-0007 | plan を作ったときとプロバイダーの契約が違う（マニフェスト、外部のプロバイダーのプログラム、API の接続先・資格情報・カタログ）。承認はその契約に対するもの。このとき apply は guard も呼ばない | 新しく plan して、レビューと承認をやり直す |
+| MAM-REC-0101 | 適用後の再観測でも宣言全体は未収束 | 次の観測を待って再計画する。次の変更にはその計画のポリシー判定・承認が必要 |
+| MAM-REC-0102 | 適用後の再観測に失敗した。実行した操作の結果は記録済みで、収束したかは分からない | 新しく plan して確かめる |
 
 ## MAM-PRV — 外部のプロバイダー
 
@@ -156,10 +168,19 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 | MAM-ACT-0101 | その操作は、そのプロバイダーのその kind の明示操作ではない | メッセージに出る、その kind の明示操作から選ぶ |
 | MAM-ACT-0102 | 対象が存在しない | 何もしなくてよい |
 | MAM-ACT-0103 | 引き継ぎの対象が、もう Mamela のもの | 何もしなくてよい |
-| MAM-ACT-0104 | プロバイダーが、対象を引き継げる（`adoptable`）と報告していない。Mamela は、プロバイダーが Mamela の作ったものと認めたものしか引き継がない | 対象が本当に Mamela の作ったものか確かめる。そうでなければ Foreign のまま |
+| MAM-ACT-0104 | プロバイダーが、対象を引き継げる（`adoptable`）と報告していない。Mamela は、プロバイダーが Mamela の作ったものと認めたものか、人が取り込んだもの（`mamela import terraform`）しか引き継がない | 対象が本当に Mamela の作ったものか確かめる。Terraform の管理下にあるなら `mamela import terraform` で取り込む。そうでなければ Foreign のまま |
 | MAM-ACT-0105 | Mamela に、対象を作った記録がない（Foreign、または作成が終わっていない）。Mamela は自分のものにしか明示操作をしない | 作成が途中なら、plan・apply で仕上げる |
 | MAM-ACT-0106 | `--confirm` の値が対象の名前と違う。何も変えていない | 名前を正しく打ち直す |
-| MAM-ACT-0201 | 操作が効いたかどうか分からない。lookup でも確かめられなかった | `--confirm` なしで `mamela act` をもう一度実行し、今の状態を見る。やみくもに繰り返さない |
+| MAM-ACT-0201 | 操作の結果や完了後の状態を確かめられなかった | 表示された操作 ID を `mamela act --recover <operation-id>` に渡して再観測する。変更要求は再送しない |
 | MAM-ACT-0202 | 操作が失敗した（または一部だけ効いた） | メッセージの原因を直してから、もう一度実行する |
+| MAM-ACT-0204 | 復旧対象の操作・資源・プロバイダー契約が一致しない、または旧形式の記録に復旧用の identity がない | 元の契約を使う。旧形式は実物と監査記録を確認する |
+| MAM-ACT-0205 | 明示操作の途中で所有記録やノードの登録が変わったため、新しい登録を保持した | 同名資源の再作成・再登録を確認する。古い操作で新しい登録を消さない |
+
+## MAM-NODE — ノードの identity と配信
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-NODE-0101 | 同名ノードのマシン ID が変わった | 旧登録の失効を確認し、現ノードで再計画する |
+| MAM-NODE-0102 | `controlplane.move_to` があるが、plan は接続先を変えない | 新しい CP の準備後、`mamela controlplane redirect` を実行する |
 
 `mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。

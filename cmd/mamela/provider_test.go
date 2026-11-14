@@ -82,3 +82,35 @@ func TestProviderInspectCatalogs(t *testing.T) {
 		t.Fatalf("catalog of a declaration: %d\n%s", code, out)
 	}
 }
+
+// The kv example's Pome Emela is what its manifest generates; a stale one fails the check; a
+// provider without specs has nothing to generate.
+func TestProviderPome(t *testing.T) {
+	run := func(args ...string) (int, string) {
+		var out bytes.Buffer
+		code := run(context.Background(), args, &out, &out)
+		return code, out.String()
+	}
+	if code, out := run("provider", "pome", "--check", "../../examples/kv/pome"); code != 0 {
+		t.Fatalf("examples/kv/pome: %d\n%s", code, out)
+	}
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS("../../examples/kv/pome")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "src/lib.emel"), []byte("## stale\n"), 0o644)
+	if code, out := run("provider", "pome", "--check", dir); code != 1 || !strings.Contains(out, "mamela provider pome") {
+		t.Fatalf("a stale Pome: %d\n%s", code, out)
+	}
+	if code, out := run("provider", "pome", dir); code != 0 || !strings.Contains(out, "1 kinds of provider kv-example") {
+		t.Fatalf("generate: %d\n%s", code, out)
+	}
+	src, _ := os.ReadFile(filepath.Join(dir, "src/lib.emel"))
+	if !strings.Contains(string(src), "pub fn kv_item(graph: Mamela.Graph, r: KvItem) -> Mamela.Graph {") ||
+		!strings.Contains(string(src), "## An item of the key-value API") {
+		t.Fatalf("generated:\n%s", src)
+	}
+	if code, out := run("provider", "pome", "../../examples/ec2/pome"); code != 1 || !strings.Contains(out, "nothing to generate") {
+		t.Fatalf("a provider without specs: %d\n%s", code, out)
+	}
+}

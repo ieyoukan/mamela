@@ -1,0 +1,9 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "<% .API %>",
+  "entries": [
+    {"method": "GET", "path": "/things", "effect": "read"},
+    {"method": "PUT", "path": "/things/{thing}", "effect": "change", "query": ["version"], "json": ["value", "tags", "owner"], "precondition": "version"},
+    {"method": "DELETE", "path": "/things/{thing}", "effect": "lose-data", "query": ["version"], "precondition": "version"}
+  ]
+}

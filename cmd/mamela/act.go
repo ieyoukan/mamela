@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -12,10 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/provider/host"
 	"github.com/ieyoukan/mamela/internal/state"
+	"github.com/ieyoukan/mamela/internal/store"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -23,12 +24,13 @@ import (
 // adopting a resource. Explicit operations are never planned. Without --confirm, act only shows
 // what it would send; with --confirm <name>, it records the operation, runs the provider's guard,
 // sends the change under a permit for exactly it, and runs the guard again.
-func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code int) {
 	fs := flag.NewFlagSet("mamela act", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
 	sitePath := addSiteFlag(fs)
 	providersFile := addProvidersFlag(fs)
+	recoverID := fs.String("recover", "", "re-observe a recorded operation without resending it")
 	confirm := fs.String("confirm", "", "the resource's name, typed again: carry the operation out")
 	by := fs.String("by", envOr("USER", ""), "who confirms")
 	tf := addToolFlags(fs)
@@ -74,9 +76,16 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return report(stderr, errors.New("the declaration uses no provider"))
 	}
 	defer rt.Close()
-	rt.SetCreations(st)
+	if err := setRecords(ctx, rt, st); err != nil {
+		return report(stderr, err)
+	}
+	rt.SetStack(res.Stack)
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
+	}
+
+	if *recoverID != "" {
+		return recoverExplicit(ctx, st, rt, res.Graph, site.Providers().DigestWith(rt.Refs()), *recoverID, string(op), target, stdout, stderr)
 	}
 
 	// The resource, as observed now (its ownership vouched for by Mamela's records).
@@ -101,7 +110,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case o.Adopts && obs.Owned:
 		return report(stderr, fmt.Errorf("MAM-ACT-0103: %s is already Mamela's; nothing to adopt", obs.ID))
 	case o.Adopts && !obs.Adoptable:
-		return report(stderr, fmt.Errorf("MAM-ACT-0104: provider %s does not report %s as adoptable; Mamela adopts only what its provider recognizes as made by Mamela", pr.Provider, obs.ID))
+		return report(stderr, fmt.Errorf("MAM-ACT-0104: provider %s does not report %s as adoptable; Mamela adopts only what its provider recognizes as made by Mamela, or what was imported (mamela import terraform)", pr.Provider, obs.ID))
 	case !o.Adopts && !obs.Owned:
 		return report(stderr, fmt.Errorf("MAM-ACT-0105: Mamela has no record of creating %s (Foreign, or not finished); it acts only on its own resources", obs.ID))
 	}
@@ -159,13 +168,29 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	defer func() {
+		if len(before) > 0 {
+			baselines := map[string][]byte{}
+			for _, g := range before {
+				baselines[g.Provider] = g.Result.Baseline
+			}
+			after := rt.Guard(ctx, protocol.GuardAfter, nil, baselines)
+			fmt.Fprintln(stdout, "\n== guard (after)")
+			printGuard(stdout, after)
+			if blocked(after) {
+				fmt.Fprintln(stdout, "\nguard: BLOCKED after the operation. Something the provider guards changed; investigate.")
+				code = 1
+			}
+		}
+	}()
+
 	// Intent first, then the change under a permit for exactly it.
 	now := wallClock()
 	id := fmt.Sprintf("act-%s-%d", strings.ReplaceAll(string(op), "/", "-"), now.UnixNano())
-	text, _ := json.Marshal(change, json.Deterministic(true))
-	if err := st.StartExplicit(ctx, id, pr.Provider, obs.ID, string(op), text, *by); err != nil {
+	if err := st.StartObservedExplicit(ctx, id, pr.Provider, string(op), *by, site.Providers().DigestWith(rt.Refs()), obs, change); err != nil {
 		return report(stderr, err)
 	}
+	fmt.Fprintf(stdout, "operation %s\nrecover without resending: mamela act --db %s --site %s --providers %s --recover %s %s %s %s\n", id, shellQuote(*db), shellQuote(*sitePath), shellQuote(*providersFile), id, op, shellQuote(target), shellQuote(dir))
 	permit, err := protocol.NewPermit(s.Manifest(), change, id, "act:"+id, site.Providers().DigestWith(rt.Refs()),
 		now.Add(time.Hour).Format(time.RFC3339))
 	if err != nil {
@@ -187,42 +212,33 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if r.Err != nil {
 		detail = r.Err.Error()
 	}
-	if err := st.FinishExplicit(ctx, id, string(outcome), detail); err != nil {
+	recorded, err := st.Explicit(ctx, id)
+	if err != nil {
 		return report(stderr, err)
 	}
+	absent := false
 	if outcome == host.OutcomeDone {
-		switch {
-		case o.Adopts:
-			// Mamela's now: recorded as if it had created it.
-			err = st.RecordCreation(ctx, pr.Provider, obs.ID, change.IDs, "act:"+id, id)
-		case slices.Contains(v.Effects, protocol.EffectLoseData):
-			// Deleted: Mamela forgets it.
-			err = st.ForgetCreations(ctx, pr.Provider, obs.ID)
+		if o.Adopts {
+			if err = st.RecordCreation(ctx, rt.Stack(), pr.Provider, obs.ID, change.IDs, "act:"+id, id); err == nil {
+				err = st.ForgetAdoption(ctx, pr.Provider, obs.ID)
+			}
+		} else {
+			absent, err = external.Absent(ctx, s, res.Graph, pr.Provider, obs.ID)
 		}
 		if err != nil {
-			return report(stderr, err)
+			outcome, detail = host.OutcomeUnknown, "completion could not be verified: "+err.Error()
 		}
+	}
+	if err := st.CompleteExplicit(ctx, recorded, string(outcome), detail, absent); err != nil {
+		return report(stderr, err)
 	}
 	fmt.Fprintf(stdout, "%s\n", outcome)
 
-	if len(before) > 0 {
-		baselines := map[string][]byte{}
-		for _, g := range before {
-			baselines[g.Provider] = g.Result.Baseline
-		}
-		after := rt.Guard(ctx, protocol.GuardAfter, nil, baselines)
-		fmt.Fprintln(stdout, "\n== guard (after)")
-		printGuard(stdout, after)
-		if blocked(after) {
-			fmt.Fprintln(stdout, "\nguard: BLOCKED after the operation. Something the provider guards changed; investigate.")
-			return 1
-		}
-	}
 	switch outcome {
 	case host.OutcomeDone:
 		return 0
 	case host.OutcomeUnknown:
-		fmt.Fprintf(stderr, "MAM-ACT-0201: whether %s took effect is not known: %v\n  hint: run mamela act again without --confirm to see the resource as it is now; never repeat it blindly\n", op, r.Err)
+		fmt.Fprintf(stderr, "MAM-ACT-0201: whether %s took effect is not known: %s\n  hint: use --recover %s to verify the original operation without resending it\n", op, detail, id)
 	default:
 		fmt.Fprintf(stderr, "MAM-ACT-0202: %s %s: %v\n", op, outcome, r.Err)
 	}
@@ -282,4 +298,43 @@ func params(p map[string][]string) string {
 		}
 	}
 	return strings.Join(out, " ")
+}
+
+func recoverExplicit(ctx context.Context, st *store.Store, rt *external.Runtime, g *graph.Graph, providers, id, op, target string, stdout, stderr io.Writer) int {
+	e, err := st.Explicit(ctx, id)
+	if err != nil {
+		return report(stderr, err)
+	}
+	if e.Op != op || target != e.Resource && target != e.Context.Observed.Name || e.Context.Providers != providers {
+		return report(stderr, fmt.Errorf("MAM-ACT-0204: recovery must use the original operation, resource and provider contract"))
+	}
+	s, ok := rt.Session(e.Provider)
+	if !ok {
+		return report(stderr, fmt.Errorf("provider %s is unavailable", e.Provider))
+	}
+	status, _, err := s.Lookup(ctx, e.Change)
+	if err != nil || status != protocol.LookupDone {
+		return report(stderr, fmt.Errorf("MAM-ACT-0201: operation %s remains %s (%v); no requests were resent", id, status, err))
+	}
+	absent, err := external.Absent(ctx, s, g, e.Provider, e.Resource)
+	if err != nil {
+		return report(stderr, err)
+	}
+	o, _ := s.Manifest().Operation(e.Context.Observed.Kind, protocol.Op(e.Op))
+	if o.Adopts {
+		if absent {
+			return report(stderr, fmt.Errorf("adopted resource is absent; inspect before recovering"))
+		}
+		if err = st.RecordCreation(ctx, rt.Stack(), e.Provider, e.Resource, e.Change.IDs, "act:"+id, id); err != nil {
+			return report(stderr, err)
+		}
+		if err = st.ForgetAdoption(ctx, e.Provider, e.Resource); err != nil {
+			return report(stderr, err)
+		}
+	}
+	if err := st.CompleteExplicit(ctx, e, string(host.OutcomeDone), "confirmed by read-only recovery", absent); err != nil {
+		return report(stderr, err)
+	}
+	fmt.Fprintf(stdout, "operation %s confirmed by observation; no requests were resent\n", id)
+	return 0
 }

@@ -39,13 +39,14 @@ type Op = protocol.Op
 
 const (
 	// OpChangeForeign is any change to a resource Mamela did not create: always denied.
-	OpChangeForeign  Op = "change-foreign"
-	OpInstallPackage Op = "install-package"
-	OpEnableService  Op = "enable-service"
-	OpDisableService Op = "disable-service"
-	OpStartService   Op = "start-service"
-	OpStopService    Op = "stop-service"
-	OpInstallK3s     Op = "install-k3s"
+	OpChangeForeign    Op = "change-foreign"
+	OpInstallPackage   Op = "install-package"
+	OpEnableService    Op = "enable-service"
+	OpDisableService   Op = "disable-service"
+	OpStartService     Op = "start-service"
+	OpStopService      Op = "stop-service"
+	OpConfigureService Op = "configure-service-repair"
+	OpInstallK3s       Op = "install-k3s"
 )
 
 // Code is a stable reason code for a decision.
@@ -75,7 +76,14 @@ type Policy struct {
 	// ProtectedNodes are machines that this Control Plane never changes: its own host (site
 	// controlplane.host). Every change to them, or to what runs on them, is denied (ADR 0003).
 	ProtectedNodes []string `json:"protectedNodes,omitempty"`
+	// Removal says what becomes of an object Mamela made for a declaration once the declaration no
+	// longer has it (ADR 0013): "delete" (the default) plans its deletion, which needs an approval
+	// made on the Control Plane's host; "retain" keeps it, as before.
+	Removal string `json:"removal,omitempty"`
 }
+
+// Deletes reports whether removing a resource from its declaration plans its deletion.
+func (p Policy) Deletes() bool { return p.Removal != "retain" }
 
 // Protected reports whether node is one the Control Plane never changes.
 func (p Policy) Protected(node string) bool {
@@ -135,9 +143,23 @@ func (p Policy) DecideProvided(v protocol.Verified) Decision {
 	return Decision{ApprovalRequired, "MAM-POL-0209", "a change through a provider (" + strings.Join(es, ", ") + ")", ""}
 }
 
+// DecideRemoval decides the deletion of an object that no declaration has any more. It always needs
+// an approval, which only the Control Plane's host can give (ADR 0013); a request the host's
+// catalog does not know is never sent.
+func (p Policy) DecideRemoval(v protocol.Verified) Decision {
+	if len(v.Unclassified) > 0 {
+		return Decision{Denied, "MAM-POL-0311", fmt.Sprintf("%d of the deletion's requests are calls the host's catalog does not know; Mamela deletes only through calls it can classify", len(v.Unclassified)),
+			"add the API's catalog to the provider's configuration"}
+	}
+	return Decision{ApprovalRequired, "MAM-POL-0310", "deletes an object Mamela made for this declaration, which no longer has it",
+		"review what is deleted, then approve the plan on the Control Plane's host (mamela approve): a pull request's comment cannot approve a deletion"}
+}
+
 // Decide returns the decision for one operation. It is a pure function of the policy and subject.
 func (p Policy) Decide(s Subject) Decision {
 	switch s.Op {
+	case OpConfigureService:
+		return Decision{Auto, "MAM-POL-0103", "apply activates the service repair policy shown in this plan", ""}
 	case OpInstallK3s:
 		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
 			"check the version and sha256 against the k3s release page before approving"}
@@ -199,6 +221,9 @@ func Decode(data []byte) (Policy, error) {
 	var p Policy
 	if err := json.Unmarshal(data, &p, json.RejectUnknownMembers(true)); err != nil {
 		return Policy{}, err
+	}
+	if p.Removal != "" && p.Removal != "delete" && p.Removal != "retain" {
+		return Policy{}, fmt.Errorf("policy: removal %q: \"delete\" or \"retain\"", p.Removal)
 	}
 	return p, nil
 }

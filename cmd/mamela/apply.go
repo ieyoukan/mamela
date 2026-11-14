@@ -11,13 +11,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/ieyoukan/mamela/internal/cp"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/external"
-	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/reconcile"
 	"github.com/ieyoukan/mamela/internal/seed"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
@@ -25,8 +23,7 @@ import (
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
-// runApply carries out an approved plan through the providers the plan was made with, between each
-// provider's guard (its safety check before and after, ADR 0006).
+// runApply carries out an approved plan (applyPlan).
 func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela apply", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -60,100 +57,15 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return report(stderr, err)
 	}
 	defer st.Close()
-	p, in, err := st.LoadPlan(ctx, fs.Arg(0))
-	if errors.Is(err, store.ErrNotFound) {
-		fmt.Fprintf(stderr, "no plan %s in %s\n", fs.Arg(0), *db)
-		return 1
-	}
-	if err != nil {
-		fmt.Fprintf(stderr, "MAM-REC-0001: %v\n  hint: the stored plan or its inputs changed; do not apply it, make a new plan\n", err)
-		return 1
-	}
-	programs, err := st.PlanPrograms(ctx, p.Digest)
-	if err != nil {
-		return report(stderr, err)
-	}
-	nodes := &node.Provider{Store: st, Clock: wallClock}
-	var rt *external.Runtime
-	var prov reconcile.Provider = nodes
-	if len(programs) > 0 {
-		t, err := tf.find()
-		if err != nil {
-			return report(stderr, err)
-		}
-		if rt, err = startPrograms(ctx, programs, t, *providersFile); err != nil {
-			return report(stderr, err)
-		}
-		defer rt.Close()
-		rt.SetCreations(st)
-		// What the other plans of the last hour are to create is taken (not this plan's own).
-		claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), p.Digest)
-		if err != nil {
-			return report(stderr, err)
-		}
-		rt.SetClaims(claims)
-		made := &artifacts{Cache: *imageCache, Site: site, Nodes: st}
-		if site != nil && site.ControlPlane.Enabled() {
-			keys, err := site.SSHPublicKeys()
-			if err != nil {
-				return report(stderr, fmt.Errorf("guest.ssh_public_key_file: %w", err))
-			}
-			if made.Seeds, err = seedMaker(site, st, keys); err != nil {
-				return report(stderr, err)
-			}
-		}
-		rt.SetArtifacts(made)
-		rt.SetLimits(siteLimits(site))
-	}
-	digest := site.Providers().DigestWith(rt.Refs())
-	if rt != nil {
-		prov = &external.Provider{Base: nodes, Runtime: rt, Graph: in.Revision, Store: st, Clock: wallClock, Providers: digest}
-	}
-
-	// 1. Each provider's guard, with the changes of it this plan may carry out. (A plan made for
-	// other providers is refused by the reconciler before anything is contacted: MAM-REC-0007.)
-	var before []external.GuardReport
-	if rt != nil && in.Providers == digest {
-		before = rt.Guard(ctx, protocol.GuardBefore, plannedChanges(p), nil)
-		if len(before) > 0 {
-			fmt.Fprintln(stdout, "== guard (before)")
-			printGuard(stdout, before)
-			if blocked(before) {
-				fmt.Fprintln(stdout, "\nguard: BLOCKED. Nothing was changed.")
-				return 1
-			}
-			fmt.Fprintln(stdout)
-		}
-	}
-
-	// 2. Reconcile.
-	fmt.Fprintf(stdout, "== apply %s\n", p.Digest)
-	host, _ := os.Hostname()
-	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour, Providers: digest}
-	rep, applyErr := rec.Apply(ctx, p.Digest)
-	if rep != nil {
-		printReport(stdout, rep)
-	}
-
-	// 3. The guards again, whatever happened above.
-	var after []external.GuardReport
-	if len(before) > 0 {
-		baselines := map[string][]byte{}
-		for _, g := range before {
-			baselines[g.Provider] = g.Result.Baseline
-		}
-		after = rt.Guard(ctx, protocol.GuardAfter, nil, baselines)
-		fmt.Fprintln(stdout, "\n== guard (after)")
-		printGuard(stdout, after)
-	}
-
+	res, err := applyPlan(ctx, st, site, fs.Arg(0), applyOptions{ProvidersFile: *providersFile, ImageCache: *imageCache, Tools: tf.find}, stdout)
+	var noPlan *noPlanError
 	switch {
-	case applyErr != nil:
-		return report(stderr, applyErr)
-	case blocked(after):
-		fmt.Fprintln(stdout, "\nguard: BLOCKED after the apply. Something the provider guards changed; investigate before any further apply.")
+	case errors.As(err, &noPlan):
+		fmt.Fprintf(stderr, "%s in %s\n", noPlan, *db)
 		return 1
-	case rep.Stopped != nil:
+	case err != nil:
+		return report(stderr, err)
+	case !res.OK():
 		return 1
 	}
 	return 0
@@ -198,7 +110,7 @@ func printGuard(w io.Writer, rs []external.GuardReport) {
 
 func printReport(w io.Writer, rep *reconcile.Report) {
 	if len(rep.Steps) == 0 && rep.Stopped == nil {
-		fmt.Fprintln(w, "nothing to do: the world already matches the plan")
+		fmt.Fprintln(w, "no operations were executed in this phase")
 	}
 	for _, s := range rep.Steps {
 		line := fmt.Sprintf("%-14s %-16s %s", s.Outcome, s.Op, s.Resource)
@@ -209,6 +121,18 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 	}
 	if s := rep.Stopped; s != nil {
 		fmt.Fprintf(w, "\nstopped: %s: %s\n  hint: %s\n", s.Code, s.Message, s.Hint)
+	}
+	if rep.RemainingErr != "" {
+		fmt.Fprintf(w, "\nMAM-REC-0102: could not observe after applying (%s); the outcomes above are recorded, but whether the declaration converged is not known. Make a new plan.\n", rep.RemainingErr)
+	}
+	if rep.Remaining != nil {
+		fmt.Fprintf(w, "\nAfter apply: %s\n", plan.Summary(rep.Remaining))
+		for _, c := range rep.Remaining.Changes {
+			if c.Status != plan.StatusInSync && c.Status != plan.StatusRetained {
+				fmt.Fprintln(w, "MAM-REC-0101: the declaration has not converged; make a new plan after the next observation. Any new changes need their own policy decision and approval.")
+				break
+			}
+		}
 	}
 }
 

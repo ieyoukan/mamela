@@ -220,7 +220,11 @@ func TestPlanReplayApprove(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("no approve hint:\n%s", stdout)
 	}
-	digest := strings.TrimSpace(stdout[i+len("mamela approve "):])
+	hint := strings.Fields(stdout[i+len("mamela approve "):])
+	digest := hint[len(hint)-1]
+	if !strings.Contains(stdout, "--db "+shellQuote(db)) {
+		t.Fatal("approval hint lost the database")
+	}
 
 	if code, out, errOut := runCLI("plan", "--db", db, "--replay", digest); code != 0 || !strings.Contains(out, "recomputes to the same digest") {
 		t.Errorf("replay: code=%d out=%s err=%s", code, out, errOut)

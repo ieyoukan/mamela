@@ -16,7 +16,7 @@ var symbols = map[Status]string{
 	StatusChange:   "~",
 	StatusWaiting:  ".",
 	StatusBlocked:  "!",
-	StatusRetained: "-",
+	StatusRetained: "=",
 }
 
 // Render writes the plan for a person: every resource, what would happen to it and why,
@@ -31,7 +31,9 @@ func Render(w io.Writer, p *Plan) {
 		sym := symbols[c.Status]
 		// "+" is a create. A provider's diffs are reasons (no "from"): it creates when its object
 		// does not exist yet.
-		if c.Status == StatusChange && (c.Creates || c.Provider == "" && len(c.Diffs) > 0 && allFromEmpty(c.Diffs)) {
+		if c.Removes {
+			sym = "-"
+		} else if c.Status == StatusChange && (c.Creates || c.Provider == "" && len(c.Diffs) > 0 && allFromEmpty(c.Diffs)) {
 			sym = "+"
 		}
 		via := ""

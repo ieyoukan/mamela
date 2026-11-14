@@ -31,9 +31,17 @@ Usage:
   mamela guard <pome-dir>             run the providers' safety checks, as before an apply (read-only)
   mamela act <op> <resource> <pome-dir>  an explicit operation of a provider (delete, reboot, adopt...);
                                       shows it, and does it only with --confirm <resource name>
+  mamela claim <pome-dir>             record that a declaration made what it declares and Mamela made before
+                                      it recorded which declaration did, so that removing it deletes it (ADR 0013)
+  mamela import terraform <pome-dir>  move what Terraform/OpenTofu manages to Mamela: declarations of the
+                                      resources of a state (terraform show -json), to adopt (ADR 0009)
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
   mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
-  mamela provider <inspect|trust|script>  check a provider program; trust a native one; print its setup scripts
+  mamela api --socket <path>          serve the Control Plane's local API to mamelacd, which follows a
+                                      repository of declarations on GitHub (ADR 0010, 0012)
+  mamela provider <new|pome|inspect|catalog|trust|script>
+                                      write a new provider; generate its Pome's Emela; check a provider
+                                      program; show its catalogs; trust a native one; print its scripts
   mamela toolchain [status|install]  check or install the pinned emela and wasmtime
   mamela version                      print the Mamela version and its pinned toolchain
 
@@ -66,8 +74,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runGuard(ctx, args[1:], stdout, stderr)
 	case "act":
 		return runAct(ctx, args[1:], stdout, stderr)
+	case "claim":
+		return runClaim(ctx, args[1:], stdout, stderr)
+	case "import":
+		return runImport(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
+	case "api":
+		return runAPI(ctx, args[1:], stdout, stderr)
 	case "controlplane":
 		return runControlPlane(ctx, args[1:], stdout, stderr)
 	case "provider":
@@ -190,7 +204,10 @@ func describe(r graph.Resource) string {
 func report(w io.Writer, err error) int {
 	var ge *graph.Error
 	var ee *evaluate.Error
+	var te told
 	switch {
+	case errors.As(err, &te):
+		fmt.Fprintln(w, te.text)
 	case errors.As(err, &ge):
 		fmt.Fprintf(w, "the declaration produced an invalid graph (%d problem%s):\n\n", len(ge.Problems), plural(len(ge.Problems)))
 		for _, p := range ge.Problems {

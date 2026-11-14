@@ -1,0 +1,15 @@
+[pome]
+name = "<% .PomeName %>"
+version = "0.1.0"
+emela = "0.27.0"
+module = "<% .Module %>"
+
+[dependencies]
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.3.0"
+"github.com/emela-lang/x/dynamic" = "v0.5.1"
+<%- if .MamelaPome %>
+
+# A local checkout of Mamela's Pome (mamela provider new --mamela).
+[replace]
+"github.com/ieyoukan/mamela/pome/mamela" = { path = "<% .MamelaPome %>" }
+<%- end %>

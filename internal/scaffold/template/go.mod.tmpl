@@ -1,0 +1,16 @@
+module <% .GoModule %>
+
+go 1.27
+
+toolchain go1.27.3
+
+require github.com/ieyoukan/mamela <% .MamelaVersion %>
+
+// The mamela command, of the same version: build.sh generates the Pome's Emela with it
+// (go tool mamela provider pome), and CI installs the toolchain with it.
+tool github.com/ieyoukan/mamela/cmd/mamela
+<%- if .MamelaGo %>
+
+// A local checkout of Mamela (mamela provider new --mamela).
+replace github.com/ieyoukan/mamela => <% .MamelaGo %>
+<%- end %>

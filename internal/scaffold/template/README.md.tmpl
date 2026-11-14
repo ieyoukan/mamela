@@ -1,0 +1,38 @@
+# <% .Provider %>
+
+A [Mamela](https://github.com/ieyoukan/mamela) provider for the API `<% .API %>`, written with
+provider/kit. Made by `mamela provider new`; start by replacing the example kind (a "thing") with
+what your API manages.
+
+| Path | What |
+|---|---|
+| `<% .Pkg %>/<% .Pkg %>.go` | the provider: each kind's calls, how to list its objects, what a declaration changes |
+| `<% .Pkg %>/fakeapi` | a fake of the API, for the tests |
+| `<% .Pkg %>/<% .Pkg %>_test.go` | Mamela's conformance suite against the fake, and the check that the Pome is the build |
+| `pome/catalogs/<% .CatalogFile %>` | the API's catalog: what each call does (read, create, change, lose-data) |
+| `pome/` | the Pome a declaration imports: the program, the catalog, and the generated Emela |
+| `build.sh` | builds the program into the Pome and generates `pome/src/lib.emel` |
+
+```sh
+./build.sh      # after each change of the provider
+go test ./...   # the conformance suite (needs Mamela's toolchain: mamela toolchain install)
+```
+
+A declaration uses it by importing the Pome:
+
+```emela
+import Mamela
+import <% .Module %>.{<% .ThingType %>}
+
+fn infrastructure() -> Mamela.Graph {
+  Mamela.empty() |> <% .Module %>.<% .ThingFn %>(<% .ThingType %>(name: "web", value: "v1", tags: []))
+}
+```
+
+and `mamela.providers.toml` says where the API is and names the catalog:
+
+```toml
+[provider.<% .Provider %>]
+api_url = "https://..."
+catalog = "pome:<% .CatalogName %>"
+```

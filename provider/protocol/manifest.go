@@ -80,6 +80,14 @@ type Kind struct {
 	// Node: resources of this kind are machines mamelet runs on (ADR 0004). Their observation
 	// reports Observed.Node, and node resources (packages, services, k3s) may be declared on them.
 	Node bool `json:"node,omitempty"`
+	// Spec are the fields of the kind's spec (ADR 0009), when the provider gives them: its Pome's
+	// types and functions can then be generated.
+	Spec []Field `json:"spec,omitempty"`
+	// Doc says what a resource of the kind is, for its generated Pome.
+	Doc string `json:"doc,omitempty"`
+	// Imports are the types of Terraform and OpenTofu resources the provider turns into
+	// declarations of this kind (MethodImport, ADR 0009): "aws_vpc".
+	Imports []string `json:"imports,omitempty"`
 }
 
 // Support says whether a provider carries out an operation.
@@ -106,6 +114,11 @@ type Operation struct {
 	// Adopts: the explicit operation takes over an Adoptable object (its only use); once it is done,
 	// Mamela records the object as its own.
 	Adopts bool `json:"adopts,omitempty"`
+	// Removes: the explicit operation that deletes the object (a kind has at most one). Mamela plans
+	// it, for an object it created for a declaration, once that declaration no longer has the
+	// resource; the plan needs an approval made on the Control Plane's host (ADR 0013). Without it,
+	// the kind's objects are never deleted by removing them from a declaration.
+	Removes bool `json:"removes,omitempty"`
 }
 
 // Call is one API call: a method and a path template whose "{name}" segments are IDs ("/items/{item}"),
@@ -217,10 +230,15 @@ func FindCall(calls []Call, api, method, path string, params map[string][]string
 	return found, ids, n == 1
 }
 
-// CheckAdopts: only an explicit operation adopts.
-func (o Operation) checkAdopts() error {
-	if o.Adopts && !o.Explicit {
+// checkLifecycle: only a supported explicit operation adopts or removes, and not both.
+func (o Operation) checkLifecycle() error {
+	switch {
+	case o.Adopts && !o.Explicit:
 		return fmt.Errorf("%s adopts, so it must be explicit", o.Op)
+	case o.Removes && (!o.Explicit || o.Support != Supported):
+		return fmt.Errorf("%s removes, so it must be an explicit, supported operation", o.Op)
+	case o.Removes && o.Adopts:
+		return fmt.Errorf("%s cannot both adopt and remove", o.Op)
 	}
 	return nil
 }
@@ -389,7 +407,14 @@ func (m Manifest) Check() error {
 		if k.Kind == "" {
 			return fmt.Errorf("manifest %s: a kind without a name", m.Provider)
 		}
+		if err := CheckFields(k.Spec); err != nil {
+			return fmt.Errorf("manifest %s: %s spec: %w", m.Provider, k.Kind, err)
+		}
+		if err := checkImports(k); err != nil {
+			return fmt.Errorf("manifest %s: %w", m.Provider, err)
+		}
 		seen := map[Op]bool{}
+		removes := false
 		for _, o := range k.Operations {
 			if o.Op == "" || seen[o.Op] {
 				return fmt.Errorf("manifest %s: %s %q is empty or declared twice", m.Provider, k.Kind, o.Op)
@@ -406,6 +431,15 @@ func (m Manifest) Check() error {
 				}
 			default:
 				return fmt.Errorf("manifest %s: %s %s: unknown support %q", m.Provider, k.Kind, o.Op, o.Support)
+			}
+			if err := o.checkLifecycle(); err != nil {
+				return fmt.Errorf("manifest %s: %s: %w", m.Provider, k.Kind, err)
+			}
+			if o.Removes {
+				if removes {
+					return fmt.Errorf("manifest %s: %s has more than one removing operation", m.Provider, k.Kind)
+				}
+				removes = true
 			}
 			if err := checkCalls(o.Calls); err != nil {
 				return fmt.Errorf("manifest %s: %s %s: %w", m.Provider, k.Kind, o.Op, err)
@@ -554,12 +588,43 @@ func ParamText(where, value string) string {
 	return value
 }
 
+// ObjectText is a parameter's value as the name of one object, to compare with a permit's ID: as
+// ParamText, and a JSON list of exactly one string as that string (an API that names the objects
+// it acts on in a list, as ECS's DeleteTaskDefinitions, names one). A list of several names no one
+// object, and never equals an ID.
+func ObjectText(where, value string) string {
+	if where == "json" {
+		var list []string
+		if json.Unmarshal([]byte(value), &list) == nil {
+			if len(list) == 1 {
+				return list[0]
+			}
+			return value
+		}
+	}
+	return ParamText(where, value)
+}
+
 // Operation returns the declaration of an operation on a kind.
 func (m Manifest) Operation(kind ResourceKind, op Op) (Operation, bool) {
 	for _, k := range m.Kinds {
 		if k.Kind == kind {
 			for _, o := range k.Operations {
 				if o.Op == op {
+					return o, true
+				}
+			}
+		}
+	}
+	return Operation{}, false
+}
+
+// RemoveOp returns the operation that deletes the objects of a kind, if the provider has one.
+func (m Manifest) RemoveOp(kind ResourceKind) (Operation, bool) {
+	for _, k := range m.Kinds {
+		if k.Kind == kind {
+			for _, o := range k.Operations {
+				if o.Removes {
 					return o, true
 				}
 			}

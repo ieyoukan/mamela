@@ -19,6 +19,9 @@ import (
 type Snapshot struct {
 	// AsOf is "now" for planning: observation ages are measured against it.
 	AsOf time.Time `json:"asOf"`
+	// Stack is the declaration (ADR 0013) the world was observed for: the objects it made, and
+	// only those, may be deleted when it no longer has them. Empty: none is named.
+	Stack string `json:"stack,omitempty"`
 	// Packages by "<node>/<package>". Absent means "not observed", not "not installed".
 	Packages map[string]Package `json:"packages"`
 	// Services by "<node>/<service>". Absent means "not observed".
@@ -30,6 +33,8 @@ type Snapshot struct {
 	K3s map[string]K3s `json:"k3s,omitempty"`
 	// Nodes are the machines of providers' node kinds, by resource name (ADR 0004).
 	Nodes map[string]Node `json:"nodes,omitempty"`
+	// AgentRegistrations binds node operations to the enrolled instance, even if a VMID is reused.
+	AgentRegistrations map[string]string `json:"agentRegistrations,omitempty"`
 }
 
 // AddProvided records providers' observations, and from them the machines of node kinds.
@@ -89,6 +94,21 @@ type Provided struct {
 	// 0007): its changes are not computed until then.
 	Waiting    string    `json:"waiting,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
+	// An object that exists, is Mamela's and is not declared (ADR 0013) has either Removal, the
+	// provider's change that deletes it (it was made for this declaration, and its kind has a
+	// removing operation), or Kept, the reason it is left as it is.
+	Removal *ProvidedChange `json:"removal,omitempty"`
+	// RemovalOrder: the later the object was created, the higher; objects are deleted from the
+	// highest down, so that what depends on an object goes before it.
+	RemovalOrder int   `json:"removalOrder,omitempty"`
+	Kept         *Kept `json:"kept,omitempty"`
+}
+
+// Kept is why an object that no declaration has any more is left as it is.
+type Kept struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
 }
 
 // ProvidedChange is one change a provider's diff computed, with what the host's catalog verifies
@@ -121,10 +141,11 @@ type Package struct {
 
 // Service is an observed systemd service on a node.
 type Service struct {
-	Exists     bool      `json:"exists"` // the unit is known to systemd (its package is installed)
-	Enabled    bool      `json:"enabled"`
-	Running    bool      `json:"running"`
-	ObservedAt time.Time `json:"observedAt"`
+	RepairStart bool      `json:"repairStart,omitempty"` // active standing permission, read from the CP's revision
+	Exists      bool      `json:"exists"`                // the unit is known to systemd (its package is installed)
+	Enabled     bool      `json:"enabled"`
+	Running     bool      `json:"running"`
+	ObservedAt  time.Time `json:"observedAt"`
 }
 
 // Empty is the snapshot of a world where nothing exists yet.
@@ -149,6 +170,8 @@ func (s Snapshot) Digest() string {
 
 func (s Snapshot) normalized() Snapshot {
 	n := Empty(s.AsOf)
+	n.Stack = s.Stack
+	n.AgentRegistrations = s.AgentRegistrations
 	for k, v := range s.Packages {
 		v.ObservedAt = v.ObservedAt.UTC()
 		n.Packages[k] = v

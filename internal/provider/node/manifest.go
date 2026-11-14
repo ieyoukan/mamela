@@ -9,7 +9,7 @@ import (
 )
 
 // Version is the version of the node provider's contract (its manifest).
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // TargetNode is the target type of mamelet's capabilities: the VM it runs in. They are granted
 // in the node's signed revision, one approved operation at a time unless Standing says otherwise.
@@ -72,6 +72,9 @@ func Manifest() spec.Manifest {
 		}},
 	}}}
 	svc := spec.Kind{Kind: graph.KindNodeService}
+	svc.Operations = append(svc.Operations, spec.Operation{Op: policy.OpConfigureService, Support: spec.Supported,
+		Needs: []spec.Need{{Capability: "revision.service-repair", Target: node, Object: "{service}", Always: true,
+			Reasons: []string{"apply activates or revokes the policy's standing start permission"}}}})
 	for _, op := range []policy.Op{policy.OpEnableService, policy.OpStartService, policy.OpDisableService, policy.OpStopService} {
 		action := serviceActions[op]
 		n := spec.Need{Capability: capSystemd + action, Target: node, Object: "{service}", Always: true,

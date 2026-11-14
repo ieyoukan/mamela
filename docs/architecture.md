@@ -23,7 +23,7 @@ Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したイン�
 2. **Least authority**: Emela、Control Plane、Provider、Agent の権限を分ける。権限境界は Mamela のコードだけでなく、Proxmox の ACL など外部の仕組みでも二重に強制する。
 3. **Continuous reconciliation**: 宣言と観測の差分を継続的に調整する。
 4. **Observable & auditable**: 決定、変更、失敗、再試行の理由を追跡できる。Plan はその入力から再計算して検証できる。
-5. **Explicit ownership**: 宣言から消えたリソースを勝手に削除しない。Mamela が作っていないリソースを取り込まない。
+5. **Explicit ownership**: 宣言から消えたリソースは、その宣言が作った物に限って、ホストでの承認のあとに削除する（ADR 0013）。ほかの物は削除しない。Mamela が作っていないリソースを取り込まない。
 6. **Idempotent operations**: 再起動・ネットワーク断・重複配送でも収束可能にする。
 
 ## 2. スコープ
@@ -80,7 +80,7 @@ AI / Human / Git
 ### 3.2 人間に優しい UX
 
 - **Plan は Terraform 風の差分 + 判定 + 理由**で表示する。各変更に `Auto` / `ApprovalRequired` / `Denied` と、安定した理由コード（例: `MAM-POL-0102`）、平易な一文、解消方法を付ける。
-- **何もしないことも明示する**: 「宣言から消えたが Retain のため保持」「観測が古いため保留」など、実行しない理由も表示する。
+- **何もしないことも明示する**: 「宣言から消えたが別の宣言が作ったため保持」「観測が古いため保留」など、実行しない理由も表示する。
 - `mamela plan` / `diff` / `describe` は常に読み取り専用で、いつ実行しても安全。変更は `mamela apply <plan-id>` だけが行い、Plan digest が一致しなければ拒否する。
 - 人が書く値は人の単位で書ける（`memory: 8 GiB`）。内部では正規化する。
 - 名前は人が付けたものを主に表示し、UID は短縮して併記する。
@@ -105,6 +105,8 @@ AI / Human / Git
 ### 実行形態
 
 初期リリースは **単一プロセス/単一アクティブ Control Plane + SQLite**。API と Reconciler は同一バイナリに統合可能。SQLite を複数の独立ノードで共有しない。HA と分散ロックが必要になった場合は、ストレージとリーダー選出を別途再設計する（初期段階から PostgreSQL 移行を前提にはしない）。
+
+プログラムは三つに分ける（ADR 0012）。mamelet はマシンのエージェント、mamela は宣言・plan・承認・apply・明示操作・取り込み（Control Plane のホストでは `mamela serve` と、mamelacd 向けの局所 API `mamela api`）、mamelacd は Git の宣言に揃え続ける。mamelacd は GitHub のトークンと自分の DB だけを持ち、plan・承認・apply は `mamela api` に頼む。
 
 ## 4. リソースモデル
 
@@ -197,7 +199,7 @@ spec:
 - `status.observedGeneration`: Controller が処理を試みた世代。成功を意味しない。
 - `conditions`: Ready / Reconciling / Blocked / Degraded と理由コード。
 - `externalID`: 基盤の実リソース（Proxmox の VMID、EC2 のインスタンス ID など）との対応。必ず再観測して確認。
-- `deletionPolicy: Retain`: 定義から消しても実体を消さない。
+- 定義から消したときの実体: その宣言が作った物は削除する。policy の `removal = "retain"` で全体を残せる（ADR 0013）。
 
 ### 所有の目印
 
@@ -293,7 +295,7 @@ APT インストールは maintainer script の特権実行を含み得るため
 
 ### 削除と承認
 
-- 未宣言 → `Unmanaged/Orphaned` として保持。削除は plan に現れない。プロバイダーが明示操作として宣言した削除・再起動・引き継ぎだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
+- 未宣言 → その宣言が作った物で、種類に削除する操作があれば、plan に削除として現れる（要承認。ADR 0013）。それ以外は `Unmanaged/Orphaned` として保持し、理由を示す。再起動・引き継ぎは、プロバイダーが明示操作として宣言したものだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
 - 承認は Plan digest、対象 ID、操作範囲、期限に結びつけ、変更で失効する。
 - Agent は署名不正、期限切れ、対象ノード不一致、未知の操作を拒否する。
 - Provider credential、Agent secret、署名鍵は Resource Graph/ログに含めず、安全な権限境界で渡す。

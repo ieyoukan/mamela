@@ -98,8 +98,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !exists {
-			it = &Item{Name: name, Owner: r.PostFormValue("owner")}
+			it = &Item{Name: name}
 			s.items[name] = it
+		}
+		if o := r.PostFormValue("owner"); o != "" {
+			it.Owner = o // set when it is created, or when it is taken over
 		}
 		it.Value = r.PostFormValue("value")
 		it.Version++

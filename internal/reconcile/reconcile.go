@@ -16,7 +16,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -25,6 +29,10 @@ import (
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 )
+
+// CodeStale is the reason code (MAM-REC-0002, docs/reason-codes.md) of a run that stopped because the
+// world was not what the plan assumed: nothing was changed for it, and the plan is made again.
+const CodeStale = "MAM-REC-0002"
 
 // ErrUnknownOutcome is returned by a Provider when it cannot tell whether an operation took
 // effect (a timeout, a lost connection). The reconciler then stops and re-observes next time.
@@ -86,6 +94,10 @@ type Report struct {
 	PlanDigest string
 	Steps      []StepReport
 	Stopped    *Stop
+	Remaining  *plan.Plan // fresh observation after this phase; success is not necessarily convergence
+	// RemainingErr says why Remaining is missing: the observation after the operations failed.
+	// The operations' outcomes above stand; only whether the declaration converged is unknown.
+	RemainingErr string
 }
 
 // Reconciler applies plans.
@@ -147,14 +159,15 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 
 	// Operations run in phases: late ones after all others (every machine of the run is created
 	// before any is started, so that no first boot competes with another machine's disk import; a
-	// boot that waits too long for its disk ends in emergency mode).
-	for phase := range 2 {
+	// boot that waits too long for its disk ends in emergency mode), and deletions last of all: a
+	// change that failed has stopped the run before anything is deleted.
+	for phase := range 3 {
 		for _, full := range p.Changes {
 			if full.Status != plan.StatusChange {
 				continue
 			}
 			c := full
-			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(o) != phase })
+			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(full, o) != phase })
 			if len(c.Operations) == 0 {
 				continue
 			}
@@ -169,11 +182,19 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 
 			current, found := findChange(now, id)
+			if gone(c, fresh) {
+				// A deleted object is no longer in the plan: the provider finishes what follows
+				// the deletion (it may have been done by an earlier run).
+				found, current = true, c
+			}
 			if found && current.Status == plan.StatusInSync {
 				// The effect is already visible (a previous run finished, or its response was lost).
 				for _, op := range c.Operations {
 					opID := OperationID(planDigest, id, op.Op)
 					if _, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op)); err != nil {
+						return nil, err
+					}
+					if err := r.releaseIfWorkerGone(ctx, planDigest, id, opID); err != nil {
 						return nil, err
 					}
 					if err := r.Store.Confirm(ctx, opID, "confirmed by observation"); err != nil {
@@ -194,7 +215,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				continue
 			}
 			if !found || !partOf(current, full) {
-				rep.Stopped = &Stop{Code: "MAM-REC-0002",
+				rep.Stopped = &Stop{Code: CodeStale,
 					Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
 					Hint:    "make a new plan from a fresh observation and review it"}
 				r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)
@@ -217,6 +238,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				}
 				o, err := r.Store.Intend(ctx, opID, planDigest, id, string(op.Op))
 				if err != nil {
+					return nil, err
+				}
+				if err := r.releaseIfWorkerGone(ctx, planDigest, id, opID); err != nil {
 					return nil, err
 				}
 				if o.Stage == store.StageSucceeded {
@@ -277,15 +301,64 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 		}
 	}
+	fresh, err = r.Provider.Observe(ctx)
+	if err != nil {
+		rep.RemainingErr = err.Error()
+		return rep, nil
+	}
+	rep.Remaining = plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
 	return rep, nil
 }
 
-// opPhase is the phase an operation runs in: late ones after everything else.
-func opPhase(op plan.Operation) int {
-	if op.Late {
+// releaseIfWorkerGone frees an operation claimed by a worker that no longer exists, so that a
+// crashed apply does not keep the next one waiting for the claim's lease (hours: an apply can wait
+// for an image import). Its outcome is unknown, and the apply observes before it does anything.
+func (r *Reconciler) releaseIfWorkerGone(ctx context.Context, planDigest, resource, opID string) error {
+	o, err := r.Store.Operation(ctx, opID)
+	if err != nil || o.Stage != store.StageStarted || !workerGone(o.Owner) {
+		return err
+	}
+	if err := r.Store.Release(ctx, opID, o.Owner); err != nil {
+		return err
+	}
+	r.event(ctx, planDigest, resource, "released", "the worker "+o.Owner+" is gone: its claim on "+opID+" was released")
+	return nil
+}
+
+// workerGone reports whether owner, a worker's name ("host/pid", as mamela writes it), is a process
+// of this host that no longer exists. Any other owner may be alive.
+func workerGone(owner string) bool {
+	i := strings.LastIndex(owner, "/")
+	if i < 0 {
+		return false
+	}
+	host, _ := os.Hostname()
+	pid, err := strconv.Atoi(owner[i+1:])
+	if owner[:i] != host || err != nil || pid <= 0 || pid == os.Getpid() {
+		return false
+	}
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+}
+
+// opPhase is the phase an operation runs in: late ones after everything else but the deletions,
+// which come last.
+func opPhase(c plan.Change, op plan.Operation) int {
+	switch {
+	case c.Removes:
+		return 2
+	case op.Late:
 		return 1
 	}
 	return 0
+}
+
+// gone reports whether the object a deletion is for is no longer there.
+func gone(c plan.Change, fresh state.Snapshot) bool {
+	if !c.Removes {
+		return false
+	}
+	o, there := fresh.Provided[c.ID()]
+	return !there || !o.Observed.Exists
 }
 
 func (r *Reconciler) addAll(rep *Report, c plan.Change, outcome Outcome, detail string) {

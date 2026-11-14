@@ -268,6 +268,38 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
   - Proxmox は mamela-proxmox の `catalogs` に移した。
   - 例の EC2 のプロバイダーは `examples/ec2/pome/catalogs/ec2.json` を同梱する。
 
+## provider kit、Pome の生成、Terraform からの乗り換え（ADR 0009、2026-11-12）
+
+設計は [ADR 0009](adr/0009-provider-kit-and-imports.md)。
+
+- **provider/kit:** 作者は種類ごとに、一覧（`List`）、差分（`Diff`）、効いているか（`Done`）を書く。プロトコルは kit が引き受ける。`examples/kv` は kit で書き直した。
+- **spec の型:** manifest に `Kind.Spec`（`protocol.Field`）・`Kind.Doc`・`Kind.Imports` が増えた。kit は Go の構造体から書き出す（`kit.SpecOf`）。
+- **`mamela provider pome`:** Pome の `src/lib.emel` を生成する（`internal/pomegen`）。`examples/kv/pome` は生成物で、`build.sh` が生成する。
+- **`mamela provider new`:** そのままテストが通る雛形を書く（`internal/scaffold`）。生成直後に `go mod tidy`・`build.sh`・`go vet`・`go test` が通ることを試験する。
+- **`mamela import terraform`:** `terraform show -json` の出力を読み（`internal/tfimport`）、プロバイダーの `import` で宣言に変え、Emela（`src/imported.emel`）に書き、引き継ぐ対象を記録する（migration 12 `adoptions`）。
+  - 観測は、記録した物を `Adoptable` と報告する。plan は何も変えない（MAM-PLAN-0114）。
+  - 引き継ぎは `mamela act --confirm` だけで行う。
+- **試験:** `providertest.Case.Adopting` で、取り込み→引き継ぎを fault の注入込みで確かめる。kv-demo で、import→plan→adopt→plan の通しを確かめる。
+- **残り:**
+  - mamela-aws と mamela-proxmox を kit に移し、取り込みを足す。
+  - OpenAPI などからカタログと呼び出しを起こす道具。
+
+## 宣言のリポジトリで運用する（ADR 0010・0012、2026-11-12〜13）
+
+設計は [ADR 0010](adr/0010-gitops-from-the-control-plane.md) と [ADR 0012](adr/0012-mamelacd.md)、使い方は [gitops.md](gitops.md)。
+
+- **コード:**
+  - `cmd/mamelacd`・`internal/gitops`: mamelacd。GitHub を読み、自分の DB（`internal/gitops/state.go`）に記録する。
+  - `cmd/mamela/api.go`・`internal/api`: 本体の局所 API。
+  - `cmd/mamela/service.go`: plan・承認・apply の本体。CLI（`plan.go`・`apply.go`）と API が同じ関数を呼ぶ。
+  - `internal/tree`: tarball の展開。リンクと、ツリーの外を指すパスと、特殊ファイルを拒む。
+- **本体の DB:** gitops の表は migration 16 で消した。
+- **unit:** `mamela controlplane bundle` が `mamela-api.service` と `mamelacd.service` を入れる。
+- **試験:**
+  - `cmd/mamela/api_test.go`: 偽の GitHub と kv で、PR から apply までを `mamela api` と mamelacd の通しで確かめる。
+  - `internal/gitops`: 偽の API で、先頭の扱い（先頭だけを apply する、信頼できない先頭は plan しない、待ち・拒否・前提の違いは plan し直す、API が答えないとき）を確かめる。
+  - `internal/api`: API の拒否（リンク、ツリーの外、期限、未知の項目）を確かめる。
+
 ## テストの優先順位
 
 1. 非許可の操作と任意 shell コマンドを拒否する。

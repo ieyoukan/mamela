@@ -8,14 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/plan"
-	"github.com/ieyoukan/mamela/internal/policy"
-	"github.com/ieyoukan/mamela/internal/provider/node"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
-	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
@@ -86,110 +83,24 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	t, err := tf.find()
+	res, err := planDeclaration(ctx, st, fs.Arg(0), planOptions{SitePath: *sitePath, ProvidersFile: *providersFile,
+		PolicyFile: *policyFile, SnapshotFile: *snapshotFile, Tools: tf.find})
 	if err != nil {
 		return report(stderr, err)
 	}
-	res, err := t.evaluator().Evaluate(ctx, fs.Arg(0))
-	if err != nil {
-		return report(stderr, err)
+	for _, w := range res.Warnings {
+		fmt.Fprintln(stderr, w)
 	}
-	// The providers the declaration imports (its Pome's dependencies), running isolated.
-	rt, err := startProviders(ctx, fs.Arg(0), t, *providersFile)
-	if err != nil {
-		return report(stderr, err)
-	}
-	rt.SetCreations(st)
-	defer rt.Close()
-	// What the other plans of the last hour are to create is taken: plans made one after another
-	// and applied together do not choose the same IDs (a VMID).
-	claims, err := st.Claims(ctx, wallClock().Add(-claimWindow), "")
-	if err != nil {
-		return report(stderr, err)
-	}
-	rt.SetClaims(claims)
-	if err := rt.CheckGraph(res.Graph); err != nil {
-		return report(stderr, err)
-	}
-
-	site, err := loadSite(*sitePath)
-	if err != nil {
-		return report(stderr, err)
-	}
-	// What mamelet on each machine last reported (read from the database; nothing is contacted).
-	snap, err := (&node.Provider{Store: st, Clock: wallClock}).Observe(ctx)
-	if err != nil {
-		return report(stderr, err)
-	}
-	if *snapshotFile != "" {
-		b, err := os.ReadFile(*snapshotFile)
-		if err != nil {
-			return report(stderr, err)
-		}
-		if snap, err = state.Decode(b); err != nil {
-			return report(stderr, err)
-		}
-	}
-	pol := policy.Default
-	if *policyFile != "" {
-		b, err := os.ReadFile(*policyFile)
-		if err != nil {
-			return report(stderr, err)
-		}
-		if pol, err = policy.Decode(b); err != nil {
-			return report(stderr, fmt.Errorf("%s: %w", *policyFile, err))
-		}
-	}
-	if site != nil && site.ControlPlane.Host != "" {
-		// This Control Plane's own host: shown, never changed (ADR 0003). The policy is stored with
-		// the plan, so apply derives the same denial.
-		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
-	}
-	rt.SetLimits(siteLimits(site))
-	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
-	if err != nil {
-		return report(stderr, err)
-	}
-	snap.AddProvided(provided)
-	p := plan.BuildFor(res.Graph, snap, pol, site.Providers().DigestWith(rt.Refs()))
-	if site != nil {
-		// A machine the site would refuse to create is refused here, before anyone approves it.
-		if refused := siteRefusals(site, p); len(refused) > 0 {
-			for _, r := range refused {
-				fmt.Fprintf(stderr, "MAM-SITE-0304: %s\n", r)
-			}
-			fmt.Fprintf(stderr, "  hint: declare an address in the site's network.static_first..static_last, or Dhcp if network.dhcp allows it (%s)\n", *sitePath)
-			return 1
-		}
-	}
-	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
-		return report(stderr, err)
-	}
-	// The programs the plan was made with: apply runs exactly these.
-	if err := st.SavePlanPrograms(ctx, p.Digest, rt.Programs()); err != nil {
-		return report(stderr, err)
-	}
-	if site != nil && site.ControlPlane.Enabled() {
-		// Tell each node's mamelet what to observe (and the repairs the policy allows by itself).
-		// Revisions name a Control Plane only to move mamelet there: a mamelet older than ADR 0003
-		// refuses a revision with a member it does not know.
-		ids := map[string]int64{}
-		for name, n := range snap.Nodes {
-			if n.Managed {
-				ids[name] = n.ID
-			}
-		}
-		if err := node.Publish(ctx, st, res.Graph, pol, site.ControlPlane.MoveTo, ids); err != nil {
-			return report(stderr, err)
-		}
-	}
+	p := res.Plan
 	plan.Render(stdout, p)
-	if site != nil {
-		renderPlanUses(stdout, site, p, res.Graph, pol, rt.Manifests())
+	if res.Site != nil {
+		renderPlanUses(stdout, res.Site, p, res.Graph, res.Policy, res.Manifests)
 	}
-	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve %s\n", *db, p.Digest)
+	fmt.Fprintf(stdout, "\nSaved to %s. To approve: mamela approve --db %s %s\n", *db, shellQuote(*db), p.Digest)
 	return 0
 }
+
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 
 func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela approve", flag.ContinueOnError)
@@ -215,24 +126,16 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return report(stderr, err)
 	}
 	defer st.Close()
-	p, _, err := st.LoadPlan(ctx, fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(stderr, "cannot approve %s: %v\n", fs.Arg(0), err)
-		return 1
-	}
-	a, err := st.Approve(ctx, p.Digest, *by, *ttl)
+	res, err := approvePlan(ctx, st, fs.Arg(0), *by, *ttl, true)
 	if err != nil {
 		return report(stderr, err)
 	}
-	denied := 0
-	for _, c := range p.Changes {
-		if c.Verdict == policy.Denied {
-			denied++
-		}
+	fmt.Fprintf(stdout, "approved %s by %s until %s\n", res.Approval.PlanDigest, res.Approval.Approver, res.Approval.ExpiresAt.Format(time.RFC3339))
+	if n := len(res.Removed); n > 0 {
+		fmt.Fprintf(stdout, "note: this plan DELETES %d object%s once applied: %s\n", n, plural(n), strings.Join(res.Removed, ", "))
 	}
-	fmt.Fprintf(stdout, "approved %s by %s until %s\n", p.Digest, a.Approver, a.ExpiresAt.Format(time.RFC3339))
-	if denied > 0 {
-		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run\n", denied, plural(denied), choose(denied == 1, "is", "are"))
+	if n := res.Denied; n > 0 {
+		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run\n", n, plural(n), choose(n == 1, "is", "are"))
 	}
 	return 0
 }

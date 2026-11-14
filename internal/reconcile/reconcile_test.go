@@ -493,3 +493,37 @@ func TestMachinesAreStartedAfterEveryCreate(t *testing.T) {
 		t.Fatalf("order %s", got)
 	}
 }
+
+// failingObserver fails every observation after the first n.
+type failingObserver struct {
+	*fake.World
+	mu sync.Mutex
+	n  int
+}
+
+func (f *failingObserver) Observe(ctx context.Context) (state.Snapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n <= 0 {
+		return state.Snapshot{}, errors.New("the API is unreachable")
+	}
+	f.n--
+	return f.World.Observe(ctx)
+}
+
+// An observation that fails after the operations ran does not turn them into a failed apply:
+// their outcomes stand, and only convergence is unknown.
+func TestObservationAfterApplyingFails(t *testing.T) {
+	e := newEnv(t)
+	p := e.plan()
+	e.approve(p)
+	r := e.reconciler("worker-a")
+	r.Provider = &failingObserver{World: e.world, n: 1} // the observation before the operations
+	rep, err := r.Apply(e.ctx, p.Digest)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if outcomes(rep)[fake.OpCreate] != reconcile.OutcomeDone || rep.Remaining != nil || !strings.Contains(rep.RemainingErr, "unreachable") {
+		t.Fatalf("report: %+v", rep)
+	}
+}

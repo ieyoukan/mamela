@@ -257,12 +257,79 @@ func TestInstallEnableStartThroughMamelet(t *testing.T) {
 	if e.os.running || e.os.starts != 1 {
 		t.Fatal("restarted without permission")
 	}
-	// ...unless the policy allows starting it automatically: then mamelet repairs it by itself.
+	// A policy change is a candidate until apply activates it.
 	e.pol.AutoStartServices = []string{"nginx"}
 	e.publish()
 	e.round()
-	if !e.os.running || e.os.starts != 2 {
+	if e.os.running || e.os.starts != 1 {
+		t.Fatal("plan activated a new repair permission")
+	}
+	if rep := e.applyApproved(e.plan()); rep.Stopped != nil {
+		t.Fatalf("activate repairs: %+v", rep)
+	}
+	e.os.running = false
+	e.round()
+	if !e.os.running || e.os.starts != 3 {
 		t.Fatal("did not repair with autoStartServices")
+	}
+}
+
+func TestPlanPreservesActiveServiceAndPendingGrants(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	_, err := e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Services = slices.Clone(prev.Services)
+		r.Services[0].Running = false
+		r.Services[0].Once = []noderev.Once{{Operation: "op-000000000000000000000000", Attempt: 1, Action: noderev.ActionStop}}
+		r.ControlPlane = "https://active.example:8443"
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := e.st.NodeRevision(e.ctx, "app")
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.publish()
+	after, _ := e.st.NodeRevision(e.ctx, "app")
+	if string(before.Content()) != string(after.Content()) {
+		t.Fatal("planning changed the active desired state or its grants")
+	}
+	// Removing a declaration from a candidate must not revoke active permissions either.
+	e.g, err = graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.publish()
+	after, _ = e.st.NodeRevision(e.ctx, "app")
+	if string(before.Content()) != string(after.Content()) {
+		t.Fatal("candidate removal changed active revision")
+	}
+}
+
+func TestRepairPolicyChangeIsPlannedEvenWithoutServiceDrift(t *testing.T) {
+	e := newEnv(t)
+	e.os.installed, e.os.exists, e.os.enabled, e.os.running = true, true, true, true
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.publish()
+	e.round()
+	p := e.plan()
+	if c := change(t, p, "NodeService app/nginx"); c.Status != plan.StatusChange {
+		t.Fatalf("repair permission missing from plan: %+v", c)
+	}
+	e.applyApproved(p)
+	e.os.running = false
+	e.round()
+	if !e.os.running {
+		t.Fatal("apply did not activate repair permission")
+	}
+	e.pol.AutoStartServices = nil
+	e.publish()
+	e.applyApproved(e.plan())
+	e.os.running = false
+	e.round()
+	if e.os.running {
+		t.Fatal("apply did not revoke repair permission")
 	}
 }
 
@@ -307,6 +374,27 @@ func TestSilentMameletIsAnUnknownOutcome(t *testing.T) {
 	}
 }
 
+func TestOldApprovalCannotGrantToReenrolledNode(t *testing.T) {
+	e := newEnv(t)
+	enroll := func(serial string) {
+		token, err := e.st.IssueEnrollToken(e.ctx, "app", 7001, "seed", time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := e.st.Enroll(e.ctx, token, "app", 7001, serial); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enroll("original")
+	e.publish()
+	e.round()
+	p := e.plan()
+	enroll("replacement") // same name and VMID, another machine identity
+	if rep := e.applyApproved(p); rep.Stopped == nil || e.os.installs != 0 {
+		t.Fatalf("old approval reached new agent: %+v", rep)
+	}
+}
+
 // A provider's machine gets a revision with what is declared on it, by its observed ID, though its
 // kind sorts after the node resources.
 func TestPublishOnAProvidersMachine(t *testing.T) {
@@ -328,5 +416,49 @@ func TestPublishOnAProvidersMachine(t *testing.T) {
 	rev, err := st.NodeRevision(ctx, "ext")
 	if err != nil || rev == nil || rev.VMID != 7007 || len(rev.Packages) != 1 || rev.Packages[0].Name != "nginx" {
 		t.Fatalf("revision %+v %v", rev, err)
+	}
+}
+
+// Publishing observation targets during plan must not bypass the denial on the Control Plane's
+// own host, even when the service policy otherwise allows automatic repairs.
+func TestPublishProtectedNodeCannotRepair(t *testing.T) {
+	e := newEnv(t)
+	e.os.installed, e.os.exists, e.os.enabled = true, true, true
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.pol.ProtectedNodes = []string{"app"}
+	e.publish()
+	e.round()
+	if e.os.starts != 0 || e.os.running {
+		t.Fatal("publishing a plan started a service on a protected node")
+	}
+	if got := change(t, e.plan(), "NodeService app/nginx"); got.Verdict != policy.Denied {
+		t.Fatalf("the protected service should remain denied: %+v", got)
+	}
+}
+
+// Moving a Control Plane onto a previously managed node must revoke pending grants too.
+func TestPublishProtectedNodeRevokesExistingGrants(t *testing.T) {
+	e := newEnv(t)
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.publish()
+	_, err := e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Packages = slices.Clone(prev.Packages)
+		r.Services = slices.Clone(prev.Services)
+		r.Packages[0].Install = &noderev.Install{Operation: "pending-install", Attempt: 1, ChangeSet: "pending"}
+		r.Services[0].Once = []noderev.Once{{Operation: "pending-start", Attempt: 1, Action: noderev.ActionStart}}
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.pol.ProtectedNodes = []string{"app"}
+	e.publish()
+	r, err := e.st.NodeRevision(e.ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Packages[0].Install != nil || len(r.Services[0].Once) != 0 || len(r.Services[0].Repair) != 0 {
+		t.Fatalf("protected node kept execution grants: %+v %+v", r.Packages, r.Services)
 	}
 }

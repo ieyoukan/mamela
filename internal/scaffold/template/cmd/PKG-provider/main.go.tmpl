@@ -1,0 +1,9 @@
+// Command <% .Pkg %>-provider is the provider program: build.sh builds it for WASI into the Pome.
+package main
+
+import (
+	"<% .GoModule %>/<% .Pkg %>"
+	"github.com/ieyoukan/mamela/provider/sdk"
+)
+
+func main() { sdk.Serve(<% .Pkg %>.Provider) }
