@@ -12,7 +12,7 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 ## 用意
 
 1. **宣言のリポジトリ:** 宣言の Pome を置く。非公開を勧める（宣言にはサイトの値が入る）。依存の Pome は、Control Plane のホストの Pome のキャッシュにあるもの、または `[replace]` でホストの絶対パスを指したものにする（評価は何も取りに行かない）。
-2. **プログラム:** linux/amd64 の `mamela` と `mamelacd` を `/usr/local/bin` に置く（`GOOS=linux GOARCH=amd64 go build ./cmd/mamela ./cmd/mamelacd`）。
+2. **プログラム:** linux/amd64 の `mamela` と `mamelacd` を `/usr/local/bin` に置く（`GOOS=linux GOARCH=amd64 go build -o dist/ ./cmd/mamela ./cmd/mamelacd`）。
 3. **unit とユーザー:** `mamela controlplane bundle` の install.sh が、次のものを入れる。
    - `mamela-api.service`（ユーザー `mamela-cp`）
    - `mamelacd.service`（ユーザー `mamelacd`）
@@ -22,14 +22,15 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
    - Pull requests: read and write
    - Commit statuses: read and write
 
-   `/etc/mamelacd/github-token` に置く（`mamelacd` だけが読める 0600）。
-5. **設定:** `/etc/mamelacd/mamelacd.toml` に書く（`mamelacd` が読める 0640）。
+   `/etc/mamelacd/github-token` に置く（所有者 `mamelacd`、0600）。
+5. **設定:** `/etc/mamelacd/mamelacd.toml` に書く（所有者 `root`、グループ `mamelacd`、0640）。
 
    ```toml
    repo = "you/infra"              # 宣言のリポジトリ
    branch = "main"                 # この先頭の宣言を反映する
    dirs = ["lab/k3s", "lab/web"]   # 宣言（Pome のディレクトリ）
    token_file = "/etc/mamelacd/github-token"
+   # api_url = "https://api.github.com"   # GitHub Enterprise など、別の API のとき
    authors = ["you"]               # この人たちの PR だけを plan する（fork の PR は扱わない）
    approvers = ["you"]             # 承認できる人
    # self_approval = false         # 作者が自分の PR を承認できないようにする
@@ -65,9 +66,14 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 
 ## しないこと
 
-- **明示操作:** 削除・再起動・引き継ぎ（`mamela act --confirm`）はしない。宣言から消しても何も消えない。`mamela api` にもその呼び出しはない。
-- **取り込み:** `mamela import terraform` はしない。
+- **明示操作・取り込み:** 削除・再起動・引き継ぎ（`mamela act --confirm`）と `mamela import terraform` はしない。`mamela api` にもその呼び出しはない。宣言から消しても何も消えない。
 - **信頼できない先頭:** 信頼する作者の PR のマージでない先頭（直接の push、ほかの作者の PR）は plan しない。
+
+## 前提と信頼の範囲（ADR 0012 の 6）
+
+- **ブランチ保護:** 直接 push の禁止とレビュー必須は、GitHub のブランチ保護に任せている。mamelacd は、先頭が信頼する作者の PR のマージコミットであることしか確かめない。
+- **古い PR のマージ:** マージ元の PR を直近 30 件の closed の PR から探すので、それより古いマージが先頭になっていると、その先頭は信頼されない扱いになり、plan しない。
+- **mamelacd が乗っ取られると:** API の範囲内で、好きな宣言を plan し、承認者になりすまして承認し、apply できる。人の承認という関門は破られうる。policy・guard・カタログ、資格情報と状態の秘匿、明示操作・取り込みをしないことは破られない。承認の身元を mamelacd を信じずに確かめるのは、ADR 0011 の署名（未実装）である。
 
 ## 試すとき
 
