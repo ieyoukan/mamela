@@ -360,7 +360,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 	}
 	for _, name := range slices.Sorted(maps.Keys(p.IDs)) {
 		for _, v := range params[name] {
-			if protocol.ParamText(call.In(name), v) != p.IDs[name] {
+			if protocol.ObjectText(call.In(name), v) != p.IDs[name] {
 				return -1, fmt.Sprintf("parameter %s=%s is not the approved %s", name, v, p.IDs[name])
 			}
 		}
@@ -371,7 +371,7 @@ func (g *gate) checkPermit(rec *Request, call protocol.Call, entry protocol.Entr
 		if !ok {
 			return -1, fmt.Sprintf("%s names the object of %s, and the permit binds no %s", b, rec.Call, b)
 		}
-		if got := params[b]; len(got) != 1 || protocol.ParamText(entry.In(b), got[0]) != want {
+		if got := params[b]; len(got) != 1 || protocol.ObjectText(entry.In(b), got[0]) != want {
 			return -1, fmt.Sprintf("%s=%s is not the approved %s", b, strings.Join(got, ","), want)
 		}
 	}

@@ -696,6 +696,42 @@ func TestJSONCalls(t *testing.T) {
 	}
 }
 
+// An API that names the objects it acts on in a list (ECS's DeleteTaskDefinitions) is bound like
+// one that names one: a list of exactly the permit's object passes; another object, or several,
+// do not.
+func TestBoundList(t *testing.T) {
+	cat := protocol.Catalog{API: "svc", Entries: []protocol.Entry{
+		{Method: "POST", Path: "/", Effect: protocol.EffectLoseData, Header: []string{"X-Amz-Target"}, JSON: []string{"taskDefinitions"},
+			Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteTaskDefinitions"}, Bind: []string{"taskDefinitions"}},
+	}}
+	if err := cat.Check(); err != nil {
+		t.Fatal(err)
+	}
+	call := protocol.Call{Method: "POST", Path: "/", Header: []string{"X-Amz-Target"}, JSON: []string{"taskDefinitions"},
+		Fixed: map[string]string{"X-Amz-Target": "Svc.DeleteTaskDefinitions"}}
+	for _, c := range []struct {
+		name, approved, sent, refused string
+	}{
+		{"the permit's object", `["app:1"]`, `["app:1"]`, ""},
+		{"another object", `["app:2"]`, `["app:2"]`, "not the approved app:1"},
+		{"several", `["app:1","app:2"]`, `["app:1","app:2"]`, "not the approved app:1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			approved := protocol.Approved{Method: "POST", Path: "/", Params: map[string][]string{"X-Amz-Target": {"Svc.DeleteTaskDefinitions"}, "taskDefinitions": {c.approved}}}
+			p := &protocol.Permit{Op: "delete", Calls: []protocol.Call{call}, IDs: map[string]string{"taskDefinitions": "app:1"}, Requests: []protocol.Approved{approved}, ExpiresAt: "2026-11-10T01:00:00Z"}
+			g := gate{phase: phaseApply, calls: p.Calls, permit: p, used: make([]bool, 1), catalog: cat, upstream: &stub{}, now: testNow}
+			_, perr := g.send(context.Background(), protocol.HostRequest{Method: "POST", Path: "/", Header: map[string][]string{"X-Amz-Target": {"Svc.DeleteTaskDefinitions"}},
+				JSON: map[string]jsontext.Value{"taskDefinitions": jsontext.Value(c.sent)}})
+			switch {
+			case c.refused == "" && perr != nil:
+				t.Errorf("refused: %v", perr)
+			case c.refused != "" && (perr == nil || !strings.Contains(perr.Message, c.refused)):
+				t.Errorf("got %v, want a refusal with %q", perr, c.refused)
+			}
+		})
+	}
+}
+
 // A provider with several APIs (ADR 0007): each request is classified by its own API's catalog and
 // sent to that API's endpoint; a call of an API the provider does not declare is not a call.
 func TestSeveralAPIs(t *testing.T) {
