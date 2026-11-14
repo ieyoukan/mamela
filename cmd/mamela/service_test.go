@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,5 +44,39 @@ func TestRendered(t *testing.T) {
 	}
 	if got := rendered(&noPlanError{"sha256:ab"}); !strings.HasPrefix(got, "mamela: no plan sha256:ab") {
 		t.Errorf("no plan: %q", got)
+	}
+}
+
+// testBackend is the API's backend over the database at db, the way `mamela api` makes it.
+func testBackend(t *testing.T, db, providers string) *apiBackend {
+	t.Helper()
+	toolDir := toolchainDir(t)
+	found, err := (toolFlags{dir: &toolDir, pomeCache: new(string)}).find()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := openStore(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return &apiBackend{st: st, tools: found, providers: providers}
+}
+
+// What the API returns is posted on GitHub: the Control Plane's local path of the declaration
+// stays out of it, whether planning or evaluating fails.
+func TestAPIBackendHidesThePath(t *testing.T) {
+	b := testBackend(t, filepath.Join(t.TempDir(), "state.db"), "")
+	dir := filepath.Join(t.TempDir(), "extracted-tree", "declaration")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := b.Plan(context.Background(), dir)
+	if err == nil || strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "<declaration>") {
+		t.Errorf("plan: %v", err)
+	}
+	_, err = b.Revision(context.Background(), dir)
+	if err == nil || strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), "<declaration>") {
+		t.Errorf("revision: %v", err)
 	}
 }

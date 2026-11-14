@@ -160,6 +160,10 @@ max_items = 10
 	if v := api.Items()["web"].Value; v != "someone else's" {
 		t.Errorf("the newer value was overwritten: %q", v)
 	}
+	// The API reports it as a result (Stale), not as text to read; it is not a failure of the API.
+	if a, err := testBackend(t, db, config).Apply(context.Background(), digest); err != nil || a.OK || !a.Stale {
+		t.Errorf("the API's apply after the world changed: %+v %v", a, err)
+	}
 
 	// An approval is for one API: pointing the configuration at another one voids it.
 	api.Put(kvapi.Item{Name: "web", Value: "v0", Owner: "mamela", Labels: []string{"prod"}, Version: 9})
