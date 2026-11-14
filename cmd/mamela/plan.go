@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"flag"
 	"fmt"
@@ -44,7 +43,6 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tf := addToolFlags(fs)
 	policyFile := fs.String("policy", "", "policy JSON file (default: the built-in conservative policy)")
 	providersFile := addProvidersFlag(fs)
-	jsonOutput := fs.Bool("json", false, "write the stored plan as JSON")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela plan [flags] <pome-dir>\n       mamela plan --replay <plan-digest>\n\n"+
 			"Shows what would change, why, and what needs approval. Saves the plan so it can be approved.\n"+
@@ -94,14 +92,6 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, w)
 	}
 	p := res.Plan
-	if *jsonOutput {
-		data, err := json.Marshal(planJSON{Digest: p.Digest, Plan: p}, json.Deterministic(true))
-		if err != nil {
-			return report(stderr, err)
-		}
-		fmt.Fprintln(stdout, string(data))
-		return 0
-	}
 	plan.Render(stdout, p)
 	if res.Site != nil {
 		renderPlanUses(stdout, res.Site, p, res.Graph, res.Policy, res.Manifests)
@@ -111,11 +101,6 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
-
-type planJSON struct {
-	Digest string     `json:"digest"`
-	Plan   *plan.Plan `json:"plan"`
-}
 
 func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("mamela approve", flag.ContinueOnError)
