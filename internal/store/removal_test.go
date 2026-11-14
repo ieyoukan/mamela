@@ -67,6 +67,13 @@ func TestFinishRemoval(t *testing.T) {
 		Context: ExplicitContext{Observed: o, Providers: "contract", Creations: []map[string]string{ids}, AgentSerial: "serial"}}, "unknown", "answer lost", false); err != nil {
 		t.Fatal(err)
 	}
+	// An earlier attempt of the same deletion, whose worker was killed, is still "started".
+	if err := s.StartObservedExplicit(ctx, "rm-0", "test", "delete", "plan sha256:y", "contract", o, ch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE explicit_operations SET started_ms = started_ms - 1000 WHERE id = 'rm-0'`); err != nil {
+		t.Fatal(err)
+	}
 	for range 2 {
 		if err := s.FinishRemoval(ctx, "test", "Machine web", "delete"); err != nil {
 			t.Fatal(err)
@@ -74,6 +81,11 @@ func TestFinishRemoval(t *testing.T) {
 	}
 	if _, ok, _ := s.Agent(ctx, "web"); ok {
 		t.Error("the registration of a deleted machine remains")
+	}
+	for id, want := range map[string]string{"rm-1": "done", "rm-0": "superseded"} {
+		if got, _ := s.ExplicitOutcome(ctx, id); got != want {
+			t.Errorf("%s ended as %q, want %q", id, got, want)
+		}
 	}
 	if c, _ := s.Creations(ctx, "test", "Machine web"); len(c) != 0 {
 		t.Errorf("creation records remain: %v", c)

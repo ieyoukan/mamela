@@ -30,6 +30,10 @@ import (
 	"github.com/ieyoukan/mamela/internal/store"
 )
 
+// CodeStale is the reason code (MAM-REC-0002, docs/reason-codes.md) of a run that stopped because the
+// world was not what the plan assumed: nothing was changed for it, and the plan is made again.
+const CodeStale = "MAM-REC-0002"
+
 // ErrUnknownOutcome is returned by a Provider when it cannot tell whether an operation took
 // effect (a timeout, a lost connection). The reconciler then stops and re-observes next time.
 var ErrUnknownOutcome = errors.New("outcome unknown")
@@ -211,7 +215,7 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				continue
 			}
 			if !found || !partOf(current, full) {
-				rep.Stopped = &Stop{Code: "MAM-REC-0002",
+				rep.Stopped = &Stop{Code: CodeStale,
 					Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
 					Hint:    "make a new plan from a fresh observation and review it"}
 				r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)

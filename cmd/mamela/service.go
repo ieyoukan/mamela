@@ -222,10 +222,6 @@ type applyOptions struct {
 	Tools         func() (tools, error)
 }
 
-// reasonStale is reconcile's stable reason code (MAM-REC-0002, docs/reason-codes.md) for a world
-// that was not what the plan assumed: nothing was changed for it.
-const reasonStale = "MAM-REC-0002"
-
 // applyResult says how an apply that did not fail ended. The zero value is a clean finish.
 type applyResult struct {
 	BlockedBefore bool            // a guard blocked: nothing was sent
@@ -237,7 +233,7 @@ type applyResult struct {
 func (r applyResult) OK() bool { return !r.BlockedBefore && !r.BlockedAfter && r.Stopped == nil }
 
 // Stale reports that the world was not what the plan assumed: the declaration is to be planned again.
-func (r applyResult) Stale() bool { return r.Stopped != nil && r.Stopped.Code == reasonStale }
+func (r applyResult) Stale() bool { return r.Stopped != nil && r.Stopped.Code == reconcile.CodeStale }
 
 // applyPlan carries out an approved plan through the providers the plan was made with, between each
 // provider's guard (its safety check before and after, ADR 0006). What it does is written to out.

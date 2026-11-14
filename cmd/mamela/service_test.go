@@ -15,7 +15,7 @@ import (
 
 // The API reads how an apply ended from the result, not from the text it printed.
 func TestApplyResult(t *testing.T) {
-	stale := &reconcile.Stop{Code: reasonStale}
+	stale := &reconcile.Stop{Code: reconcile.CodeStale}
 	other := &reconcile.Stop{Code: "MAM-REC-0004"}
 	for _, c := range []struct {
 		name        string
