@@ -7,6 +7,3 @@ module = "K3s"
 [dependencies]
 "github.com/ieyoukan/mamela/pome/mamela" = "v0.3.0"
 "github.com/emela-lang/x/dynamic" = "v0.5.1"
-
-[replace]
-"github.com/ieyoukan/mamela/pome/mamela" = { path = "../mamela" }
