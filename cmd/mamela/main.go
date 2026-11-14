@@ -203,7 +203,10 @@ func describe(r graph.Resource) string {
 func report(w io.Writer, err error) int {
 	var ge *graph.Error
 	var ee *evaluate.Error
+	var te told
 	switch {
+	case errors.As(err, &te):
+		fmt.Fprintln(w, te.text)
 	case errors.As(err, &ge):
 		fmt.Fprintf(w, "the declaration produced an invalid graph (%d problem%s):\n\n", len(ge.Problems), plural(len(ge.Problems)))
 		for _, p := range ge.Problems {
