@@ -177,6 +177,23 @@ func (g *GitHub) Branch(ctx context.Context, name string) (string, error) {
 	return out.Commit.SHA, nil
 }
 
+// CommitAuthor is the GitHub login a commit is attributed to ("": none, or not a user).
+func (g *GitHub) CommitAuthor(ctx context.Context, sha string) (string, error) {
+	var out struct {
+		Author *struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"author"`
+	}
+	if err := g.do(ctx, "GET", g.repoPath("/commits/"+sha), nil, nil, &out); err != nil {
+		return "", err
+	}
+	if out.Author == nil || out.Author.Type != "User" {
+		return "", nil
+	}
+	return out.Author.Login, nil
+}
+
 func validSHA(s string) bool {
 	if len(s) != 40 {
 		return false

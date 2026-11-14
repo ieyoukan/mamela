@@ -112,7 +112,7 @@ func (m *fakeMamela) Approve(_ context.Context, digest, by string, _ time.Durati
 	if _, ok := m.plans[digest]; !ok {
 		return &api.Error{Status: 422, Message: "no such plan"}
 	}
-	if !strings.HasPrefix(by, "github:") {
+	if !strings.HasPrefix(by, "github:") && !strings.HasPrefix(by, "push:") {
 		return fmt.Errorf("by %q", by)
 	}
 	m.approved[digest] = true
