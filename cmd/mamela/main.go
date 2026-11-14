@@ -78,9 +78,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runServe(ctx, args[1:], stdout, stderr)
 	case "api":
 		return runAPI(ctx, args[1:], stdout, stderr)
-	case "gitops":
-		fmt.Fprintln(stderr, "mamela gitops moved to its own program, mamelacd, which uses `mamela api` (ADR 0012)")
-		return 2
 	case "controlplane":
 		return runControlPlane(ctx, args[1:], stdout, stderr)
 	case "provider":

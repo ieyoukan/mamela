@@ -30,12 +30,10 @@ type GitHub struct {
 
 // PR is a pull request.
 type PR struct {
-	Number int    `json:"number"`
-	State  string `json:"state"`
-	Title  string `json:"title"`
-	User   User   `json:"user"`
-	Head   Ref    `json:"head"`
-	Base   Ref    `json:"base"`
+	Number int  `json:"number"`
+	User   User `json:"user"`
+	Head   Ref  `json:"head"`
+	Base   Ref  `json:"base"`
 	// MergedAt is set once it is merged; MergeCommitSHA is then the commit it was merged as.
 	MergedAt       *time.Time `json:"merged_at"`
 	MergeCommitSHA string     `json:"merge_commit_sha"`
