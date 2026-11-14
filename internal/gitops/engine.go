@@ -101,12 +101,30 @@ func (e *Engine) syncBranch(ctx context.Context, closed []PR) (errs []string) {
 		return []string{err.Error()}
 	}
 	owner := e.mergedAs(closed, head)
+	by, err := e.pusher(ctx, head)
+	if err != nil {
+		return []string{err.Error()}
+	}
 	for _, d := range e.Config.Dirs {
-		if err := e.syncHead(ctx, head, owner, d); err != nil {
+		if err := e.syncHead(ctx, head, owner, by, d); err != nil {
 			errs = append(errs, fmt.Sprintf("%s at the head: %v", d, err))
 		}
 	}
 	return errs
+}
+
+// pusher is the author of the head commit when sync = "push" and the author is one of the
+// configured authors ("": the head is not applied on its own). Whoever can push to the branch is
+// trusted at GitHub; the author is what the commit says (ADR 0014).
+func (e *Engine) pusher(ctx context.Context, head string) (string, error) {
+	if !e.Config.PushSync() {
+		return "", nil
+	}
+	login, err := e.GitHub.CommitAuthor(ctx, head)
+	if err != nil || !slices.Contains(e.Config.Authors, login) {
+		return "", err
+	}
+	return login, nil
 }
 
 // trusted: a pull request of the repository itself (not a fork), into the branch, by an author.

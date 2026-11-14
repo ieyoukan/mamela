@@ -26,8 +26,13 @@ type Config struct {
 	// the repository: contents read, pull requests and commit statuses read and write.
 	API       string `toml:"api_url"`
 	TokenFile string `toml:"token_file"`
-	// Authors are whose pull requests are planned; Approvers who may approve (GitHub logins).
-	// SelfApproval lets an author approve their own pull request's plan.
+	// Sync says what makes a head of the branch applied: "approval" (the default: a pull request's
+	// plan, approved by an approver's comment) or "push" (ADR 0014: the head itself, from an author,
+	// is the approval; a plan that deletes still needs the Control Plane's host).
+	Sync string `toml:"sync"`
+	// Authors are whose pull requests are planned (with sync = "push": whose commits are applied);
+	// Approvers who may approve (GitHub logins). SelfApproval lets an author approve their own
+	// pull request's plan.
 	Authors      []string `toml:"authors"`
 	Approvers    []string `toml:"approvers"`
 	SelfApproval *bool    `toml:"self_approval"`
@@ -40,6 +45,15 @@ type Config struct {
 	StateDB      string `toml:"state_db"`
 }
 
+// The values of Config.Sync.
+const (
+	SyncApproval = "approval"
+	SyncPush     = "push"
+)
+
+// PushSync says whether a head of the branch from an author is applied without an approval comment.
+func (c Config) PushSync() bool { return c.Sync == SyncPush }
+
 var repoRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 // Check says what is wrong with the configuration.
@@ -51,8 +65,10 @@ func (c Config) Check() error {
 		return fmt.Errorf("branch and dirs are required")
 	case c.TokenFile == "":
 		return fmt.Errorf("token_file is required (a token limited to %s)", c.Repo)
-	case len(c.Authors) == 0 || len(c.Approvers) == 0:
-		return fmt.Errorf("authors and approvers are required: whose pull requests are planned, and who approves")
+	case c.Sync != "" && c.Sync != SyncApproval && c.Sync != SyncPush:
+		return fmt.Errorf("sync %q: %q or %q", c.Sync, SyncApproval, SyncPush)
+	case len(c.Authors) == 0 || (len(c.Approvers) == 0 && !c.PushSync()):
+		return fmt.Errorf("authors and approvers are required: whose pull requests are planned, and who approves (approvers may be empty with sync = %q)", SyncPush)
 	case c.MamelaSocket == "":
 		return fmt.Errorf("mamela_socket is required (the Control Plane's local API, `mamela api --socket`)")
 	case c.StateDB == "":

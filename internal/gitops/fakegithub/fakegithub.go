@@ -52,6 +52,7 @@ type GitHub struct {
 	prs      []*PR
 	trees    map[string][]byte // sha -> tarball
 	branches map[string]string // name -> head
+	authors  map[string]string // sha -> the login a commit is attributed to
 	comments []Comment
 	statuses []Status
 	next     int64
@@ -59,7 +60,7 @@ type GitHub struct {
 
 // New returns an empty fake of a repository that accepts the token.
 func New(repo, token string) *GitHub {
-	return &GitHub{Repo: repo, Token: token, trees: map[string][]byte{}, branches: map[string]string{}, next: 1000}
+	return &GitHub{Repo: repo, Token: token, trees: map[string][]byte{}, branches: map[string]string{}, authors: map[string]string{}, next: 1000}
 }
 
 // AddTree makes a commit whose tree is the directory dir (files only), and returns its SHA.
@@ -143,6 +144,13 @@ func (g *GitHub) SetBranch(name, sha string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.branches[name] = sha
+}
+
+// SetAuthor says whose commit sha is (a GitHub user; without it, a commit is attributed to nobody).
+func (g *GitHub) SetAuthor(sha, login string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.authors[sha] = login
 }
 
 // Say comments on a pull request as someone.
@@ -229,6 +237,13 @@ func (g *GitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(map[string]any{"name": strings.TrimPrefix(p, "/branches/"), "commit": map[string]any{"sha": sha}})
+	case r.Method == "GET" && strings.HasPrefix(p, "/commits/"):
+		sha := strings.TrimPrefix(p, "/commits/")
+		if login := g.authors[sha]; login != "" {
+			reply(map[string]any{"sha": sha, "author": map[string]any{"login": login, "type": "User"}})
+		} else {
+			reply(map[string]any{"sha": sha, "author": nil})
+		}
 	case r.Method == "GET" && strings.HasPrefix(p, "/tarball/"):
 		data, ok := g.trees[strings.TrimPrefix(p, "/tarball/")]
 		if !ok {

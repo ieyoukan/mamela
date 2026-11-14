@@ -119,6 +119,9 @@ func planStatus(p api.Planned) (state, description string) {
 	switch {
 	case p.Blocked > 0:
 		return "failure", fmt.Sprintf("%d blocked, %d waiting", p.Blocked, p.Waiting)
+	case p.Removals > 0:
+		// ADR 0013: only the Control Plane's host approves a deletion; the status says how.
+		return "pending", fmt.Sprintf("deletes %d: on the host, mamela approve %s", p.Removals, p.Digest)
 	case p.Changes > 0:
 		return "pending", fmt.Sprintf("%d changes, approve %s", p.Changes, short(p.Digest))
 	case p.Waiting > 0:

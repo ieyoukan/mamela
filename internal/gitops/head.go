@@ -14,7 +14,8 @@ import (
 // Each declaration at the head has a state (Head, HeadInSync...), kept between polls. A poll
 // starts from the last state and the head's commit:
 //
-//	a new head, not merged from a trusted pull request  -> HeadUntrusted (not planned)
+//	a new head, neither merged from a trusted pull request nor (sync = "push") by an author
+//	                                                      -> HeadUntrusted (not planned)
 //	a new head that cannot be evaluated                  -> HeadError (until another commit)
 //	an approved plan of exactly the head's declaration   -> applied: HeadFailed, or planned again
 //	waiting, blocked or unplanned (same head)            -> planned again
@@ -23,7 +24,9 @@ import (
 //	any other new head                                   -> planned
 //
 // "Planned" ends in HeadInSync, HeadPending, HeadWaiting or HeadBlocked (the plan's counts), or
-// HeadUnplanned when the plan could not be made.
+// HeadUnplanned when the plan could not be made. With sync = "push" (ADR 0014) a plan with
+// changes and no deletion is approved right after it is planned, as the head's author: the next
+// poll applies it.
 
 // Outcomes of applying a plan, kept with it (and said in the comment).
 const (
@@ -40,23 +43,25 @@ type headSync struct {
 	e     *Engine
 	sha   string // the head commit
 	owner int    // the trusted pull request merged as the head (0: none among the recent ones)
+	by    string // sync = "push": the author of the head commit, who approves its plans ("": no one)
 	dir   string
 }
 
 // syncHead brings one declaration at the head of the branch about. owner is the trusted pull
-// request merged as the head; without one, a new head is not planned (ADR 0010).
-func (e *Engine) syncHead(ctx context.Context, sha string, owner int, dir string) error {
+// request merged as the head, by the author of the head commit when sync = "push" (ADR 0014);
+// without either, a new head is not planned (ADR 0010).
+func (e *Engine) syncHead(ctx context.Context, sha string, owner int, by, dir string) error {
 	if !validSHA(sha) {
 		return fmt.Errorf("the head of %s: commit %q", e.Config.Branch, sha)
 	}
-	h := headSync{e: e, sha: sha, owner: owner, dir: dir}
+	h := headSync{e: e, sha: sha, owner: owner, by: by, dir: dir}
 	last, known, err := e.Store.Head(ctx, e.Config.Repo, dir)
 	if err != nil {
 		return err
 	}
 	sameHead := known && last.SHA == sha
 	switch {
-	case !sameHead && owner == 0:
+	case !sameHead && owner == 0 && by == "":
 		e.logf("mamelacd: %s: the head %s of %s was not merged from a trusted author's pull request: not planned", dir, short(sha), e.Config.Branch)
 		return h.record(ctx, "", HeadUntrusted, "")
 	case sameHead && (last.State == HeadUntrusted || last.State == HeadError):
@@ -145,7 +150,31 @@ func (h headSync) recordPlanned(ctx context.Context, rev string, planned api.Pla
 	case err != nil:
 		return err
 	}
-	return h.record(ctx, rev, headState(planned), planned.Digest)
+	if err := h.record(ctx, rev, headState(planned), planned.Digest); err != nil {
+		return err
+	}
+	return h.approveByPush(ctx, planned)
+}
+
+// approveByPush approves a plan of the head as the head's author (sync = "push", ADR 0014): the
+// push is the approval. A plan that deletes is not: it is approved on the Control Plane's host (the
+// API refuses it too). A blocked plan is not approved either.
+func (h headSync) approveByPush(ctx context.Context, p api.Planned) error {
+	if h.by == "" || p.Changes == 0 || p.Blocked > 0 || p.Removals > 0 {
+		return nil
+	}
+	e := h.e
+	ttl, _ := e.Config.ttl()
+	if err := e.Mamela.Approve(ctx, p.Digest, "push:"+h.by, ttl); err != nil {
+		if !api.Refused(err) {
+			return err
+		}
+		e.logf("mamelacd: %s plan %s was not approved: %v", h.dir, short(p.Digest), err)
+		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "could not be approved")
+		return nil
+	}
+	e.logf("mamelacd: %s plan %s approved by the push of %s", h.dir, short(p.Digest), h.by)
+	return nil
 }
 
 // plan plans the head and records its state.

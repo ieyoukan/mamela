@@ -33,6 +33,7 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
    dirs = ["lab/k3s", "lab/web"]   # 宣言（Pome のディレクトリ）
    token_file = "/etc/mamelacd/github-token"
    # api_url = "https://api.github.com"   # GitHub Enterprise など、別の API のとき
+# sync = "push"                 # PR なしで、main への push を承認として同期する（下の「push で同期する」）
    authors = ["you"]               # この人たちの PR だけを plan する（fork の PR は扱わない）
    approvers = ["you"]             # 承認できる人
    # self_approval = false         # 作者が自分の PR を承認できないようにする
@@ -65,6 +66,14 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 4. 結果は PR のコメントと、先頭のコミットの commit status に出る。
    - apply の後は先頭を plan し直す。次の段階に変更があれば、新しい digest の承認を待つ。
    - 待ち・拒否のあいだは poll のたびに plan し直す（同じ状態は二度コメントしない）。
+
+## push で同期する（`sync = "push"`、ADR 0014）
+
+書く人が一人なら、PR もコメントも要らない。`mamelacd.toml` に `sync = "push"` を書くと、`main` の先頭のコミットの作者が `authors` にいれば、その先頭を plan し、変更があれば作者の名前で承認して、次の poll で apply する。結果は commit status（`mamela/<dir>`）に出る。
+
+- **削除は承認しない:** 削除を含む plan は、status に `mamela approve <digest>` が出る。Control Plane のホストで承認すると、次の poll で apply する。
+- **ブランチ保護:** PR 必須の保護は外す（force push と削除の禁止は残す）。ブランチへ書ける人が、承認する人になる。複数人で運用するなら `sync = "approval"`（既定）にする。
+- **approvers は空でよい:** push では承認のコメントを読まない（PR の承認コメントは、これまでどおり動く）。
 
 ## しないこと
 
