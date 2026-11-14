@@ -252,6 +252,9 @@ ALTER TABLE gitops_plans ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0;`,
 	// database holds none of GitHub's.
 	`DROP TABLE IF EXISTS gitops_plans;
 DROP TABLE IF EXISTS gitops_seen;`,
+	// 17: the declaration (stack, ADR 0013) each created object belongs to. Objects recorded before
+	// this have none ('') and are never deleted by removing them from a declaration.
+	`ALTER TABLE provider_creations ADD COLUMN stack TEXT NOT NULL DEFAULT '';`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.

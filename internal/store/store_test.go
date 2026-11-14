@@ -358,8 +358,8 @@ func TestExplicitOperationsAndForgetting(t *testing.T) {
 		t.Fatalf("unknown operation: %v", err)
 	}
 
-	st.RecordCreation(ctx, "proxmox", "ProxmoxVM web", map[string]string{"vmid": "7001"}, "p", "o")
-	st.RecordCreation(ctx, "proxmox", "ProxmoxVM db", map[string]string{"vmid": "7002"}, "p", "o")
+	st.RecordCreation(ctx, "", "proxmox", "ProxmoxVM web", map[string]string{"vmid": "7001"}, "p", "o")
+	st.RecordCreation(ctx, "", "proxmox", "ProxmoxVM db", map[string]string{"vmid": "7002"}, "p", "o")
 	n, _ := st.NodeNumber(ctx, "web")
 	if err := st.ForgetCreations(ctx, "proxmox", "ProxmoxVM web"); err != nil {
 		t.Fatal(err)

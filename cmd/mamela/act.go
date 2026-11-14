@@ -79,6 +79,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	if err := setRecords(ctx, rt, st); err != nil {
 		return report(stderr, err)
 	}
+	rt.SetStack(res.Stack)
 	if err := rt.CheckGraph(res.Graph); err != nil {
 		return report(stderr, err)
 	}
@@ -218,11 +219,11 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	absent := false
 	if outcome == host.OutcomeDone {
 		if o.Adopts {
-			if err = st.RecordCreation(ctx, pr.Provider, obs.ID, change.IDs, "act:"+id, id); err == nil {
+			if err = st.RecordCreation(ctx, rt.Stack(), pr.Provider, obs.ID, change.IDs, "act:"+id, id); err == nil {
 				err = st.ForgetAdoption(ctx, pr.Provider, obs.ID)
 			}
 		} else {
-			absent, err = explicitAbsent(ctx, s, res.Graph, pr.Provider, obs.ID)
+			absent, err = external.Absent(ctx, s, res.Graph, pr.Provider, obs.ID)
 		}
 		if err != nil {
 			outcome, detail = host.OutcomeUnknown, "completion could not be verified: "+err.Error()
@@ -299,32 +300,6 @@ func params(p map[string][]string) string {
 	return strings.Join(out, " ")
 }
 
-// explicitAbsent uses the provider's read-only inventory, which includes its undeclared owned
-// resources. Data loss alone never implies deletion: an existing target keeps its ownership.
-func explicitAbsent(ctx context.Context, session *host.Session, g *graph.Graph, provider, id string) (bool, error) {
-	var resources []protocol.Resource
-	declared := false
-	for _, r := range g.Sorted() {
-		if r.Provided != nil && r.Provided.Provider == provider {
-			resources = append(resources, external.Resource(r))
-			declared = declared || r.ID() == id
-		}
-	}
-	observed, _, err := session.ObserveWith(ctx, protocol.ObserveParams{Resources: resources})
-	if err != nil {
-		return false, err
-	}
-	for _, o := range observed {
-		if o.ID == id {
-			return !o.Exists, nil
-		}
-	}
-	if declared {
-		return false, fmt.Errorf("provider omitted declared resource %s; absence is unconfirmed", id)
-	}
-	return true, nil
-}
-
 func recoverExplicit(ctx context.Context, st *store.Store, rt *external.Runtime, g *graph.Graph, providers, id, op, target string, stdout, stderr io.Writer) int {
 	e, err := st.Explicit(ctx, id)
 	if err != nil {
@@ -341,7 +316,7 @@ func recoverExplicit(ctx context.Context, st *store.Store, rt *external.Runtime,
 	if err != nil || status != protocol.LookupDone {
 		return report(stderr, fmt.Errorf("MAM-ACT-0201: operation %s remains %s (%v); no requests were resent", id, status, err))
 	}
-	absent, err := explicitAbsent(ctx, s, g, e.Provider, e.Resource)
+	absent, err := external.Absent(ctx, s, g, e.Provider, e.Resource)
 	if err != nil {
 		return report(stderr, err)
 	}
@@ -350,7 +325,7 @@ func recoverExplicit(ctx context.Context, st *store.Store, rt *external.Runtime,
 		if absent {
 			return report(stderr, fmt.Errorf("adopted resource is absent; inspect before recovering"))
 		}
-		if err = st.RecordCreation(ctx, e.Provider, e.Resource, e.Change.IDs, "act:"+id, id); err != nil {
+		if err = st.RecordCreation(ctx, rt.Stack(), e.Provider, e.Resource, e.Change.IDs, "act:"+id, id); err != nil {
 			return report(stderr, err)
 		}
 		if err = st.ForgetAdoption(ctx, e.Provider, e.Resource); err != nil {

@@ -34,6 +34,7 @@ const (
 	OpStart  protocol.Op = "start-vm"  // late: after every create of the run
 	OpResize protocol.Op = "resize-vm"
 	OpShrink protocol.Op = "shrink-vm" // never carried out (unsupported)
+	OpDelete protocol.Op = "delete-vm" // the removing operation: planned for what no declaration has any more
 )
 
 // Fault is an injected failure for the next call of one operation.
@@ -52,6 +53,8 @@ type Machine struct {
 	Running bool
 	CPU     int64
 	ID      int64 // the node's number (assigned at create when 0)
+	// Stack is the declaration that made it (World.SetStack when it was created).
+	Stack string
 }
 
 // World is the fake real world.
@@ -65,6 +68,7 @@ type World struct {
 	// Catalog lists the "<node>/<name>" packages and services the fake agent reports on each
 	// managed, running machine, as a real agent reports what its revision declares.
 	catalog []string
+	stack   string
 	faults  map[policy.Op][]Fault
 	calls   map[policy.Op]int
 	// Duplicates counts creates of a machine that already existed (a real API refuses them).
@@ -94,6 +98,14 @@ func (w *World) Declare(g *graph.Graph) {
 	}
 }
 
+// SetStack names the declaration being planned and applied: the machines created from now on are
+// made for it, and only those are deleted when it no longer has them.
+func (w *World) SetStack(stack string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stack = stack
+}
+
 // Inject queues a fault for the next call of op.
 func (w *World) Inject(op policy.Op, f Fault) {
 	w.mu.Lock()
@@ -116,6 +128,13 @@ func (w *World) SetMachine(name string, m Machine) {
 		m.ID = int64(7000 + len(w.machines))
 	}
 	w.machines[name] = m
+}
+
+// Machines returns the machines that exist, whoever made them.
+func (w *World) Machines() map[string]Machine {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return maps.Clone(w.machines)
 }
 
 // SetService changes a service directly (for example, someone stops nginx by hand).
@@ -146,6 +165,7 @@ func (w *World) Observe(ctx context.Context) (state.Snapshot, error) {
 	defer w.mu.Unlock()
 	now := w.clock().UTC()
 	snap := state.Empty(now)
+	snap.Stack = w.stack
 	provided := map[string]state.Provided{}
 	observe := func(name string, m Machine, exists bool) protocol.Observed {
 		o := protocol.Observed{ID: string(Kind) + " " + name, Kind: Kind, Name: name, Exists: exists}
@@ -191,13 +211,23 @@ func (w *World) Observe(ctx context.Context) (state.Snapshot, error) {
 		}
 		provided[r.ID()] = p
 	}
-	// Machines Mamela created and that are no longer declared: reported, so that Mamela keeps them.
+	// Machines Mamela created and that are no longer declared: deleted when the declaration being
+	// planned made them, otherwise kept.
 	for _, name := range slices.Sorted(maps.Keys(w.machines)) {
 		id := string(Kind) + " " + name
-		if _, ok := provided[id]; ok || !w.machines[name].Owned {
+		m := w.machines[name]
+		if _, ok := provided[id]; ok || !m.Owned {
 			continue
 		}
-		provided[id] = state.Provided{Provider: Provider, Kind: Kind, Name: name, Observed: observe(name, w.machines[name], true), ObservedAt: now}
+		p := state.Provided{Provider: Provider, Kind: Kind, Name: name, Observed: observe(name, m, true), ObservedAt: now}
+		if m.Stack != "" && m.Stack == w.stack {
+			c := protocol.Change{Resource: id, Kind: Kind, Op: OpDelete, IDs: map[string]string{"name": name}, Precondition: version(m),
+				Reasons:  []string{"delete it"},
+				Requests: []protocol.Approved{{Method: "DELETE", Path: "/vms/" + name}}}
+			p.Removal = &state.ProvidedChange{Change: c, Verified: protocol.Verified{Effects: []protocol.Effect{protocol.EffectLoseData}}}
+			p.RemovalOrder = int(m.ID) // later machines depend on earlier ones
+		}
+		provided[id] = p
 	}
 	snap.AddProvided(provided)
 
@@ -227,7 +257,11 @@ func (w *World) Apply(ctx context.Context, step reconcile.Step) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.calls[step.Op]++
-	w.Applied = append(w.Applied, string(step.Op)+" "+step.Resource.Name)
+	name := step.Resource.Name
+	if step.Approved.Removes {
+		name = step.Approved.Name
+	}
+	w.Applied = append(w.Applied, string(step.Op)+" "+name)
 	var fault Fault
 	if q := w.faults[step.Op]; len(q) > 0 {
 		fault, w.faults[step.Op] = q[0], q[1:]
@@ -247,12 +281,18 @@ func (w *World) Apply(ctx context.Context, step reconcile.Step) error {
 func (w *World) change(step reconcile.Step) error {
 	r := step.Resource
 	switch step.Op {
+	case OpDelete:
+		// Gone already (an earlier run did it): nothing to do, as the host's provider adapter does.
+		if m, ok := w.machines[step.Approved.Name]; ok && !m.Owned {
+			return fmt.Errorf("machine %s is not Mamela's", step.Approved.Name)
+		}
+		delete(w.machines, step.Approved.Name)
 	case OpCreate:
 		if _, exists := w.machines[r.Name]; exists {
 			w.Duplicates++
 			return fmt.Errorf("machine %s already exists", r.Name)
 		}
-		w.machines[r.Name] = Machine{Owned: true, CPU: cpuOf(r), ID: int64(7000 + len(w.machines))}
+		w.machines[r.Name] = Machine{Owned: true, CPU: cpuOf(r), ID: int64(7000 + len(w.machines)), Stack: w.stack}
 	case OpStart, OpResize:
 		m, ok := w.machines[r.Name]
 		if !ok {

@@ -151,14 +151,15 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 
 	// Operations run in phases: late ones after all others (every machine of the run is created
 	// before any is started, so that no first boot competes with another machine's disk import; a
-	// boot that waits too long for its disk ends in emergency mode).
-	for phase := range 2 {
+	// boot that waits too long for its disk ends in emergency mode), and deletions last of all: a
+	// change that failed has stopped the run before anything is deleted.
+	for phase := range 3 {
 		for _, full := range p.Changes {
 			if full.Status != plan.StatusChange {
 				continue
 			}
 			c := full
-			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(o) != phase })
+			c.Operations = slices.DeleteFunc(slices.Clone(full.Operations), func(o plan.Operation) bool { return opPhase(full, o) != phase })
 			if len(c.Operations) == 0 {
 				continue
 			}
@@ -173,6 +174,11 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 
 			current, found := findChange(now, id)
+			if gone(c, fresh) {
+				// A deleted object is no longer in the plan: the provider finishes what follows
+				// the deletion (it may have been done by an earlier run).
+				found, current = true, c
+			}
 			if found && current.Status == plan.StatusInSync {
 				// The effect is already visible (a previous run finished, or its response was lost).
 				for _, op := range c.Operations {
@@ -290,12 +296,25 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 	return rep, nil
 }
 
-// opPhase is the phase an operation runs in: late ones after everything else.
-func opPhase(op plan.Operation) int {
-	if op.Late {
+// opPhase is the phase an operation runs in: late ones after everything else but the deletions,
+// which come last.
+func opPhase(c plan.Change, op plan.Operation) int {
+	switch {
+	case c.Removes:
+		return 2
+	case op.Late:
 		return 1
 	}
 	return 0
+}
+
+// gone reports whether the object a deletion is for is no longer there.
+func gone(c plan.Change, fresh state.Snapshot) bool {
+	if !c.Removes {
+		return false
+	}
+	o, there := fresh.Provided[c.ID()]
+	return !there || !o.Observed.Exists
 }
 
 func (r *Reconciler) addAll(rep *Report, c plan.Change, outcome Outcome, detail string) {

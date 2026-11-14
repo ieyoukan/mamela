@@ -226,7 +226,9 @@ type noCreations struct{}
 func (noCreations) Creations(context.Context, string, string) ([]map[string]string, error) {
 	return nil, nil
 }
-func (noCreations) RecordCreation(context.Context, string, string, map[string]string, string, string) error {
+func (noCreations) CreationStack(context.Context, string, string) (string, error) { return "", nil }
+func (noCreations) CreationOrder(context.Context, string) (map[string]int, error) { return nil, nil }
+func (noCreations) RecordCreation(context.Context, string, string, string, map[string]string, string, string) error {
 	return nil
 }
 
@@ -236,7 +238,9 @@ type recorded map[string][]map[string]string
 func (r recorded) Creations(_ context.Context, provider, resource string) ([]map[string]string, error) {
 	return r[provider+"/"+resource], nil
 }
-func (r recorded) RecordCreation(_ context.Context, provider, resource string, ids map[string]string, _, _ string) error {
+func (r recorded) CreationStack(context.Context, string, string) (string, error) { return "", nil }
+func (r recorded) CreationOrder(context.Context, string) (map[string]int, error) { return nil, nil }
+func (r recorded) RecordCreation(_ context.Context, _, provider, resource string, ids map[string]string, _, _ string) error {
 	r[provider+"/"+resource] = append(r[provider+"/"+resource], ids)
 	return nil
 }
@@ -260,7 +264,7 @@ func TestOwnershipNeedsMamelasRecord(t *testing.T) {
 	if _, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0)); err == nil || !strings.Contains(err.Error(), "did not create it") {
 		t.Fatalf("an item with a copied marker is taken as Mamela's: %v", err)
 	}
-	rec.RecordCreation(t.Context(), "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
+	rec.RecordCreation(t.Context(), "", "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
 	got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
 	if err != nil || !got["KVItem web"].Observed.Owned || len(got["KVItem web"].Changes) != 1 {
 		t.Fatalf("an item Mamela recorded creating: %+v %v", got["KVItem web"], err)
@@ -337,7 +341,7 @@ func TestAfterWaitsForTheDependency(t *testing.T) {
 	}
 	// web is created through Mamela (recorded first, then made).
 	api.Put(kvapi.Item{Name: "web", Value: "v1", Owner: "mamela", Version: 1})
-	rec.RecordCreation(t.Context(), "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
+	rec.RecordCreation(t.Context(), "", "kv-example", "KVItem web", map[string]string{"item": "web"}, "", "")
 	got, err = rt.Observe(t.Context(), g, time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
