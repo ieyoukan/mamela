@@ -3,9 +3,10 @@
 // cmd/kv-provider builds it for WASI.
 //
 // Kind KVItem, spec {"value": "...", "labels": ["..."]}. It creates and updates items it owns
-// (owner "mamela") and never touches an item someone else created. Removing a declaration never
-// deletes an item: deleting one is an explicit operation (delete-item), which a person asks for by
-// name (mamela act). Its guard (ADR 0006) limits how many items there may be and checks that the
+// (owner "mamela") and never touches an item someone else created. Removing an item from the
+// declaration that made it deletes it (delete-item, ADR 0013), once a plan that says so is approved
+// on the Control Plane's host; delete-item is also an explicit operation a person asks for by name
+// (mamela act). Its guard (ADR 0006) limits how many items there may be and checks that the
 // items of others are unchanged by an apply.
 //
 // What the author writes is the kind: how to list items, what changes a declaration needs, and
@@ -85,7 +86,7 @@ func (items) Operations() []protocol.Operation {
 	return []protocol.Operation{
 		kit.Op(OpCreate, write, putItem, putLabels),
 		kit.Op(OpUpdate, write, putItem, putLabels),
-		kit.ExplicitOp(OpDelete, write, deleteItem),
+		kit.RemoveOp(OpDelete, write, deleteItem),
 		kit.AdoptOp(OpAdopt, write, putItem),
 	}
 }
