@@ -36,6 +36,9 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if len(args) > 0 && args[0] == "redirect" {
 		return runRedirect(ctx, args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "gitops-units" {
+		return runGitopsUnits(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "bundle" {
 		fmt.Fprint(stderr, controlPlaneUsage)
 		return 2
@@ -206,6 +209,7 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	add("mamela-api.service", 0o644, []byte(apiUnit))
 	add("mamelacd.service", 0o644, []byte(mamelacdUnit))
 	add("install.sh", 0o755, []byte(installScript))
+	add("install-gitops.sh", 0o755, []byte(gitopsInstallScript))
 
 	if err := writeBundle(*out, files); err != nil {
 		return report(stderr, err)
@@ -221,6 +225,34 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	fmt.Fprintf(stdout, "once the new endpoint is ready, run: mamela controlplane redirect --db %s --url %s\n", shellQuote(*db), shellQuote(*newURL))
 	fmt.Fprintf(stdout, "On the host, plan and apply with --site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db.\n")
 	fmt.Fprintln(stdout, "\nnote: plan does not move the agents (controlplane.move_to); redirect is an explicit action.")
+	return 0
+}
+
+// runGitopsUnits writes what a host that has a Control Plane already needs to run mamelacd: the two
+// units and the script that installs them, for a person to review and run as root there.
+func runGitopsUnits(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mamela controlplane gitops-units", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	out := fs.String("out", "gitops-units", "the directory to write")
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: mamela controlplane gitops-units [--out <dir>]\n\nWrites mamela-api.service, mamelacd.service and install-gitops.sh, for a host that has a Control Plane\nalready. The units expect /etc/mamela/site.toml, /etc/mamela/providers.toml and /var/lib/mamela/state.db;\nedit them if the host keeps these elsewhere.\n\nFlags:\n")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	if err := os.MkdirAll(*out, 0o755); err != nil {
+		return report(stderr, err)
+	}
+	for name, f := range map[string]bundleFile{
+		"mamela-api.service": {0o644, []byte(apiUnit)}, "mamelacd.service": {0o644, []byte(mamelacdUnit)}, "install-gitops.sh": {0o755, []byte(gitopsInstallScript)},
+	} {
+		if err := os.WriteFile(filepath.Join(*out, name), f.data, os.FileMode(f.mode)); err != nil {
+			return report(stderr, err)
+		}
+	}
+	fmt.Fprintf(stdout, "wrote %s/{mamela-api.service,mamelacd.service,install-gitops.sh}\nOn the host, as root: review them, then %s/install-gitops.sh %s (docs/gitops.md)\n", *out, *out, *out)
 	return 0
 }
 
@@ -373,6 +405,7 @@ Group=mamelacd
 SupplementaryGroups=mamela-api
 StateDirectory=mamelacd
 StateDirectoryMode=0700
+UMask=0077
 WorkingDirectory=/var/lib/mamelacd
 ExecStart=/usr/local/bin/mamelacd run --config /etc/mamelacd/mamelacd.toml
 Restart=always
@@ -386,6 +419,30 @@ InaccessiblePaths=-/etc/mamela -/var/lib/mamela
 
 [Install]
 WantedBy=multi-user.target
+`
+
+// gitopsInstall is the part of the installer that prepares a host for mamelacd (ADR 0012): a user of
+// its own, in the group of the API's socket, and the two units. It is also installScript's tail, and
+// alone as install-gitops.sh, for a host that has a Control Plane already.
+const gitopsInstall = `# mamelacd (ADR 0012): a user of its own, in the group of the API's socket.
+getent group mamela-api >/dev/null 2>&1 || groupadd --system mamela-api
+id mamelacd >/dev/null 2>&1 || useradd --system --user-group --groups mamela-api --home-dir /var/lib/mamelacd --shell /usr/sbin/nologin mamelacd
+install -d -m 0750 -o root -g mamelacd $r/etc/mamelacd
+for u in mamela-api.service mamelacd.service; do
+  if test -f "$b/$u"; then install -m 0644 -o root -g root "$b/$u" $r/etc/systemd/system/$u; fi
+done
+`
+
+// gitopsInstallScript installs mamelacd's user and units on a host that has a Control Plane already
+// (`+"`mamela controlplane gitops-units`"+`).
+const gitopsInstallScript = `#!/usr/bin/env bash
+# Prepares a Control Plane host for mamelacd (docs/gitops.md). Run as root, with the directory this
+# script is in. It does not start anything, and does not touch the Control Plane's files.
+set -euo pipefail
+b="${1:?usage: install-gitops.sh <directory with the units>}"
+r="${MAMELA_INSTALL_ROOT:-}"
+` + gitopsInstall + `systemctl daemon-reload
+echo "installed; write /etc/mamelacd/mamelacd.toml and the GitHub token, then: systemctl enable --now mamela-api mamelacd (docs/gitops.md)"
 `
 
 // installScript places the bundle's files on the host. It is short on purpose: review it first.
@@ -419,13 +476,6 @@ for f in "$b"/var/cp/*; do install -m 0600 -o mamela-cp -g mamela-cp "$f" $r/var
 install -m 0755 -o root -g root "$b/var/mamelet-linux-amd64" $r/var/lib/mamela/mamelet-linux-amd64
 install -m 0600 -o mamela-cp -g mamela-cp "$b/var/state.db" $r/var/lib/mamela/state.db
 install -m 0644 -o root -g root "$b/mamela-serve.service" $r/etc/systemd/system/mamela-serve.service
-# mamelacd (ADR 0012): a user of its own, in the group of the API's socket.
-getent group mamela-api >/dev/null 2>&1 || groupadd --system mamela-api
-id mamelacd >/dev/null 2>&1 || useradd --system --user-group --groups mamela-api --home-dir /var/lib/mamelacd --shell /usr/sbin/nologin mamelacd
-install -d -m 0750 -o root -g mamelacd $r/etc/mamelacd
-for u in mamela-api.service mamelacd.service; do
-  if test -f "$b/$u"; then install -m 0644 -o root -g root "$b/$u" $r/etc/systemd/system/$u; fi
-done
-systemctl daemon-reload
+` + gitopsInstall + `systemctl daemon-reload
 echo "installed; start it with: systemctl enable --now mamela-serve (gitops: mamela-api and mamelacd, see docs/gitops.md)"
 `

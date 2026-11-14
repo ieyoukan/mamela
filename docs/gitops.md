@@ -13,10 +13,12 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 
 1. **宣言のリポジトリ:** 宣言の Pome を置く。非公開を勧める（宣言にはサイトの値が入る）。依存の Pome は、Control Plane のホストの Pome のキャッシュにあるもの、または `[replace]` でホストの絶対パスを指したものにする（評価は何も取りに行かない）。
 2. **プログラム:** linux/amd64 の `mamela` と `mamelacd` を `/usr/local/bin` に置く（`GOOS=linux GOARCH=amd64 go build -o dist/ ./cmd/mamela ./cmd/mamelacd`）。
-3. **unit とユーザー:** `mamela controlplane bundle` の install.sh が、次のものを入れる。
+3. **unit とユーザー:** 次のものを入れる。
    - `mamela-api.service`（ユーザー `mamela-cp`）
    - `mamelacd.service`（ユーザー `mamelacd`）
    - グループ `mamela-api`（ソケットに届くのはこのグループだけ）
+
+   新しいホストでは `mamela controlplane bundle` の install.sh が入れる。Control Plane がすでに動いているホストでは、`mamela controlplane gitops-units --out units` で unit と `install-gitops.sh` を書き、ホストで読んでから root で実行する。unit は `/etc/mamela/site.toml`、`/etc/mamela/providers.toml`、`/var/lib/mamela/state.db` を見る。ホストが別の場所に置いているなら、unit を直す。
 4. **GitHub のトークン:** そのリポジトリだけの fine-grained token を作る。権限は次のものだけにする。
    - Contents: read
    - Pull requests: read and write
@@ -66,14 +68,15 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 
 ## しないこと
 
-- **明示操作・取り込み:** 削除・再起動・引き継ぎ（`mamela act --confirm`）と `mamela import terraform` はしない。`mamela api` にもその呼び出しはない。宣言から消しても何も消えない。
+- **明示操作・取り込み:** 再起動・引き継ぎ・削除の明示操作（`mamela act --confirm`）と `mamela import terraform` はしない。`mamela api` にもその呼び出しはない。
+- **削除の承認:** 宣言から消した物の削除（[ADR 0013](adr/0013-removal-deletes.md)）は、plan に載り、PR のコメントにもそう書かれるが、コメントでは承認できない。Control Plane のホストで `mamela approve <digest>` を実行する。承認のあとにマージされれば、mamelacd が apply する。
 - **信頼できない先頭:** 信頼する作者の PR のマージでない先頭（直接の push、ほかの作者の PR）は plan しない。
 
 ## 前提と信頼の範囲（ADR 0012 の 6）
 
 - **ブランチ保護:** 直接 push の禁止とレビュー必須は、GitHub のブランチ保護に任せている。mamelacd は、先頭が信頼する作者の PR のマージコミットであることしか確かめない。
 - **古い PR のマージ:** マージ元の PR を直近 30 件の closed の PR から探すので、それより古いマージが先頭になっていると、その先頭は信頼されない扱いになり、plan しない。
-- **mamelacd が乗っ取られると:** API の範囲内で、好きな宣言を plan し、承認者になりすまして承認し、apply できる。人の承認という関門は破られうる。policy・guard・カタログ、資格情報と状態の秘匿、明示操作・取り込みをしないことは破られない。承認の身元を mamelacd を信じずに確かめるのは、ADR 0011 の署名（未実装）である。
+- **mamelacd が乗っ取られると:** API の範囲内で、好きな宣言を plan し、承認者になりすまして承認し、apply できる。人の承認という関門は破られうる。ただし、物の削除を含む plan は承認できない（API が断る）ので、削除はできない。policy・guard・カタログ、資格情報と状態の秘匿、明示操作・取り込みをしないことは破られない。承認の身元を mamelacd を信じずに確かめるのは、ADR 0011 の署名（未実装）である。
 
 ## 試すとき
 

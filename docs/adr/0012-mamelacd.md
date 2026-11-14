@@ -39,7 +39,7 @@ Kubernetes の kubelet・kubectl・Argo CD に倣う。
 | `POST /v1/trees` | コミットの tarball を受け取り、展開して digest で名付ける（`internal/tree` がリンク・ツリーの外・特殊ファイルを拒む） |
 | `POST /v1/plan` | ツリーの中の宣言を plan して保存する |
 | `POST /v1/revision` | 宣言を評価して digest を返す |
-| `POST /v1/approve` | plan を digest で承認する（`by` は `<source>:<login>` の形で、mamelacd は `github:<login>` と伝える。期限は 7 日まで） |
+| `POST /v1/approve` | plan を digest で承認する（`by` は `<source>:<login>` の形で、mamelacd は `github:<login>` と伝える。期限は 7 日まで）。物の削除を含む plan は承認しない（MAM-API-0201、ADR 0013） |
 | `POST /v1/approved` | plan の承認が有効かを返す |
 | `POST /v1/apply` | 承認された plan を apply する |
 
@@ -83,6 +83,8 @@ Kubernetes の kubelet・kubectl・Argo CD に倣う。
 - **守れるもの:** 乗っ取られても、次のことはできない。
   - 資格情報や状態を読む（API は返さず、ファイルの権限と `InaccessiblePaths` で読めない）。
   - 明示操作（削除・再起動・引き継ぎ）や取り込みをする（API にその呼び出しがない）。
+  - 物の削除を承認する（削除を含む plan は、API が承認を断る。Control Plane のホストでの `mamela approve` だけが承認でき、承認のあとの apply だけを mamelacd がする。ADR 0013）。
+- **実機で確かめた（2026-11-14、Control Plane の VM で）:** ソケットは `mamela-api` グループだけが開ける。`/etc/mamela`・`/var/lib/mamela` は mamelacd の名前空間から見えない。書き込みは自分の状態と `/tmp` だけで、権限は無い。承認者でない人の承認は断られ、作者でない人の PR は plan されない。リンクやツリーの外へのパスを含む tarball は断られる。API が止まっているあいだの承認コメントは、API が戻ってから処理される。乗っ取られた mamelacd が、ソケットだけで、任意のツリーを plan し、他人の名前で承認できることも再現した。
 - **承認の身元:** mamelacd を信じずに承認の身元を確かめられるのは、ADR 0011 の 10（物理キーの署名）だけである。署名は本体が確かめる。未実装なので、今の関門の強さは、mamelacd のホストの安全に頼っている。
 - **ブランチ保護が前提:** mamelacd が確かめるのは、先頭が信頼する作者の PR のマージコミットであることだけで、その PR が誰にレビューされたかは見ない。直接 push の禁止とレビュー必須は、GitHub のブランチ保護（ruleset）に任せている。保護がなければ、レビューなしにマージされた宣言を、承認者の承認だけで apply することになる。
 - **マージ元の PR の探索:** 先頭のマージ元は、直近 30 件の closed の PR（更新の新しい順）から、マージコミットが先頭と一致するものを探す。それより古い PR のマージが先頭だと、マージ元が見つからず、その先頭は信頼されない扱い（HeadUntrusted）になり、plan しない。新しい信頼できるマージが来れば、そちらが先頭になる。
