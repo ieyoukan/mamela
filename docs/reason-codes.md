@@ -112,6 +112,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0115 | k3s の版上げは、全 Kubernetes ノードが Ready のあいだだけ進む。Ready でないノードがある、または server がノードを報告していない（server の k3s を調べる） |
 | MAM-PLAN-0116 | k3s の版上げの順番待ち。server が先、agent は名前の順に 1 台ずつ（agent は server より新しい版にしない） |
 | MAM-PLAN-0117 | mamelet からの k3s のマニフェストの報告を待つ |
+| MAM-PLAN-0118 | k3s のノードのマシンを再起動する変更（仕様の変更での再起動など）は、クラスタのマシンを 1 台ずつ、名前の順（agent が server より先）に行う。先のマシンの再起動が済むまで待つ。全 Kubernetes ノードが Ready でなければ MAM-PLAN-0115 |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |

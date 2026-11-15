@@ -253,7 +253,69 @@ func (b builder) provided(r graph.Resource) Change {
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
 		c.ProviderChanges = append(c.ProviderChanges, pc.Change)
 	}
+	if got.Observed.Exists && b.restartsMachine(got) {
+		if note := b.machineRestartGate(r); note != nil {
+			w := newChange(r)
+			w.Provider, w.Status, w.Note = c.Provider, StatusWaiting, note
+			return w
+		}
+	}
 	return c
+}
+
+// restartsMachine is whether a provider's changes of an existing machine interrupt it (reboot, stop).
+func (b builder) restartsMachine(got state.Provided) bool {
+	return slices.ContainsFunc(got.Changes, func(pc state.ProvidedChange) bool {
+		return slices.Contains(pc.Verified.Effects, protocol.EffectRestart)
+	})
+}
+
+// machineRestartGate says what a restart of a machine that runs a k3s node waits for (nil: nothing,
+// or the machine runs none). The machines of a cluster are restarted one at a time (in the order of
+// their names, so the agents come before the server), and only while every Kubernetes node is
+// Ready: a plan that restarts them all at once would take the cluster down.
+func (b builder) machineRestartGate(r graph.Resource) *Note {
+	var mine *graph.NodeK3sSpec
+	for _, o := range b.g.Sorted() {
+		if o.NodeK3s != nil && o.NodeK3s.Node == r.Name {
+			mine = o.NodeK3s
+		}
+	}
+	if mine == nil || !b.snap.K3s[mine.Node+"/k3s"].Running {
+		return nil
+	}
+	server := mine.Server
+	if mine.Role == graph.K3sServer {
+		server = mine.Node
+	}
+	for _, o := range b.g.Sorted() {
+		k := o.NodeK3s
+		if k == nil || k.Node >= r.Name || (k.Node != server && k.Server != server) {
+			continue
+		}
+		for _, m := range b.g.Sorted() {
+			if m.Provided != nil && m.Name == k.Node && b.restartsMachine(b.snap.Provided[m.ID()]) && b.snap.Provided[m.ID()].Observed.Exists {
+				return &Note{Code: "MAM-PLAN-0118", Message: fmt.Sprintf("waits for machine %s to be restarted before %s (the machines of a cluster are restarted one at a time)", m.Name, r.Name),
+					Hint: "apply the plan that restarts it, then plan again"}
+			}
+		}
+	}
+	nodes := b.declaredNodes(b.snap.K3s[server+"/k3s"].Nodes, &graph.NodeK3sSpec{Node: server, Role: graph.K3sServer})
+	var notReady []string
+	for _, n := range nodes {
+		if !n.Ready {
+			notReady = append(notReady, n.Name)
+		}
+	}
+	switch {
+	case len(nodes) == 0:
+		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before machine %s is restarted", r.Name),
+			Hint: "the server reports them while it runs; if it never does, look at k3s on the server"}
+	case len(notReady) > 0:
+		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before machine %s is restarted (not Ready: %s)", r.Name, strings.Join(notReady, ", ")),
+			Hint: "a restart goes on only on a healthy cluster; find out why the node is not Ready"}
+	}
+	return nil
 }
 
 // SameProviderChanges reports whether every change of fresh is one of approved, exactly: the
@@ -498,7 +560,9 @@ func (b builder) k3s(r graph.Resource) Change {
 	c.Diffs = []Diff{{"version", b.k3sRunning(r, got), want.Version}, {"sha256", got.SHA256, want.SHA256},
 		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
 		{"role", "", string(want.Role)}}
-	if server != "" && server != got.Server {
+	if server != "" {
+		// Always shown, changed or not: the grant checks the server in the revision against this
+		// approved value, so it is what the approval says the agent joins.
 		c.Diffs = append(c.Diffs, Diff{"server", got.Server, server})
 	}
 	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
@@ -598,6 +662,7 @@ func (b builder) upgradeGate(r graph.Resource, got state.K3s) *Note {
 	if !got.Running {
 		return nil // nothing restarts
 	}
+	nodes = b.declaredNodes(nodes, want)
 	var notReady []string
 	for _, n := range nodes {
 		if !n.Ready {
@@ -613,6 +678,34 @@ func (b builder) upgradeGate(r graph.Resource, got state.K3s) *Note {
 			Hint: "an upgrade goes on only on a healthy cluster; find out why the node is not Ready"}
 	}
 	return nil
+}
+
+// declaredNodes are the Kubernetes nodes the declaration is about: those named like a k3s node of
+// this cluster. A node the declaration does not name (a machine whose declaration was removed and
+// left its node behind, or one joined by hand) is not Mamela's to wait for: it would stop every
+// upgrade for good. When no name matches at all (the Kubernetes node names are not the declared
+// ones), nothing is dropped: the gate stays as careful as it can be.
+func (b builder) declaredNodes(nodes []state.K3sNode, want *graph.NodeK3sSpec) []state.K3sNode {
+	server := want.Server
+	if want.Role == graph.K3sServer {
+		server = want.Node
+	}
+	declared := map[string]bool{}
+	for _, r := range b.g.Sorted() {
+		if o := r.NodeK3s; o != nil && (o.Node == server || o.Server == server) {
+			declared[o.Node] = true
+		}
+	}
+	var mine []state.K3sNode
+	for _, n := range nodes {
+		if declared[n.Name] {
+			mine = append(mine, n)
+		}
+	}
+	if len(mine) == 0 {
+		return nodes
+	}
+	return mine
 }
 
 // k3sServerOf is the server of node's k3s agent, when service is that agent's k3s service.

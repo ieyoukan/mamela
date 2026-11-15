@@ -55,3 +55,14 @@ func TestApplyOutcome(t *testing.T) {
 		}
 	}
 }
+
+func TestFailureSummary(t *testing.T) {
+	text := "failed upgrade-k3s NodeK3s a/k3s (x)\n\nstopped: MAM-REC-0004: upgrade-k3s on NodeK3s a/k3s failed:\n  the revision names server \"https://192.0.2.1:6443\", the approved plan \"\" (plan again)\n  hint: fix the cause"
+	got := failureSummary(text, 90)
+	if !strings.HasPrefix(got, "MAM-REC-0004: upgrade-k3s on NodeK3s a/k3s failed: the revision names server") || strings.ContainsAny(got, "\n") || len([]rune(got)) > 90 || !strings.HasSuffix(got, "…") {
+		t.Errorf("%q", got)
+	}
+	if got := failureSummary("guard blocked", 90); got != "guard blocked" {
+		t.Errorf("%q", got)
+	}
+}

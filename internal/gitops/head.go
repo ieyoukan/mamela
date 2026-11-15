@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/ieyoukan/mamela/internal/api"
 )
@@ -283,11 +284,27 @@ func (h headSync) apply(ctx context.Context, rev string, p Plan) error {
 		return err
 	}
 	if outcome == outcomeFailed {
-		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "failed "+short(p.Digest))
+		// Without a pull request to comment on (sync = "push"), this is the only place the reason shows.
+		why := failureSummary(text, 90)
+		e.logf("mamelacd: %s plan %s failed: %s", h.dir, short(p.Digest), why)
+		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "failed "+short(p.Digest)+": "+why)
 		return h.record(ctx, rev, HeadFailed, p.Digest)
 	}
 	next, err := e.planAndPost(ctx, pr, h.sha, h.dir, true)
 	return h.recordPlanned(ctx, rev, next, err)
+}
+
+// failureSummary is why an apply stopped, in one short line (a commit status holds 140 characters):
+// what follows "stopped:" if the text has it, white space collapsed, cut at max.
+func failureSummary(text string, max int) string {
+	if _, rest, ok := strings.Cut(text, "stopped:"); ok {
+		text = rest
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	if r := []rune(text); len(r) > max {
+		text = string(r[:max-1]) + "…"
+	}
+	return text
 }
 
 // applyOutcome is how an apply went, from the API's answer (err: the API refused it), and the
