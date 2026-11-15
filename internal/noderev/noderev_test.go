@@ -195,3 +195,31 @@ func TestManifestsAreChecked(t *testing.T) {
 		}
 	}
 }
+
+func TestNodeRemovalIsChecked(t *testing.T) {
+	tok := strings.Repeat("a", 64)
+	rev := func(role string, rm *NodeRemoval) Revision {
+		k := &K3s{Version: "v1.37.2+k3s1", SHA256: tok, Role: role, Token: tok, Remove: rm}
+		if role == K3sAgent {
+			k.Server = "https://192.0.2.10:6443"
+		}
+		return Revision{Schema: Schema, Node: "web", VMID: 7001, Serial: 1, IssuedAt: time.Unix(1, 0), ExpiresAt: time.Unix(100, 0), K3s: k}
+	}
+	once := Once{Operation: "op-000000000000000000000001", Attempt: 1, Action: ActionRemove}
+	if r := rev(K3sServer, &NodeRemoval{Node: "agent-1", Once: once}); r.Check() != nil {
+		t.Fatalf("a valid removal: %v", r.Check())
+	}
+	bad := once
+	bad.Action = ActionInstall
+	for name, r := range map[string]Revision{
+		"an agent removes nodes": rev(K3sAgent, &NodeRemoval{Node: "agent-1", Once: once}),
+		"an argument as a name":  rev(K3sServer, &NodeRemoval{Node: "--all", Once: once}),
+		"a path as a name":       rev(K3sServer, &NodeRemoval{Node: "../x", Once: once}),
+		"another action":         rev(K3sServer, &NodeRemoval{Node: "agent-1", Once: bad}),
+		"no operation":           rev(K3sServer, &NodeRemoval{Node: "agent-1", Once: Once{Attempt: 1, Action: ActionRemove}}),
+	} {
+		if r.Check() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

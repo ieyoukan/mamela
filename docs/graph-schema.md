@@ -106,6 +106,15 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 - **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
 - **server のアドレス:** server のマシンが固定アドレス（`spec.network`）を宣言していれば、それを使う（報告を待たず、報告にも従わない）。DHCP なら、server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
 
+#### 宣言から消えた agent の Kubernetes ノード
+
+agent を宣言から消しても、Kubernetes にはそのノードが残る。server の `NodeK3s` の plan が、次のノードを 1 つずつ消す操作（`remove-k3s-node`、MAM-POL-0214）を出す。server が収束していて、動いているときだけ。
+
+- **機械ごと消えるとき:** そのノードのマシンを、この plan が削除する（ADR 0013）。ノードは、マシンの削除の**前**に消す（Ready なら cordon と drain をしてから delete）。
+- **取り残されたノード:** Ready でなく、同じ名前のマシンがもう無い。drain はできないので、delete だけ。
+- **消さないもの:** 宣言しているノード、server 自身のノード、マシンが残っているノード（止まっているだけ、宣言から外しただけ）、server が報告するノードの名前に server 自身が無いクラスタ、policy が `removal = "retain"` のとき。
+- **承認:** 削除なので、ホストの `mamela approve` だけ（API は断る）。plan の diff `remove-node` が、消すノードの名前を示し、grant はその名前だけを mamelet に渡す。drain が終わらなければ、何も消さず uncordon して失敗にする。
+
 ### NodeK3sManifest
 
 k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/manifests`）にある、1 つのマニフェストのファイル。k3s は、そこにあるものを cluster-admin の権限で適用し、ファイルが変わるたびにまた適用する（HelmChart、ワークロードなど）。宣言は、K3s の Pome（0.1.1 から）の `K3s.manifest(graph, server, name, content)`。

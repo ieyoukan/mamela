@@ -38,7 +38,8 @@ type tinyOS struct {
 	exists, enabled, running  bool
 	installs, enables, starts int
 	restarts                  int
-	kubectl                   string // what `k3s kubectl get nodes` prints
+	kubectl                   string   // what `k3s kubectl get nodes` prints
+	kubectlCalls              []string // the changing kubectl commands mamelet ran
 	beforeInstall             func()
 }
 

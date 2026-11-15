@@ -75,8 +75,10 @@ Kubernetes の API を見る観測（Ready の確認）は、mamelet が server 
 | 止まった agent がいるときの版上げ | server は Ready を待った。ただし止まった agent に、server を待たず新しい binary を入れる plan が出ていた | binary があれば、止まっていても server を待つ（#20） |
 | VM の再起動 | 再起動後も、宣言した版のまま戻る | — |
 | agent の追加（スケールアウト） | push から Ready まで約 7 分、人の操作なし | — |
-| agent の削除（スケールイン） | 削除はホスト承認。VM は消えたが、Kubernetes にノードが NotReady で残り、以後の版上げを止めた | Ready の確認を、宣言したノードだけにする（#20）。ノードを消す仕組みは**まだない** |
+| agent の削除（スケールイン） | 削除はホスト承認。VM は消えたが、Kubernetes にノードが NotReady で残り、以後の版上げを止めた | Ready の確認を、宣言したノードだけにする（#20）。ノードを消す仕組みは、次の行（#21） |
+| agent の削除（2 回目、ノードを消す仕組みつき） | plan が「ノード k3s-s-agent-2 を消す（先に drain）」と「VM を消す」の 2 件を出し、ホストの承認で進んだ。drain で ArgoCD の Pod が server と agent-1 に移り、ノードが消え、そのあと VM が消えた。ArgoCD は HTTP 200 のまま、境界の外のゲストは変わらず | `remove-k3s-node`（MAM-POL-0214）、削除の判定を操作にも広げた（#21） |
 | メモリの変更（agent 2 台） | plan が 2 台を同時に再起動しようとした | k3s のマシンの再起動は 1 台ずつ、Ready のあいだだけ（#20）。実機で 1 台ずつ進んだ |
+| 同じ名前の agent を宣言に戻す（削除のあと） | 人の操作なしで、約 7 分（push から Ready まで）。新しい VM と新しいノードとして Ready になった。古い証明書や許可は引き継がない | — |
 | 中断された適用（API を kill -9） | 次の apply が、世界を見直して完了した | — |
 | ArgoCD（Helm チャート）の設定変更 | 承認、書き込み、k3s の Helm が反映（server 1 から 2） | — |
 
@@ -101,8 +103,24 @@ push から収束までの目安（この環境）は、VM の作成が約 1.5 �
 6. **待ち時間が長い。** 1 段ごとに poll（1 分）と apply（約 1.5〜2 分）がかかり、版上げは 1 台あたり約 3 分、4 台で約 10 分。安全のためだが、`interval` を短くすれば縮められる
 7. **新しく宣言したものの最初の plan が、長く動いているマシンでは「agent が一度も報告していない」（MAM-PLAN-0110）と出る**（再 plan で直る。メッセージが紛らわしい）
 
+### 使いにくい点の直し方（検討、2026-11-16）
+
+直す順は、「効きが大きく、Mamela 本体を k3s に寄せない（provider と mamelet、mamelacd の中で済む）もの」から。
+
+| # | 使いにくい点 | 直し方 | 大きさ |
+|---|---|---|---|
+| 7 | MAM-PLAN-0110 が新しい宣言に出て紛らわしい | そのノードが他のリソースを報告済みなら、「このリソースの報告を待つ」（待ち、MAM-PLAN-0108 など）にする。0110 は、そのノードが何も報告していないときだけ | 小（plan のメッセージと条件） |
+| 5 | 失敗したあと、新しいコミットが来るまで動かない | mamelacd に `retry`（既定は 10m、最大 N 回）を足す。failed の先頭を、同じ承認のまま、時間を置いて apply し直す。apply は世界を見直して続きから進むので、繰り返してよい。回数を超えたら failed のまま、status に理由を残す | 小（mamelacd の head の状態遷移） |
+| 6 | 1 段ごとに poll を待つので遅い | apply が済んだら、次の poll を待たずに plan し直す（段が続くときは、すぐ次の段へ）。mamelet の poll の間隔は、apply の待ちの間だけ短くする | 小〜中（mamelacd の nextStep、mamelet の間隔） |
+| 2 | mamelet の更新の仕組みがない | revision に `mamelet: {sha256}` を足す（署名つき）。mamelet は、Control Plane が配る（すでに `GET /v1/mamelet/{sha256}` がある）バイナリを取り、sha256 が revision と一致するときだけ、前の版を残して置き換え、自分を再起動する。起動後に報告できなければ、systemd が前の版に戻す。更新は plan に出て、承認が要る（policy: `update-mamelet`） | 中（新しい op、mamelet の自己置き換え、巻き戻し） |
+| 3 | 秘密を Git に入れずにクラスタへ渡せない | Control Plane のホストの `/etc/mamela/secrets/<name>` を、宣言が名前（`secret("argocd-github")`）で指す。plan は名前と内容の sha256 だけを示す（値は出さない）。値は、署名つき revision で、そのノードの mamelet にだけ渡し（参加トークンと同じ経路）、マニフェストの `${secret:<name>}` を書き込むときに置き換える。観測は、置き換えたあとの sha256 | 中〜大（新しい経路。秘密の扱いの ADR が先） |
+| 1 | 一度だけの準備が重い | `mamela doctor <provider>`: 読み取りだけで、pool、ロール、Token、ACL、ストレージの有無を調べ、足りないものと、それを作るスクリプトの該当部分を示す。`mamela init` が `mamela.site.toml` と `mamela.providers.toml` の雛形を出す。root のスクリプトは、安全のために人が読んで実行する設計を変えない | 中（provider の契約に点検を足す） |
+| 4 | 宣言から消した agent のノードが残る | **実装した**（`remove-k3s-node`） | — |
+
+Mamela 本体を k3s に寄せないために、次を守る。ノードの操作は `NodeK3s` の plan と node provider、mamelet の中だけに置く（核は「削除を含む操作はホストだけが承認する」という一般の規則だけを持つ）。秘密は k3s 専用にせず、「宣言が名前で指し、署名つき revision でノードに渡す」一般の仕組みにする。
+
 ### 次にやるとよいこと（優先順）
-1. 宣言から消した agent のノードを、drain して消す（承認つき）。スケールインを最後まで IaC にする
+1. ~~宣言から消した agent のノードを、drain して消す（承認つき）~~ → 実装した（`remove-k3s-node`、MAM-POL-0214。[graph-schema](../graph-schema.md)）
 2. 秘密の渡し方（たとえば、ホストの `/etc/mamela/secrets/` にあるファイルを、宣言が名前で指して、k3s の Secret にする。内容は Git に入れない）
 3. mamelet の更新（Control Plane が署名した版を、各ノードが自分で取り替える）
 4. MAM-PLAN-0110 のメッセージと条件を直す（そのノードが他のものを報告していれば、「このリソースの報告を待つ」と言う）

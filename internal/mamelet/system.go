@@ -28,7 +28,7 @@ const (
 	progDpkgQuery = "/usr/bin/dpkg-query"
 	progAptGet    = "/usr/bin/apt-get"
 	progSystemctl = "/usr/bin/systemctl"
-	progK3s       = "/usr/local/bin/k3s" // only to read the nodes its API lists (K3sNodes)
+	progK3s       = "/usr/local/bin/k3s" // kubectl on the server: list nodes (K3sNodes); cordon, drain, delete one (RemoveK3sNode)
 )
 
 // ExecRunner runs programs directly (no shell), with a minimal environment.

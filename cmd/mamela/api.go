@@ -119,7 +119,7 @@ func (b *apiBackend) Plan(ctx context.Context, dir string) (api.Planned, error) 
 		case c.Status == plan.StatusChange:
 			out.Changes++
 		}
-		if c.Removes {
+		if c.Deletes() {
 			out.Removals++
 		}
 	}

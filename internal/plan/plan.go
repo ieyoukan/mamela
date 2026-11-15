@@ -58,6 +58,10 @@ type Operation struct {
 	Decision policy.Decision `json:"decision"`
 	// Late operations run after every other operation of the apply (protocol.Change.Late).
 	Late bool `json:"late,omitempty"`
+	// Deletes: the operation deletes something that was not made by this resource's declaration
+	// being removed (a Kubernetes node). Like every deletion it is approved only on the Control
+	// Plane's host (ADR 0013).
+	Deletes bool `json:"deletes,omitempty"`
 }
 
 // Note explains a status that has no operation (waiting, blocked, retained).
@@ -88,6 +92,30 @@ type Change struct {
 	// every other change, newest object first, and only a plan approved on the Control Plane's
 	// host runs it.
 	Removes bool `json:"removes,omitempty"`
+}
+
+// Deletes is whether the change deletes anything: an object no declaration has any more, or an
+// operation that deletes (a Kubernetes node). Only a plan approved on the Control Plane's host
+// runs it.
+func (c Change) Deletes() bool {
+	return c.Removes || slices.ContainsFunc(c.Operations, func(o Operation) bool { return o.Deletes })
+}
+
+// Deleted names what the change deletes, for a person: the object, or the Kubernetes node.
+func (c Change) Deleted() []string {
+	if c.Removes {
+		return []string{c.ID()}
+	}
+	var out []string
+	for _, d := range c.Diffs {
+		if d.Field == "remove-node" && c.Deletes() {
+			out = append(out, "Kubernetes node "+d.To)
+		}
+	}
+	if len(out) == 0 && c.Deletes() {
+		out = append(out, c.ID())
+	}
+	return out
 }
 
 // ID is the resource identity ("Kind name").
@@ -191,7 +219,7 @@ func keptNote(o state.Provided) *Note {
 func (p *Plan) Removals() int {
 	n := 0
 	for _, c := range p.Changes {
-		if c.Removes {
+		if c.Deletes() {
 			n++
 		}
 	}
@@ -529,7 +557,7 @@ func (b builder) k3s(r graph.Resource) Change {
 			Hint:    "fix it on the node, then plan again"}
 		return c
 	case got.Installed && got.SHA256 == want.SHA256 && !got.Stale:
-		return b.withOps(c)
+		return b.retireNode(r, got, b.withOps(c))
 	}
 	// A k3s whose binary is in place is changed in place: an agent only after its server runs the
 	// declared release; and, if it runs (it is restarted), the agents one at a time and only while
@@ -572,6 +600,79 @@ func (b builder) k3s(r graph.Resource) Change {
 		return b.withOps(c, policy.Subject{Op: policy.OpUpgradeK3s})
 	}
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
+}
+
+// retireNode adds to the plan of a k3s server that is in sync the removal of a Kubernetes node
+// that no declaration of this cluster names any more: a node whose machine this plan deletes (it
+// is drained first, while its machine still runs), or a Not Ready node whose machine is gone (a
+// left-over). One node per plan; the server's own node, a node whose machine still exists, and a
+// cluster whose node names do not include the server's own are never touched. It is a deletion:
+// the policy's removal = retain keeps it, and only the Control Plane's host approves it.
+func (b builder) retireNode(r graph.Resource, got state.K3s, c Change) Change {
+	want := r.NodeK3s
+	if want.Role != graph.K3sServer || !got.Running || !b.pol.Deletes() ||
+		!slices.ContainsFunc(got.Nodes, func(n state.K3sNode) bool { return n.Name == want.Node }) {
+		return c
+	}
+	declared := map[string]bool{}
+	for _, o := range b.g.Sorted() {
+		if k := o.NodeK3s; k != nil && (k.Node == want.Node || k.Server == want.Node) {
+			declared[k.Node] = true
+		}
+	}
+	byName := slices.SortedFunc(slices.Values(got.Nodes), func(x, y state.K3sNode) int { return strings.Compare(x.Name, y.Name) })
+	for _, n := range byName {
+		if declared[n.Name] || b.pol.Protected(n.Name) {
+			continue
+		}
+		var why string
+		switch {
+		case b.machineLeaves(n.Name):
+			why = "its machine is deleted by this plan; its pods are moved to other nodes first, then the node is deleted"
+			if !n.Ready {
+				why = "its machine is deleted by this plan and the node is not Ready (it cannot be drained); the node is deleted"
+			}
+		case !n.Ready && !b.machineExists(n.Name):
+			why = "the node is not Ready and no machine of that name exists any more (a left-over); the node is deleted"
+		default:
+			continue
+		}
+		// The approval names the node: the grant takes it from this diff, and no other.
+		c.Diffs = append(c.Diffs, Diff{"remove-node", "", n.Name}, Diff{"remove-node because", "", why})
+		d := b.pol.Decide(policy.Subject{Op: policy.OpRemoveK3sNode})
+		c.Status = StatusChange
+		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
+		c.Operations = append(c.Operations, Operation{Op: policy.OpRemoveK3sNode, Decision: d, Late: true, Deletes: true})
+		return c
+	}
+	return c
+}
+
+// machineLeaves is whether this plan deletes the machine called name (ADR 0013).
+func (b builder) machineLeaves(name string) bool {
+	if !b.pol.Deletes() || b.pol.Protected(name) {
+		return false
+	}
+	for id, o := range b.snap.Provided {
+		if o.Name == name && o.Removal != nil && !o.Declared && o.Observed.Exists && o.Observed.Owned &&
+			!slices.ContainsFunc(b.g.Resources, func(r graph.Resource) bool { return r.ID() == id }) {
+			return true
+		}
+	}
+	return false
+}
+
+// machineExists is whether any machine called name is observed.
+func (b builder) machineExists(name string) bool {
+	if _, ok := b.snap.Nodes[name]; ok {
+		return true
+	}
+	for _, o := range b.snap.Provided {
+		if o.Name == name && o.Observed.Exists {
+			return true
+		}
+	}
+	return false
 }
 
 // k3sManifest plans a manifest file in a k3s server's auto-deploy directory. Its whole content is

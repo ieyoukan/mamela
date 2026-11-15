@@ -415,3 +415,57 @@ func manifestPath(name string) string {
 func (s *System) WriteManifest(m noderev.Manifest) error {
 	return writeK3sFile(s.path(manifestPath(m.Name)), []byte(m.Content), 0o600)
 }
+
+// How long a drain may take before mamelet gives up (the node is then left as it was).
+const k3sDrainTimeout = 4 * time.Minute
+
+// RemoveK3sNode removes the Kubernetes node name from the cluster a running server serves, with
+// the server's own kubeconfig and fixed commands only. A node that is Ready is drained first (its
+// pods move to other nodes: cordon, then drain without touching DaemonSets); a node that is not
+// Ready cannot be drained, so it is only deleted. A drain that does not finish leaves nothing
+// deleted and the node schedulable again. A node that is already gone is a success. The server's
+// own node is never removed. The returned text says what was done.
+func (s *System) RemoveK3sNode(ctx context.Context, name, self string) (string, error) {
+	if !noderev.ValidNode(name) {
+		return "", fmt.Errorf("%q is not a node name mamelet removes", name)
+	}
+	if name == self {
+		return "", fmt.Errorf("%s is this server's own node: mamelet never removes it", name)
+	}
+	env := "KUBECONFIG=" + k3sKubeconfig
+	kubectl := func(timeout time.Duration, args ...string) (string, error) {
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		return s.run(cctx, progK3s, append([]string{"kubectl"}, args...), env)
+	}
+	var node *noderev.K3sNode
+	nodes := s.K3sNodes(ctx)
+	if nodes == nil {
+		return "", errors.New("the cluster's nodes cannot be read: not removing anything")
+	}
+	for i := range nodes {
+		if nodes[i].Name == name {
+			node = &nodes[i]
+		}
+	}
+	if node == nil {
+		return "Kubernetes node " + name + " is already gone", nil
+	}
+	done := "deleted Kubernetes node " + name
+	if node.Ready {
+		if _, err := kubectl(time.Minute, "cordon", name); err != nil {
+			return "", err
+		}
+		if _, err := kubectl(k3sDrainTimeout+time.Minute, "drain", name, "--ignore-daemonsets", "--delete-emptydir-data", "--timeout="+k3sDrainTimeout.String()); err != nil {
+			_, _ = kubectl(time.Minute, "uncordon", name) // best effort: leave it as it was
+			return "", fmt.Errorf("draining %s did not finish (nothing was deleted): %w", name, err)
+		}
+		done = "drained and deleted Kubernetes node " + name
+	} else {
+		done = "deleted Kubernetes node " + name + " (not Ready, so not drained)"
+	}
+	if _, err := kubectl(time.Minute, "delete", "node", name); err != nil {
+		return "", err
+	}
+	return done, nil
+}

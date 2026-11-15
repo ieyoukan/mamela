@@ -196,8 +196,8 @@ func approvePlan(ctx context.Context, st *store.Store, digest, by string, ttl ti
 		if c.Verdict == policy.Denied {
 			out.Denied++
 		}
-		if c.Removes {
-			out.Removed = append(out.Removed, c.ID())
+		if c.Deletes() {
+			out.Removed = append(out.Removed, c.Deleted()...)
 		}
 	}
 	if len(out.Removed) > 0 && !host {

@@ -155,6 +155,12 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			if r.K3s == nil {
 				r.K3s = k3s
 			}
+			if rm := r.K3s; rm != nil && rm.Remove != nil && declaresNode(g, name, rm.Remove.Node) {
+				// A node that is declared again is never removed by an old grant.
+				k := *rm
+				k.Remove = nil
+				r.K3s = &k
+			}
 			if pol.Protected(name) {
 				for i := range r.Packages {
 					r.Packages[i].Install = nil
@@ -211,6 +217,16 @@ func K3sServerURL(ctx context.Context, st *store.Store, server string) (string, 
 		return "", false, err
 	}
 	return "https://" + slices.Sorted(slices.Values(nr.Report.K3s.Addresses))[0] + ":6443", true, nil
+}
+
+// declaresNode is whether the declaration has a k3s node called node that joins server (or is it).
+func declaresNode(g *graph.Graph, server, node string) bool {
+	for _, r := range g.Sorted() {
+		if k := r.NodeK3s; k != nil && k.Node == node && (k.Server == server || k.Node == server) {
+			return true
+		}
+	}
+	return false
 }
 
 func findPackage(r *noderev.Revision, name string) *noderev.Package {
@@ -291,6 +307,22 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			}
 			k := kr
 			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall}
+			rev.K3s = &k
+			return nil
+		}
+	case step.Op == policy.OpRemoveK3sNode && r.NodeK3s != nil && r.NodeK3s.Role == graph.K3sServer:
+		// The node to remove is the one the approved plan named, and no other.
+		target := approvedDiff(step.Approved, "remove-node")
+		if !noderev.ValidNode(target) {
+			return fmt.Errorf("the approved plan names no Kubernetes node to remove (plan again)")
+		}
+		node, what = r.NodeK3s.Node, "remove Kubernetes node "+target
+		grant = func(rev *noderev.Revision) error {
+			if rev.K3s == nil || rev.K3s.Role != noderev.K3sServer {
+				return fmt.Errorf("%s has no k3s server in its revision (plan again)", node)
+			}
+			k := *rev.K3s
+			k.Remove = &noderev.NodeRemoval{Node: target, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionRemove}}
 			rev.K3s = &k
 			return nil
 		}
