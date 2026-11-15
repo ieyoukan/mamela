@@ -75,7 +75,12 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			if snap.K3s == nil {
 				snap.K3s = map[string]state.K3s{}
 			}
+			var nodes []state.K3sNode
+			for _, n := range k.Nodes {
+				nodes = append(nodes, state.K3sNode{Name: n.Name, Version: n.Version, Ready: n.Ready})
+			}
 			snap.K3s[r.Node+"/k3s"] = state.K3s{Installed: k.Installed, SHA256: k.SHA256, Error: k.Error, Server: k.Server,
+				Running: k.Running, Stale: k.Stale, Nodes: nodes,
 				Addresses: slices.Sorted(slices.Values(k.Addresses)), ObservedAt: nr.Received}
 		}
 	}
@@ -240,7 +245,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest}
 			return nil
 		}
-	case step.Op == policy.OpInstallK3s && r.NodeK3s != nil:
+	case (step.Op == policy.OpInstallK3s || step.Op == policy.OpUpgradeK3s) && r.NodeK3s != nil:
 		kr, ok, err := k3sRevision(ctx, p.Store, *r.NodeK3s, inputs.Revision.StaticIP(r.NodeK3s.Server))
 		if err != nil {
 			return err
@@ -249,6 +254,9 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			return fmt.Errorf("k3s server address is not observed; plan again")
 		}
 		node, what = r.NodeK3s.Node, "install k3s "+r.NodeK3s.Version
+		if step.Op == policy.OpUpgradeK3s {
+			what = "upgrade to k3s " + r.NodeK3s.Version
+		}
 		grant = func(rev *noderev.Revision) error {
 			// An agent joins the server the approved plan named, or nothing happens.
 			if want := approvedDiff(step.Approved, "server"); kr.Server != want {

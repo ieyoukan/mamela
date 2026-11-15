@@ -37,6 +37,8 @@ type tinyOS struct {
 	installed                 bool
 	exists, enabled, running  bool
 	installs, enables, starts int
+	restarts                  int
+	kubectl                   string // what `k3s kubectl get nodes` prints
 	beforeInstall             func()
 }
 

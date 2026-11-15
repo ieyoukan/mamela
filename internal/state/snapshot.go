@@ -74,7 +74,17 @@ type K3s struct {
 	Error      string    `json:"error,omitempty"`
 	Addresses  []string  `json:"addresses,omitempty"` // the node's IPv4 addresses, sorted
 	Server     string    `json:"server,omitempty"`    // the server an installed agent joins
+	Running    bool      `json:"running,omitempty"`   // the k3s service is active
+	Stale      bool      `json:"stale,omitempty"`     // it started before the binary in place was written
+	Nodes      []K3sNode `json:"nodes,omitempty"`     // a running server's view of the cluster
 	ObservedAt time.Time `json:"observedAt"`
+}
+
+// K3sNode is a Kubernetes node as its server sees it.
+type K3sNode struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	Ready   bool   `json:"ready"`
 }
 
 // Provided is what a provider observed of one resource, and the changes its diff computed from

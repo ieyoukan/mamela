@@ -47,6 +47,7 @@ const (
 	OpStopService      Op = "stop-service"
 	OpConfigureService Op = "configure-service-repair"
 	OpInstallK3s       Op = "install-k3s"
+	OpUpgradeK3s       Op = "upgrade-k3s"
 )
 
 // Code is a stable reason code for a decision.
@@ -163,6 +164,9 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpInstallK3s:
 		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
 			"check the version and sha256 against the k3s release page before approving"}
+	case OpUpgradeK3s:
+		return Decision{ApprovalRequired, "MAM-POL-0212", "replaces the k3s binary (a release pinned by sha256) and restarts k3s on this node: a server's API is unavailable while it restarts, and an agent's node is not Ready",
+			"check the release against the k3s release page and that agents are not newer than the server; back up the server's data first"}
 	case OpInstallPackage:
 		if s.Removes {
 			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",

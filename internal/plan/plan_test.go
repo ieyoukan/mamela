@@ -485,3 +485,114 @@ func TestWaitingForADependency(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 }
+
+// A k3s that runs the declared binary is in sync only if its process started after the binary was
+// written: a node whose process is older than its binary is upgraded (restarted) with an approval.
+func TestK3sStaleProcessIsAnUpgrade(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1", "a2")
+	s := k3sObserved(g, now)
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, Stale: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a2", Version: "v1.37.1+k3s1", Ready: true}}}
+	c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s")
+	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s || c.Verdict != policy.ApprovalRequired {
+		t.Fatalf("stale server: %+v", c)
+	}
+	if !slices.ContainsFunc(c.Diffs, func(d Diff) bool { return d.Field == "version" && d.From == "v1.37.1+k3s1" && d.To == "v1.37.2+k3s1" }) ||
+		!slices.ContainsFunc(c.Diffs, func(d Diff) bool { return d.Field == "restart" }) {
+		t.Fatalf("the diff does not say the running release and the restart: %+v", c.Diffs)
+	}
+	// A binary of another sha256 with k3s running is an upgrade too; without k3s running it is an install.
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}}}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s {
+		t.Fatalf("running, other binary: %+v", c)
+	}
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, ObservedAt: t0}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.OpInstallK3s {
+		t.Fatalf("not running, other binary: %+v", c)
+	}
+}
+
+// An upgrade goes on only while the cluster is Ready, the server first and the agents one at a
+// time.
+func TestK3sUpgradeOrderAndHealth(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1", "a2")
+	ready := func(v string) []state.K3sNode {
+		return []state.K3sNode{{Name: "srv", Version: v, Ready: true}, {Name: "a1", Version: v, Ready: true}, {Name: "a2", Version: v, Ready: true}}
+	}
+	s := k3sObserved(g, now)
+	set := func(name, sha string, stale bool, nodes []state.K3sNode) {
+		s.K3s[name+"/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, Stale: stale, Nodes: nodes, ObservedAt: t0}
+	}
+	status := func(name string) Change { return find(t, Build(g, s, policy.Default), "NodeK3s "+name+"/k3s") }
+
+	// Everything old: only the server is ready to go; the agents wait for it.
+	set("srv", old, false, ready("v1.37.1+k3s1"))
+	set("a1", old, false, nil)
+	set("a2", old, false, nil)
+	if c := status("srv"); c.Status != StatusChange {
+		t.Fatalf("server: %+v", c)
+	}
+	if c := status("a1"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0116" || !strings.Contains(c.Note.Message, "server srv") {
+		t.Fatalf("agent before the server: %+v", c)
+	}
+
+	// A node that is not Ready stops the server's upgrade.
+	nodes := ready("v1.37.1+k3s1")
+	nodes[2].Ready = false
+	set("srv", old, false, nodes)
+	if c := status("srv"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0115" || !strings.Contains(c.Note.Message, "a2") {
+		t.Fatalf("unhealthy cluster: %+v", c)
+	}
+	// A server that reports no nodes is not a healthy cluster either.
+	set("srv", old, false, nil)
+	if c := status("srv"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0115" {
+		t.Fatalf("no nodes reported: %+v", c)
+	}
+
+	// The server is upgraded: the first agent goes, the second waits for it.
+	set("srv", now, false, ready("v1.37.2+k3s1"))
+	if c := status("srv"); c.Status != StatusInSync {
+		t.Fatalf("upgraded server: %+v", c)
+	}
+	if c := status("a1"); c.Status != StatusChange || c.Operations[0].Op != policy.OpUpgradeK3s {
+		t.Fatalf("first agent: %+v", c)
+	}
+	if c := status("a2"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0116" || !strings.Contains(c.Note.Message, "a1") {
+		t.Fatalf("second agent: %+v", c)
+	}
+	set("a1", now, false, nil)
+	if c := status("a2"); c.Status != StatusChange {
+		t.Fatalf("second agent after the first: %+v", c)
+	}
+}
+
+// k3sCluster is a server (srv) and agents of one release, on machines with a static server address.
+func k3sCluster(t *testing.T, sha string, agents ...string) *graph.Graph {
+	t.Helper()
+	res := vm("srv", `{"mode":"static","address":"192.0.2.40/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`) + `,` +
+		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	for _, a := range agents {
+		res += `,` + vm(a, `{"mode":"dhcp"}`) + `,{"kind":"NodeK3s","name":"` + a + `/k3s","spec":{"node":"` + a + `","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	}
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + res + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// k3sObserved is a snapshot with the cluster's machines running and k3s observed on each.
+func k3sObserved(g *graph.Graph, sha string) state.Snapshot {
+	s := state.Empty(t0)
+	s.K3s = map[string]state.K3s{}
+	for _, r := range g.Sorted() {
+		if r.NodeK3s != nil {
+			machineObserved(&s, g, r.NodeK3s.Node, true, true, true, 600)
+			s.K3s[r.Name] = state.K3s{Installed: true, SHA256: sha, ObservedAt: t0}
+		}
+	}
+	return s
+}

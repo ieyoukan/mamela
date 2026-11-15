@@ -384,6 +384,23 @@ type K3sState struct {
 	Addresses []string `json:"addresses,omitempty"`
 	// Server is the server the installed agent's unit joins ("" for a server or when not installed).
 	Server string `json:"server,omitempty"`
+	// Running is whether the k3s service is active. Stale is whether the running process started
+	// before the binary in place was written: it runs a release other than the one on disk (an
+	// upgrade that was not followed by a restart, or a binary replaced under a running k3s). A
+	// node whose binary is the declared one is not in sync while it is Stale.
+	Running bool `json:"running,omitempty"`
+	Stale   bool `json:"stale,omitempty"`
+	// Nodes are the Kubernetes nodes a server sees (its API, through the server's own kubeconfig),
+	// with the kubelet release each runs and whether it is Ready. Only a running server reports
+	// them. An upgrade goes on only while the cluster is Ready.
+	Nodes []K3sNode `json:"nodes,omitempty"`
+}
+
+// K3sNode is a Kubernetes node as its server sees it.
+type K3sNode struct {
+	Name    string `json:"name"`
+	Version string `json:"version"` // the kubelet release ("v1.33.5+k3s1")
+	Ready   bool   `json:"ready"`
 }
 
 // ServiceState is an observed service.

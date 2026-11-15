@@ -26,6 +26,14 @@ func (o k3sOS) Run(ctx context.Context, program string, args []string, env []str
 		o.exists = true
 		return nil, nil, 0, nil
 	}
+	if len(args) > 0 && args[0] == "restart" {
+		o.restarts++
+		o.running = true
+		return nil, nil, 0, nil
+	}
+	if strings.HasSuffix(program, "/k3s") {
+		return []byte(o.kubectl), nil, 0, nil
+	}
 	return o.tinyOS.Run(ctx, program, args, env)
 }
 
@@ -35,6 +43,16 @@ func TestK3sThroughMamelet(t *testing.T) {
 	binary := "\x7fELF k3s server"
 	sum := sha256.Sum256([]byte(binary))
 	downloads := 0
+	graphOf := func(sha, version string) *graph.Graph {
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+			`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+			`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + sha + `","version":"` + version + `"}},` +
+			`{"kind":"NodeService","name":"app/k3s","spec":{"enabled":true,"node":"app","running":true,"service":"k3s"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		downloads++
 		w.Write([]byte(binary))
@@ -42,14 +60,7 @@ func TestK3sThroughMamelet(t *testing.T) {
 	defer srv.Close()
 
 	e := newEnv(t)
-	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
-		`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
-		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
-		`{"kind":"NodeService","name":"app/k3s","spec":{"enabled":true,"node":"app","running":true,"service":"k3s"}}]}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.g = g
+	e.g = graphOf(hex.EncodeToString(sum[:]), "v1.37.2+k3s1")
 	e.agent.System = &mamelet.System{Runner: k3sOS{e.os}, AllowedOrigins: []string{"Ubuntu:"}, Root: t.TempDir(),
 		HTTP: srv.Client(), K3sReleases: srv.URL, Addresses: func() []string { return []string{"192.0.2.10"} }}
 	e.publish()
@@ -95,6 +106,37 @@ func TestK3sThroughMamelet(t *testing.T) {
 	url, ok, err := node.K3sServerURL(e.ctx, e.st, "app")
 	if err != nil || !ok || url != "https://192.0.2.10:6443" {
 		t.Fatalf("server URL: %q %v %v", url, ok, err)
+	}
+
+	// A new release is declared: with k3s running, that is an upgrade. It waits until the server
+	// reports its Kubernetes nodes Ready, needs its own approval, and replaces the binary and
+	// restarts k3s; afterwards the node is in sync.
+	binary2 := "\x7fELF k3s server, the next release"
+	binary = binary2
+	sum2 := sha256.Sum256([]byte(binary2))
+	e.g = graphOf(hex.EncodeToString(sum2[:]), "v1.37.3+k3s1")
+	e.publish()
+	e.round()
+	if k := change(t, e.plan(), "NodeK3s app/k3s"); k.Status != plan.StatusWaiting || k.Note.Code != "MAM-PLAN-0115" {
+		t.Fatalf("upgrade before the cluster is reported Ready: %+v", k)
+	}
+	e.os.kubectl = "app\tv1.37.2+k3s1\tTrue\n"
+	e.round()
+	p = e.plan()
+	k = change(t, p, "NodeK3s app/k3s")
+	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || len(k.Operations) != 1 || k.Operations[0].Op != policy.OpUpgradeK3s ||
+		k.Diffs[0].From != "v1.37.2+k3s1" || k.Diffs[0].To != "v1.37.3+k3s1" {
+		t.Fatalf("upgrade: %+v", k)
+	}
+	if downloads != 1 || e.os.restarts != 0 {
+		t.Fatal("changed before approval")
+	}
+	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone || downloads != 2 || e.os.restarts != 1 {
+		t.Fatalf("upgrade: %+v (downloads %d, restarts %d)", rep, downloads, e.os.restarts)
+	}
+	e.round()
+	if k := change(t, e.plan(), "NodeK3s app/k3s"); k.Status != plan.StatusInSync {
+		t.Fatalf("k3s after the upgrade: %+v", k)
 	}
 }
 

@@ -192,6 +192,9 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 		rep.Packages, rep.Services = pkgs, svcs
 		if rev.K3s != nil {
 			k := a.System.K3s(ctx, *rev.K3s)
+			if rev.K3s.Role == noderev.K3sServer && k.Running {
+				k.Nodes = a.System.K3sNodes(ctx)
+			}
 			rep.K3s = &k
 		}
 		rep.Results = append(rep.Results, a.knownResults(rev, st)...)
@@ -284,7 +287,7 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		if _, done := st.Attempts[attemptKey(in.Operation, in.Attempt)]; !done {
 			obs := a.System.K3s(ctx, *k)
 			switch {
-			case obs.Installed && obs.SHA256 == k.SHA256:
+			case obs.Installed && obs.SHA256 == k.SHA256 && !obs.Stale:
 				record(in.Operation, in.Attempt, noderev.OutcomeDone, "k3s "+k.Version+" is installed")
 			case obs.Error != "":
 				record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
@@ -293,7 +296,11 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 				if err := a.System.InstallK3s(ctx, *k); err != nil {
 					record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
 				} else {
-					record(in.Operation, in.Attempt, noderev.OutcomeDone, "installed k3s "+k.Version)
+					detail := "installed k3s " + k.Version
+					if obs.Running {
+						detail += " and restarted it"
+					}
+					record(in.Operation, in.Attempt, noderev.OutcomeDone, detail)
 				}
 			}
 		}

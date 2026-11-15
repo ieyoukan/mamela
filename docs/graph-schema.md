@@ -87,6 +87,13 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 | `spec.version` | string | k3s のリリース（`v1.37.2+k3s1`） |
 | `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`） |
 
+**版を変える（版上げ）:** 宣言の `version` と `sha256` を変えると、動いている k3s の版上げになる。plan は `upgrade-k3s`（MAM-POL-0212、承認が要る）を出し、承認のあと mamelet がバイナリを置き換えて k3s を再起動する。順番と条件は次のとおり。
+
+- **server が先、agent は名前の順に 1 台ずつ**（MAM-PLAN-0116）。
+- **全ノードが Ready のあいだだけ**（MAM-PLAN-0115）。server が `k3s kubectl get nodes` で読んだ、ノードの名前・kubelet の版・Ready を、report で知らせる。読めなければ進まない。
+- **動いている版の観測:** バイナリの sha256 が宣言どおりでも、プロセスがそのバイナリより前に起動していれば（`stale`）、収束していない。plan は同じ `upgrade-k3s` で再起動を出す。
+- **巻き戻しと drain は行わない。** 版を戻したいときは、宣言を戻して同じ手順で上げ直す。drain は Kubernetes の側の仕事で、Mamela は Ready の観測までにする。
+
 起動の引数は Mamela が決める。宣言からは変えられない。
 
 | 役割 | 起動の引数 |

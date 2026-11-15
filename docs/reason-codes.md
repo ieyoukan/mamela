@@ -75,6 +75,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0207 | ApprovalRequired | サービスの停止・無効化 |
 | MAM-POL-0208 | ApprovalRequired | プロバイダーの変更に、host のカタログが知らない呼び出しの要求がある（要求をレビューする） |
 | MAM-POL-0210 | ApprovalRequired | k3s（Kubernetes）の導入。GitHub から取得し sha256 で固定したバイナリを、root で動かす |
+| MAM-POL-0212 | ApprovalRequired | 動いている k3s の版上げ。バイナリ（sha256 で固定）を置き換え、そのノードの k3s を再起動する。server の再起動中は API が使えず、agent の再起動中はそのノードが Ready でない |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
@@ -107,6 +108,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
 | MAM-PLAN-0114 | プロバイダーのリソースが存在し、引き継ぐ対象（`adoptable`）である。`mamela import terraform` で取り込んだもの、またはプロバイダーが以前 Mamela の作ったものと認めたもの。人が引き継ぐまで、Mamela は何も変えない（ADR 0009） | プロバイダーの引き継ぎ操作を `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。そのあと plan すると、宣言との差分が出る |
+| MAM-PLAN-0115 | k3s の版上げは、全 Kubernetes ノードが Ready のあいだだけ進む。Ready でないノードがある、または server がノードを報告していない（server の k3s を調べる） |
+| MAM-PLAN-0116 | k3s の版上げの順番待ち。server が先、agent は名前の順に 1 台ずつ（agent は server より新しい版にしない） |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
