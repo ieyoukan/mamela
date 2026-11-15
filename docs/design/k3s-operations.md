@@ -78,6 +78,7 @@ Kubernetes の API を見る観測（Ready の確認）は、mamelet が server 
 | agent の削除（スケールイン） | 削除はホスト承認。VM は消えたが、Kubernetes にノードが NotReady で残り、以後の版上げを止めた | Ready の確認を、宣言したノードだけにする（#20）。ノードを消す仕組みは、次の行（#21） |
 | agent の削除（2 回目、ノードを消す仕組みつき） | plan が「ノード k3s-s-agent-2 を消す（先に drain）」と「VM を消す」の 2 件を出し、ホストの承認で進んだ。drain で ArgoCD の Pod が server と agent-1 に移り、ノードが消え、そのあと VM が消えた。ArgoCD は HTTP 200 のまま、境界の外のゲストは変わらず | `remove-k3s-node`（MAM-POL-0214）、削除の判定を操作にも広げた（#21） |
 | メモリの変更（agent 2 台） | plan が 2 台を同時に再起動しようとした | k3s のマシンの再起動は 1 台ずつ、Ready のあいだだけ（#20）。実機で 1 台ずつ進んだ |
+| 同じ名前の agent を宣言に戻す（削除のあと） | 人の操作なしで、約 7 分（push から Ready まで）。新しい VM と新しいノードとして Ready になった。古い証明書や許可は引き継がない | — |
 | 中断された適用（API を kill -9） | 次の apply が、世界を見直して完了した | — |
 | ArgoCD（Helm チャート）の設定変更 | 承認、書き込み、k3s の Helm が反映（server 1 から 2） | — |
 
