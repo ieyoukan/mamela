@@ -349,3 +349,90 @@ func TestK3sManifestIsWrittenOnlyAsApproved(t *testing.T) {
 		t.Fatalf("content after the second write: %q", b)
 	}
 }
+
+// A Kubernetes node is removed only as approved: a Ready one is cordoned, drained and deleted, in
+// that order; one that is not Ready is only deleted; a drain that fails deletes nothing and leaves
+// the node schedulable; the server's own node and a node already gone are handled; and an old
+// grant does nothing twice.
+func TestK3sNodeIsRemovedOnlyAsApproved(t *testing.T) {
+	e, _ := k3sEnv(t, "\x7fELF k3s")
+	e.os.services["k3s"] = &fakeService{exists: true, enabled: true, running: true}
+	e.os.started["k3s"] = time.Now().Add(time.Hour).Unix()
+	nodes := "web\tv1\tTrue\nag1\tv1\tTrue\nag2\tv1\tFalse\n"
+	remove := func(serial int64, op, node string) noderev.Report {
+		e.publishK3s(serial, &noderev.K3s{Version: k3sVersion, SHA256: sum("\x7fELF k3s"), Role: "server", Token: testToken,
+			Remove: &noderev.NodeRemoval{Node: node, Once: noderev.Once{Operation: op, Attempt: 1, Action: noderev.ActionRemove}}})
+		return e.round()
+	}
+	kubectl := func() []string {
+		var out []string
+		for _, c := range e.os.commands {
+			if strings.HasPrefix(c, progK3s) && !strings.Contains(c, " get ") {
+				out = append(out, strings.TrimPrefix(c, progK3s+" kubectl "))
+			}
+		}
+		return out
+	}
+	opA, opB, opC, opD := "op-0000000000000000000000a1", "op-0000000000000000000000a2", "op-0000000000000000000000a3", "op-0000000000000000000000a4"
+
+	// A Ready node: cordon, drain, delete.
+	e.os.kubectl = nodes
+	rep := remove(1, opA, "ag1")
+	got := kubectl()
+	if len(got) != 3 || got[0] != "cordon ag1" || !strings.HasPrefix(got[1], "drain ag1 --ignore-daemonsets --delete-emptydir-data") || got[2] != "delete node ag1" {
+		t.Fatalf("commands: %v", got)
+	}
+	if rep.Results[0].Outcome != noderev.OutcomeDone || !strings.Contains(rep.Results[0].Detail, "drained and deleted") {
+		t.Fatalf("result: %+v", rep.Results)
+	}
+	// The same grant does not run again.
+	e.os.commands = nil
+	remove(2, opA, "ag1")
+	if len(kubectl()) != 0 {
+		t.Fatalf("a grant ran twice: %v", kubectl())
+	}
+
+	// A node that is not Ready: deleted, not drained.
+	e.os.commands = nil
+	rep = remove(3, opB, "ag2")
+	if got := kubectl(); len(got) != 1 || got[0] != "delete node ag2" || !strings.Contains(rep.Results[0].Detail, "not drained") {
+		t.Fatalf("a Not Ready node: %v %+v", got, rep.Results)
+	}
+
+	// A node that is already gone is a success without commands.
+	e.os.commands = nil
+	if rep = remove(4, opC, "ag2"); rep.Results[0].Outcome != noderev.OutcomeDone || len(kubectl()) != 0 {
+		t.Fatalf("already gone: %v %+v", kubectl(), rep.Results)
+	}
+
+	// The server's own node is never removed.
+	e.os.commands = nil
+	if rep = remove(5, opD, "web"); rep.Results[0].Outcome != noderev.OutcomeFailed || len(kubectl()) != 0 || !strings.Contains(e.os.kubectl, "web\t") {
+		t.Fatalf("own node: %v %+v", kubectl(), rep.Results)
+	}
+
+	// A drain that does not finish deletes nothing and uncordons.
+	e.os.kubectl, e.os.kubectlFails, e.os.commands = "web\tv1\tTrue\nag3\tv1\tTrue\n", "drain", nil
+	rep = remove(6, "op-0000000000000000000000a5", "ag3")
+	got = kubectl()
+	if rep.Results[0].Outcome != noderev.OutcomeFailed || len(got) != 3 || got[2] != "uncordon ag3" || !strings.Contains(e.os.kubectl, "ag3\t") {
+		t.Fatalf("a failed drain: %v %+v", got, rep.Results)
+	}
+}
+
+// A node is removed only by a server that runs, and only from a revision fetched this round.
+func TestK3sNodeRemovalWaitsForARunningServer(t *testing.T) {
+	e, _ := k3sEnv(t, "\x7fELF k3s")
+	e.os.kubectl = "web\tv1\tTrue\nag1\tv1\tFalse\n"
+	e.publishK3s(1, &noderev.K3s{Version: k3sVersion, SHA256: sum("\x7fELF k3s"), Role: "server", Token: testToken,
+		Remove: &noderev.NodeRemoval{Node: "ag1", Once: noderev.Once{Operation: "op-0000000000000000000000b1", Attempt: 1, Action: noderev.ActionRemove}}})
+	rep := e.round() // k3s does not run
+	for _, c := range e.os.commands {
+		if strings.Contains(c, " delete ") {
+			t.Fatalf("a stopped server removed a node: %v", e.os.commands)
+		}
+	}
+	if len(rep.Results) != 0 {
+		t.Fatalf("results: %+v", rep.Results)
+	}
+}

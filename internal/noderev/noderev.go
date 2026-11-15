@@ -67,6 +67,15 @@ type K3s struct {
 	// Install is an approved installation of exactly this binary: mamelet downloads the release
 	// asset, and installs it (with Mamela's fixed systemd unit) only if its sha256 matches.
 	Install *Once `json:"install,omitempty"`
+	// Remove is an approved removal of one Kubernetes node from the cluster (a server only): mamelet
+	// drains the node when it is Ready, then deletes it.
+	Remove *NodeRemoval `json:"remove,omitempty"`
+}
+
+// NodeRemoval is an approved, one-time removal of the Kubernetes node Node.
+type NodeRemoval struct {
+	Node string `json:"node"`
+	Once
 }
 
 // Manifest is a file in k3s's auto-deploy directory: mamela-<Name>.yaml, with exactly Content.
@@ -160,8 +169,9 @@ const (
 	ActionStart   = "start"
 	ActionDisable = "disable"
 	ActionStop    = "stop"
-	ActionInstall = "install" // k3s only
-	ActionWrite   = "write"   // a k3s manifest only
+	ActionInstall = "install"     // k3s only
+	ActionWrite   = "write"       // a k3s manifest only
+	ActionRemove  = "remove-node" // a k3s server only: delete a Kubernetes node
 )
 
 var (
@@ -277,6 +287,17 @@ func (r *Revision) Check() error {
 		}
 		if in := k.Install; in != nil && (!operationPattern.MatchString(in.Operation) || in.Attempt < 1 || in.Action != ActionInstall) {
 			add("k3s: install grant %+v is not valid", *in)
+		}
+	}
+	if k := r.K3s; k != nil && k.Remove != nil {
+		rm := k.Remove
+		switch {
+		case k.Role != K3sServer:
+			add("k3s: only a server removes Kubernetes nodes")
+		case !nodePattern.MatchString(rm.Node):
+			add("k3s: %q is not a node name that can be removed", rm.Node)
+		case !operationPattern.MatchString(rm.Operation) || rm.Attempt < 1 || rm.Action != ActionRemove:
+			add("k3s: remove grant %+v is not valid", rm.Once)
 		}
 	}
 	for _, m := range r.Manifests {

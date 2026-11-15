@@ -41,6 +41,8 @@ type fakeOS struct {
 	started     map[string]int64
 	restartedAt int64
 	kubectl     string
+	// kubectlFails names a kubectl verb (drain, delete) that exits 1.
+	kubectlFails string
 }
 
 func newFakeOS() *fakeOS {
@@ -70,7 +72,22 @@ func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []strin
 		}
 		return nil, nil, 0, nil
 	case progK3s:
-		return []byte(f.kubectl), nil, 0, nil
+		switch verb := args[1]; {
+		case verb == f.kubectlFails:
+			return nil, []byte("error: " + verb + " failed"), 1, nil
+		case verb == "delete": // kubectl delete node <name>
+			var keep []string
+			for _, l := range strings.Split(f.kubectl, "\n") {
+				if !strings.HasPrefix(l, last+"\t") && l != "" {
+					keep = append(keep, l)
+				}
+			}
+			f.kubectl = strings.Join(keep, "\n") + "\n"
+			return nil, nil, 0, nil
+		case verb == "get":
+			return []byte(f.kubectl), nil, 0, nil
+		}
+		return nil, nil, 0, nil // cordon, drain, uncordon
 	case progSystemctl:
 		s := f.services[last]
 		if s == nil {

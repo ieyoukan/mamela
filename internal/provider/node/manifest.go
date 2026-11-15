@@ -20,6 +20,7 @@ const (
 	CapAptInstall  = "apt.install"
 	CapK3sInstall  = "k3s.install"
 	CapK3sManifest = "k3s.manifest"
+	CapK3sRemove   = "k3s.remove-node"
 	capSystemd     = "systemd."
 )
 
@@ -76,6 +77,12 @@ func Manifest() spec.Manifest {
 	k3s := spec.Kind{Kind: graph.KindNodeK3s, Operations: []spec.Operation{
 		{Op: policy.OpInstallK3s, Support: spec.Supported, Needs: []spec.Need{k3sNeed}},
 		{Op: policy.OpUpgradeK3s, Support: spec.Supported, Needs: []spec.Need{k3sUpgradeNeed}},
+		{Op: policy.OpRemoveK3sNode, Support: spec.Supported, Needs: []spec.Need{{
+			Capability: CapK3sRemove, Target: node, Object: "a Kubernetes node the declaration no longer names (the one the approved plan names)", Always: true,
+			Conditions: slices.Clone(grantConditions),
+			Note:       "mamelet on the server cordons and drains the node (when it is Ready), then deletes it with the server's own kubeconfig; it never removes the server's own node",
+			Reasons:    []string{"mamelet runs k3s kubectl cordon, drain and delete node once"},
+		}}},
 	}}
 	manifest := spec.Kind{Kind: graph.KindNodeK3sManifest, Operations: []spec.Operation{{
 		Op: policy.OpWriteK3sManifest, Support: spec.Supported, Needs: []spec.Need{{

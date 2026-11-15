@@ -333,6 +333,22 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		}
 	}
 
+	if k := rev.K3s; k != nil && k.Remove != nil && online && k.Role == noderev.K3sServer {
+		rm := k.Remove
+		if _, done := st.Attempts[attemptKey(rm.Operation, rm.Attempt)]; !done {
+			// Only a server that runs removes nodes; a server that is not up yet waits for a round
+			// in which it is.
+			if running, _ := a.System.k3sProcess(ctx); running {
+				changed = true
+				if detail, err := a.System.RemoveK3sNode(ctx, rm.Node, a.Config.Node); err != nil {
+					record(rm.Operation, rm.Attempt, noderev.OutcomeFailed, err.Error())
+				} else {
+					record(rm.Operation, rm.Attempt, noderev.OutcomeDone, detail)
+				}
+			}
+		}
+	}
+
 	for i, s := range rev.Services {
 		obs := svcs[i]
 		if !obs.Exists {
@@ -431,6 +447,11 @@ func (a *Agent) knownResults(rev *noderev.Revision, st State) []noderev.Result {
 	}
 	if k := rev.K3s; k != nil && k.Install != nil {
 		if r, ok := st.Attempts[attemptKey(k.Install.Operation, k.Install.Attempt)]; ok {
+			out = append(out, r)
+		}
+	}
+	if k := rev.K3s; k != nil && k.Remove != nil {
+		if r, ok := st.Attempts[attemptKey(k.Remove.Operation, k.Remove.Attempt)]; ok {
 			out = append(out, r)
 		}
 	}

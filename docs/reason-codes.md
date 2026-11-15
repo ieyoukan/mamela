@@ -77,6 +77,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0210 | ApprovalRequired | k3s（Kubernetes）の導入。GitHub から取得し sha256 で固定したバイナリを、root で動かす |
 | MAM-POL-0212 | ApprovalRequired | 動いている k3s の版上げ。バイナリ（sha256 で固定）を置き換え、そのノードの k3s を再起動する。server の再起動中は API が使えず、agent の再起動中はそのノードが Ready でない |
 | MAM-POL-0213 | ApprovalRequired | k3s の自動適用ディレクトリへのマニフェストの書き込み。k3s は cluster-admin の権限で適用し、変わるたびにまた適用する。plan に全文が出る |
+| MAM-POL-0214 | ApprovalRequired | Kubernetes のノードを、クラスタから消す（Ready なら先に drain する）。宣言に無いノードだけ。削除なので、承認は Control Plane のホストだけが行う（`mamela approve`） |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |

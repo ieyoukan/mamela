@@ -749,3 +749,88 @@ func TestMachinesOfAClusterAreRestartedOneAtATime(t *testing.T) {
 		t.Fatalf("a machine whose k3s does not run: %+v", c)
 	}
 }
+
+// A Kubernetes node that no declaration names any more is removed from the cluster, with an
+// approval that only the Control Plane's host gives, in two cases: its machine is deleted by this
+// plan (the removal runs before the machine's deletion), or it is a Not Ready left-over whose
+// machine is gone. Nothing else is touched.
+func TestK3sNodeRemoval(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, sha, "a1")
+	nodes := func(extra ...state.K3sNode) []state.K3sNode {
+		return append([]state.K3sNode{{Name: "a1", Ready: true}, {Name: "srv", Ready: true}}, extra...)
+	}
+	world := func(ns []state.K3sNode) state.Snapshot {
+		s := k3sObserved(g, sha)
+		s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, Nodes: ns, ObservedAt: t0}
+		return s
+	}
+	removed := func(s *state.Snapshot, name string) {
+		undeclared(s, name, true)
+		o := s.Provided["TestVM "+name]
+		o.Removal = &state.ProvidedChange{Change: protocol.Change{Resource: "TestVM " + name, Kind: "TestVM", Op: "delete-vm"}}
+		s.Provided["TestVM "+name] = o
+	}
+	srv := func(s state.Snapshot, pol policy.Policy) Change {
+		return find(t, Build(g, s, pol), "NodeK3s srv/k3s")
+	}
+
+	// 1. A Ready node whose machine this plan deletes: drained first, one late deleting operation.
+	s := world(nodes(state.K3sNode{Name: "a2", Ready: true}))
+	removed(&s, "a2")
+	p := Build(g, s, policy.Default)
+	c := find(t, p, "NodeK3s srv/k3s")
+	if c.Status != StatusChange || len(c.Operations) != 1 {
+		t.Fatalf("%+v", c)
+	}
+	op := c.Operations[0]
+	if op.Op != policy.OpRemoveK3sNode || !op.Late || !op.Deletes || op.Decision.Verdict != policy.ApprovalRequired {
+		t.Errorf("operation: %+v", op)
+	}
+	if !slices.Contains(c.Diffs, Diff{"remove-node", "", "a2"}) || !c.Deletes() || p.Removals() < 1 {
+		t.Errorf("the approval must name the node and need the host: %+v removals=%d", c.Diffs, p.Removals())
+	}
+	if got := c.Deleted(); len(got) != 1 || got[0] != "Kubernetes node a2" {
+		t.Errorf("deleted: %v", got)
+	}
+
+	// 2. A Ready node whose machine is only undeclared (kept): nothing.
+	s = world(nodes(state.K3sNode{Name: "a2", Ready: true}))
+	undeclared(&s, "a2", true)
+	if c := srv(s, policy.Default); c.Status != StatusInSync {
+		t.Errorf("a node of a kept machine was planned for removal: %+v", c)
+	}
+	// 3. A Not Ready node with no machine: a left-over, removed. With its machine existing: kept.
+	s = world(nodes(state.K3sNode{Name: "ghost", Ready: false}))
+	if c := srv(s, policy.Default); c.Status != StatusChange || !slices.Contains(c.Diffs, Diff{"remove-node", "", "ghost"}) {
+		t.Errorf("a left-over node was not planned for removal: %+v", c)
+	}
+	undeclared(&s, "ghost", true)
+	if c := srv(s, policy.Default); c.Status != StatusInSync {
+		t.Errorf("a Not Ready node whose machine exists was planned for removal: %+v", c)
+	}
+	// 4. The policy that retains what a declaration no longer has keeps nodes too.
+	s = world(nodes(state.K3sNode{Name: "ghost", Ready: false}))
+	if c := srv(s, policy.Policy{Removal: "retain"}); c.Status != StatusInSync {
+		t.Errorf("removal = retain: %+v", c)
+	}
+	// 5. Declared nodes and the server itself are never removed, however they look.
+	s = world([]state.K3sNode{{Name: "a1", Ready: false}, {Name: "srv", Ready: true}})
+	if c := srv(s, policy.Default); c.Status != StatusInSync {
+		t.Errorf("a declared node: %+v", c)
+	}
+	// 6. Node names that do not include the server's own are not trusted.
+	s = world([]state.K3sNode{{Name: "ip-10-0-0-1", Ready: false}})
+	if c := srv(s, policy.Default); c.Status != StatusInSync {
+		t.Errorf("unrelated node names: %+v", c)
+	}
+	// 7. One node per plan, the first by name; the server must be running.
+	s = world(nodes(state.K3sNode{Name: "g2", Ready: false}, state.K3sNode{Name: "g1", Ready: false}))
+	if c := srv(s, policy.Default); !slices.Contains(c.Diffs, Diff{"remove-node", "", "g1"}) || slices.Contains(c.Diffs, Diff{"remove-node", "", "g2"}) {
+		t.Errorf("one node at a time: %+v", c.Diffs)
+	}
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: false, Nodes: s.K3s["srv/k3s"].Nodes, ObservedAt: t0}
+	if c := srv(s, policy.Default); c.Status != StatusInSync {
+		t.Errorf("a server that does not run: %+v", c)
+	}
+}

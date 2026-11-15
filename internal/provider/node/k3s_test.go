@@ -36,6 +36,20 @@ func (o k3sOS) Run(ctx context.Context, program string, args []string, env []str
 		return nil, nil, 0, nil
 	}
 	if strings.HasSuffix(program, "/k3s") {
+		if len(args) > 2 && args[1] == "delete" { // kubectl delete node <name>
+			var keep []string
+			for _, l := range strings.Split(o.kubectl, "\n") {
+				if l != "" && !strings.HasPrefix(l, args[len(args)-1]+"\t") {
+					keep = append(keep, l)
+				}
+			}
+			o.kubectl = strings.Join(keep, "\n") + "\n"
+			o.kubectlCalls = append(o.kubectlCalls, strings.Join(args[1:], " "))
+			return nil, nil, 0, nil
+		}
+		if len(args) > 1 && args[1] != "get" {
+			o.kubectlCalls = append(o.kubectlCalls, strings.Join(args[1:], " "))
+		}
 		return []byte(o.kubectl), nil, 0, nil
 	}
 	return o.tinyOS.Run(ctx, program, args, env)
@@ -213,5 +227,58 @@ func TestK3sManifestThroughMamelet(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(file); !strings.Contains(string(b), "labels") {
 		t.Fatalf("the changed manifest: %q", b)
+	}
+}
+
+// A Kubernetes node that is left over (Not Ready, its machine gone) is removed through an approved
+// plan that names it: the plan is a deletion (only the host approves it), the grant carries exactly
+// that node, mamelet deletes it (a Not Ready node is not drained), and the next plan is in sync.
+func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
+	binary := "\x7fELF k3s server"
+	sum := sha256.Sum256([]byte(binary))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(binary)) }))
+	defer srv.Close()
+	e := newEnv(t)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeService","name":"app/k3s","spec":{"enabled":true,"node":"app","running":true,"service":"k3s"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.g = g
+	e.agent.System = &mamelet.System{Runner: k3sOS{e.os}, AllowedOrigins: []string{"Ubuntu:"}, Root: t.TempDir(),
+		HTTP: srv.Client(), K3sReleases: srv.URL, Addresses: func() []string { return []string{"192.0.2.10"} }}
+	e.publish()
+	e.round()
+	e.applyApproved(e.plan()) // install
+	e.round()
+	e.applyApproved(e.plan()) // enable and start
+	e.os.kubectl = "app\tv1.37.2+k3s1\tTrue\nghost\tv1.37.2+k3s1\tFalse\nkeep\tv1.37.2+k3s1\tTrue\n"
+	e.round()
+	const id = "NodeK3s app/k3s"
+	if k := change(t, e.plan(), id); k.Status != plan.StatusChange {
+		// "keep" is Ready and "ghost" is Not Ready; both are undeclared and have no machine: only
+		// the Not Ready one is a left-over.
+		t.Fatalf("no removal planned: %+v", k)
+	}
+	p := e.plan()
+	k := change(t, p, id)
+	if len(k.Operations) != 1 || k.Operations[0].Op != policy.OpRemoveK3sNode || !k.Deletes() || p.Removals() != 1 ||
+		len(k.Deleted()) != 1 || k.Deleted()[0] != "Kubernetes node ghost" || k.Verdict != policy.ApprovalRequired {
+		t.Fatalf("removal: %+v", k)
+	}
+	if len(e.os.kubectlCalls) != 0 {
+		t.Fatal("changed before approval")
+	}
+	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone {
+		t.Fatalf("apply: %+v", rep)
+	}
+	if fmt.Sprint(e.os.kubectlCalls) != "[delete node ghost]" || !strings.Contains(e.os.kubectl, "keep\t") || strings.Contains(e.os.kubectl, "ghost") {
+		t.Fatalf("kubectl: %v, nodes %q", e.os.kubectlCalls, e.os.kubectl)
+	}
+	e.round()
+	if k := change(t, e.plan(), id); k.Status != plan.StatusInSync || len(k.Operations) != 0 {
+		t.Fatalf("after the removal: %+v", k)
 	}
 }
