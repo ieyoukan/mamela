@@ -31,7 +31,7 @@ func Render(w io.Writer, p *Plan) {
 		sym := symbols[c.Status]
 		// "+" is a create. A provider's diffs are reasons (no "from"): it creates when its object
 		// does not exist yet.
-		if c.Removes {
+		if c.Removes || (c.Deletes() && !slices.ContainsFunc(c.Operations, func(o Operation) bool { return !o.Deletes })) {
 			sym = "-"
 		} else if c.Status == StatusChange && (c.Creates || c.Provider == "" && len(c.Diffs) > 0 && allFromEmpty(c.Diffs)) {
 			sym = "+"

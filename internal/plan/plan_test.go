@@ -834,3 +834,14 @@ func TestK3sNodeRemoval(t *testing.T) {
 		t.Errorf("a server that does not run: %+v", c)
 	}
 }
+
+// A change whose only operation deletes a Kubernetes node is drawn as a deletion ("-").
+func TestRenderNodeRemovalIsADeletion(t *testing.T) {
+	c := Change{Kind: graph.KindNodeK3s, Name: "srv/k3s", Status: StatusChange, Diffs: []Diff{{"remove-node", "", "a2"}},
+		Operations: []Operation{{Op: policy.OpRemoveK3sNode, Late: true, Deletes: true}}}
+	var b bytes.Buffer
+	Render(&b, &Plan{Changes: []Change{c}})
+	if !strings.Contains(b.String(), "- NodeK3s srv/k3s") {
+		t.Errorf("render:\n%s", b.String())
+	}
+}
