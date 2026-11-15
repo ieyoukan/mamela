@@ -57,7 +57,11 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return report(stderr, err)
 	}
 	defer st.Close()
-	res, err := applyPlan(ctx, st, site, fs.Arg(0), applyOptions{ProvidersFile: *providersFile, ImageCache: *imageCache, Tools: tf.find}, stdout)
+	digest, err := st.ResolvePlanDigest(ctx, fs.Arg(0))
+	if err != nil {
+		return report(stderr, err)
+	}
+	res, err := applyPlan(ctx, st, site, digest, applyOptions{ProvidersFile: *providersFile, ImageCache: *imageCache, Tools: tf.find}, stdout)
 	var noPlan *noPlanError
 	switch {
 	case errors.As(err, &noPlan):

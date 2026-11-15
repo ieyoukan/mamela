@@ -14,21 +14,23 @@ func TestNextStep(t *testing.T) {
 		last     Head
 		known    bool
 		sameHead bool
+		drift    bool
 		rev      string
 		want     headStep
 	}{
-		{"never seen", Head{}, false, false, "r1", stepPlanNew},
-		{"a new commit with another declaration", Head{Revision: "r0", State: HeadInSync}, true, false, "r1", stepPlanNew},
-		{"a new commit, a declaration that was pending", Head{Revision: "r1", State: HeadPending}, true, false, "r1", stepPlanNew},
-		{"a new commit, the same declaration in sync", Head{Revision: "r1", State: HeadInSync}, true, false, "r1", stepUnchanged},
-		{"same head, waiting", Head{Revision: "r1", State: HeadWaiting}, true, true, "r1", stepPlanAgain},
-		{"same head, blocked", Head{Revision: "r1", State: HeadBlocked}, true, true, "r1", stepPlanAgain},
-		{"same head, could not be planned", Head{Revision: "r1", State: HeadUnplanned}, true, true, "r1", stepPlanAgain},
-		{"same head, pending an approval", Head{Revision: "r1", State: HeadPending}, true, true, "r1", stepLeave},
-		{"same head, in sync", Head{Revision: "r1", State: HeadInSync}, true, true, "r1", stepLeave},
-		{"same head, apply failed", Head{Revision: "r1", State: HeadFailed}, true, true, "r1", stepLeave},
+		{"never seen", Head{}, false, false, false, "r1", stepPlanNew},
+		{"a new commit with another declaration", Head{Revision: "r0", State: HeadInSync}, true, false, false, "r1", stepPlanNew},
+		{"a new commit, a declaration that was pending", Head{Revision: "r1", State: HeadPending}, true, false, false, "r1", stepPlanNew},
+		{"a new commit, the same declaration in sync", Head{Revision: "r1", State: HeadInSync}, true, false, false, "r1", stepUnchanged},
+		{"same head, waiting", Head{Revision: "r1", State: HeadWaiting}, true, true, false, "r1", stepPlanAgain},
+		{"same head, blocked", Head{Revision: "r1", State: HeadBlocked}, true, true, false, "r1", stepPlanAgain},
+		{"same head, could not be planned", Head{Revision: "r1", State: HeadUnplanned}, true, true, false, "r1", stepPlanAgain},
+		{"same head, pending an approval", Head{Revision: "r1", State: HeadPending}, true, true, false, "r1", stepLeave},
+		{"same head, in sync", Head{Revision: "r1", State: HeadInSync}, true, true, false, "r1", stepLeave},
+		{"same head, apply failed", Head{Revision: "r1", State: HeadFailed}, true, true, false, "r1", stepLeave},
+		{"same head, in sync, the resync interval has passed", Head{Revision: "r1", State: HeadInSync}, true, true, true, "r1", stepPlanAgain},
 	} {
-		if got := nextStep(c.last, c.known, c.sameHead, c.rev); got != c.want {
+		if got := nextStep(c.last, c.known, c.sameHead, c.drift, c.rev); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
 		}
 	}

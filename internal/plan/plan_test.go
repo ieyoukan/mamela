@@ -640,3 +640,31 @@ func TestK3sManifestPlan(t *testing.T) {
 		t.Fatalf("unreadable: %+v", ch)
 	}
 }
+
+// A stopped agent with an older binary in place waits for its server too: given a newer binary
+// first, it would start on a release newer than its server's. It needs no healthy cluster (nothing
+// restarts), and a fresh install (no binary) waits for nothing.
+func TestK3sStoppedAgentWaitsForTheServer(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1")
+	s := k3sObserved(g, now)
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1"}}}
+	s.K3s["a1/k3s"] = state.K3s{Installed: true, SHA256: old, ObservedAt: t0} // stopped, with the old binary
+	c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s")
+	if c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0116" {
+		t.Fatalf("a stopped agent before the server: %+v", c)
+	}
+	// The server is upgraded; the agent's node is not Ready (it is stopped), and that does not matter.
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1"}}}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.OpInstallK3s {
+		t.Fatalf("a stopped agent after the server: %+v", c)
+	}
+	// A fresh install, no binary yet: nothing to wait for.
+	s.K3s["srv/k3s"] = state.K3s{ObservedAt: t0}
+	s.K3s["a1/k3s"] = state.K3s{ObservedAt: t0}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange {
+		t.Fatalf("a fresh agent: %+v", c)
+	}
+}

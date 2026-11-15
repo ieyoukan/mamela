@@ -40,6 +40,13 @@ type Config struct {
 	// read (default 1m).
 	ApprovalTTL string `toml:"approval_ttl"`
 	Interval    string `toml:"interval"`
+	// Resync is how often a declaration at the head that is in sync is planned again, to find drift
+	// (the world changed under it: a service stopped, a binary replaced): default 10m, "0" never.
+	// A drift is shown on the head's commit status. SelfHeal (only with sync = "push") approves the
+	// plan that undoes the drift, as the head's author; without it, a drift waits for an approval
+	// on the Control Plane's host. Planning only observes: nothing changes by itself.
+	Resync   string `toml:"resync"`
+	SelfHeal bool   `toml:"self_heal"`
 	// MamelaSocket is the Control Plane's local API (`mamela api`); StateDB mamelacd's own database.
 	MamelaSocket string `toml:"mamela_socket"`
 	StateDB      string `toml:"state_db"`
@@ -69,6 +76,8 @@ func (c Config) Check() error {
 		return fmt.Errorf("sync %q: %q or %q", c.Sync, SyncApproval, SyncPush)
 	case len(c.Authors) == 0 || (len(c.Approvers) == 0 && !c.PushSync()):
 		return fmt.Errorf("authors and approvers are required: whose pull requests are planned, and who approves (approvers may be empty with sync = %q)", SyncPush)
+	case c.SelfHeal && !c.PushSync():
+		return fmt.Errorf("self_heal needs sync = %q (the author's push is what approves)", SyncPush)
 	case c.MamelaSocket == "":
 		return fmt.Errorf("mamela_socket is required (the Control Plane's local API, `mamela api --socket`)")
 	case c.StateDB == "":
@@ -82,8 +91,23 @@ func (c Config) Check() error {
 	if _, err := c.ttl(); err != nil {
 		return err
 	}
-	_, err := c.interval()
+	if _, err := c.interval(); err != nil {
+		return err
+	}
+	_, err := c.resync()
 	return err
+}
+
+// resync is how often drift is looked for (0: never).
+func (c Config) resync() (time.Duration, error) {
+	if c.Resync == "" {
+		return 10 * time.Minute, nil
+	}
+	d, err := time.ParseDuration(c.Resync)
+	if err != nil || (d != 0 && d < time.Minute) {
+		return 0, fmt.Errorf("resync %q: 1m or more, or 0 for never", c.Resync)
+	}
+	return d, nil
 }
 
 func localDir(d string) bool {
