@@ -295,16 +295,28 @@ func (h headSync) apply(ctx context.Context, rev string, p Plan) error {
 }
 
 // failureSummary is why an apply stopped, in one short line (a commit status holds 140 characters):
-// what follows "stopped:" if the text has it, white space collapsed, cut at max.
+// the last line that gives a reason (it has a MAM- code, or says it failed or stopped), else the
+// last line there is; white space collapsed, cut at max. The guards' "ok" lines before it are not it.
 func failureSummary(text string, max int) string {
-	if _, rest, ok := strings.Cut(text, "stopped:"); ok {
-		text = rest
+	var last, reason string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		last = line
+		if strings.Contains(line, "MAM-") || strings.HasPrefix(line, "failed") || strings.HasPrefix(line, "stopped") {
+			reason = line
+		}
 	}
-	text = strings.Join(strings.Fields(text), " ")
-	if r := []rune(text); len(r) > max {
-		text = string(r[:max-1]) + "…"
+	if reason == "" {
+		reason = last
 	}
-	return text
+	reason = strings.TrimPrefix(reason, "stopped: ")
+	if r := []rune(reason); len(r) > max {
+		reason = string(r[:max-1]) + "…"
+	}
+	return reason
 }
 
 // applyOutcome is how an apply went, from the API's answer (err: the API refused it), and the

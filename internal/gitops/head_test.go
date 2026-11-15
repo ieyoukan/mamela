@@ -57,12 +57,15 @@ func TestApplyOutcome(t *testing.T) {
 }
 
 func TestFailureSummary(t *testing.T) {
-	text := "failed upgrade-k3s NodeK3s a/k3s (x)\n\nstopped: MAM-REC-0004: upgrade-k3s on NodeK3s a/k3s failed:\n  the revision names server \"https://192.0.2.1:6443\", the approved plan \"\" (plan again)\n  hint: fix the cause"
+	text := "== guard (before)\nok    proxmox PVE-0001  the cluster is quorate\n\nfailed upgrade-k3s NodeK3s a/k3s (x)\n\nstopped: MAM-REC-0004: upgrade-k3s on NodeK3s a/k3s failed: the revision names server \"https://192.0.2.1:6443\", the approved plan \"\" (plan again)\n  hint: fix the cause, then run apply again\n\n== guard (after)\nok    proxmox PVE-0400  nothing changed"
 	got := failureSummary(text, 90)
 	if !strings.HasPrefix(got, "MAM-REC-0004: upgrade-k3s on NodeK3s a/k3s failed: the revision names server") || strings.ContainsAny(got, "\n") || len([]rune(got)) > 90 || !strings.HasSuffix(got, "…") {
 		t.Errorf("%q", got)
 	}
 	if got := failureSummary("guard blocked", 90); got != "guard blocked" {
 		t.Errorf("%q", got)
+	}
+	if got := failureSummary("== guard (before)\nok  PVE-0001 fine\nconnection reset by peer", 90); got != "connection reset by peer" {
+		t.Errorf("the last line when none gives a reason: %q", got)
 	}
 }
