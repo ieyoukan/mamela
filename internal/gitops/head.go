@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/ieyoukan/mamela/internal/api"
 )
@@ -19,6 +20,7 @@ import (
 //	a new head that cannot be evaluated                  -> HeadError (until another commit)
 //	an approved plan of exactly the head's declaration   -> applied: HeadFailed, or planned again
 //	waiting, blocked or unplanned (same head)            -> planned again
+//	in sync (same head), the resync interval has passed  -> planned again, to find drift
 //	pending, in sync or failed (same head)               -> left alone
 //	a new head, the declaration in sync before           -> HeadInSync, nothing to plan
 //	any other new head                                   -> planned
@@ -45,6 +47,7 @@ type headSync struct {
 	owner int    // the trusted pull request merged as the head (0: none among the recent ones)
 	by    string // sync = "push": the author of the head commit, who approves its plans ("": no one)
 	dir   string
+	drift bool // planned again only to find drift (the head is the same, and was in sync)
 }
 
 // syncHead brings one declaration at the head of the branch about. owner is the trusted pull
@@ -88,7 +91,8 @@ func (e *Engine) syncHead(ctx context.Context, sha string, owner int, by, dir st
 		return h.apply(ctx, rev, p)
 	}
 
-	switch nextStep(last, known, sameHead, rev) {
+	h.drift = sameHead && e.resyncDue(last)
+	switch nextStep(last, known, sameHead, h.drift, rev) {
 	case stepLeave:
 		return nil
 	case stepUnchanged:
@@ -112,8 +116,10 @@ const (
 )
 
 // nextStep says what to do with a declaration at the head that has no approved plan to apply.
-func nextStep(last Head, known, sameHead bool, rev string) headStep {
+func nextStep(last Head, known, sameHead, drift bool, rev string) headStep {
 	switch {
+	case sameHead && drift:
+		return stepPlanAgain
 	case sameHead && (last.State == HeadWaiting || last.State == HeadBlocked || last.State == HeadUnplanned):
 		return stepPlanAgain
 	case sameHead:
@@ -164,6 +170,10 @@ func (h headSync) approveByPush(ctx context.Context, p api.Planned) error {
 		return nil
 	}
 	e := h.e
+	if h.drift && !e.Config.SelfHeal {
+		e.logf("mamelacd: %s drifted: plan %s needs an approval (self_heal is off)", h.dir, short(p.Digest))
+		return nil
+	}
 	ttl, _ := e.Config.ttl()
 	if err := e.Mamela.Approve(ctx, p.Digest, "push:"+h.by, ttl); err != nil {
 		if !api.Refused(err) {
@@ -179,8 +189,22 @@ func (h headSync) approveByPush(ctx context.Context, p api.Planned) error {
 
 // plan plans the head and records its state.
 func (h headSync) plan(ctx context.Context, rev string) error {
-	p, err := h.e.planAndPost(ctx, h.owner, h.sha, h.dir, true)
+	pr := h.owner
+	if h.drift {
+		pr = 0 // not the merged pull request's business: it is about the world now
+	}
+	p, err := h.e.planAndPost(ctx, pr, h.sha, h.dir, true)
+	if err == nil && h.drift && p.Changes+p.Blocked > 0 {
+		h.e.logf("mamelacd: %s drifted from %s: %d changes, %d blocked (plan %s)", h.dir, short(h.sha), p.Changes, p.Blocked, short(p.Digest))
+	}
 	return h.recordPlanned(ctx, rev, p, err)
+}
+
+// resyncDue says whether a declaration that is in sync at the head has not been planned for the
+// resync interval: the world may have drifted from it.
+func (e *Engine) resyncDue(last Head) bool {
+	d, _ := e.Config.resync()
+	return d > 0 && last.State == HeadInSync && e.Store.Now().UnixMilli()-last.UpdatedMs >= d.Milliseconds()
 }
 
 // evaluate evaluates the head's declaration at the Control Plane: its revision. If the API refuses
@@ -260,11 +284,39 @@ func (h headSync) apply(ctx context.Context, rev string, p Plan) error {
 		return err
 	}
 	if outcome == outcomeFailed {
-		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "failed "+short(p.Digest))
+		// Without a pull request to comment on (sync = "push"), this is the only place the reason shows.
+		why := failureSummary(text, 90)
+		e.logf("mamelacd: %s plan %s failed: %s", h.dir, short(p.Digest), why)
+		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "failed "+short(p.Digest)+": "+why)
 		return h.record(ctx, rev, HeadFailed, p.Digest)
 	}
 	next, err := e.planAndPost(ctx, pr, h.sha, h.dir, true)
 	return h.recordPlanned(ctx, rev, next, err)
+}
+
+// failureSummary is why an apply stopped, in one short line (a commit status holds 140 characters):
+// the last line that gives a reason (it has a MAM- code, or says it failed or stopped), else the
+// last line there is; white space collapsed, cut at max. The guards' "ok" lines before it are not it.
+func failureSummary(text string, max int) string {
+	var last, reason string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		last = line
+		if strings.Contains(line, "MAM-") || strings.HasPrefix(line, "failed") || strings.HasPrefix(line, "stopped") {
+			reason = line
+		}
+	}
+	if reason == "" {
+		reason = last
+	}
+	reason = strings.TrimPrefix(reason, "stopped: ")
+	if r := []rune(reason); len(r) > max {
+		reason = string(r[:max-1]) + "…"
+	}
+	return reason
 }
 
 // applyOutcome is how an apply went, from the API's answer (err: the API refused it), and the

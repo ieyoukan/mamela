@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver ("sqlite")
@@ -419,6 +420,36 @@ type PlanInputs struct {
 
 // LoadPlan recomputes a stored plan from its stored inputs and verifies that the result has the
 // stored digest. A plan is never trusted as stored text: it is always re-derived.
+// ResolvePlanDigest completes a plan digest a person typed: the whole digest, or a prefix of at
+// least 8 hex digits (with or without "sha256:"), as the commit status and logs show it. A prefix
+// that fits more than one plan is an error: it never picks one.
+func (s *Store) ResolvePlanDigest(ctx context.Context, typed string) (string, error) {
+	hex := strings.TrimPrefix(strings.TrimSpace(typed), "sha256:")
+	if len(hex) < 8 || len(hex) > 64 || strings.Trim(hex, "0123456789abcdef") != "" {
+		return typed, nil // not a prefix: whatever the lookup says
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT digest FROM plans WHERE digest LIKE ? ESCAPE '\' LIMIT 3`, "sha256:"+hex+"%")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var found []string
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return "", err
+		}
+		found = append(found, d)
+	}
+	switch {
+	case len(found) == 1:
+		return found[0], nil
+	case len(found) > 1:
+		return "", fmt.Errorf("%q fits more than one plan: write more of the digest", typed)
+	}
+	return typed, nil
+}
+
 func (s *Store) LoadPlan(ctx context.Context, digest string) (*plan.Plan, PlanInputs, error) {
 	var rev, snapD, polD, madeBy, providers string
 	var canonical []byte

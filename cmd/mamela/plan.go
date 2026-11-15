@@ -65,7 +65,11 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fs.Usage()
 			return 2
 		}
-		p, _, err := st.LoadPlan(ctx, *replay)
+		digest, err := st.ResolvePlanDigest(ctx, *replay)
+		if err != nil {
+			return report(stderr, err)
+		}
+		p, _, err := st.LoadPlan(ctx, digest)
 		if errors.Is(err, store.ErrNotFound) {
 			fmt.Fprintf(stderr, "no plan %s in %s\n", *replay, *db)
 			return 1
@@ -110,6 +114,7 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	ttl := fs.Duration("ttl", time.Hour, "how long the approval stays valid")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela approve [flags] <plan-digest>\n\n"+
+			"The digest may be a prefix of 8 or more hex digits, as the commit status shows it.\n"+
 			"Approves exactly this plan. Any change to the declaration, the observation or the policy makes a\n"+
 			"different plan, which needs its own approval. Denied operations never run, approved or not.\n\nFlags:\n")
 		fs.PrintDefaults()
@@ -126,7 +131,11 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return report(stderr, err)
 	}
 	defer st.Close()
-	res, err := approvePlan(ctx, st, fs.Arg(0), *by, *ttl, true)
+	digest, err := st.ResolvePlanDigest(ctx, fs.Arg(0))
+	if err != nil {
+		return report(stderr, err)
+	}
+	res, err := approvePlan(ctx, st, digest, *by, *ttl, true)
 	if err != nil {
 		return report(stderr, err)
 	}

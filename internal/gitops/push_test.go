@@ -3,6 +3,7 @@ package gitops
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/api"
 )
@@ -131,5 +132,82 @@ func TestSyncConfig(t *testing.T) {
 	c.Sync = "auto"
 	if c.Check() == nil {
 		t.Error("unknown sync accepted")
+	}
+}
+
+// drifted makes the world differ from the head's declaration, and the resync interval pass.
+func (f *fixture) drifted() {
+	f.t.Helper()
+	f.m.world = "changed under it"
+	clock := f.e.Store.clock
+	f.e.Store.clock = func() time.Time { return clock().Add(time.Hour) }
+}
+
+// A declaration in sync is planned again after the resync interval, to find drift: it is shown on
+// the head, and without self_heal nothing undoes it by itself.
+func TestDriftIsFoundAndWaitsForAnApproval(t *testing.T) {
+	f := pushFixture(t)
+	head := f.push("v1", "alice")
+	f.once()
+	f.once()
+	f.once()
+	if f.m.world != "v1" || f.lastStatus(head).State != "success" {
+		t.Fatalf("not in sync: %v %+v", f.m.world, f.lastStatus(head))
+	}
+	planned := f.m.planned
+	f.once()
+	if f.m.planned != planned {
+		t.Fatal("planned again before the resync interval")
+	}
+
+	f.drifted()
+	f.once()
+	if f.m.planned != planned+1 || f.lastStatus(head).State != "pending" {
+		t.Fatalf("drift not found: planned %d, status %+v", f.m.planned, f.lastStatus(head))
+	}
+	f.once()
+	f.once()
+	if f.m.world != "changed under it" || len(f.m.applied) != 1 {
+		t.Fatalf("a drift was undone without an approval: %v %v", f.m.world, f.m.applied)
+	}
+}
+
+// With self_heal, the plan that undoes the drift is approved as the head's author and applied.
+func TestSelfHealUndoesDrift(t *testing.T) {
+	f := pushFixture(t)
+	f.e.Config.SelfHeal = true
+	head := f.push("v1", "alice")
+	f.once()
+	f.once()
+	f.once()
+	f.drifted()
+	f.once() // finds the drift, approves the plan
+	f.once() // applies it
+	if f.m.world != "v1" || len(f.m.applied) != 2 {
+		t.Fatalf("not healed: %v %v", f.m.world, f.m.applied)
+	}
+	if s := f.lastStatus(head); s.State != "success" {
+		t.Fatalf("status: %+v", s)
+	}
+}
+
+func TestResyncConfig(t *testing.T) {
+	c := Config{Repo: "me/infra", Branch: "main", Dirs: []string{"infra"}, TokenFile: "x", Authors: []string{"alice"}, Approvers: []string{"alice"}, MamelaSocket: "x", StateDB: "x"}
+	if d, err := c.resync(); err != nil || d != 10*time.Minute {
+		t.Errorf("default: %v %v", d, err)
+	}
+	for resync, ok := range map[string]bool{"5m": true, "0": true, "30s": false, "soon": false} {
+		c.Resync = resync
+		if err := c.Check(); (err == nil) != ok {
+			t.Errorf("resync %q: %v", resync, err)
+		}
+	}
+	c.Resync, c.SelfHeal = "", true
+	if c.Check() == nil {
+		t.Error("self_heal without sync = push")
+	}
+	c.Sync = SyncPush
+	if err := c.Check(); err != nil {
+		t.Errorf("self_heal with push: %v", err)
 	}
 }

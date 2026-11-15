@@ -92,6 +92,8 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 - **server が先、agent は名前の順に 1 台ずつ**（MAM-PLAN-0116）。
 - **全ノードが Ready のあいだだけ**（MAM-PLAN-0115）。server が `k3s kubectl get nodes` で読んだ、ノードの名前・kubelet の版・Ready を、report で知らせる。読めなければ進まない。
 - **動いている版の観測:** バイナリの sha256 が宣言どおりでも、プロセスがそのバイナリより前に起動していれば（`stale`）、収束していない。plan は同じ `upgrade-k3s` で再起動を出す。
+- **宣言していないノードは待たない。** Ready の確認は、宣言した k3s のノードだけが対象である。VM を宣言から消したあとに Kubernetes に残るノード（NotReady）は、以後の版上げを止めない。名前がどれも一致しないときは、全ノードを対象にする（できるだけ慎重に）。残ったノードは、Mamela はまだ消さない（`k3s kubectl delete node <名前>` を手で行う）。
+- **マシンの再起動も 1 台ずつ。** k3s が動いているマシンを再起動する変更（仕様の変更など）は、同じ順（agent が先、server が最後）で 1 台ずつ、全ノードが Ready のあいだだけ進む（MAM-PLAN-0118）。
 - **巻き戻しと drain は行わない。** 版を戻したいときは、宣言を戻して同じ手順で上げ直す。drain は Kubernetes の側の仕事で、Mamela は Ready の観測までにする。
 
 起動の引数は Mamela が決める。宣言からは変えられない。

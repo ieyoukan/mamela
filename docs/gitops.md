@@ -38,6 +38,8 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
    approvers = ["you"]             # 承認できる人
    # self_approval = false         # 作者が自分の PR を承認できないようにする
    approval_ttl = "24h"            # 承認の期限（7 日まで）
+   # resync = "10m"                # 収束済みの宣言を plan し直して、ずれを探す間隔（既定 10m、"0" で止める）
+   # self_heal = true              # sync = "push" のとき、ずれを戻す plan を作者の名前で承認する
    interval = "1m"                 # GitHub を読む間隔
    mamela_socket = "/run/mamela/api.sock"
    state_db = "/var/lib/mamelacd/state.db"
@@ -74,6 +76,14 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 - **削除は承認しない:** 削除を含む plan は、status に `mamela approve <digest>` が出る。Control Plane のホストで承認すると、次の poll で apply する。
 - **ブランチ保護:** PR 必須の保護は外す（force push と削除の禁止は残す）。ブランチへ書ける人が、承認する人になる。複数人で運用するなら `sync = "approval"`（既定）にする。
 - **approvers は空でよい:** push では承認のコメントを読まない（PR の承認コメントは、これまでどおり動く）。
+
+## ずれを見つける（`resync`、`self_heal`）
+
+収束済みの先頭は、新しいコミットがない限り plan し直さない。それだけだと、あとから世界が変わっても（サービスを手で止めた、バイナリを替えた、VM が落ちた）、commit status は「in sync」のままになる。`resync`（既定 10 分）ごとに、収束済みの宣言を plan し直す。plan は観測するだけで、何も変えない。
+
+- **ずれがあれば:** commit status に変更の数が出て、ログに `drifted` と出る。そのずれを戻す plan は、`mamela approve <digest>`（ホスト）で承認する。
+- **`self_heal = true`（`sync = "push"` のとき）:** ずれを戻す plan を、先頭の作者の名前で承認して、次の poll で apply する。削除を含む plan と、blocked の plan は承認しない（ホストの承認が要る）。
+- 宣言のとおりに戻すだけで、宣言にないものは消さない。
 
 ## しないこと
 

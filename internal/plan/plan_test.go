@@ -640,3 +640,112 @@ func TestK3sManifestPlan(t *testing.T) {
 		t.Fatalf("unreadable: %+v", ch)
 	}
 }
+
+// A stopped agent with an older binary in place waits for its server too: given a newer binary
+// first, it would start on a release newer than its server's. It needs no healthy cluster (nothing
+// restarts), and a fresh install (no binary) waits for nothing.
+func TestK3sStoppedAgentWaitsForTheServer(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1")
+	s := k3sObserved(g, now)
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1"}}}
+	s.K3s["a1/k3s"] = state.K3s{Installed: true, SHA256: old, ObservedAt: t0} // stopped, with the old binary
+	c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s")
+	if c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0116" {
+		t.Fatalf("a stopped agent before the server: %+v", c)
+	}
+	// The server is upgraded; the agent's node is not Ready (it is stopped), and that does not matter.
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1"}}}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.OpInstallK3s {
+		t.Fatalf("a stopped agent after the server: %+v", c)
+	}
+	// A fresh install, no binary yet: nothing to wait for.
+	s.K3s["srv/k3s"] = state.K3s{ObservedAt: t0}
+	s.K3s["a1/k3s"] = state.K3s{ObservedAt: t0}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange {
+		t.Fatalf("a fresh agent: %+v", c)
+	}
+}
+
+// An agent's change always says the server it joins, even when it is the one it already joins: the
+// approval is checked against it when the change is carried out.
+func TestK3sAgentChangeAlwaysSaysItsServer(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1")
+	s := k3sObserved(g, now)
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1", Ready: true}}}
+	s.K3s["a1/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, Server: "https://192.0.2.40:6443", ObservedAt: t0}
+	c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s")
+	if c.Status != StatusChange || !slices.ContainsFunc(c.Diffs, func(d Diff) bool { return d.Field == "server" && d.To == "https://192.0.2.40:6443" }) {
+		t.Fatalf("the agent's change does not say its server: %+v", c)
+	}
+}
+
+// A Kubernetes node the declaration does not name (the node of a machine that was removed) does not
+// hold an upgrade back; a declared node that is not Ready still does.
+func TestK3sUpgradeIgnoresUndeclaredNodes(t *testing.T) {
+	const old, now = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1")
+	s := k3sObserved(g, now)
+	nodes := []state.K3sNode{{Name: "srv", Ready: true}, {Name: "a1", Ready: true}, {Name: "gone", Ready: false}}
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, Nodes: nodes, ObservedAt: t0}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); c.Status != StatusChange {
+		t.Fatalf("an undeclared node that is not Ready held the upgrade back: %+v", c)
+	}
+	nodes[1].Ready = false
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0115" {
+		t.Fatalf("a declared node that is not Ready did not: %+v", c)
+	}
+	// Names that match nothing declared: all of them count.
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "ip-10-0-0-1", Ready: false}}}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); c.Status != StatusWaiting {
+		t.Fatalf("names that match nothing: %+v", c)
+	}
+}
+
+// The machines of a cluster are restarted one at a time (agents before the server) and only while
+// every Kubernetes node is Ready: a plan that resizes them all must not reboot them all at once.
+func TestMachinesOfAClusterAreRestartedOneAtATime(t *testing.T) {
+	const now = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, now, "a1", "a2")
+	s := k3sObserved(g, now)
+	ready := []state.K3sNode{{Name: "srv", Ready: true}, {Name: "a1", Ready: true}, {Name: "a2", Ready: true}}
+	for _, n := range []string{"srv", "a1", "a2"} {
+		s.K3s[n+"/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0}
+	}
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0, Nodes: ready}
+	for _, n := range []string{"srv", "a1", "a2"} {
+		machineObserved(&s, g, n, true, true, true, 600, providedChange("TestVM "+n, "resize-vm", protocol.EffectRestart))
+	}
+	status := func(n string) Change { return find(t, Build(g, s, policy.Default), "TestVM "+n) }
+
+	if c := status("a1"); c.Status != StatusChange {
+		t.Fatalf("the first agent: %+v", c)
+	}
+	if c := status("a2"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0118" || !strings.Contains(c.Note.Message, "a1") {
+		t.Fatalf("the second agent: %+v", c)
+	}
+	if c := status("srv"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0118" {
+		t.Fatalf("the server: %+v", c)
+	}
+	// The first agent is done: the next one goes, the server still waits for it.
+	machineObserved(&s, g, "a1", true, true, true, 600)
+	if c := status("a2"); c.Status != StatusChange {
+		t.Fatalf("the second agent after the first: %+v", c)
+	}
+	// A node that is not Ready stops them all.
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Ready: true}, {Name: "a1", Ready: false}, {Name: "a2", Ready: true}}}
+	if c := status("a2"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0115" {
+		t.Fatalf("an unhealthy cluster: %+v", c)
+	}
+	// A machine that runs no k3s is not held back, and neither is one whose k3s does not run.
+	s.K3s["a2/k3s"] = state.K3s{Installed: true, SHA256: now, ObservedAt: t0}
+	if c := status("a2"); c.Status != StatusChange {
+		t.Fatalf("a machine whose k3s does not run: %+v", c)
+	}
+}

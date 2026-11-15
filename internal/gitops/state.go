@@ -93,6 +93,9 @@ func OpenStore(ctx context.Context, path string, clock func() time.Time) (*Store
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Now is the store's clock.
+func (s *Store) Now() time.Time { return s.clock() }
+
 func (s *Store) nowMs() int64 { return s.clock().UnixMilli() }
 
 // Plan is a plan mamelacd posted.
@@ -197,6 +200,8 @@ type Head struct {
 	Revision string
 	State    string // HeadPending, HeadWaiting, ...
 	Digest   string // the last plan
+	// UpdatedMs is when the state was recorded (the store's clock, milliseconds).
+	UpdatedMs int64
 }
 
 // States of a declaration at the head of the branch.
@@ -214,8 +219,8 @@ const (
 // Head returns the last state of a declaration at the head of the branch.
 func (s *Store) Head(ctx context.Context, repo, dir string) (Head, bool, error) {
 	h := Head{Dir: dir}
-	err := s.db.QueryRowContext(ctx, `SELECT sha, revision, state, digest FROM heads WHERE repo = ? AND dir = ?`, repo, dir).
-		Scan(&h.SHA, &h.Revision, &h.State, &h.Digest)
+	err := s.db.QueryRowContext(ctx, `SELECT sha, revision, state, digest, updated_ms FROM heads WHERE repo = ? AND dir = ?`, repo, dir).
+		Scan(&h.SHA, &h.Revision, &h.State, &h.Digest, &h.UpdatedMs)
 	if errors.Is(err, sql.ErrNoRows) {
 		return h, false, nil
 	}

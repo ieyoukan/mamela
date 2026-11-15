@@ -417,3 +417,35 @@ func TestClaims(t *testing.T) {
 		t.Fatalf("claims except the other: %v", got)
 	}
 }
+
+// A person types the digest as the commit status shows it: a prefix, with or without "sha256:". A
+// prefix that fits no plan, or more than one, never picks one.
+func TestResolvePlanDigest(t *testing.T) {
+	ctx := context.Background()
+	s, clock, _ := open(t)
+	g := graphFixture(t)
+	snap := state.Empty(clock.Now())
+	p := plan.Build(g, snap, policy.Default)
+	if err := s.SavePlan(ctx, g, snap, policy.Default, p); err != nil {
+		t.Fatal(err)
+	}
+	hex := strings.TrimPrefix(p.Digest, "sha256:")
+	for _, typed := range []string{p.Digest, hex, hex[:12], "sha256:" + hex[:8]} {
+		if got, err := s.ResolvePlanDigest(ctx, typed); err != nil || got != p.Digest {
+			t.Errorf("%q: %q %v", typed, got, err)
+		}
+	}
+	for _, typed := range []string{hex[:7], "zzzzzzzzzz", "0000000000"} {
+		if got, err := s.ResolvePlanDigest(ctx, typed); err != nil || got != typed {
+			t.Errorf("%q should be left as typed: %q %v", typed, got, err)
+		}
+	}
+	// A second plan that shares the first 8 digits makes the prefix ambiguous.
+	other := "sha256:" + hex[:8] + strings.Repeat("0", 56)
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, made_by, providers_digest, created_ms) SELECT ?, revision_digest, snapshot_digest, policy_digest, canonical, made_by, providers_digest, created_ms FROM plans WHERE digest = ?`, other, p.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResolvePlanDigest(ctx, hex[:8]); err == nil || !strings.Contains(err.Error(), "more than one") {
+		t.Errorf("an ambiguous prefix: %v", err)
+	}
+}
