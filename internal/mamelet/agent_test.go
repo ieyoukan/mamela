@@ -36,11 +36,16 @@ type fakeOS struct {
 	provides    map[string]string // installing a package creates this service
 	failInstall bool
 	commands    []string
+	// started is when a service's main process started (unix seconds), as systemd says; restart
+	// sets it to restartedAt. kubectl is what `k3s kubectl get nodes` prints.
+	started     map[string]int64
+	restartedAt int64
+	kubectl     string
 }
 
 func newFakeOS() *fakeOS {
 	return &fakeOS{installed: map[string]string{}, sim: map[string]string{"nginx": nginxSim},
-		services: map[string]*fakeService{}, provides: map[string]string{"nginx": "nginx.service"}}
+		services: map[string]*fakeService{}, provides: map[string]string{"nginx": "nginx.service"}, started: map[string]int64{}}
 }
 
 func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []string) ([]byte, []byte, int, error) {
@@ -64,6 +69,8 @@ func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []strin
 			f.services[svc] = &fakeService{exists: true, enabled: true, running: true}
 		}
 		return nil, nil, 0, nil
+	case progK3s:
+		return []byte(f.kubectl), nil, 0, nil
 	case progSystemctl:
 		s := f.services[last]
 		if s == nil {
@@ -81,11 +88,20 @@ func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []strin
 					active = "active"
 				}
 			}
-			return []byte(fmt.Sprintf("LoadState=%s\nUnitFileState=%s\nActiveState=%s\n", load, unit, active)), nil, 0, nil
+			out := fmt.Sprintf("LoadState=%s\nUnitFileState=%s\nActiveState=%s\n", load, unit, active)
+			if t := f.started[last]; t > 0 && s.running {
+				out += fmt.Sprintf("ExecMainStartTimestamp=@%d\n", t)
+			}
+			return []byte(out), nil, 0, nil
 		case "enable":
 			s.enabled = true
 		case "start":
 			s.running = true
+		case "restart":
+			s.running = true
+			if f.started != nil {
+				f.started[last] = f.restartedAt
+			}
 		case "disable":
 			s.enabled = false
 		case "stop":
@@ -131,6 +147,8 @@ type env struct {
 	cp  *fakeCP
 	now time.Time
 	a   *Agent
+
+	k3sBody string // the binary the fake release server serves
 }
 
 func newEnv(t *testing.T) *env {

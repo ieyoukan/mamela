@@ -25,6 +25,7 @@ const (
 // k3sEnv serves a release whose binary is body.
 func k3sEnv(t *testing.T, body string) (*env, *int) {
 	e := newEnv(t)
+	e.k3sBody = body
 	downloads := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asset, _ := K3sAsset()
@@ -33,7 +34,7 @@ func k3sEnv(t *testing.T, body string) (*env, *int) {
 			return
 		}
 		downloads++
-		w.Write([]byte(body))
+		w.Write([]byte(e.k3sBody))
 	}))
 	t.Cleanup(srv.Close)
 	e.a.System.Root, e.a.System.HTTP, e.a.System.K3sReleases = t.TempDir(), srv.Client(), srv.URL
@@ -207,5 +208,144 @@ func TestStartHasADeadline(t *testing.T) {
 	err := s.Start(context.Background(), "k3s")
 	if err == nil || !strings.Contains(err.Error(), "did not finish starting") || time.Since(start) > 5*time.Second {
 		t.Fatalf("start: %v after %s", err, time.Since(start))
+	}
+}
+
+// An upgrade replaces the binary and restarts a k3s that runs, so that it runs what was approved.
+// A process that started before the binary on disk was written is reported Stale, and an approved
+// install for the binary already in place restarts it without downloading again. Nothing restarts
+// a k3s that does not run (starting it is a NodeService).
+func TestK3sUpgradeRestartsARunningK3s(t *testing.T) {
+	v1, v2 := "\x7fELF k3s one", "\x7fELF k3s two"
+	e, downloads := k3sEnv(t, v1)
+	root := e.a.System.Root
+	grant := func(serial int64, binary string, attempt int) {
+		e.publishK3s(serial, &noderev.K3s{Version: k3sVersion, SHA256: sum(binary), Role: "server", Token: testToken,
+			Install: &noderev.Once{Operation: k3sOp, Attempt: attempt, Action: noderev.ActionInstall}})
+	}
+	restarts := func() int {
+		n := 0
+		for _, c := range e.os.commands {
+			if strings.HasPrefix(c, progSystemctl+" restart") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// The first installation does not restart anything: k3s does not run yet.
+	grant(1, v1, 1)
+	if rep := e.round(); !rep.K3s.Installed || rep.K3s.Running || restarts() != 0 {
+		t.Fatalf("install: %+v, %d restarts", rep.K3s, restarts())
+	}
+
+	// k3s runs, started after the binary was written: in sync, nothing is stale.
+	future := time.Now().Add(time.Hour).Unix()
+	e.os.services["k3s"] = &fakeService{exists: true, enabled: true, running: true}
+	e.os.started["k3s"] = future
+	e.os.kubectl = "srv\tv1.33.5+k3s1\tTrue\nag\tv1.33.5+k3s1\tFalse\n"
+	e.publishK3s(2, &noderev.K3s{Version: k3sVersion, SHA256: sum(v1), Role: "server", Token: testToken})
+	rep := e.round()
+	if !rep.K3s.Installed || !rep.K3s.Running || rep.K3s.Stale {
+		t.Fatalf("a fresh process: %+v", rep.K3s)
+	}
+	if len(rep.K3s.Nodes) != 2 || rep.K3s.Nodes[0] != (noderev.K3sNode{Name: "ag", Version: "v1.33.5+k3s1"}) || !rep.K3s.Nodes[1].Ready {
+		t.Fatalf("nodes: %+v", rep.K3s.Nodes)
+	}
+
+	// The approved upgrade: another binary replaces the one in place, and k3s is restarted.
+	e.k3sBody = v2
+	e.os.restartedAt = future + 10
+	grant(3, v2, 2)
+	rep = e.round()
+	if b, _ := os.ReadFile(filepath.Join(root, k3sBinary)); string(b) != v2 || *downloads != 2 {
+		t.Fatalf("the binary was not replaced (%d downloads)", *downloads)
+	}
+	if restarts() != 1 || !rep.K3s.Installed || rep.K3s.Stale || rep.Results[0].Outcome != noderev.OutcomeDone || !strings.Contains(rep.Results[0].Detail, "restarted") {
+		t.Fatalf("after the upgrade: %+v %+v, %d restarts", rep.K3s, rep.Results, restarts())
+	}
+
+	// A process older than the binary is Stale (the binary was replaced under it, or the restart
+	// did not happen): it is not in sync, and an approved install restarts it without a download.
+	e.os.started["k3s"] = time.Now().Add(-time.Hour).Unix()
+	e.publishK3s(4, &noderev.K3s{Version: k3sVersion, SHA256: sum(v2), Role: "server", Token: testToken})
+	if rep := e.round(); !rep.K3s.Stale || !rep.K3s.Installed || restarts() != 1 {
+		t.Fatalf("a stale process: %+v, %d restarts", rep.K3s, restarts())
+	}
+	grant(5, v2, 3)
+	rep = e.round()
+	if rep.K3s.Stale || restarts() != 2 || *downloads != 2 {
+		t.Fatalf("restart of a stale process: %+v, %d restarts, %d downloads", rep.K3s, restarts(), *downloads)
+	}
+}
+
+func TestParseK3sNodes(t *testing.T) {
+	got := ParseK3sNodes("b\tv1.33.5+k3s1\tFalse\na\tv1.33.5+k3s1\tTrue\n\nodd line\n")
+	if len(got) != 2 || got[0].Name != "a" || !got[0].Ready || got[1].Ready {
+		t.Fatalf("nodes: %+v", got)
+	}
+	if len(ParseK3sNodes("")) != 0 {
+		t.Fatal("nodes of nothing")
+	}
+}
+
+// A manifest is written only with an approved grant, exactly as the revision says, once per
+// attempt; without a grant it is only observed.
+func TestK3sManifestIsWrittenOnlyAsApproved(t *testing.T) {
+	e := newEnv(t)
+	e.a.System.Root = t.TempDir()
+	path := filepath.Join(e.a.System.Root, noderev.K3sManifestDir, "mamela-argocd.yaml")
+	const content = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: argocd\n"
+	publish := func(serial int64, content string, w *noderev.Once) {
+		s, err := noderev.Sign(e.key, noderev.Revision{Schema: noderev.Schema, Node: "web", VMID: 7001, Serial: serial,
+			IssuedAt: e.now, ExpiresAt: e.now.Add(time.Hour), Packages: []noderev.Package{}, Services: []noderev.Service{},
+			Manifests: []noderev.Manifest{{Name: "argocd", Content: content, Write: w}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.cp.signed, e.cp.err = s, nil
+	}
+	write := func(attempt int) *noderev.Once {
+		return &noderev.Once{Operation: k3sOp, Attempt: attempt, Action: noderev.ActionWrite}
+	}
+
+	// Without a grant: observed, not written.
+	publish(1, content, nil)
+	rep := e.round()
+	if len(rep.Manifests) != 1 || rep.Manifests[0].Name != "argocd" || rep.Manifests[0].SHA256 != "" {
+		t.Fatalf("observation: %+v", rep.Manifests)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("written without a grant: %v", err)
+	}
+
+	// With a grant: written exactly, readable by root only, and reported.
+	publish(2, content, write(1))
+	rep = e.round()
+	if b, _ := os.ReadFile(path); string(b) != content {
+		t.Fatalf("content: %q", b)
+	}
+	if fi, _ := os.Stat(path); fi == nil || fi.Mode().Perm() != 0o600 {
+		t.Error("the manifest is readable by others")
+	}
+	if rep.Manifests[0].SHA256 != noderev.ManifestSHA256(content) || len(rep.Results) != 1 || rep.Results[0].Outcome != noderev.OutcomeDone {
+		t.Fatalf("after the write: %+v %+v", rep.Manifests, rep.Results)
+	}
+
+	// The same attempt does not write again (a change by hand stays until a new approval).
+	os.WriteFile(path, []byte("changed by hand\n"), 0o600)
+	e.round()
+	if b, _ := os.ReadFile(path); string(b) != "changed by hand\n" {
+		t.Error("the same attempt wrote again")
+	}
+	if rep := e.round(); rep.Manifests[0].SHA256 != noderev.ManifestSHA256("changed by hand\n") {
+		t.Errorf("the change by hand is not reported: %+v", rep.Manifests)
+	}
+
+	// A new approval of new content replaces the file.
+	publish(3, content+"# next\n", write(2))
+	e.round()
+	if b, _ := os.ReadFile(path); string(b) != content+"# next\n" {
+		t.Fatalf("content after the second write: %q", b)
 	}
 }

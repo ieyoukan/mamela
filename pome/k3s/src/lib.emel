@@ -43,3 +43,18 @@ pub fn agent(
     ],
   )
 }
+
+## Declares that the k3s server on `server` has the manifest `name` in its auto-deploy directory
+## (`mamela-<name>.yaml`): k3s applies what is in `content` (a workload, a `HelmChart`) with
+## cluster-admin rights, and applies it again whenever it changes. The plan shows the whole
+## content and asks for an approval; changing `content` is a new approval. A manifest that is no
+## longer declared is not removed (its file stays; remove it by hand on the server).
+pub fn manifest(graph: Mamela.Graph, server: Node, name: String, content: String) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    server,
+    "NodeK3sManifest",
+    "#{server.name}/manifest/#{name}",
+    [("name", Text(name)), ("content", Text(content))],
+  )
+}

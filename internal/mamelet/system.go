@@ -28,6 +28,7 @@ const (
 	progDpkgQuery = "/usr/bin/dpkg-query"
 	progAptGet    = "/usr/bin/apt-get"
 	progSystemctl = "/usr/bin/systemctl"
+	progK3s       = "/usr/local/bin/k3s" // only to read the nodes its API lists (K3sNodes)
 )
 
 // ExecRunner runs programs directly (no shell), with a minimal environment.
@@ -35,7 +36,7 @@ type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
 	switch program {
-	case progDpkgQuery, progAptGet, progSystemctl:
+	case progDpkgQuery, progAptGet, progSystemctl, progK3s:
 	default:
 		return nil, nil, -1, fmt.Errorf("mamelet does not run %s", program)
 	}
@@ -259,6 +260,21 @@ func (s *System) Start(ctx context.Context, name string) error {
 	_, err := s.run(sctx, progSystemctl, []string{"start", "--", name})
 	if err != nil && sctx.Err() != nil && ctx.Err() == nil {
 		return fmt.Errorf("%s did not finish starting within %s (systemd keeps starting it; the next observation shows whether it runs)", name, StartTimeout)
+	}
+	return err
+}
+
+// Restart restarts a service that runs (the new process starts from what is on disk). Like Start,
+// it does not hold mamelet for longer than StartTimeout.
+func (s *System) Restart(ctx context.Context, name string) error {
+	if !noderev.ValidService(name) {
+		return fmt.Errorf("invalid service name %q", name)
+	}
+	sctx, cancel := context.WithTimeout(ctx, StartTimeout)
+	defer cancel()
+	_, err := s.run(sctx, progSystemctl, []string{"restart", "--", name})
+	if err != nil && sctx.Err() != nil && ctx.Err() == nil {
+		return fmt.Errorf("%s did not finish restarting within %s (systemd keeps starting it; the next observation shows whether it runs)", name, StartTimeout)
 	}
 	return err
 }

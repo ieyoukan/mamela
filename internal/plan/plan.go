@@ -123,6 +123,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.guard(r.NodeService.Node, b.service(r)))
 		case graph.KindNodeK3s:
 			p.Changes = append(p.Changes, b.guard(r.NodeK3s.Node, b.k3s(r)))
+		case graph.KindNodeK3sManifest:
+			p.Changes = append(p.Changes, b.guard(r.NodeK3sManifest.Node, b.k3sManifest(r)))
 		default:
 			if r.Provided != nil {
 				p.Changes = append(p.Changes, b.guard(r.Name, b.provided(r)))
@@ -464,8 +466,17 @@ func (b builder) k3s(r graph.Resource) Change {
 			Message: fmt.Sprintf("the agent on %s cannot observe k3s: %s", want.Node, got.Error),
 			Hint:    "fix it on the node, then plan again"}
 		return c
-	case got.Installed && got.SHA256 == want.SHA256:
+	case got.Installed && got.SHA256 == want.SHA256 && !got.Stale:
 		return b.withOps(c)
+	}
+	// A k3s that runs is upgraded in place (the binary is replaced and k3s restarted): the server
+	// first, the agents one at a time, and only while every Kubernetes node is Ready.
+	upgrade := got.Running
+	if upgrade {
+		if note := b.upgradeGate(r, got); note != nil {
+			c.Status, c.Note = StatusWaiting, note
+			return c
+		}
 	}
 	server := ""
 	if want.Role == graph.K3sAgent && b.g.StaticIP(want.Server) != "" {
@@ -483,7 +494,7 @@ func (b builder) k3s(r graph.Resource) Change {
 	// The diff says exactly what is approved: the release, the binary's sha256, where it comes
 	// from, how it runs and, for an agent, the server it joins. The join token is made by the
 	// Control Plane and given only to the cluster's nodes; it is never shown.
-	c.Diffs = []Diff{{"version", "", want.Version}, {"sha256", got.SHA256, want.SHA256},
+	c.Diffs = []Diff{{"version", b.k3sRunning(r, got), want.Version}, {"sha256", got.SHA256, want.SHA256},
 		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
 		{"role", "", string(want.Role)}}
 	if server != "" {
@@ -491,7 +502,111 @@ func (b builder) k3s(r graph.Resource) Change {
 	}
 	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
 		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})
+	if upgrade {
+		c.Diffs = append(c.Diffs, Diff{"restart", "", "k3s on " + want.Node + " restarts into this release; its Kubernetes node is not Ready for a while"})
+		return b.withOps(c, policy.Subject{Op: policy.OpUpgradeK3s})
+	}
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
+}
+
+// k3sManifest plans a manifest file in a k3s server's auto-deploy directory. Its whole content is
+// in the diff: that is what is approved, and what k3s then applies with cluster-admin rights.
+func (b builder) k3sManifest(r graph.Resource) Change {
+	want := r.NodeK3sManifest
+	c := newChange(r)
+	if ok, note := b.nodeReady(want.Node); !ok {
+		c.Status, c.Note = StatusWaiting, note
+		return c
+	}
+	got, observed := b.snap.K3sManifests[r.Name]
+	switch {
+	case !observed:
+		c.Status, c.Note = b.awaitAgent(want.Node, &Note{Code: "MAM-PLAN-0117",
+			Message: fmt.Sprintf("waits for the agent on %s to report the manifest %s", want.Node, want.Name)})
+		return c
+	case b.stale(got.ObservedAt):
+		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
+		return c
+	case got.Error != "":
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0204",
+			Message: fmt.Sprintf("the agent on %s cannot observe the manifest %s: %s", want.Node, want.Name, got.Error),
+			Hint:    "fix it on the node, then plan again"}
+		return c
+	}
+	sum := noderev.ManifestSHA256(want.Content)
+	if got.SHA256 == sum {
+		return b.withOps(c)
+	}
+	c.Diffs = []Diff{{"file", "", noderev.K3sManifestDir + "/" + noderev.K3sManifestFile(want.Name)},
+		{"sha256", got.SHA256, sum}, {"content", "", want.Content}}
+	return b.withOps(c, policy.Subject{Op: policy.OpWriteK3sManifest})
+}
+
+// k3sCurrent is whether a node's k3s is what its declaration says: the declared binary, running.
+func k3sCurrent(got state.K3s, want *graph.NodeK3sSpec) bool {
+	return got.Installed && got.SHA256 == want.SHA256 && !got.Stale
+}
+
+// k3sRunning is the release a node's kubelet runs, as the cluster's server reports it ("" when
+// unknown).
+func (b builder) k3sRunning(r graph.Resource, got state.K3s) string {
+	nodes := got.Nodes
+	if r.NodeK3s.Role == graph.K3sAgent {
+		nodes = b.snap.K3s[r.NodeK3s.Server+"/k3s"].Nodes
+	}
+	for _, n := range nodes {
+		if n.Name == r.NodeK3s.Node {
+			return n.Version
+		}
+	}
+	return ""
+}
+
+// upgradeGate says what an upgrade of a running k3s waits for, or nil when it may go on. The server
+// goes first (an agent never runs a newer release than its server), the agents one at a time (in
+// the order of their names), and each step only while every Kubernetes node is Ready, as the
+// server sees it: a restart on top of an unhealthy cluster would take more of it down.
+func (b builder) upgradeGate(r graph.Resource, got state.K3s) *Note {
+	want := r.NodeK3s
+	nodes := got.Nodes
+	if want.Role == graph.K3sAgent {
+		srv, ok := b.snap.K3s[want.Server+"/k3s"]
+		for _, other := range b.g.Sorted() {
+			o := other.NodeK3s
+			if o == nil || o.Node != want.Server {
+				continue
+			}
+			if !ok || b.stale(srv.ObservedAt) || !k3sCurrent(srv, o) {
+				return &Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s server %s to run its declared release before %s is upgraded (an agent never runs a newer release than its server)", want.Server, want.Node),
+					Hint: "the server's upgrade comes first in this or an earlier plan"}
+			}
+		}
+		for _, other := range b.g.Sorted() {
+			o := other.NodeK3s
+			if o == nil || o.Role != graph.K3sAgent || o.Server != want.Server || o.Node >= want.Node {
+				continue
+			}
+			if og, seen := b.snap.K3s[other.Name]; seen && og.Running && !k3sCurrent(og, o) {
+				return &Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s agent %s to be upgraded before %s (agents are upgraded one at a time)", o.Node, want.Node)}
+			}
+		}
+		nodes = srv.Nodes
+	}
+	var notReady []string
+	for _, n := range nodes {
+		if !n.Ready {
+			notReady = append(notReady, n.Name)
+		}
+	}
+	switch {
+	case len(nodes) == 0:
+		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before k3s on %s is restarted", want.Node),
+			Hint: "the server reports them while it runs; if it never does, look at k3s on the server"}
+	case len(notReady) > 0:
+		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before k3s on %s is restarted (not Ready: %s)", want.Node, strings.Join(notReady, ", ")),
+			Hint: "an upgrade goes on only on a healthy cluster; find out why the node is not Ready"}
+	}
+	return nil
 }
 
 // k3sServerOf is the server of node's k3s agent, when service is that agent's k3s service.

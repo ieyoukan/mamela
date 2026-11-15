@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"encoding/json/v2"
 	"errors"
 	"net/netip"
 	"strings"
@@ -442,5 +443,47 @@ func TestSameDeclarationTwiceIsOne(t *testing.T) {
 	other := machine("app", `{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`)
 	if _, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + other + `]}`)); err == nil || !strings.Contains(err.Error(), "MAM-GRAPH-0102") {
 		t.Fatalf("two different declarations: %v", err)
+	}
+}
+
+// A manifest is a file of a k3s server's auto-deploy directory: the name is a file stem, the
+// content is bounded text, and the node is a k3s server of the graph.
+func TestNodeK3sManifest(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	server := `{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	doc := func(node, name, content string) string {
+		c, _ := json.Marshal(content)
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) + `,` + machine("other", dhcp) + `,` + server + `,` +
+			`{"kind":"NodeK3sManifest","name":"` + node + `/manifest/` + name + `","spec":{"node":"` + node + `","name":"` + name + `","content":` + string(c) + `}}]}`
+	}
+	g, err := Decode([]byte(doc("web", "argocd", "kind: Namespace\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m *NodeK3sManifestSpec
+	for _, r := range g.Sorted() {
+		if r.NodeK3sManifest != nil {
+			m = r.NodeK3sManifest
+		}
+	}
+	if m == nil || m.Node != "web" || m.Name != "argocd" || m.Content != "kind: Namespace\n" {
+		t.Fatalf("manifest: %+v", m)
+	}
+	// The content is part of the declaration: another content is another digest.
+	g2, _ := Decode([]byte(doc("web", "argocd", "kind: Namespace\n# changed\n")))
+	if g.Digest() == g2.Digest() {
+		t.Error("the digest ignores the content")
+	}
+	for name, d := range map[string]string{
+		"a node that is no server": doc("other", "argocd", "x: 1"),
+		"a path as the name":       doc("web", "../argocd", "x: 1"),
+		"an uppercase name":        doc("web", "ArgoCD", "x: 1"),
+		"an empty content":         doc("web", "argocd", "  \n"),
+		"too large":                doc("web", "argocd", strings.Repeat("a", MaxK3sManifest+1)),
+		"a NUL":                    doc("web", "argocd", "a\x00b"),
+	} {
+		if _, err := Decode([]byte(d)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

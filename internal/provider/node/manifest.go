@@ -17,9 +17,10 @@ const TargetNode = "node"
 
 // Capability names: what mamelet does with the grant, by program and action.
 const (
-	CapAptInstall = "apt.install"
-	CapK3sInstall = "k3s.install"
-	capSystemd    = "systemd."
+	CapAptInstall  = "apt.install"
+	CapK3sInstall  = "k3s.install"
+	CapK3sManifest = "k3s.manifest"
+	capSystemd     = "systemd."
 )
 
 // Condition keys mamelet checks before it acts (facts it knows from the signed revision, its
@@ -62,13 +63,26 @@ func Manifest() spec.Manifest {
 			Reasons: []string{"mamelet runs apt-get install once"},
 		}},
 	}}}
-	k3s := spec.Kind{Kind: graph.KindNodeK3s, Operations: []spec.Operation{{
-		Op: policy.OpInstallK3s, Support: spec.Supported, Needs: []spec.Need{{
-			Capability: CapK3sInstall, Target: node, Object: "k3s {version}", Always: true,
-			Conditions: append(slices.Clone(grantConditions),
-				spec.Condition{Key: KeyK3sSHA256, Test: spec.Equals, Values: []string{"{sha256}"}}),
-			Note:    "mamelet downloads the release and installs it only if its sha256 is the declared one, with Mamela's fixed unit",
-			Reasons: []string{"mamelet writes /usr/local/bin/k3s and its systemd unit once"},
+	k3sNeed := spec.Need{
+		Capability: CapK3sInstall, Target: node, Object: "k3s {version}", Always: true,
+		Conditions: append(slices.Clone(grantConditions),
+			spec.Condition{Key: KeyK3sSHA256, Test: spec.Equals, Values: []string{"{sha256}"}}),
+		Note:    "mamelet downloads the release and installs it only if its sha256 is the declared one, with Mamela's fixed unit",
+		Reasons: []string{"mamelet writes /usr/local/bin/k3s and its systemd unit once"},
+	}
+	k3sUpgradeNeed := k3sNeed
+	k3sUpgradeNeed.Note = "the same grant as an installation, for a k3s that runs: mamelet then restarts it, so that the node runs the declared release"
+	k3sUpgradeNeed.Reasons = []string{"mamelet writes /usr/local/bin/k3s and its systemd unit once, and restarts k3s"}
+	k3s := spec.Kind{Kind: graph.KindNodeK3s, Operations: []spec.Operation{
+		{Op: policy.OpInstallK3s, Support: spec.Supported, Needs: []spec.Need{k3sNeed}},
+		{Op: policy.OpUpgradeK3s, Support: spec.Supported, Needs: []spec.Need{k3sUpgradeNeed}},
+	}}
+	manifest := spec.Kind{Kind: graph.KindNodeK3sManifest, Operations: []spec.Operation{{
+		Op: policy.OpWriteK3sManifest, Support: spec.Supported, Needs: []spec.Need{{
+			Capability: CapK3sManifest, Target: node, Object: "{name}", Always: true,
+			Conditions: slices.Clone(grantConditions),
+			Note:       "mamelet writes exactly the content of the approved plan to /var/lib/rancher/k3s/server/manifests/mamela-<name>.yaml, which k3s applies with cluster-admin rights",
+			Reasons:    []string{"mamelet writes the manifest file once"},
 		}},
 	}}}
 	svc := spec.Kind{Kind: graph.KindNodeService}
@@ -86,5 +100,5 @@ func Manifest() spec.Manifest {
 		}
 		svc.Operations = append(svc.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: []spec.Need{n}})
 	}
-	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: []spec.Kind{pkg, svc, k3s}}
+	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: []spec.Kind{pkg, svc, k3s, manifest}}
 }

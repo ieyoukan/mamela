@@ -6,6 +6,8 @@ import (
 	"net/netip"
 	"regexp"
 	"slices"
+	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -17,11 +19,12 @@ var (
 	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,254}$`)
 	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
 	// A k3s release ("v1.33.5+k3s1") and a sha256 in hex.
-	K3sVersionRe   = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
-	sha256Re       = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
-	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
+	k3sManifestNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	K3sVersionRe      = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
+	sha256Re          = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	providedKindRe    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
+	providerNameRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	providedNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 )
 
 // Validate checks the meaning of a decoded graph: names, ranges, references and duplicates.
@@ -126,6 +129,29 @@ func Validate(g *Graph) error {
 				add(r, CodeInvalidValue, "spec.server", "a node cannot be an agent of itself", "")
 			case s.Role != K3sServer && s.Role != K3sAgent:
 				add(r, CodeInvalidValue, "spec.role", fmt.Sprintf("role %q is not server or agent", s.Role), "")
+			}
+		case KindNodeK3sManifest:
+			s := r.NodeK3sManifest
+			checkNodeRef(add, r, s.Node, nodes)
+			if !k3sServers[s.Node] {
+				add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Node),
+					"k3s applies manifests on a server: declare the server with K3s.server on that node")
+			}
+			if !k3sManifestNameRe.MatchString(s.Name) {
+				add(r, CodeInvalidValue, "spec.name", fmt.Sprintf("%q is not a valid manifest name", s.Name),
+					"use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)")
+			}
+			switch {
+			case s.Content == "" || strings.TrimSpace(s.Content) == "":
+				add(r, CodeInvalidValue, "spec.content", "the manifest is empty", "")
+			case len(s.Content) > MaxK3sManifest:
+				add(r, CodeInvalidValue, "spec.content", fmt.Sprintf("the manifest is %d bytes; at most %d", len(s.Content), MaxK3sManifest),
+					"a manifest that needs more should install a Helm chart (a HelmChart manifest) instead of holding it")
+			case !utf8.ValidString(s.Content) || strings.ContainsRune(s.Content, 0):
+				add(r, CodeInvalidValue, "spec.content", "the manifest is not text (UTF-8 without NUL)", "")
+			}
+			if want := s.Node + "/manifest/" + s.Name; r.Name != want {
+				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/manifest/name)", want), "")
 			}
 		case KindNodeService:
 			s := r.NodeService

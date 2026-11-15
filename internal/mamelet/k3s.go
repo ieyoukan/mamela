@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 const (
 	k3sBinary = "/usr/local/bin/k3s"
 	k3sUnit   = "/etc/systemd/system/k3s.service"
+	// k3sKubeconfig is the server's own kubeconfig (readable by root only).
+	k3sKubeconfig = "/etc/rancher/k3s/k3s.yaml"
 	// maxK3sBinary bounds a download.
 	maxK3sBinary = 256 << 20
 )
@@ -97,6 +100,7 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 	default:
 		st.SHA256 = sum
 	}
+	st.Running, st.Stale = s.k3sProcess(ctx)
 	unit, err := os.ReadFile(s.path(k3sUnit))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -112,6 +116,64 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 	token, err := os.ReadFile(s.path(noderev.K3sTokenFile))
 	st.Installed = st.SHA256 != "" && string(unit) == K3sUnit(want.Role, want.Server) && err == nil && string(token) == want.Token+"\n"
 	return st
+}
+
+// k3sProcess says whether the k3s service runs and, if so, whether the process started before the
+// binary in place was written (a stale process runs another release than the one on disk). The
+// start time is systemd's, in whole seconds, so the binary's time is cut to seconds too: a restart
+// right after the binary was written is not stale. Where the start time cannot be read, a running
+// process is taken as not stale: the other checks (the binary's sha256) still hold.
+func (s *System) k3sProcess(ctx context.Context) (running, stale bool) {
+	out, err := s.run(ctx, progSystemctl, []string{"show", "--timestamp=unix", "--property=ActiveState,ExecMainStartTimestamp", "--", "k3s"})
+	if err != nil {
+		return false, false
+	}
+	var started time.Time
+	for _, line := range strings.Split(out, "\n") {
+		k, v, _ := strings.Cut(strings.TrimSpace(line), "=")
+		switch k {
+		case "ActiveState":
+			running = v == "active"
+		case "ExecMainStartTimestamp":
+			if n, err := strconv.ParseInt(strings.TrimPrefix(v, "@"), 10, 64); err == nil && strings.HasPrefix(v, "@") && n > 0 {
+				started = time.Unix(n, 0)
+			}
+		}
+	}
+	fi, err := os.Stat(s.path(k3sBinary))
+	if !running || started.IsZero() || err != nil {
+		return running, false
+	}
+	return true, started.Before(fi.ModTime().Truncate(time.Second))
+}
+
+// k3sNodesFormat lists the nodes of the cluster: name, kubelet release and Ready, tab separated.
+const k3sNodesFormat = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}`
+
+// K3sNodes reads the Kubernetes nodes a running k3s server sees, with its own kubeconfig (a fixed
+// read-only command). nil when they cannot be read: the plan then does not take the cluster as Ready.
+func (s *System) K3sNodes(ctx context.Context) []noderev.K3sNode {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, err := s.run(cctx, progK3s, []string{"kubectl", "get", "nodes", "--output=" + k3sNodesFormat}, "KUBECONFIG="+k3sKubeconfig)
+	if err != nil {
+		return nil
+	}
+	return ParseK3sNodes(out)
+}
+
+// ParseK3sNodes parses the output of k3sNodesFormat.
+func ParseK3sNodes(out string) []noderev.K3sNode {
+	var nodes []noderev.K3sNode
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Split(strings.TrimSpace(line), "\t")
+		if len(f) != 3 || f[0] == "" {
+			continue
+		}
+		nodes = append(nodes, noderev.K3sNode{Name: f[0], Version: f[1], Ready: f[2] == "True"})
+	}
+	slices.SortFunc(nodes, func(a, b noderev.K3sNode) int { return strings.Compare(a.Name, b.Name) })
+	return nodes
 }
 
 // unitServer is the --server of an agent's unit, or "".
@@ -212,7 +274,7 @@ func DefaultRouteInterface(table string) (string, bool) {
 // InstallK3s installs k3s as the revision says: the release's binary (downloaded unless the one in
 // place already has the approved sha256, and installed only if its sha256 is the approved one),
 // the join token and Mamela's unit for the role. It does not start or enable the service (that is
-// a NodeService).
+// a NodeService); a k3s that runs is restarted, so that it runs what was installed (an upgrade).
 func (s *System) InstallK3s(ctx context.Context, k noderev.K3s) error {
 	if sum, err := fileSHA256(s.path(k3sBinary)); err != nil || sum != k.SHA256 {
 		if err := s.downloadK3s(ctx, k.Version, k.SHA256); err != nil {
@@ -228,8 +290,13 @@ func (s *System) InstallK3s(ctx context.Context, k noderev.K3s) error {
 	if err := writeK3sFile(s.path(k3sUnit), []byte(K3sUnit(k.Role, k.Server)), 0o644); err != nil {
 		return err
 	}
-	_, err := s.run(ctx, progSystemctl, []string{"daemon-reload"})
-	return err
+	if _, err := s.run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
+		return err
+	}
+	if running, _ := s.k3sProcess(ctx); running {
+		return s.Restart(ctx, "k3s")
+	}
+	return nil
 }
 
 func (s *System) downloadK3s(ctx context.Context, version, wantSHA256 string) error {
@@ -323,4 +390,28 @@ func fileSHA256(p string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// Manifest observes a manifest file: the sha256 of its content ("" when it is not there).
+func (s *System) Manifest(name string) noderev.ManifestState {
+	st := noderev.ManifestState{Name: name}
+	sum, err := fileSHA256(s.path(manifestPath(name)))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		st.Error = err.Error()
+	default:
+		st.SHA256 = sum
+	}
+	return st
+}
+
+func manifestPath(name string) string {
+	return filepath.Join(noderev.K3sManifestDir, noderev.K3sManifestFile(name))
+}
+
+// WriteManifest writes a manifest as the revision says, atomically, readable by root only (k3s
+// applies it with cluster-admin rights, and it may hold values).
+func (s *System) WriteManifest(m noderev.Manifest) error {
+	return writeK3sFile(s.path(manifestPath(m.Name)), []byte(m.Content), 0o600)
 }

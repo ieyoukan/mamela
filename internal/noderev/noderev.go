@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Schema identifies the revision format.
@@ -42,6 +43,9 @@ type Revision struct {
 	// K3s, when set, is the k3s server the node should run: mamelet observes it, and installs it
 	// only with an approved, one-time Install.
 	K3s *K3s `json:"k3s,omitempty"`
+	// Manifests are the manifests a k3s server should have in its auto-deploy directory: mamelet
+	// observes them, and writes one only with an approved, one-time Write.
+	Manifests []Manifest `json:"manifests,omitempty"`
 	// ControlPlane is the URL mamelet should reach the Control Plane at from now on
 	// ("https://host:port"), when the Control Plane moves (ADR 0003). The CA and the key that
 	// sign revisions stay the same, so the new address is trusted exactly as the old one was.
@@ -64,6 +68,30 @@ type K3s struct {
 	// asset, and installs it (with Mamela's fixed systemd unit) only if its sha256 matches.
 	Install *Once `json:"install,omitempty"`
 }
+
+// Manifest is a file in k3s's auto-deploy directory: mamela-<Name>.yaml, with exactly Content.
+type Manifest struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	// Write is an approved writing of exactly this content.
+	Write *Once `json:"write,omitempty"`
+}
+
+// K3sManifestDir is where k3s applies manifests from (a server only); the files mamelet writes
+// there are named K3sManifestFile(name), never a name k3s itself uses.
+const K3sManifestDir = "/var/lib/rancher/k3s/server/manifests"
+
+// K3sManifestFile is the file name of a manifest.
+func K3sManifestFile(name string) string { return "mamela-" + name + ".yaml" }
+
+// ManifestSHA256 is the sha256 (hex) of a manifest's content.
+func ManifestSHA256(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
+// MaxManifest bounds a manifest's content (bytes).
+const MaxManifest = 64 << 10
 
 // K3sReleases is where k3s releases are downloaded from: <K3sReleases>/<version>/<asset>.
 const K3sReleases = "https://github.com/k3s-io/k3s/releases/download"
@@ -133,11 +161,13 @@ const (
 	ActionDisable = "disable"
 	ActionStop    = "stop"
 	ActionInstall = "install" // k3s only
+	ActionWrite   = "write"   // a k3s manifest only
 )
 
 var (
 	nodePattern      = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	packagePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
+	manifestPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	servicePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9@._-]{0,127}$`)
 	operationPattern = regexp.MustCompile(`^op-[0-9a-f]{24}$`)
 	k3sServerURL     = regexp.MustCompile(`^https://(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}:6443$`)
@@ -249,6 +279,20 @@ func (r *Revision) Check() error {
 			add("k3s: install grant %+v is not valid", *in)
 		}
 	}
+	for _, m := range r.Manifests {
+		switch {
+		case !manifestPattern.MatchString(m.Name):
+			add("manifest %q is not a valid manifest name", m.Name)
+		case seen["m/"+m.Name]:
+			add("manifest %s appears twice", m.Name)
+		case m.Content == "" || len(m.Content) > MaxManifest || !utf8.ValidString(m.Content) || strings.ContainsRune(m.Content, 0):
+			add("manifest %s: the content is empty, too large or not text", m.Name)
+		}
+		seen["m/"+m.Name] = true
+		if w := m.Write; w != nil && (!operationPattern.MatchString(w.Operation) || w.Attempt < 1 || w.Action != ActionWrite) {
+			add("manifest %s: write grant %+v is not valid", m.Name, *w)
+		}
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid revision: %s", strings.Join(problems, "; "))
 	}
@@ -261,6 +305,8 @@ func (r Revision) Content() []byte {
 	r.IssuedAt, r.ExpiresAt = time.Time{}, time.Time{}
 	r.Packages = slices.Clone(r.Packages)
 	r.Services = slices.Clone(r.Services)
+	r.Manifests = slices.Clone(r.Manifests)
+	slices.SortFunc(r.Manifests, func(a, b Manifest) int { return strings.Compare(a.Name, b.Name) })
 	slices.SortFunc(r.Packages, func(a, b Package) int { return strings.Compare(a.Name, b.Name) })
 	slices.SortFunc(r.Services, func(a, b Service) int { return strings.Compare(a.Name, b.Name) })
 	if r.Packages == nil {
@@ -359,7 +405,9 @@ type Report struct {
 	Packages []PackageState `json:"packages"`
 	Services []ServiceState `json:"services"`
 	K3s      *K3sState      `json:"k3s,omitempty"`
-	Results  []Result       `json:"results"`
+	// Manifests are the observed files of the revision's manifests.
+	Manifests []ManifestState `json:"manifests,omitempty"`
+	Results   []Result        `json:"results"`
 	// Refused explains why the last revision received was not accepted, if it was not.
 	Refused string `json:"refused,omitempty"`
 }
@@ -384,6 +432,31 @@ type K3sState struct {
 	Addresses []string `json:"addresses,omitempty"`
 	// Server is the server the installed agent's unit joins ("" for a server or when not installed).
 	Server string `json:"server,omitempty"`
+	// Running is whether the k3s service is active. Stale is whether the running process started
+	// before the binary in place was written: it runs a release other than the one on disk (an
+	// upgrade that was not followed by a restart, or a binary replaced under a running k3s). A
+	// node whose binary is the declared one is not in sync while it is Stale.
+	Running bool `json:"running,omitempty"`
+	Stale   bool `json:"stale,omitempty"`
+	// Nodes are the Kubernetes nodes a server sees (its API, through the server's own kubeconfig),
+	// with the kubelet release each runs and whether it is Ready. Only a running server reports
+	// them. An upgrade goes on only while the cluster is Ready.
+	Nodes []K3sNode `json:"nodes,omitempty"`
+}
+
+// K3sNode is a Kubernetes node as its server sees it.
+type K3sNode struct {
+	Name    string `json:"name"`
+	Version string `json:"version"` // the kubelet release ("v1.33.5+k3s1")
+	Ready   bool   `json:"ready"`
+}
+
+// ManifestState is an observed manifest file: the sha256 of what is in the file ("" when it is
+// not there).
+type ManifestState struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // ServiceState is an observed service.

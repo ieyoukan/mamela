@@ -47,6 +47,12 @@ type wireNodeK3s struct {
 	SHA256  *string `json:"sha256"`
 }
 
+type wireNodeK3sManifest struct {
+	Node    *string `json:"node"`
+	Name    *string `json:"name"`
+	Content *string `json:"content"`
+}
+
 type wireNodeService struct {
 	Node    *string `json:"node"`
 	Service *string `json:"service"`
@@ -211,10 +217,21 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 				r.NodeK3s.Server = *s.Server
 			}
 		}
+	case KindNodeK3sManifest:
+		var s wireNodeK3sManifest
+		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
+			return nil, problemsOf(fromJSONError(err, where+" spec"))
+		}
+		need(s.Node != nil, "node")
+		need(s.Name != nil, "name")
+		need(s.Content != nil, "content")
+		if len(problems) == 0 {
+			r.NodeK3sManifest = &NodeK3sManifestSpec{Node: *s.Node, Name: *s.Name, Content: *s.Content}
+		}
 	default:
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
 			Message: fmt.Sprintf("kind %q is not known", r.Kind),
-			Hint:    "known kinds are NodePackage, NodeService and NodeK3s; a provider's kind needs its \"provider\""})
+			Hint:    "known kinds are NodePackage, NodeService, NodeK3s and NodeK3sManifest; a provider's kind needs its \"provider\""})
 	}
 	if len(problems) > 0 {
 		return nil, problems
