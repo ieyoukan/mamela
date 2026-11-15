@@ -106,7 +106,7 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 
 ### NodeK3sManifest
 
-k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/manifests`）にある、1 つのマニフェストのファイル。k3s は、そこにあるものを cluster-admin の権限で適用し、ファイルが変わるたびにまた適用する（HelmChart、ワークロードなど）。宣言は、K3s の Pome（0.2.0）の `K3s.manifest(graph, server, name, content)`。
+k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/manifests`）にある、1 つのマニフェストのファイル。k3s は、そこにあるものを cluster-admin の権限で適用し、ファイルが変わるたびにまた適用する（HelmChart、ワークロードなど）。宣言は、K3s の Pome（0.1.1 から）の `K3s.manifest(graph, server, name, content)`。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
