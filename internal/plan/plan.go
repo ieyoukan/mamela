@@ -123,6 +123,8 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.guard(r.NodeService.Node, b.service(r)))
 		case graph.KindNodeK3s:
 			p.Changes = append(p.Changes, b.guard(r.NodeK3s.Node, b.k3s(r)))
+		case graph.KindNodeK3sManifest:
+			p.Changes = append(p.Changes, b.guard(r.NodeK3sManifest.Node, b.k3sManifest(r)))
 		default:
 			if r.Provided != nil {
 				p.Changes = append(p.Changes, b.guard(r.Name, b.provided(r)))
@@ -505,6 +507,39 @@ func (b builder) k3s(r graph.Resource) Change {
 		return b.withOps(c, policy.Subject{Op: policy.OpUpgradeK3s})
 	}
 	return b.withOps(c, policy.Subject{Op: policy.OpInstallK3s})
+}
+
+// k3sManifest plans a manifest file in a k3s server's auto-deploy directory. Its whole content is
+// in the diff: that is what is approved, and what k3s then applies with cluster-admin rights.
+func (b builder) k3sManifest(r graph.Resource) Change {
+	want := r.NodeK3sManifest
+	c := newChange(r)
+	if ok, note := b.nodeReady(want.Node); !ok {
+		c.Status, c.Note = StatusWaiting, note
+		return c
+	}
+	got, observed := b.snap.K3sManifests[r.Name]
+	switch {
+	case !observed:
+		c.Status, c.Note = b.awaitAgent(want.Node, &Note{Code: "MAM-PLAN-0117",
+			Message: fmt.Sprintf("waits for the agent on %s to report the manifest %s", want.Node, want.Name)})
+		return c
+	case b.stale(got.ObservedAt):
+		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
+		return c
+	case got.Error != "":
+		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0204",
+			Message: fmt.Sprintf("the agent on %s cannot observe the manifest %s: %s", want.Node, want.Name, got.Error),
+			Hint:    "fix it on the node, then plan again"}
+		return c
+	}
+	sum := noderev.ManifestSHA256(want.Content)
+	if got.SHA256 == sum {
+		return b.withOps(c)
+	}
+	c.Diffs = []Diff{{"file", "", noderev.K3sManifestDir + "/" + noderev.K3sManifestFile(want.Name)},
+		{"sha256", got.SHA256, sum}, {"content", "", want.Content}}
+	return b.withOps(c, policy.Subject{Op: policy.OpWriteK3sManifest})
 }
 
 // k3sCurrent is whether a node's k3s is what its declaration says: the declared binary, running.

@@ -288,3 +288,64 @@ func TestParseK3sNodes(t *testing.T) {
 		t.Fatal("nodes of nothing")
 	}
 }
+
+// A manifest is written only with an approved grant, exactly as the revision says, once per
+// attempt; without a grant it is only observed.
+func TestK3sManifestIsWrittenOnlyAsApproved(t *testing.T) {
+	e := newEnv(t)
+	e.a.System.Root = t.TempDir()
+	path := filepath.Join(e.a.System.Root, noderev.K3sManifestDir, "mamela-argocd.yaml")
+	const content = "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: argocd\n"
+	publish := func(serial int64, content string, w *noderev.Once) {
+		s, err := noderev.Sign(e.key, noderev.Revision{Schema: noderev.Schema, Node: "web", VMID: 7001, Serial: serial,
+			IssuedAt: e.now, ExpiresAt: e.now.Add(time.Hour), Packages: []noderev.Package{}, Services: []noderev.Service{},
+			Manifests: []noderev.Manifest{{Name: "argocd", Content: content, Write: w}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.cp.signed, e.cp.err = s, nil
+	}
+	write := func(attempt int) *noderev.Once {
+		return &noderev.Once{Operation: k3sOp, Attempt: attempt, Action: noderev.ActionWrite}
+	}
+
+	// Without a grant: observed, not written.
+	publish(1, content, nil)
+	rep := e.round()
+	if len(rep.Manifests) != 1 || rep.Manifests[0].Name != "argocd" || rep.Manifests[0].SHA256 != "" {
+		t.Fatalf("observation: %+v", rep.Manifests)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("written without a grant: %v", err)
+	}
+
+	// With a grant: written exactly, readable by root only, and reported.
+	publish(2, content, write(1))
+	rep = e.round()
+	if b, _ := os.ReadFile(path); string(b) != content {
+		t.Fatalf("content: %q", b)
+	}
+	if fi, _ := os.Stat(path); fi == nil || fi.Mode().Perm() != 0o600 {
+		t.Error("the manifest is readable by others")
+	}
+	if rep.Manifests[0].SHA256 != noderev.ManifestSHA256(content) || len(rep.Results) != 1 || rep.Results[0].Outcome != noderev.OutcomeDone {
+		t.Fatalf("after the write: %+v %+v", rep.Manifests, rep.Results)
+	}
+
+	// The same attempt does not write again (a change by hand stays until a new approval).
+	os.WriteFile(path, []byte("changed by hand\n"), 0o600)
+	e.round()
+	if b, _ := os.ReadFile(path); string(b) != "changed by hand\n" {
+		t.Error("the same attempt wrote again")
+	}
+	if rep := e.round(); rep.Manifests[0].SHA256 != noderev.ManifestSHA256("changed by hand\n") {
+		t.Errorf("the change by hand is not reported: %+v", rep.Manifests)
+	}
+
+	// A new approval of new content replaces the file.
+	publish(3, content+"# next\n", write(2))
+	e.round()
+	if b, _ := os.ReadFile(path); string(b) != content+"# next\n" {
+		t.Fatalf("content after the second write: %q", b)
+	}
+}

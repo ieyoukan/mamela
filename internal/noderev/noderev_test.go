@@ -173,3 +173,25 @@ func TestChangeSetDigest(t *testing.T) {
 		t.Fatal("a change set whose digest does not match was accepted")
 	}
 }
+
+func TestManifestsAreChecked(t *testing.T) {
+	rev := func(m ...Manifest) Revision {
+		return Revision{Schema: Schema, Node: "web", VMID: 7001, Serial: 1, IssuedAt: time.Unix(1, 0), ExpiresAt: time.Unix(100, 0), Manifests: m}
+	}
+	ok := Manifest{Name: "argocd", Content: "kind: Namespace\n", Write: &Once{Operation: "op-000000000000000000000001", Attempt: 1, Action: ActionWrite}}
+	if r := rev(ok); r.Check() != nil {
+		t.Fatalf("a valid manifest: %v", r.Check())
+	}
+	for name, r := range map[string]Revision{
+		"a path as the name": rev(Manifest{Name: "../x", Content: "a"}),
+		"an empty content":   rev(Manifest{Name: "x", Content: ""}),
+		"too large":          rev(Manifest{Name: "x", Content: strings.Repeat("a", MaxManifest+1)}),
+		"twice":              rev(ok, ok),
+		"another action":     rev(Manifest{Name: "x", Content: "a", Write: &Once{Operation: "op-000000000000000000000001", Attempt: 1, Action: ActionInstall}}),
+		"attempt 0":          rev(Manifest{Name: "x", Content: "a", Write: &Once{Operation: "op-000000000000000000000001", Action: ActionWrite}}),
+	} {
+		if r.Check() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

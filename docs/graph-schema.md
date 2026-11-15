@@ -104,6 +104,22 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 - **参加のトークン:** Control Plane がクラスタごとに乱数で作る。そのクラスタのノードの署名した revision にだけ入れる（ノードとの接続は相互認証の TLS）。宣言・plan・報告には出ない。
 - **server のアドレス:** server のマシンが固定アドレス（`spec.network`）を宣言していれば、それを使う（報告を待たず、報告にも従わない）。DHCP なら、server の mamelet が報告した IPv4 アドレスを使う。報告するのは、既定経路を持つインターフェースのアドレスだけである。k3s 自身が足すアドレス（flannel.1 と cni0 の 10.42.0.0/16、サービスの 10.43.0.0/16）は報告しない。これがないと、k3s の起動後に agent の接続先が 10.42.0.0 に変わってしまう。plan はアドレスを表示し、承認したアドレスと revision のアドレスが違えば導入しない。server のアドレスが変わると、plan は agent の `server` を「旧 -> 新」で示し、入れ直しの承認を求める。
 
+### NodeK3sManifest
+
+k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/manifests`）にある、1 つのマニフェストのファイル。k3s は、そこにあるものを cluster-admin の権限で適用し、ファイルが変わるたびにまた適用する（HelmChart、ワークロードなど）。宣言は、K3s の Pome（0.2.0）の `K3s.manifest(graph, server, name, content)`。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/manifest/<name>` |
+| `spec.node` | string | 同じ Graph で `NodeK3s` の server として宣言したマシンの名前 |
+| `spec.name` | string | `[a-z0-9-]`、63 字まで。ファイルは `mamela-<name>.yaml`（k3s 自身のファイルと名前がぶつからない） |
+| `spec.content` | string | YAML（UTF-8、NUL なし、64 KiB まで）。宣言の中に書く。取得はしない |
+
+- **承認:** `write-k3s-manifest`（MAM-POL-0213）。plan の diff に内容の全文と sha256 が出る。承認したものと別の内容は書かない。内容を変えるのは、新しい承認になる。
+- **書き込み:** mamelet が、承認のあと一度だけ、そのとおりの内容を書く（0600、root。置き換えは原子的）。観測は、ファイルの sha256 だけである。
+- **消さない:** 宣言から消しても、ファイルは残る（k3s が適用したものも残る）。消すのはサーバー上で手で行う。削除は ADR 0013 の範囲で、このリソースにはまだない。
+- **大きなものは HelmChart で:** 内容が 64 KiB を超えるものは、`HelmChart`（k3s 組み込みの Helm コントローラー）のマニフェストでチャートを指す。
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。

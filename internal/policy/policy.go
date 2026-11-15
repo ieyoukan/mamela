@@ -48,6 +48,7 @@ const (
 	OpConfigureService Op = "configure-service-repair"
 	OpInstallK3s       Op = "install-k3s"
 	OpUpgradeK3s       Op = "upgrade-k3s"
+	OpWriteK3sManifest Op = "write-k3s-manifest"
 )
 
 // Code is a stable reason code for a decision.
@@ -167,6 +168,9 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpUpgradeK3s:
 		return Decision{ApprovalRequired, "MAM-POL-0212", "replaces the k3s binary (a release pinned by sha256) and restarts k3s on this node: a server's API is unavailable while it restarts, and an agent's node is not Ready",
 			"check the release against the k3s release page and that agents are not newer than the server; back up the server's data first"}
+	case OpWriteK3sManifest:
+		return Decision{ApprovalRequired, "MAM-POL-0213", "puts a manifest in k3s's auto-deploy directory: k3s applies it with cluster-admin rights, and again whenever it changes",
+			"read the whole manifest in this plan; a HelmChart or a workload in it runs with the rights its YAML asks for"}
 	case OpInstallPackage:
 		if s.Removes {
 			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",

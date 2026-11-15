@@ -391,3 +391,27 @@ func fileSHA256(p string) (string, error) {
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// Manifest observes a manifest file: the sha256 of its content ("" when it is not there).
+func (s *System) Manifest(name string) noderev.ManifestState {
+	st := noderev.ManifestState{Name: name}
+	sum, err := fileSHA256(s.path(manifestPath(name)))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		st.Error = err.Error()
+	default:
+		st.SHA256 = sum
+	}
+	return st
+}
+
+func manifestPath(name string) string {
+	return filepath.Join(noderev.K3sManifestDir, noderev.K3sManifestFile(name))
+}
+
+// WriteManifest writes a manifest as the revision says, atomically, readable by root only (k3s
+// applies it with cluster-admin rights, and it may hold values).
+func (s *System) WriteManifest(m noderev.Manifest) error {
+	return writeK3sFile(s.path(manifestPath(m.Name)), []byte(m.Content), 0o600)
+}

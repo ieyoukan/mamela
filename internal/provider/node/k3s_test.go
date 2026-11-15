@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/node"
@@ -146,4 +150,68 @@ func token(t *testing.T, e *env) string {
 		t.Fatal(err)
 	}
 	return tok
+}
+
+// A manifest goes from the declaration to the server's auto-deploy directory only through an
+// approved plan, and exactly with the content the plan showed; changing the content is a new plan.
+func TestK3sManifestThroughMamelet(t *testing.T) {
+	binary := "\x7fELF k3s server"
+	sum := sha256.Sum256([]byte(binary))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(binary)) }))
+	defer srv.Close()
+	root := t.TempDir()
+	graphOf := func(content string) *graph.Graph {
+		c, _ := json.Marshal(content)
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+			`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+			`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + hex.EncodeToString(sum[:]) + `","version":"v1.37.2+k3s1"}},` +
+			`{"kind":"NodeK3sManifest","name":"app/manifest/argocd","spec":{"node":"app","name":"argocd","content":` + string(c) + `}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	const id = "NodeK3sManifest app/manifest/argocd"
+	file := filepath.Join(root, noderev.K3sManifestDir, "mamela-argocd.yaml")
+
+	e := newEnv(t)
+	e.g = graphOf("kind: Namespace\nmetadata:\n  name: argocd\n")
+	e.agent.System = &mamelet.System{Runner: k3sOS{e.os}, AllowedOrigins: []string{"Ubuntu:"}, Root: root,
+		HTTP: srv.Client(), K3sReleases: srv.URL, Addresses: func() []string { return []string{"192.0.2.10"} }}
+	e.publish()
+	e.round()
+
+	p := e.plan()
+	m := change(t, p, id)
+	if m.Status != plan.StatusChange || m.Verdict != policy.ApprovalRequired || m.Operations[0].Op != policy.OpWriteK3sManifest {
+		t.Fatalf("manifest: %+v", m)
+	}
+	if _, err := os.Stat(file); err == nil {
+		t.Fatal("written before approval")
+	}
+	if rep := e.applyApproved(p); rep.Stopped != nil {
+		t.Fatalf("apply: %+v", rep)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "kind: Namespace\nmetadata:\n  name: argocd\n" {
+		t.Fatalf("the manifest on the server: %q", b)
+	}
+	e.round()
+	if m := change(t, e.plan(), id); m.Status != plan.StatusInSync {
+		t.Fatalf("after the write: %+v", m)
+	}
+
+	// Another content is a new change with its own approval.
+	e.g = graphOf("kind: Namespace\nmetadata:\n  name: argocd\n  labels: {a: b}\n")
+	e.publish()
+	e.round()
+	p = e.plan()
+	if m := change(t, p, id); m.Status != plan.StatusChange {
+		t.Fatalf("changed content: %+v", m)
+	}
+	if rep := e.applyApproved(p); rep.Stopped != nil {
+		t.Fatalf("second apply: %+v", rep)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), "labels") {
+		t.Fatalf("the changed manifest: %q", b)
+	}
 }

@@ -190,6 +190,9 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 			pkgs, svcs = a.observe(ctx, rev)
 		}
 		rep.Packages, rep.Services = pkgs, svcs
+		for _, m := range rev.Manifests {
+			rep.Manifests = append(rep.Manifests, a.System.Manifest(m.Name))
+		}
 		if rev.K3s != nil {
 			k := a.System.K3s(ctx, *rev.K3s)
 			if rev.K3s.Role == noderev.K3sServer && k.Running {
@@ -278,6 +281,30 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 				record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
 			} else {
 				record(in.Operation, in.Attempt, noderev.OutcomeDone, "installed "+p.Name)
+			}
+		}
+	}
+
+	for _, m := range rev.Manifests {
+		in := m.Write
+		if in == nil || !online {
+			continue
+		}
+		if _, done := st.Attempts[attemptKey(in.Operation, in.Attempt)]; done {
+			continue
+		}
+		obs := a.System.Manifest(m.Name)
+		switch {
+		case obs.Error != "":
+			record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
+		case obs.SHA256 == noderev.ManifestSHA256(m.Content):
+			record(in.Operation, in.Attempt, noderev.OutcomeDone, "manifest "+m.Name+" is in place")
+		default:
+			changed = true
+			if err := a.System.WriteManifest(m); err != nil {
+				record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
+			} else {
+				record(in.Operation, in.Attempt, noderev.OutcomeDone, "wrote manifest "+m.Name)
 			}
 		}
 	}
@@ -391,6 +418,13 @@ func (a *Agent) knownResults(rev *noderev.Revision, st State) []noderev.Result {
 	for _, s := range rev.Services {
 		for _, o := range s.Once {
 			if r, ok := st.Attempts[attemptKey(o.Operation, o.Attempt)]; ok {
+				out = append(out, r)
+			}
+		}
+	}
+	for _, m := range rev.Manifests {
+		if m.Write != nil {
+			if r, ok := st.Attempts[attemptKey(m.Write.Operation, m.Write.Attempt)]; ok {
 				out = append(out, r)
 			}
 		}

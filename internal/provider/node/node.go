@@ -71,6 +71,12 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			snap.Services[r.Node+"/"+sv.Name] = state.Service{Exists: sv.Exists, Enabled: sv.Enabled, Running: sv.Running,
 				RepairStart: repair, ObservedAt: nr.Received}
 		}
+		for _, m := range r.Manifests {
+			if snap.K3sManifests == nil {
+				snap.K3sManifests = map[string]state.K3sManifest{}
+			}
+			snap.K3sManifests[r.Node+"/manifest/"+m.Name] = state.K3sManifest{SHA256: m.SHA256, Error: m.Error, ObservedAt: nr.Received}
+		}
 		if k := r.K3s; k != nil {
 			if snap.K3s == nil {
 				snap.K3s = map[string]state.K3s{}
@@ -101,8 +107,11 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		var pkgs []noderev.Package
 		var svcs []noderev.Service
 		var k3s *noderev.K3s
+		var manifests []noderev.Manifest
 		for _, r := range g.Sorted() {
 			switch {
+			case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == name:
+				manifests = append(manifests, noderev.Manifest{Name: r.NodeK3sManifest.Name, Content: r.NodeK3sManifest.Content})
 			case r.NodePackage != nil && r.NodePackage.Node == name:
 				pkgs = append(pkgs, noderev.Package{Name: r.NodePackage.Package})
 			case r.NodeService != nil && r.NodeService.Node == name:
@@ -126,6 +135,12 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				r = *prev
 				r.Packages = slices.Clone(prev.Packages)
 				r.Services = slices.Clone(prev.Services)
+				r.Manifests = slices.Clone(prev.Manifests)
+			}
+			for _, m := range manifests {
+				if findManifest(&r, m.Name) == nil {
+					r.Manifests = append(r.Manifests, m)
+				}
 			}
 			for _, p := range pkgs {
 				if findPackage(&r, p.Name) == nil {
@@ -151,6 +166,9 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 					k := *r.K3s
 					k.Install = nil
 					r.K3s = &k
+				}
+				for i := range r.Manifests {
+					r.Manifests[i].Write = nil
 				}
 			}
 			return r, nil
@@ -199,6 +217,15 @@ func findPackage(r *noderev.Revision, name string) *noderev.Package {
 	for i := range r.Packages {
 		if r.Packages[i].Name == name {
 			return &r.Packages[i]
+		}
+	}
+	return nil
+}
+
+func findManifest(r *noderev.Revision, name string) *noderev.Manifest {
+	for i := range r.Manifests {
+		if r.Manifests[i].Name == name {
+			return &r.Manifests[i]
 		}
 	}
 	return nil
@@ -267,6 +294,22 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			rev.K3s = &k
 			return nil
 		}
+	case step.Op == policy.OpWriteK3sManifest && r.NodeK3sManifest != nil:
+		m := *r.NodeK3sManifest
+		node, what = m.Node, "write k3s manifest "+m.Name
+		grant = func(rev *noderev.Revision) error {
+			// Exactly the content the approved plan showed, or nothing happens.
+			if want := approvedDiff(step.Approved, "sha256"); want != noderev.ManifestSHA256(m.Content) {
+				return fmt.Errorf("the manifest %s is not the one the approved plan showed (plan again)", m.Name)
+			}
+			w := &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionWrite}
+			if cur := findManifest(rev, m.Name); cur != nil {
+				cur.Content, cur.Write = m.Content, w
+			} else {
+				rev.Manifests = append(rev.Manifests, noderev.Manifest{Name: m.Name, Content: m.Content, Write: w})
+			}
+			return nil
+		}
 	case (serviceActions[step.Op] != "" || configure) && r.NodeService != nil:
 		action := serviceActions[step.Op]
 		node, what = r.NodeService.Node, action+" "+r.NodeService.Service
@@ -311,6 +354,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		r := *prev
 		r.Packages = slices.Clone(prev.Packages)
 		r.Services = slices.Clone(prev.Services)
+		r.Manifests = slices.Clone(prev.Manifests)
 		return r, grant(&r)
 	}); err != nil {
 		return fmt.Errorf("%s on %s: %w", what, node, err)

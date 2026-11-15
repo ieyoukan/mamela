@@ -31,6 +31,8 @@ type Snapshot struct {
 	Provided map[string]Provided `json:"provided,omitempty"`
 	// K3s by "<node>/k3s". Absent means "not observed".
 	K3s map[string]K3s `json:"k3s,omitempty"`
+	// K3sManifests by resource name ("<node>/manifest/<name>"). Absent means "not observed".
+	K3sManifests map[string]K3sManifest `json:"k3sManifests,omitempty"`
 	// Nodes are the machines of providers' node kinds, by resource name (ADR 0004).
 	Nodes map[string]Node `json:"nodes,omitempty"`
 	// AgentRegistrations binds node operations to the enrolled instance, even if a VMID is reused.
@@ -77,6 +79,14 @@ type K3s struct {
 	Running    bool      `json:"running,omitempty"`   // the k3s service is active
 	Stale      bool      `json:"stale,omitempty"`     // it started before the binary in place was written
 	Nodes      []K3sNode `json:"nodes,omitempty"`     // a running server's view of the cluster
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+// K3sManifest is an observed manifest file of a k3s server: the sha256 of its content ("" when the
+// file is not there).
+type K3sManifest struct {
+	SHA256     string    `json:"sha256,omitempty"`
+	Error      string    `json:"error,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
 }
 
@@ -195,6 +205,13 @@ func (s Snapshot) normalized() Snapshot {
 		for k, v := range s.K3s {
 			v.ObservedAt = v.ObservedAt.UTC()
 			n.K3s[k] = v
+		}
+	}
+	if len(s.K3sManifests) > 0 {
+		n.K3sManifests = map[string]K3sManifest{}
+		for k, v := range s.K3sManifests {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.K3sManifests[k] = v
 		}
 	}
 	if len(s.Provided) > 0 {

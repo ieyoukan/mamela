@@ -30,6 +30,9 @@ const (
 	KindNodePackage Kind = "NodePackage"
 	KindNodeService Kind = "NodeService"
 	KindNodeK3s     Kind = "NodeK3s"
+	// KindNodeK3sManifest is a manifest in the auto-deploy directory of a k3s server: k3s applies
+	// what is in it (a Helm chart, a workload) and applies it again whenever it changes.
+	KindNodeK3sManifest Kind = "NodeK3sManifest"
 )
 
 // Builtin reports whether a kind is one of Mamela's own (not a provider's).
@@ -44,6 +47,8 @@ var kindOrder = map[Kind]int{
 	KindNodePackage: 1,
 	KindNodeService: 2,
 	KindNodeK3s:     3,
+
+	KindNodeK3sManifest: 4,
 }
 
 // Graph is a decoded and validated desired state.
@@ -59,6 +64,8 @@ type Resource struct {
 	NodePackage *NodePackageSpec
 	NodeService *NodeServiceSpec
 	NodeK3s     *NodeK3sSpec
+
+	NodeK3sManifest *NodeK3sManifestSpec
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
@@ -159,6 +166,19 @@ type NodeK3sSpec struct {
 	Version string // "v1.33.5+k3s1"
 	SHA256  string // hex, of the release's binary for the node's architecture
 }
+
+// NodeK3sManifestSpec says a k3s server has this manifest in its auto-deploy directory
+// (/var/lib/rancher/k3s/server/manifests/mamela-<name>.yaml). k3s applies a manifest with
+// cluster-admin rights, so the plan shows the whole content, and writing or changing it needs an
+// approval. The content is the declaration's: nothing is downloaded.
+type NodeK3sManifestSpec struct {
+	Node    string // a k3s server
+	Name    string // [a-z0-9-]: the file is mamela-<name>.yaml
+	Content string // YAML, at most MaxK3sManifest bytes
+}
+
+// MaxK3sManifest bounds a manifest's content.
+const MaxK3sManifest = 64 << 10
 
 // K3sRole is what a node is in its k3s cluster.
 type K3sRole string

@@ -2,6 +2,7 @@ package plan
 
 import (
 	"bytes"
+	"encoding/json/v2"
 	"slices"
 	"strings"
 	"testing"
@@ -595,4 +596,47 @@ func k3sObserved(g *graph.Graph, sha string) state.Snapshot {
 		}
 	}
 	return s
+}
+
+// A manifest is written with an approval that shows its whole content, and is in sync only when
+// the file on the server has exactly that content.
+func TestK3sManifestPlan(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	const content = "kind: Namespace\nmetadata:\n  name: argocd\n"
+	c, _ := json.Marshal(content)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		vm("srv", `{"mode":"dhcp"}`) + `,` +
+		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3sManifest","name":"srv/manifest/argocd","spec":{"node":"srv","name":"argocd","content":` + string(c) + `}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	machineObserved(&s, g, "srv", true, true, true, 600)
+	const id = "NodeK3sManifest srv/manifest/argocd"
+
+	if c := find(t, Build(g, s, policy.Default), id); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0117" {
+		t.Fatalf("not observed: %+v", c)
+	}
+	s.K3sManifests = map[string]state.K3sManifest{"srv/manifest/argocd": {ObservedAt: t0}}
+	ch := find(t, Build(g, s, policy.Default), id)
+	if ch.Status != StatusChange || ch.Verdict != policy.ApprovalRequired || len(ch.Operations) != 1 || ch.Operations[0].Op != policy.OpWriteK3sManifest {
+		t.Fatalf("absent: %+v", ch)
+	}
+	if !slices.ContainsFunc(ch.Diffs, func(d Diff) bool { return d.Field == "content" && d.To == content }) ||
+		!slices.ContainsFunc(ch.Diffs, func(d Diff) bool { return d.Field == "sha256" && d.To == noderev.ManifestSHA256(content) }) {
+		t.Fatalf("the diff does not show the content: %+v", ch.Diffs)
+	}
+	s.K3sManifests["srv/manifest/argocd"] = state.K3sManifest{SHA256: noderev.ManifestSHA256("another"), ObservedAt: t0}
+	if ch := find(t, Build(g, s, policy.Default), id); ch.Status != StatusChange {
+		t.Fatalf("another content: %+v", ch)
+	}
+	s.K3sManifests["srv/manifest/argocd"] = state.K3sManifest{SHA256: noderev.ManifestSHA256(content), ObservedAt: t0}
+	if ch := find(t, Build(g, s, policy.Default), id); ch.Status != StatusInSync {
+		t.Fatalf("same content: %+v", ch)
+	}
+	s.K3sManifests["srv/manifest/argocd"] = state.K3sManifest{Error: "permission denied", ObservedAt: t0}
+	if ch := find(t, Build(g, s, policy.Default), id); ch.Status != StatusBlocked {
+		t.Fatalf("unreadable: %+v", ch)
+	}
 }
