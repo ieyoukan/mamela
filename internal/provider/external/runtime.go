@@ -33,6 +33,8 @@ type Runtime struct {
 	// stack is the declaration being planned or applied (ADR 0013): the objects created from now
 	// on are recorded for it, and only the objects it made are deleted when it no longer has them.
 	stack string
+	// warnings are for the operator: a provider that runs without a pin (MAM-PRV-0010).
+	warnings []string
 }
 
 // Programs converts discovered packages into the programs a plan stores.
@@ -49,6 +51,15 @@ func Programs(pkgs []Package) []store.Program {
 func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime string) (*Runtime, error) {
 	rt := &Runtime{sessions: map[string]*host.Session{}, programs: programs, endpoints: map[string]string{}, guardSettings: map[string][]byte{}}
 	for _, p := range programs {
+		// Before any of it runs: a program or a catalog the operator did not pin is not started
+		// (ADR 0015). A tree chooses the Pomes it imports; the operator chooses what runs with the
+		// operator's credentials.
+		warnings, err := cfg.checkPins(p)
+		if err != nil {
+			rt.Close()
+			return nil, err
+		}
+		rt.warnings = append(rt.warnings, warnings...)
 		exe, err := host.InspectBytes(p.Source+" ("+p.Provider+")", p.Data)
 		if err != nil {
 			rt.Close()
@@ -104,6 +115,15 @@ func Start(ctx context.Context, programs []store.Program, cfg Config, wasmtime s
 		rt.endpoints[p.Provider] = endpoint
 	}
 	return rt, nil
+}
+
+// Warnings are what the operator should read about the providers that started (a provider that is
+// not pinned: MAM-PRV-0010). Nothing is stopped by them.
+func (rt *Runtime) Warnings() []string {
+	if rt == nil {
+		return nil
+	}
+	return slices.Clone(rt.warnings)
 }
 
 // Creations is Mamela's record of what it set out to create through providers.

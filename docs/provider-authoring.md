@@ -22,6 +22,7 @@ Mamela は、プロバイダーが正しく書かれていることを安全の�
   合わない要求は送らずに拒否し（`CodeRefused`）、記録する。
 - **効果:** 呼び出しの効果（読み取り、作成、変更、再起動、データを失いうる）は、host のカタログで決める。プロバイダーの申告は使わない。カタログが知らない呼び出しを含む操作は、つねに人の承認が要る。
 - **結果:** apply の結果（done、failed、partly-done、unknown）は、host が自分の送った要求の記録から決める。プロバイダーが成功と答えても、許可を越える要求をしていれば失敗として扱う。
+- **誰が選ぶか:** 運用者の資格情報で動くプログラムと、その要求を分類するカタログを選ぶのは、運用者である。宣言のツリーが選ぶのは、どの Pome の版を import するかまでで、`mamela.providers.toml` の `program_sha256`・`catalog_sha256` と違うバイト列は、起動しない（MAM-PRV-0009、[ADR 0015](adr/0015-provider-pinning.md)）。
 
 ## 始め方: `mamela provider new`（ADR 0009）
 
@@ -338,7 +339,7 @@ func TestConformance(t *testing.T) {
 
 カタログ（`protocol.Catalog`）は、API の呼び出しごとに、次のものを書いたものである。
 
-- 効果（`read`、`create`、`change`、`restart`、`lose-data`）
+- 効果（`read`、`create`、`change`、`restart`、`lose-data`）。`read` と書けるのは、`GET`（と `HEAD`）と、`fixed` のパラメータで呼び出しを区別する RPC 型の `POST`（EC2 の `Action=...`、JSON の API の `X-Amz-Target`）だけである。`PUT`・`PATCH`・`DELETE`、`fixed` のない `POST` を `read` とするカタログは、読み込まない（MAM-PRV-0011）
 - API が各パラメータを読む場所（`query`、`form`、`header`、`json`）と、同じメソッドとパスの呼び出しを区別する固定のパラメータ（`fixed`）
 - 前提条件のパラメータ
 - `measures`: 大きさを決めるパラメータと、その書式（`count`、`size`、`drive`、`table`、`cpu-units`）。site の予算で確かめる（MAM-SITE-0305）。`cpu-units` は ECS の CPU 単位で、1024 を 1 vCPU とし、切り上げて数える
@@ -359,7 +360,7 @@ func TestConformance(t *testing.T) {
 
 - **書き方:** Go で書いて JSON に書き出してもよい。mamela-aws と mamela-proxmox は、`catalogs` パッケージを `build.sh` で `pome/catalogs/*.json` に書き出す。同梱する JSON が書き出しと同じことは、試験で確かめる。
 - **試験:** 同梱するファイルで行う（`providertest.Catalog(t, "pome/catalogs/ec2.json")`）。Mamela が分類に使うものと同じである。
-- **使われ方:** カタログは、運用者が `mamela.providers.toml` で名指したときだけ使われる（`catalog = "pome:ec2"`）。運用者は、使う前に `mamela provider catalog <pome-dir>` で読める。
+- **使われ方:** カタログは、運用者が `mamela.providers.toml` で名指し（`catalog = "pome:ec2"`）、読んで sha256 を固定した（`catalog_sha256`）ものだけが使われる。運用者は、使う前に `mamela provider catalog <pome-dir>` で読める。固定のない設定は警告つきで動くが、宣言のツリーがカタログを選べる状態である（MAM-PRV-0010）。
   - Mamela は、カタログをプログラムと一緒に plan に保存する。apply は、それで分類する。
   - カタログの中身は、承認の範囲に入る。カタログが変われば、承認し直す。
 - **プログラムとの関係:** プログラムは、カタログを見ることも変えることもできない。host が、プログラムのすべての要求を、運用者が選んだカタログで分類する。プログラムが自分の呼び出しを自己申告で分類することはない。
@@ -406,6 +407,7 @@ Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb 
    api_url    = "https://kv.example.com/api"   # http は 127.0.0.1・::1・localhost だけ
    token_file = "~/.config/kv/token"           # Authorization: Bearer <token>
    catalog    = "kv-catalog.json"              # API のカタログ: Pome が同梱するもの（"pome:<名前>"）か、自分のファイル
+   program_sha256 = "..."                      # プログラムの sha256。`mamela provider pin` が出す（下の「プログラムとカタログを固定する」）
 
    [provider.kv-example.guard]                 # guard の設定（秘密は書かない）
    max_items = 5
@@ -417,6 +419,27 @@ Pome の版の中身は git のツリーそのもので、`Pome.lock` と sumdb 
 5. `mamela plan <pome-dir>` を実行する。プロバイダーが観測し、diff を計算する。plan は、変更ごとに対象と、送る要求をすべてパラメータまで表示する。承認するのはこの内容である。
 6. `mamela guard <pome-dir>` で、プロバイダーの guard の前の検査だけを確かめられる（読み取りだけ）。
 7. `mamela approve <digest>` で承認し、`mamela apply <digest>` で実行する。
+
+### プログラムとカタログを固定する（ADR 0015）
+
+宣言のツリーは、依存する Pome を選ぶので、プロバイダーのプログラムと、Pome が同梱するカタログも選べてしまう。運用者の資格情報で動くものは、運用者が選ぶ。
+
+```toml
+strict_pins = true                       # 任意。固定のないプロバイダーを拒む
+
+[provider.kv-example]
+api_url        = "https://kv.example.com/api"
+catalog        = "pome:kv"
+program_sha256 = "..."                   # provider.wasm の sha256
+catalog_sha256 = "..."                   # catalog = "pome:kv" のカタログのファイルの sha256
+```
+
+- **値を出す:** `mamela provider pin [--providers <file>] [--check] <pome-dir | 宣言のディレクトリ> [<provider>]`。設定のどの節に何を書くかと、いまの設定との比べ（pinned・differs・not pinned）を出す。何も書き換えない。値は、`mamela provider catalog` と `mamela provider inspect` で中身を読んでから写す。
+- **書く場所:** `program_sha256` はプロバイダーの節に書く。`catalog_sha256` は `catalog = "pome:<名前>"` と書いた節に書く（API が複数あるプロバイダーでは、`[provider.<name>.apis.<api>]` ごと）。自分のファイルのカタログには要らない。
+- **合わなければ:** プログラムもカタログも起動せず、API に何も送らない（MAM-PRV-0009）。plan のときも、apply のときも確かめる。
+- **版上げ:** プロバイダーの Pome の版を上げる PR は、運用者が新しい digest を設定に書くまで、plan が MAM-PRV-0009 で止まる。設定は plan のたびに読み直す。
+- **固定のない設定:** 従来どおり動く。`mamela plan` が MAM-PRV-0010 の警告を出す。すべて固定したら、`strict_pins = true` にする。
+- **作者へ:** リリースの文に、プログラムとカタログの sha256 を書く。運用者が、自分で出した値と照らせる。
 
 承認は、そのときの API の接続先（URL・資格情報・カタログ）に対するものである。設定でどれかを変えると、承認は効かなくなる（MAM-REC-0007）。資格情報が AWS の profile なら、鍵ではなく profile の名前で決まる（鍵を更新しても承認は効く）。複数の API を使うプロバイダーでは、すべての API の接続先をまとめたものである。
 
@@ -477,6 +500,8 @@ guard_token_id   = "mamela-audit@pve!audit"      # guard だけが使う読み�
 guard_token_file = "~/.config/mamela/pve-audit-token"
 tls_fingerprint  = "AA:BB:..."                   # サーバー証明書の SHA-256 を固定する
 catalog          = "pome:proxmox"                # Pome が同梱するカタログ
+program_sha256   = "..."                         # mamela provider pin が出す（ADR 0015）
+catalog_sha256   = "..."
 
 [provider.proxmox.guard]
 # guard の設定（境界、しきい値）。中身はプロバイダーが決める（mamela-proxmox の docs/lab.md）
@@ -508,6 +533,8 @@ EC2 のようなクエリ API と SigV4 の API にも、プロバイダーを�
   region     = "ap-northeast-1"
   service    = "ec2"
   catalog    = "pome:ec2"                         # Pome が同梱するカタログ（examples/ec2/pome/catalogs/ec2.json）
+  program_sha256 = "..."                          # mamela provider pin が出す（ADR 0015）
+  catalog_sha256 = "..."
   ```
 
   `token_id` と `token_file` の代わりに、AWS の profile（一時的な資格情報でもよい）を書ける（下の「複数の API を使うクラウドのプロバイダー」の「設定と資格情報」）。
@@ -570,6 +597,7 @@ AWS のように、サービスごとに API が分かれ、クエリの API（E
   [provider.aws.guard]          # guard の設定はプロバイダーに 1 つ（API の節には書けない）
   ```
 
+  - 固定（ADR 0015）は、`program_sha256` をプロバイダーの節に、`catalog_sha256` を `catalog = "pome:<名前>"` と書いた各 API の節に書く（API の節では、プロバイダーの節から受け継がない）。
   - API の節は、`auth`・`profile`・`region`・`service`・`tls_fingerprint`・資格情報（guard の資格情報も）を、書かなければプロバイダーの節から受け継ぐ。`apis` を書くなら、プロバイダーの節には `api_url` と `catalog` を書かない。
   - `profile`: host は、要求ごとに、共有の資格情報のファイル（`AWS_SHARED_CREDENTIALS_FILE`、なければ `~/.aws/credentials`）からその profile の鍵とセッショントークンを読む。MFA や assume-role の一時的な鍵を人が更新すれば、次の要求から使う。セッショントークンは `X-Amz-Security-Token` で送る。鍵が読めなければ何も送らない。
   - 設定のない API への要求は送られない。
