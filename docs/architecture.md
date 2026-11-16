@@ -239,9 +239,15 @@ SQLite の WAL モードとトランザクションを使い、**単一 Control 
 
 - `resourceVersion` / Generation を用いて競合更新を拒否する。
 - リソース/ノードごとに操作を直列化し、実行前に DB に Intent を書く。
+- **apply は 1 つの DB につき 1 つだけ**動く。DB の隣の `<db>.apply.lock` を OS のファイルロック（flock）で取り、CLI の `mamela apply` と `mamela api` の apply が同時に走らない（走らせようとした側は MAM-REC-0009 で止まる）。plan ごと・リソースごとの lease にしなかったのは、apply が最初に観測した世界を前提にするためで、リソース単位の排他では「先の apply が作る前に観測した 2 つめが、同じ create をもう一度送る」を防げない。ロックは持ち主のプロセスが終われば（`kill -9` でも）OS が手放すので、落ちた apply が次を止めない。この排他は plan・承認・`mamela act` には掛からない。
+- SQLite のトランザクションはすべて `BEGIN IMMEDIATE` で始め（書く前に読むトランザクションが、別の接続の commit のあとに待たずに `database is locked` で落ちるのを避ける）、起動時の migration は、書き込みロックの中でスキーマの版を読み直す。複数のプログラム（`mamela serve`、`mamela api`、CLI）が同時に起動しても、migration は 1 度だけ行われる。
+- **migration の前に退避する。** 中身のある DB は、変更の前に `<db>.pre-migrate-<旧版>` へ丸ごと写す（VACUUM INTO。権限 0600）。migration は全部が通るか、何も変わらないかである。新しい版の Mamela が上げた DB を古い Mamela が開くと、MAM-DB-0001 で断り、どの Mamela が上げたかと、戻すための退避ファイルを示す。
+- **保持:** 承認されず、操作の記録もない plan は、30 日たつと消える（その plan だけが使っていた revision・観測・policy・プロバイダーのプログラムと、その plan の event も）。plan が使わない 30 日より古い観測（apply が最初に保存したもの）も消える。承認された plan、operation を持つ plan、plan に属さない event は残す（何を許し、何をしたかの記録）。`mamela plan` が 1 時間に 1 回、片付ける。DB のファイルは縮まない（空いた場所を再利用する）。
 - 外部 API と DB を一つのトランザクションにできない。Exactly-once を仮定しない。
 - プロバイダーの作成は、作る前に決まる ID（Proxmox の VMID、EC2 のクライアントトークン）を Intent（作成の記録）に先に書いてから送る。同じ ID での再作成は API 側で失敗するか同じものを返すため、二重作成の自然な防止になる。再起動後は、その ID と所有の印で再観測する。
-- Lease は期限付き。失効後の引継ぎ時も再観測と fencing 相当の仕組みを用いる。
+- Lease は期限付き。失効後の引継ぎ時も再観測と fencing 相当の仕組みを用いる。落ちた apply の claim は、lease（3 時間）を待たず、次の apply が手放す。持ち主（worker）の名前は `<host>/<pid>#<開始時刻>` で、開始時刻は Linux では boot id と `/proc/<pid>/stat` の starttime である。pid だけで見ると、再起動した service が同じ pid をもらったときや、再起動後に別のプロセスが同じ pid を使うときに、死んだ worker の claim が生きているものと見なされて残る。pid が生きていても開始時刻が違えば、別のプロセスなので claim を手放す（開始時刻が分からない環境と、古い版が書いた `host/pid` は、pid が生きている限り生きているものと見る）。手放した操作は結果が不明として扱い、次の apply は観測してから動く。
+- **`mamela api` は止められても、動いている apply を途中で切らない。** SIGTERM を受けると、新しい要求を受けつけず（順番待ちの要求は 503 で断る）、動いている要求（apply）が終わるまで待つ（`--drain-timeout`、既定 10 分）。それを超えたら要求を取り消し、その worker の終わっていない claim を「結果不明」に直してから終わる（次の apply は観測してから動く）。systemd の `TimeoutStopSec` は、これより長くする（`mamela controlplane` が書く unit は 660 秒。すでに入れた unit には自分で足す）。
+- **`mamela api` は、本体が届き切るまでロックを取らない。** 要求の本体は、最大サイズ（JSON は 1 MiB、tree は 64 MiB）と読み込みの期限（60 秒）の中で読み切ってから、plan・承認・apply の順番待ちに入る。ソケットを開けて本体を送り切らない者がいても、ほかの要求は止まらない。
 - Status と Event は、実行結果が不明なときに「成功」を推測しない。
 
 ## 6. Reconciliation
@@ -297,6 +303,10 @@ APT インストールは maintainer script の特権実行を含み得るため
 
 - 未宣言 → その宣言が作った物で、種類に削除する操作があれば、plan に削除として現れる（要承認。ADR 0013）。それ以外は `Unmanaged/Orphaned` として保持し、理由を示す。再起動・引き継ぎは、プロバイダーが明示操作として宣言したものだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
 - 承認は Plan digest、対象 ID、操作範囲、期限に結びつけ、変更で失効する。
+- **承認は追記する記録である。** 承認済みの plan をもう一度承認しても、承認者と期限は書き換わらず、先の承認が残る（その要求は event に残り、`mamela approve` は MAM-APR-0002 と表示する）。期限が切れた、または取り消された plan の承認は、横に新しい記録として加わる。
+- **承認は取り消せる。** `mamela revoke <digest>` は承認を失効させ（承認の記録は残り、取り消しが別の記録と event として加わる）、以後の apply は、その承認が要る操作を行わない。実行中の apply も、まだ始めていない承認が要る操作の前で止まる（MAM-REC-0011。済んだことは戻らない）。
+- **apply は、plan を作ったときの policy が、いま有効な policy と同じときだけ行う。** 承認は、そのときの policy の下での判断だからである。`mamela apply` と `mamela api` は、plan と同じ `--policy` のファイル（なければ内蔵の policy）と、site の Control Plane のホストの保護から、いまの policy を求め、plan に保存した policy の digest と違えば何も実行せず（MAM-REC-0010）、plan し直すよう促す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける。
+- **削除は直前にもう一度観測する。** 削除は最後の段で、前の段（image の取り込みは数時間かかる）の間に対象が変わりうる。各削除の直前に世界を観測し直し、承認した plan の削除と同じ要求・対象・前提条件でなければ、何も消さずに止まる（MAM-REC-0002）。観測し直せなければ消さずに止まる（MAM-REC-0008）。
 - Agent は署名不正、期限切れ、対象ノード不一致、未知の操作を拒否する。
 - Provider credential、Agent secret、署名鍵は Resource Graph/ログに含めず、安全な権限境界で渡す。
 - Rollback は best-effort。不可逆な OS / DB 操作は安全性を保証できない。
@@ -342,11 +352,12 @@ mamela plan --replay <plan-id>
 mamela explain MAM-POL-0102
 mamela apply <plan-id>
 mamela approve <plan-id>
+mamela revoke <plan-id>
 mamela events --node app-server
 mamela reconcile app-server
 ~~~
 
-CLI 名は `mamela`、Node Agent は `mamelet`（マシン内で動く小さな Mamela という意味）。上の CLI は設計案である。実装済みのコマンドは `mamela -h` で分かる（`eval`、`check`、`plan`、`approve`、`apply`、`guard`、`act`、`serve`、`controlplane bundle`、`provider`、`toolchain`）。
+CLI 名は `mamela`、Node Agent は `mamelet`（マシン内で動く小さな Mamela という意味）。上の CLI は設計案である。実装済みのコマンドは `mamela -h` で分かる（`eval`、`check`、`plan`、`approve`、`revoke`、`apply`、`guard`、`act`、`serve`、`controlplane bundle`、`provider`、`toolchain`）。
 
 ## 9. Emela / WASM 技術方針
 

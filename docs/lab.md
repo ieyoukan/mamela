@@ -51,8 +51,11 @@ mamela guard <pome-dir>
 ~~~bash
 mamela plan <pome-dir>          # 観測して計画し、保存する（読み取りだけ）
 mamela approve <plan-digest>    # その計画だけを承認する
+mamela revoke <plan-digest>     # 承認を取り消す（記録は残る。apply の最中なら、始めていない操作の前で止まる）
 mamela apply <plan-digest>      # guard（前）→ 再観測して実行 → guard（後）
 ~~~
+
+apply は 1 つの DB につき 1 つずつ動く（別の apply が動いていれば MAM-REC-0009 で止まる）。plan に `--policy` を付けたなら、apply にも同じ `--policy` を付ける。plan のときと違う policy では実行しない（MAM-REC-0010）。
 
 apply は、変更の前後でプロバイダーごとに次を行う。
 
