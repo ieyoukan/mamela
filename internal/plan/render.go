@@ -101,13 +101,19 @@ func renderDiff(w io.Writer, d Diff) {
 	}
 	fmt.Fprintf(w, "      %s:\n", esc(d.Field))
 	if d.From != "" {
-		for _, l := range safetext.EscapeLines(d.From) {
+		for _, l := range lines(d.From) {
 			fmt.Fprintf(w, "      - %s\n", l)
 		}
 	}
-	for _, l := range safetext.EscapeLines(d.To) {
+	for _, l := range lines(d.To) {
 		fmt.Fprintf(w, "      + %s\n", l)
 	}
+}
+
+// lines are the escaped lines of a text; the newline that ends the last one does not start another
+// (the sha256 of the content, which the plan shows too, covers it).
+func lines(s string) []string {
+	return safetext.EscapeLines(strings.TrimSuffix(s, "\n"))
 }
 
 // Summary is a one-line count of the plan.
