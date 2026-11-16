@@ -54,7 +54,7 @@ func (m *artifacts) Make(ctx context.Context, a protocol.Artifact) (host.Prepare
 			Open: func() (io.ReadCloser, error) { return m.verified(path, a.SHA256) }}, nil
 	case protocol.ArtifactSeed:
 		if m.Seeds == nil || m.Site == nil {
-			return host.Prepared{}, errors.New("this Mamela makes no seeds: the site has no Control Plane ([controlplane])")
+			return host.Prepared{}, errors.New("this Mamela makes no seeds: there is no site definition (--site)")
 		}
 		network := graphNetwork(*a.Network)
 		if err := m.Site.Allows(a.Node, network); err != nil {
@@ -76,7 +76,10 @@ func (m *artifacts) Make(ctx context.Context, a protocol.Artifact) (host.Prepare
 		switch a.Format {
 		case protocol.SeedUserData:
 			sum := sha256.Sum256(m.Seeds.MameletBinary)
-			url := strings.TrimRight(m.Site.ControlPlane.Advertised(), "/") + "/v1/mamelet/" + hex.EncodeToString(sum[:])
+			url := ""
+			if !m.Seeds.Plain {
+				url = strings.TrimRight(m.Site.ControlPlane.Advertised(), "/") + "/v1/mamelet/" + hex.EncodeToString(sum[:])
+			}
 			name, img, err = m.Seeds.NewUserData(ctx, a.Node, int(id), network, url)
 		default:
 			name, img, err = m.Seeds.New(ctx, a.Node, int(id), network)

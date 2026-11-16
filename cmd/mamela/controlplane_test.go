@@ -204,6 +204,38 @@ func TestUserDataSeedArtifact(t *testing.T) {
 	}
 }
 
+// A site without a Control Plane makes seeds without mamelet (the machine is made and configured;
+// nothing of Mamela runs on it): no token, no binary, and the node still gets its number.
+func TestPlainSeedArtifact(t *testing.T) {
+	ctx := context.Background()
+	site, err := sitedef.Load(filepath.Join("..", "..", "mamela.site.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	site.ControlPlane = sitedef.ControlPlane{}
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "s.db"), wallClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	m := &artifacts{Site: site, Nodes: st, Seeds: &seed.Maker{User: "mamela", Plain: true}}
+	for _, format := range []string{"", protocol.SeedUserData} {
+		p, err := m.Make(ctx, protocol.Artifact{ID: "seed", Kind: protocol.ArtifactSeed, Node: "web", Network: &protocol.Network{Mode: "dhcp"}, Format: format})
+		if err != nil {
+			t.Fatalf("format %q: %v", format, err)
+		}
+		rc, _ := p.Open()
+		img, _ := io.ReadAll(rc)
+		if p.Info.NodeID != store.FirstNodeNumber || bytes.Contains(img, []byte("mamelet")) || bytes.Contains(img, []byte("enroll")) {
+			t.Fatalf("format %q: node %d, mentions mamelet: %v", format, p.Info.NodeID, bytes.Contains(img, []byte("mamelet")))
+		}
+	}
+	// Without a seed maker at all, a seed is still refused.
+	if _, err := (&artifacts{Site: site, Nodes: st}).Make(ctx, protocol.Artifact{ID: "seed", Kind: protocol.ArtifactSeed, Node: "web", Network: &protocol.Network{Mode: "dhcp"}}); err == nil {
+		t.Fatal("a seed without a maker")
+	}
+}
+
 // A host that has a Control Plane already gets mamelacd's units and a script that installs them,
 // without the rest of a bundle: the script is valid, and mamelacd's database is private to it.
 func TestGitopsUnits(t *testing.T) {

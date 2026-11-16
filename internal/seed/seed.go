@@ -96,6 +96,66 @@ func UserData(p Params, binaryURL, binarySHA256 string) ([]byte, error) {
 	return ud, nil
 }
 
+// PlainFiles are the files of a seed without mamelet, for a site that has no Control Plane: the login
+// user with its SSH keys, the network and the guest agent, and nothing of Mamela's agent (no
+// enrollment, no token, no binary). The machine is created and configured; nothing runs on it
+// for Mamela (the declaration can have no package, service or k3s resource for it).
+func PlainFiles(p Params) ([]File, error) {
+	ud, err := plainUserData(p, true)
+	if err != nil {
+		return nil, err
+	}
+	network, err := networkConfig(p.Network)
+	if err != nil {
+		return nil, err
+	}
+	meta := fmt.Sprintf("instance-id: mamela-%s-%d\nlocal-hostname: %s\n", p.Node, p.VMID, p.Node)
+	return []File{{Name: "meta-data", Data: []byte(meta)}, {Name: "user-data", Data: ud}, {Name: "network-config", Data: network}}, nil
+}
+
+// PlainUserData is the plain seed as user-data alone, for a machine a cloud creates.
+func PlainUserData(p Params) ([]byte, error) {
+	if p.Network.Mode != graph.NetworkDHCP {
+		return nil, errors.New("seed: user-data configures no network; a cloud machine gets its address from the cloud (dhcp)")
+	}
+	return plainUserData(p, false)
+}
+
+func plainUserData(p Params, guestAgent bool) ([]byte, error) {
+	if !noderev.ValidNode(p.Node) || p.VMID <= 0 || p.User == "" {
+		return nil, errors.New("seed: node, vmid and user are required")
+	}
+	for _, k := range p.SSHPublicKeys {
+		if strings.ContainsAny(k, "\r\n") {
+			return nil, errors.New("seed: an SSH key spans lines")
+		}
+	}
+	keys := p.SSHPublicKeys
+	if keys == nil {
+		keys = []string{}
+	}
+	packages, runcmd := []string{}, []any{}
+	if guestAgent {
+		packages = append(packages, "qemu-guest-agent")
+		runcmd = append(runcmd, []string{"systemctl", "start", "qemu-guest-agent"})
+	}
+	doc := map[string]any{
+		"users": []any{map[string]any{
+			"name": p.User, "groups": []string{"sudo"}, "sudo": "ALL=(ALL) NOPASSWD:ALL", "shell": "/bin/bash",
+			"lock_passwd": true, "ssh_authorized_keys": keys,
+		}},
+		"ssh_pwauth":     false,
+		"package_update": guestAgent,
+		"packages":       packages,
+		"runcmd":         runcmd,
+	}
+	ud, err := json.Marshal(doc, json.Deterministic(true))
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte("#cloud-config\n"), ud...), nil
+}
+
 // userData is the #cloud-config: the login user, mamelet's configuration and one-time token, its
 // unit, and the commands that install and start it (install is fixed text but for checksums).
 func userData(p Params, install string, guestAgent bool) ([]byte, error) {
@@ -174,8 +234,16 @@ func netTag(n graph.Network) string {
 }
 
 // NewUserData makes a seed as user-data with a fresh one-time token (UserData), for a machine
-// whose mamelet fetches its binary from binaryURL.
+// whose mamelet fetches its binary from binaryURL. A Plain maker makes user-data without mamelet.
 func (m *Maker) NewUserData(ctx context.Context, node string, id int, network graph.Network, binaryURL string) (string, []byte, error) {
+	if m.Plain {
+		ud, err := PlainUserData(Params{Node: node, VMID: id, User: m.User, SSHPublicKeys: m.SSHPublicKeys, Network: network})
+		if err != nil {
+			return "", nil, err
+		}
+		sum := sha256.Sum256(ud)
+		return fmt.Sprintf("mamela-seed-%s-%d-%s.user-data", node, id, hex.EncodeToString(sum[:8])), ud, nil
+	}
 	ttl := m.TokenTTL
 	if ttl == 0 {
 		ttl = 24 * time.Hour
@@ -212,6 +280,9 @@ type Maker struct {
 	AllowedOrigins []string
 	MameletBinary  []byte
 	TokenTTL       time.Duration // default 24h
+	// Plain: the seeds carry no mamelet (a site without a Control Plane): only the login user, the
+	// network and the guest agent. No token is issued and no database is needed.
+	Plain bool
 }
 
 func (m *Maker) config(node string, vmid int) mamelet.Config {
@@ -232,6 +303,18 @@ func (m *Maker) Reusable(ctx context.Context, node string, vmid int, network gra
 
 // New makes a seed with a fresh one-time token. The file name contains the image's checksum.
 func (m *Maker) New(ctx context.Context, node string, vmid int, network graph.Network) (string, []byte, error) {
+	if m.Plain {
+		files, err := PlainFiles(Params{Node: node, VMID: vmid, User: m.User, SSHPublicKeys: m.SSHPublicKeys, Network: network})
+		if err != nil {
+			return "", nil, err
+		}
+		img, err := ISO("CIDATA", files)
+		if err != nil {
+			return "", nil, err
+		}
+		sum := sha256.Sum256(img)
+		return fmt.Sprintf("mamela-seed-%s-%d-%s-%s.iso", node, vmid, netTag(network), hex.EncodeToString(sum[:8])), img, nil
+	}
 	ttl := m.TokenTTL
 	if ttl == 0 {
 		ttl = 24 * time.Hour
