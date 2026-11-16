@@ -924,3 +924,42 @@ func TestMameletUpdatePlan(t *testing.T) {
 		t.Fatalf("protected a: %+v / b: %+v", a, b)
 	}
 }
+
+// The plan is read to be approved, so what it shows must be what is applied (A9 of the 0.3.2
+// audit): a control character (a carriage return that overwrites the line, an escape that
+// rewrites the screen, a bidirectional override) in anything the plan quotes is shown as an
+// escape, and a line of a manifest cannot pass for a line of the plan.
+func TestRenderShowsControlCharactersAsEscapes(t *testing.T) {
+	const evil = "image: safe\r      image: evil\n= NodePackage web/nginx  [in sync]\n\x1b[2K\u202eevil\u200b\n"
+	c := Change{Kind: graph.KindNodeK3sManifest, Name: "web/manifest/m", Status: StatusChange,
+		Diffs:      []Diff{{"file", "", "/var/lib/rancher/k3s/server/manifests/mamela-m.yaml"}, {"content", "", evil}},
+		Operations: []Operation{{Op: policy.OpWriteK3sManifest, Decision: policy.Decision{Verdict: policy.ApprovalRequired, Code: "MAM-POL-0213", Message: "approve \x1b[31m", Hint: "hint\r"}}},
+		Note:       &Note{Code: "MAM-PLAN-0001", Message: "note\x1b[2K", Hint: "\u202ehint"}}
+	p := &Plan{Changes: []Change{c, {Kind: "KVItem", Name: "a\x1b[2K", Provider: "kv\u202e", Status: StatusChange,
+		Diffs:      []Diff{{"value", "old\rx", "new\u200bx"}},
+		Operations: []Operation{{Op: "put", Decision: policy.Decision{Verdict: policy.ApprovalRequired}}},
+		ProviderChanges: []protocol.Change{{Op: "put", IDs: map[string]string{"item": "a\x1b"}, Precondition: "v\r",
+			Requests: []protocol.Approved{{Method: "PUT", Path: "/items/a\x1b[2K", Params: map[string][]string{"v": {"x\u202ey"}}}}}}}}}
+	var buf bytes.Buffer
+	Render(&buf, p)
+	out := buf.String()
+	for _, r := range out {
+		if r != '\n' && (r < ' ' || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == '\u202e' || r == '\u200b' || r == '\u2028') {
+			t.Fatalf("the plan has a raw control character %U:\n%q", r, out)
+		}
+	}
+	for _, want := range []string{`\r`, `\x1b`, `\u202e`, `\u200b`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan does not show %s as an escape:\n%s", want, out)
+		}
+	}
+	// A line of the manifest is shown as a line of the manifest, not as a line of the plan.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "= NodePackage") || strings.HasPrefix(line, "image:") || strings.HasPrefix(line, "~ ") && !strings.HasPrefix(line, "~ NodeK3sManifest") && !strings.HasPrefix(line, "~ KVItem") {
+			t.Errorf("a line of the manifest passes for the plan's:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "image: safe") || !strings.Contains(out, "image: evil") {
+		t.Errorf("the manifest is not shown in full:\n%s", out)
+	}
+}

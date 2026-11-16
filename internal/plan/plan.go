@@ -81,6 +81,11 @@ type Change struct {
 	// Verdict is the strictest decision among the operations; empty when there are none.
 	Verdict policy.Verdict `json:"verdict,omitempty"`
 	Note    *Note          `json:"note,omitempty"`
+	// Warnings are things a person should read before approving that neither stop nor change
+	// anything: the declaration is valid, but probably not what was meant (a k3s agent newer than
+	// its server, a k3s that nothing starts). They are part of the plan, so the plan that was read is
+	// the plan that is approved.
+	Warnings []Note `json:"warnings,omitempty"`
 	// Provider is set for a resource of a provider's kind.
 	Provider string `json:"provider,omitempty"`
 	// ProviderChanges are the provider's changes, one per operation, with exactly the requests
@@ -247,6 +252,11 @@ func (b builder) provided(r graph.Resource) Change {
 	case b.stale(got.ObservedAt):
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
 		return c
+	case got.Kept != nil:
+		// Declared here, but made for another declaration (B4): Mamela changes nothing of it, and a
+		// person decides where it belongs. Waiting would never end by itself.
+		c.Status, c.Note = StatusBlocked, &Note{Code: got.Kept.Code, Message: got.Kept.Message, Hint: got.Kept.Hint}
+		return c
 	case got.Waiting != "":
 		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0113", Message: got.Waiting,
 			Hint: "apply the plan that makes it, then plan again (ADR 0007)"}
@@ -389,10 +399,24 @@ func (b builder) nodeReady(node string) (bool, *Note) {
 	case !m.managed:
 		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("machine %s is not managed by Mamela (Foreign)", node),
 			Hint: "Mamela does not configure machines it did not create; a provider may offer to adopt one (mamela act)"}
+	case b.machineOfAnother(node) != nil:
+		k := b.machineOfAnother(node)
+		return false, &Note{Code: k.Code, Message: fmt.Sprintf("machine %s: %s", node, k.Message), Hint: k.Hint}
 	case m.stopped:
 		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for machine %s to be started", node)}
 	}
 	return true, nil
+}
+
+// machineOfAnother says, for a machine Mamela made for another declaration (B4), why this one
+// does not configure it; nil for any other machine.
+func (b builder) machineOfAnother(node string) *state.Kept {
+	for _, id := range slices.Sorted(maps.Keys(b.snap.Provided)) {
+		if p := b.snap.Provided[id]; p.Name == node && p.Declared && p.Kept != nil && p.Observed.Node != nil {
+			return p.Kept
+		}
+	}
+	return nil
 }
 
 // machine is what plans need of a node: a provider's machine (ADR 0004).
