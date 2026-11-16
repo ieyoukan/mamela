@@ -31,6 +31,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	sitePath := addSiteFlag(fs)
 	imageCache := fs.String("image-cache", defaultImageCache(), "directory of downloaded, verified files (images)")
 	providersFile := addProvidersFlag(fs)
+	policyFile := fs.String("policy", "", "policy JSON file in force, as for mamela plan (default: the built-in conservative policy); a plan made under another policy is not applied")
 	tf := addToolFlags(fs)
 	fs.Usage = func() {
 		fmt.Fprint(stderr, "Usage: mamela apply [flags] <plan-digest>\n\n"+
@@ -38,7 +39,9 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			"(the same programs, stored with the plan), each change under a permit for exactly its approved requests.\n"+
 			"Each provider's guard checks its infrastructure first: if anything blocks, nothing is sent. After, the\n"+
 			"guards check again (for example, that nothing outside the provider's boundary changed).\n"+
-			"The world is observed again first, and only what the plan expected is changed. Denied operations never run.\n\nFlags:\n")
+			"The world is observed again first, and only what the plan expected is changed; a deletion is checked once more\n"+
+			"right before it runs. Denied operations never run. One apply runs at a time on a database. A plan made under\n"+
+			"another policy than the one in force (--policy, the same file as for mamela plan) is not applied.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -61,7 +64,7 @@ func runApply(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	if err != nil {
 		return report(stderr, err)
 	}
-	res, err := applyPlan(ctx, st, site, digest, applyOptions{ProvidersFile: *providersFile, ImageCache: *imageCache, Tools: tf.find}, stdout)
+	res, err := applyPlan(ctx, st, site, digest, applyOptions{ProvidersFile: *providersFile, PolicyFile: *policyFile, ImageCache: *imageCache, Tools: tf.find}, stdout)
 	var noPlan *noPlanError
 	switch {
 	case errors.As(err, &noPlan):
