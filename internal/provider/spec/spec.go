@@ -149,6 +149,8 @@ func fields(r graph.Resource) map[string]string {
 		f["node"], f["service"] = r.NodeService.Node, r.NodeService.Service
 	case r.NodeK3s != nil:
 		f["node"], f["version"], f["sha256"] = r.NodeK3s.Node, r.NodeK3s.Version, r.NodeK3s.SHA256
+	case r.NodeMamelet != nil:
+		f["node"], f["version"], f["sha256"] = r.NodeMamelet.Node, r.NodeMamelet.Version, r.NodeMamelet.SHA256
 	case r.Provided != nil:
 		// A provider's templates name the spec's top-level strings and integers ("{pool}").
 		var spec map[string]jsontext.Value

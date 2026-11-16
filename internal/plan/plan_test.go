@@ -853,3 +853,74 @@ func TestRenderNodeRemovalIsADeletion(t *testing.T) {
 		t.Errorf("render:\n%s", b.String())
 	}
 }
+
+// The mamelet a node runs is the declared one, or the node is updated with an approval: one node
+// at a time in the order of the names, never past a node that does not run what is declared, and
+// never while the agent has not reported which mamelet it runs.
+func TestMameletUpdatePlan(t *testing.T) {
+	const old, now = "11" + "aa", "22" + "bb"
+	oldSHA, newSHA := strings.Repeat(old, 16), strings.Repeat(now, 16)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		vm("a", `{"mode":"dhcp"}`) + `,` + vm("b", `{"mode":"dhcp"}`) + `,` +
+		`{"kind":"NodeMamelet","name":"a/mamelet","spec":{"node":"a","version":"0.9.1","sha256":"` + newSHA + `"}},` +
+		`{"kind":"NodeMamelet","name":"b/mamelet","spec":{"node":"b","sha256":"` + newSHA + `"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	world := func(a, b string) state.Snapshot {
+		s := state.Empty(t0)
+		machineObserved(&s, g, "a", true, true, true, 600)
+		machineObserved(&s, g, "b", true, true, true, 600)
+		s.Mamelets = map[string]state.Mamelet{"a/mamelet": {SHA256: a, Version: "0.9.0", ObservedAt: t0}, "b/mamelet": {SHA256: b, ObservedAt: t0}}
+		return s
+	}
+
+	// Both run the old one: a is updated; b waits for it.
+	p := Build(g, world(oldSHA, oldSHA), policy.Default)
+	a, b := find(t, p, "NodeMamelet a/mamelet"), find(t, p, "NodeMamelet b/mamelet")
+	if a.Status != StatusChange || a.Verdict != policy.ApprovalRequired || len(a.Operations) != 1 || a.Operations[0].Op != policy.OpUpdateMamelet {
+		t.Fatalf("a: %+v", a)
+	}
+	for _, d := range []Diff{{"sha256", oldSHA, newSHA}, {"version", "0.9.0", "0.9.1"}} {
+		if !slices.Contains(a.Diffs, d) {
+			t.Errorf("a lacks the diff %+v: %+v", d, a.Diffs)
+		}
+	}
+	if b.Status != StatusWaiting || b.Note.Code != "MAM-PLAN-0120" || len(b.Operations) != 0 {
+		t.Fatalf("b before a is updated: %+v", b)
+	}
+	// a runs the declared one: b is next.
+	p = Build(g, world(newSHA, oldSHA), policy.Default)
+	if a, b = find(t, p, "NodeMamelet a/mamelet"), find(t, p, "NodeMamelet b/mamelet"); a.Status != StatusInSync || b.Status != StatusChange {
+		t.Fatalf("a in sync, b next: %+v %+v", a, b)
+	}
+	// Both: in sync.
+	for _, c := range Build(g, world(newSHA, newSHA), policy.Default).Changes {
+		if c.Kind == graph.KindNodeMamelet && c.Status != StatusInSync {
+			t.Errorf("%s: %+v", c.ID(), c)
+		}
+	}
+	// A node that did not report which mamelet it runs (a mamelet from before) is waited for, and
+	// the plan says how to move on; b is not updated past it.
+	s := world(oldSHA, oldSHA)
+	delete(s.Mamelets, "a/mamelet")
+	if a = find(t, Build(g, s, policy.Default), "NodeMamelet a/mamelet"); a.Status != StatusWaiting || a.Note.Code != "MAM-PLAN-0119" || !strings.Contains(a.Note.Hint, "by hand") {
+		t.Fatalf("no report: %+v", a)
+	}
+	// An observation that is too old is not acted on.
+	s = world(oldSHA, oldSHA)
+	m := s.Mamelets["a/mamelet"]
+	m.ObservedAt = t0.Add(-24 * time.Hour)
+	s.Mamelets["a/mamelet"] = m
+	if a = find(t, Build(g, s, policy.Default), "NodeMamelet a/mamelet"); a.Status != StatusBlocked {
+		t.Fatalf("stale: %+v", a)
+	}
+	// The Control Plane's own host is never updated through a plan (ADR 0003), and does not hold the
+	// others back.
+	pol := policy.Default
+	pol.ProtectedNodes = []string{"a"}
+	p = Build(g, world(oldSHA, oldSHA), pol)
+	if a, b = find(t, p, "NodeMamelet a/mamelet"), find(t, p, "NodeMamelet b/mamelet"); a.Verdict != policy.Denied || b.Status != StatusChange {
+		t.Fatalf("protected a: %+v / b: %+v", a, b)
+	}
+}

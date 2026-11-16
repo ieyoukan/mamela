@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/provider/external"
 	"github.com/ieyoukan/mamela/internal/seed"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
@@ -261,5 +262,35 @@ func TestGitopsUnits(t *testing.T) {
 		if !bytes.Contains(unit, []byte(want)) {
 			t.Errorf("mamelacd.service lacks %q", want)
 		}
+	}
+}
+
+// A declaration that pins a mamelet this Control Plane does not serve is warned about at plan time.
+func TestMameletServedWarning(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "mamelet")
+	if err := os.WriteFile(bin, []byte("\x7fELF mamelet"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	site := &sitedef.Site{ControlPlane: sitedef.ControlPlane{URL: "https://cp:8443", MameletBinary: bin}}
+	sum := sha256.Sum256([]byte("\x7fELF mamelet"))
+	served := hex.EncodeToString(sum[:])
+	graphOf := func(sha string) *graph.Graph {
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+			`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+			`{"kind":"NodeMamelet","name":"app/mamelet","spec":{"node":"app","sha256":"` + sha + `"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	if w := mameletServedWarning(site, graphOf(served)); w != "" {
+		t.Errorf("the served release is pinned: %s", w)
+	}
+	if w := mameletServedWarning(site, graphOf(strings.Repeat("ab", 32))); !strings.Contains(w, "MAM-NODE-0103") || !strings.Contains(w, served[:12]) {
+		t.Errorf("another release is pinned: %q", w)
+	}
+	g, _ := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[]}`))
+	if w := mameletServedWarning(site, g); w != "" {
+		t.Errorf("nothing pinned: %s", w)
 	}
 }

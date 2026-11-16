@@ -487,3 +487,48 @@ func TestNodeK3sManifest(t *testing.T) {
 		}
 	}
 }
+
+// The mamelet a node runs is declared by its sha256 (a label for people is optional), on a node of
+// the graph, under the name "<node>/mamelet".
+func TestNodeMamelet(t *testing.T) {
+	sha := strings.Repeat("cd", 32)
+	doc := func(node, name, spec string) string {
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) + `,` +
+			`{"kind":"NodeMamelet","name":"` + name + `","spec":` + strings.ReplaceAll(spec, "NODE", node) + `}]}`
+	}
+	g, err := Decode([]byte(doc("web", "web/mamelet", `{"node":"NODE","version":"0.9.1","sha256":"`+sha+`"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m *NodeMameletSpec
+	for _, r := range g.Sorted() {
+		if r.NodeMamelet != nil {
+			m = r.NodeMamelet
+		}
+	}
+	if m == nil || m.Node != "web" || m.SHA256 != sha || m.Version != "0.9.1" {
+		t.Fatalf("mamelet: %+v", m)
+	}
+	// No label is fine; another sha256 is another digest.
+	g2, err := Decode([]byte(doc("web", "web/mamelet", `{"node":"NODE","sha256":"`+sha+`"}`)))
+	if err != nil {
+		t.Fatalf("without a label: %v", err)
+	}
+	g3, _ := Decode([]byte(doc("web", "web/mamelet", `{"node":"NODE","sha256":"`+strings.Repeat("ef", 32)+`"}`)))
+	if g2.Digest() == g3.Digest() || g.Digest() == g2.Digest() {
+		t.Error("the digest ignores the sha256 or the label")
+	}
+	for name, d := range map[string]string{
+		"an unknown node":       doc("nope", "nope/mamelet", `{"node":"NODE","sha256":"`+sha+`"}`),
+		"a short sha256":        doc("web", "web/mamelet", `{"node":"NODE","sha256":"abcd"}`),
+		"an uppercase sha256":   doc("web", "web/mamelet", `{"node":"NODE","sha256":"`+strings.ToUpper(sha)+`"}`),
+		"no sha256":             doc("web", "web/mamelet", `{"node":"NODE"}`),
+		"a name that is not it": doc("web", "web/agent", `{"node":"NODE","sha256":"`+sha+`"}`),
+		"a label with a space":  doc("web", "web/mamelet", `{"node":"NODE","version":"a b","sha256":"`+sha+`"}`),
+		"an unknown field":      doc("web", "web/mamelet", `{"node":"NODE","sha256":"`+sha+`","url":"https://x"}`),
+	} {
+		if _, err := Decode([]byte(d)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

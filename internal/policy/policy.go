@@ -50,6 +50,7 @@ const (
 	OpUpgradeK3s       Op = "upgrade-k3s"
 	OpWriteK3sManifest Op = "write-k3s-manifest"
 	OpRemoveK3sNode    Op = "remove-k3s-node"
+	OpUpdateMamelet    Op = "update-mamelet"
 )
 
 // Code is a stable reason code for a decision.
@@ -172,6 +173,9 @@ func (p Policy) Decide(s Subject) Decision {
 	case OpWriteK3sManifest:
 		return Decision{ApprovalRequired, "MAM-POL-0213", "puts a manifest in k3s's auto-deploy directory: k3s applies it with cluster-admin rights, and again whenever it changes",
 			"read the whole manifest in this plan; a HelmChart or a workload in it runs with the rights its YAML asks for"}
+	case OpUpdateMamelet:
+		return Decision{ApprovalRequired, "MAM-POL-0215", "replaces mamelet (the node's agent, which runs as root) with the binary of the declared sha256, which the Control Plane serves, and restarts it; the previous binary is kept, and mamelet goes back to it if the new one does not report",
+			"check the sha256 against the binary you built and put in controlplane.mamelet_binary; nodes are updated one at a time"}
 	case OpRemoveK3sNode:
 		return Decision{ApprovalRequired, "MAM-POL-0214", "deletes a Kubernetes node from the cluster (its pods are drained first when the node is Ready): the node is not declared any more",
 			"check the node's name in this plan; only the Control Plane's host can approve it (mamela approve), as with every deletion"}

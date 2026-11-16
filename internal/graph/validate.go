@@ -22,6 +22,7 @@ var (
 	k3sManifestNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	K3sVersionRe      = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
 	sha256Re          = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	mameletVersionRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 	providedKindRe    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
 	providerNameRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 	providedNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
@@ -152,6 +153,20 @@ func Validate(g *Graph) error {
 			}
 			if want := s.Node + "/manifest/" + s.Name; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/manifest/name)", want), "")
+			}
+		case KindNodeMamelet:
+			s := r.NodeMamelet
+			checkNodeRef(add, r, s.Node, nodes)
+			if !sha256Re.MatchString(s.SHA256) {
+				add(r, CodeInvalidValue, "spec.sha256", fmt.Sprintf("%q is not a sha256 in lowercase hex", s.SHA256),
+					"the sha256 of the linux/amd64 mamelet binary: shasum -a 256 mamelet-linux-amd64")
+			}
+			if s.Version != "" && !mameletVersionRe.MatchString(s.Version) {
+				add(r, CodeInvalidValue, "spec.version", fmt.Sprintf("%q is not a valid version label", s.Version),
+					"letters, digits and '.', '_', '+', '-', at most 64")
+			}
+			if want := s.Node + "/mamelet"; r.Name != want {
+				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/mamelet)", want), "")
 			}
 		case KindNodeService:
 			s := r.NodeService

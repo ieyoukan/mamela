@@ -102,6 +102,20 @@ pub fn on_node(
   Graph(on_nodes: List.append(graph.on_nodes, [r]), ..graph)
 }
 
+## Declares the mamelet release `node` runs, by the sha256 of its binary (the one the Control Plane
+## serves: the site's `controlplane.mamelet_binary`). `version` is a label for people. A node that
+## runs another mamelet is updated, with an approval, one node at a time; the node keeps its
+## previous binary and goes back to it if the new one does not report.
+pub fn mamelet(graph: Graph, node: Node, version: String, sha256: String) -> Graph {
+  on_node(
+    graph,
+    node,
+    "NodeMamelet",
+    "#{node.name}/mamelet",
+    [("version", Text(version)), ("sha256", Text(sha256))],
+  )
+}
+
 ## A machine mamelet runs on: a machine a provider makes (its Pome gives a function that returns
 ## one, such as `Proxmox.node`). Taking a `Node` (not a name) keeps a reference from pointing at a
 ## machine that was never declared by a typo.

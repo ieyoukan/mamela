@@ -81,6 +81,15 @@ type storeCP struct {
 	st  *store.Store
 	key ed25519.PrivateKey
 	now func() time.Time
+	// binaries is what the Control Plane serves as mamelet, by sha256.
+	binaries map[string][]byte
+}
+
+func (c storeCP) Mamelet(_ context.Context, sha string) ([]byte, error) {
+	if b, ok := c.binaries[sha]; ok {
+		return b, nil
+	}
+	return nil, fmt.Errorf("the Control Plane does not serve a mamelet with this sha256")
 }
 
 func (c storeCP) Revision(ctx context.Context) (noderev.Signed, error) {

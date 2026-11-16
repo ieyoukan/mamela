@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -159,6 +161,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 	}
 	out := &planned{Plan: p, Graph: res.Graph, Policy: pol, Site: site, Programs: rt.Programs(), Manifests: rt.Manifests()}
 	if site != nil && site.ControlPlane.Enabled() {
+		if w := mameletServedWarning(site, res.Graph); w != "" {
+			out.Warnings = append(out.Warnings, w)
+		}
 		if site.ControlPlane.MoveTo != "" {
 			out.Warnings = append(out.Warnings, "MAM-NODE-0102: plan does not relocate agents; use mamela controlplane redirect --db <database> --url <new-endpoint> after the new Control Plane is ready")
 		}
@@ -346,4 +351,31 @@ func applyPlan(ctx context.Context, st *store.Store, site *sitedef.Site, digest 
 		return applyResult{BlockedAfter: true, Stopped: rep.Stopped}, nil
 	}
 	return applyResult{Stopped: rep.Stopped}, nil
+}
+
+// mameletServedWarning says, when a declaration pins a mamelet this Control Plane does not serve,
+// that mamelet on the node could not fetch it ("" when all is well or nothing is pinned). It only
+// advises: the plan does not depend on it, and an update that cannot fetch its binary fails safely.
+func mameletServedWarning(site *sitedef.Site, g *graph.Graph) string {
+	var pinned []string
+	for _, r := range g.Sorted() {
+		if r.NodeMamelet != nil {
+			pinned = append(pinned, r.NodeMamelet.SHA256)
+		}
+	}
+	if len(pinned) == 0 || site.ControlPlane.MameletBinary == "" {
+		return ""
+	}
+	bin, err := os.ReadFile(site.ControlPlane.MameletBinary)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(bin)
+	served := hex.EncodeToString(sum[:])
+	for _, sha := range pinned {
+		if sha != served {
+			return fmt.Sprintf("MAM-NODE-0103: the declaration pins mamelet %s, but this Control Plane serves %s (controlplane.mamelet_binary): a node could not fetch the pinned one; put its binary there and restart mamela serve, or pin %s", sha[:12], served[:12], served[:12])
+		}
+	}
+	return ""
 }

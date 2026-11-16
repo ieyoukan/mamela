@@ -21,6 +21,7 @@ const (
 	CapK3sInstall  = "k3s.install"
 	CapK3sManifest = "k3s.manifest"
 	CapK3sRemove   = "k3s.remove-node"
+	CapMameletUpd  = "mamelet.update"
 	capSystemd     = "systemd."
 )
 
@@ -34,9 +35,10 @@ const (
 	KeyAptRemove    = "mamela:apt.remove"    // packages the simulation would remove
 	KeyAptOrigin    = "mamela:apt.origin"    // origins of the packages it would install
 	KeyAutoStart    = "mamela:policy.autoStartServices"
-	KeyK3sSHA256    = "mamela:k3s.sha256" // sha256 of the downloaded binary
-	FactChangeSet   = "changeSet"         // plan fact: the approved change set digest
-	FactOrigins     = "allowedOrigins"    // plan fact: the policy's allowed APT origins (prefixes, "Ubuntu:*")
+	KeyK3sSHA256    = "mamela:k3s.sha256"     // sha256 of the downloaded binary
+	KeyMameletSHA   = "mamela:mamelet.sha256" // sha256 of the mamelet binary fetched from the Control Plane
+	FactChangeSet   = "changeSet"             // plan fact: the approved change set digest
+	FactOrigins     = "allowedOrigins"        // plan fact: the policy's allowed APT origins (prefixes, "Ubuntu:*")
 	FactAutoStart   = "autoStartServices"
 	FactOperationID = "operationId" // filled when the operation is granted
 	FactExpiresAt   = "expiresAt"   // filled when the revision is signed
@@ -92,6 +94,15 @@ func Manifest() spec.Manifest {
 			Reasons:    []string{"mamelet writes the manifest file once"},
 		}},
 	}}}
+	mameletKind := spec.Kind{Kind: graph.KindNodeMamelet, Operations: []spec.Operation{{
+		Op: policy.OpUpdateMamelet, Support: spec.Supported, Needs: []spec.Need{{
+			Capability: CapMameletUpd, Target: node, Object: "mamelet {sha256}", Always: true,
+			Conditions: append(slices.Clone(grantConditions),
+				spec.Condition{Key: KeyMameletSHA, Test: spec.Equals, Values: []string{"{sha256}"}}),
+			Note:    "mamelet fetches the binary from the Control Plane over its pinned TLS, replaces itself only if the sha256 is the declared one and the new binary runs (-version), keeps the previous binary, and goes back to it if the new one does not report within 10 minutes",
+			Reasons: []string{"mamelet replaces /usr/local/sbin/mamelet once and restarts"},
+		}},
+	}}}
 	svc := spec.Kind{Kind: graph.KindNodeService}
 	svc.Operations = append(svc.Operations, spec.Operation{Op: policy.OpConfigureService, Support: spec.Supported,
 		Needs: []spec.Need{{Capability: "revision.service-repair", Target: node, Object: "{service}", Always: true,
@@ -107,5 +118,5 @@ func Manifest() spec.Manifest {
 		}
 		svc.Operations = append(svc.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: []spec.Need{n}})
 	}
-	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: []spec.Kind{pkg, svc, k3s, manifest}}
+	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: []spec.Kind{pkg, svc, k3s, manifest, mameletKind}}
 }

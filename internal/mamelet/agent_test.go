@@ -41,6 +41,9 @@ type fakeOS struct {
 	started     map[string]int64
 	restartedAt int64
 	kubectl     string
+	// nextRuns: the staged mamelet runs with -version (and prints nextVersion).
+	nextRuns    bool
+	nextVersion string
 	// kubectlFails names a kubectl verb (drain, delete) that exits 1.
 	kubectlFails string
 }
@@ -52,6 +55,12 @@ func newFakeOS() *fakeOS {
 
 func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []string) ([]byte, []byte, int, error) {
 	f.commands = append(f.commands, program+" "+strings.Join(args, " "))
+	if strings.HasSuffix(program, "mamelet.next") {
+		if f.nextRuns {
+			return []byte(f.nextVersion + "\n"), nil, 0, nil
+		}
+		return nil, []byte("exec format error"), 126, nil
+	}
 	last := args[len(args)-1]
 	switch program {
 	case progDpkgQuery:
@@ -144,6 +153,18 @@ type fakeCP struct {
 	signed  noderev.Signed
 	err     error
 	reports []noderev.Report
+	// binaries is what the Control Plane serves as mamelet, by the sha256 asked for.
+	binaries map[string][]byte
+	fetched  []string
+}
+
+func (c *fakeCP) Mamelet(_ context.Context, sha string) ([]byte, error) {
+	c.fetched = append(c.fetched, sha)
+	b, ok := c.binaries[sha]
+	if !ok {
+		return nil, errors.New("the Control Plane does not serve a mamelet with this sha256")
+	}
+	return b, nil
 }
 
 func (c *fakeCP) Revision(context.Context) (noderev.Signed, error) { return c.signed, c.err }

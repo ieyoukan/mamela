@@ -33,6 +33,9 @@ const (
 	// KindNodeK3sManifest is a manifest in the auto-deploy directory of a k3s server: k3s applies
 	// what is in it (a Helm chart, a workload) and applies it again whenever it changes.
 	KindNodeK3sManifest Kind = "NodeK3sManifest"
+	// KindNodeMamelet is the mamelet release a node runs: its sha256 is declared, like a k3s
+	// binary's, and a node that runs another one is updated (with an approval).
+	KindNodeMamelet Kind = "NodeMamelet"
 )
 
 // Builtin reports whether a kind is one of Mamela's own (not a provider's).
@@ -49,6 +52,7 @@ var kindOrder = map[Kind]int{
 	KindNodeK3s:     3,
 
 	KindNodeK3sManifest: 4,
+	KindNodeMamelet:     5,
 }
 
 // Graph is a decoded and validated desired state.
@@ -66,6 +70,7 @@ type Resource struct {
 	NodeK3s     *NodeK3sSpec
 
 	NodeK3sManifest *NodeK3sManifestSpec
+	NodeMamelet     *NodeMameletSpec
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
@@ -175,6 +180,16 @@ type NodeK3sManifestSpec struct {
 	Node    string // a k3s server
 	Name    string // [a-z0-9-]: the file is mamela-<name>.yaml
 	Content string // YAML, at most MaxK3sManifest bytes
+}
+
+// NodeMameletSpec says a node runs the mamelet whose binary has this sha256. The Control Plane
+// serves that binary (the site's controlplane.mamelet_binary); mamelet on the node fetches it,
+// checks the sha256, keeps the previous binary and restarts into the new one. The resource's name
+// is "<node>/mamelet".
+type NodeMameletSpec struct {
+	Node    string
+	Version string // a label for people (shown in the plan); optional
+	SHA256  string // hex, of the linux/amd64 binary
 }
 
 // MaxK3sManifest bounds a manifest's content.

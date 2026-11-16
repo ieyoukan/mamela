@@ -131,6 +131,22 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 - **消さない:** 宣言から消しても、ファイルは残る（k3s が適用したものも残る）。消すのはサーバー上で手で行う。削除は ADR 0013 の範囲で、このリソースにはまだない。
 - **大きなものは HelmChart で:** 内容が 64 KiB を超えるものは、`HelmChart`（k3s 組み込みの Helm コントローラー）のマニフェストでチャートを指す。
 
+### NodeMamelet
+
+ノードで動く mamelet の版を、宣言で固定する（k3s の binary と同じに、sha256 で）。宣言は、Mamela Pome の `Mamela.mamelet(graph, node, version, sha256)`（0.3.1 から。公開前は `Mamela.on_node(graph, node, "NodeMamelet", ...)`）。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/mamelet` |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.sha256` | string | linux/amd64 の mamelet の binary の sha256（小文字 16 進 64 桁） |
+| `spec.version` | string | 人のための名前（省略できる。`[A-Za-z0-9._+-]`、64 字まで）。plan に出る |
+
+- **承認:** `update-mamelet`（MAM-POL-0215）。plan の diff に、いま動いている sha256 と宣言した sha256 が出る。
+- **配る側:** Control Plane は、サイト設定の `controlplane.mamelet_binary` の binary を `/v1/mamelet/<sha256>` で配る。宣言した sha256 が配っているものと違うと、`mamela plan` が警告する（MAM-NODE-0103）。
+- **更新:** mamelet が binary を取り、sha256 を確かめ、`-version` で動くことを確かめてから、前の binary を `mamelet.prev` に残して置き換え、自分を再起動する。新しい mamelet が報告しなければ、前に戻る。ノードは 1 台ずつ、名前の順に更新する。手順と限界は [mamelet の更新](mamelet-update.md)。
+- **観測:** mamelet は、動いている binary の sha256 を報告する（`/proc/self/exe` のもの。置き換えた直後の、まだ再起動していないプロセスの版ではなく）。
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。
