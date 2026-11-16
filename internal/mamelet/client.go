@@ -32,10 +32,28 @@ type EnrollRequest struct {
 	CSR   string `json:"csr"` // PEM
 }
 
-// EnrollResponse carries the client certificate.
+// EnrollResponse carries the client certificate (and the renewed one, see RenewRequest).
 type EnrollResponse struct {
 	Certificate string `json:"certificate"` // PEM
 }
+
+// RenewRequest asks the Control Plane, with the current client certificate, for a new one before it
+// ends. The request is signed by the key of the certificate: mamelet keeps its key, so that
+// cert.pem and key.pem always belong together (one file is replaced, atomically).
+type RenewRequest struct {
+	CSR string `json:"csr"` // PEM
+}
+
+// ErrRenewUnsupported is what renewal returns when the Control Plane does not know the request (an
+// older one): nothing was changed, and the certificate lasts as long as it does.
+var ErrRenewUnsupported = errors.New("the Control Plane does not renew certificates (it is older than mamelet)")
+
+const (
+	// renewWhenLeft is the part of a certificate's life that is left when mamelet renews it.
+	renewWhenLeft = 3 // a third
+	// renewRetry is how long mamelet waits before asking again after a renewal that failed.
+	renewRetry = time.Hour
+)
 
 const maxResponse = 1 << 20
 
@@ -112,18 +130,37 @@ func Enroll(ctx context.Context, c Config, token string) error {
 	return writeFile(c.certPath(), []byte(resp.Certificate))
 }
 
+// writeFile replaces path with data, atomically and durably: after a power loss, the file is the
+// old one or the new one, never an empty one (a node whose certificate file is empty cannot start).
 func writeFile(path string, data []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
 }
 
-// Client talks to the Control Plane with the enrolled client certificate.
+// Client talks to the Control Plane with the enrolled client certificate. One goroutine uses it
+// at a time (mamelet's loop); renewing a certificate replaces the HTTP client.
 type Client struct {
 	cfg  Config
 	http *http.Client
+	cert tls.Certificate
+	leaf *x509.Certificate
+	// renewTried is when a renewal was last attempted (it is not retried within renewRetry).
+	renewTried time.Time
 	// moved is the URL a revision moved the Control Plane to (ADR 0003); "" when it did not.
 	moved string
 	// active is the URL the last revision came from; reports go there.
@@ -150,7 +187,88 @@ func NewClient(c Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cfg: c, http: httpClient(tlsCfg)}, nil
+	leaf := cert.Leaf
+	if leaf == nil {
+		if leaf, err = x509.ParseCertificate(cert.Certificate[0]); err != nil {
+			return nil, fmt.Errorf("load the client certificate: %w", err)
+		}
+	}
+	return &Client{cfg: c, http: httpClient(tlsCfg), cert: cert, leaf: leaf}, nil
+}
+
+// CertNotAfter is when the client certificate ends.
+func (c *Client) CertNotAfter() time.Time { return c.leaf.NotAfter }
+
+// CertExpired reports whether the client certificate has ended at now. The Control Plane then
+// refuses the connection itself; only enrolling again helps.
+func (c *Client) CertExpired(now time.Time) bool { return !now.Before(c.leaf.NotAfter) }
+
+// RenewDue reports whether less than a third of the certificate's life is left at now.
+func (c *Client) RenewDue(now time.Time) bool {
+	life := c.leaf.NotAfter.Sub(c.leaf.NotBefore)
+	return !now.Before(c.leaf.NotAfter.Add(-life / renewWhenLeft))
+}
+
+// RenewIfDue asks the Control Plane for a new certificate when less than a third of the life of the
+// current one is left, saves it, and uses it from then on. It reports whether it did. A renewal
+// that failed is not tried again for an hour. A Control Plane that does not know the request (an
+// older one) answers 404: ErrRenewUnsupported, and nothing changes. The key stays the same, so a
+// crash can only leave the old certificate or the new one in cert.pem, each with its key.
+func (c *Client) RenewIfDue(ctx context.Context, now time.Time) (bool, error) {
+	if !c.RenewDue(now) || (!c.renewTried.IsZero() && now.Sub(c.renewTried) < renewRetry) {
+		return false, nil
+	}
+	c.renewTried = now
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: c.cfg.Node}}, c.cert.PrivateKey)
+	if err != nil {
+		return false, fmt.Errorf("renew: %w", err)
+	}
+	body, err := json.Marshal(RenewRequest{CSR: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))})
+	if err != nil {
+		return false, err
+	}
+	server := c.active
+	if server == "" {
+		server = c.servers()[0]
+	}
+	var resp EnrollResponse
+	if err := do(ctx, c.http, http.MethodPost, c.nodeURL(server, "/renew"), body, &resp); err != nil {
+		var se *statusError
+		if errors.As(err, &se) && se.code == http.StatusNotFound {
+			return false, ErrRenewUnsupported
+		}
+		return false, fmt.Errorf("renew: %w", err)
+	}
+	block, _ := pem.Decode([]byte(resp.Certificate))
+	if block == nil {
+		return false, errors.New("renew: the Control Plane did not return a certificate")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false, fmt.Errorf("renew: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(c.cfg.CA)) {
+		return false, errors.New("the Control Plane CA in the configuration is not a PEM certificate")
+	}
+	if _, err := cert.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		return false, fmt.Errorf("renew: the certificate is not one of the Control Plane's: %w", err)
+	}
+	if pub, ok := cert.PublicKey.(*ecdsa.PublicKey); !ok || !pub.Equal(c.leaf.PublicKey) || cert.Subject.CommonName != c.cfg.Node || !cert.NotAfter.After(c.leaf.NotAfter) {
+		return false, errors.New("renew: the certificate is not a later one for this key and node")
+	}
+	renewed := tls.Certificate{Certificate: [][]byte{cert.Raw}, PrivateKey: c.cert.PrivateKey, Leaf: cert}
+	tlsCfg, err := c.cfg.tlsConfig(&renewed)
+	if err != nil {
+		return false, err
+	}
+	if err := writeFile(c.cfg.certPath(), []byte(resp.Certificate)); err != nil {
+		return false, fmt.Errorf("renew: save the certificate: %w", err)
+	}
+	old := c.http
+	c.http, c.cert, c.leaf = httpClient(tlsCfg), renewed, cert
+	old.CloseIdleConnections()
+	return true, nil
 }
 
 func (c *Client) nodeURL(server, suffix string) string {
@@ -249,6 +367,14 @@ func (c *Client) Report(ctx context.Context, r noderev.Report) error {
 	return do(ctx, c.http, http.MethodPost, c.nodeURL(server, "/report"), body, nil)
 }
 
+// statusError is an answer other than 2xx.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
 func do(ctx context.Context, client *http.Client, method, u string, body []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
@@ -267,7 +393,7 @@ func do(ctx context.Context, client *http.Client, method, u string, body []byte,
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("%s %s: %s: %s", method, u, resp.Status, bytes.TrimSpace(data))
+		return &statusError{resp.StatusCode, fmt.Sprintf("%s %s: %s: %s", method, u, resp.Status, bytes.TrimSpace(data))}
 	}
 	if out == nil || resp.StatusCode == http.StatusNoContent {
 		return nil
