@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs every local check: Go formatting, vet and tests (with the pinned toolchain required),
-# Emela formatting, type checks and tests, and the determinism check of the example.
+# Emela formatting, type checks and tests, the determinism check of the example, and that the Pome
+# versions, their tags and the examples agree (docs/releasing.md; it reads the tags of the clone).
 # Nothing here touches the network or real infrastructure.
 #
 # Usage: scripts/check.sh   (run scripts/install-toolchain.sh first; needs Node.js, see mise.toml)
@@ -38,6 +39,10 @@ git ls-files '*Pome.lock' ':!:internal/evaluate/testdata/**' | while read -r loc
       echo "$lock: the cache differs (run scripts/install-toolchain.sh)"; exit 1; }
   fi
 done
+
+step "pome: versions, tags and examples agree (docs/releasing.md)"
+scripts/test-check-pome-versions.sh
+scripts/check-pome-versions.sh
 
 step "go: test (race detector on)"
 go test -race -count=1 ./...

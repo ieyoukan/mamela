@@ -3,6 +3,8 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -10,13 +12,16 @@ import (
 	"io"
 	"maps"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
@@ -49,6 +54,10 @@ type reasonSink struct{}
 // ErrNotSent marks an error that happened before the request was sent.
 var ErrNotSent = errors.New("not sent")
 
+// ErrCertificatePin is what the check of a pinned TLS certificate (tls_fingerprint) returns when the
+// server's certificate is not the pinned one.
+var ErrCertificatePin = errors.New("the server certificate does not match the pinned fingerprint")
+
 // maxResponse bounds a response body.
 const maxResponse = 8 << 20
 
@@ -57,6 +66,10 @@ type HTTP struct {
 	Base      string                      // "https://pve.example:8006/api2/json"
 	Client    *http.Client                // with timeouts
 	Authorize func(r *http.Request) error // adds the credentials (signs the request)
+	// Detail receives the failure of a request as Go reports it, with the address in it, for the
+	// operator's log. The error the host returns says what kind of failure it was and never where:
+	// a plan's errors reach a pull request (B10 of docs/reviews/2026-11-17-iac-audit.md).
+	Detail func(err error)
 }
 
 // Do implements Upstream.
@@ -75,7 +88,8 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 	}
 	req, err := newRequest(ctx, h.Base, r, f)
 	if err != nil {
-		return 0, nil, err
+		h.detail(err)
+		return 0, nil, notAURL(err)
 	}
 	if h.Authorize != nil {
 		if err := h.Authorize(req); err != nil {
@@ -96,15 +110,17 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
+		h.detail(err)
 		if !wrote {
-			return 0, nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+			return 0, nil, fmt.Errorf("%w: %s", ErrNotSent, sayConnectionFailure(err))
 		}
-		return 0, nil, err
+		return 0, nil, errors.New(sayConnectionFailure(err))
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse+1))
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("reading the response: %w", err)
+		h.detail(err)
+		return resp.StatusCode, nil, errors.New(sayConnectionFailure(err) + " while reading the response")
 	}
 	if len(body) > maxResponse {
 		return resp.StatusCode, nil, fmt.Errorf("a response larger than %d MiB", maxResponse>>20)
@@ -116,12 +132,20 @@ func (h HTTP) send(ctx context.Context, r protocol.HostRequest, f *File) (int, [
 	return resp.StatusCode, body, nil
 }
 
+func (h HTTP) detail(err error) {
+	if h.Detail != nil {
+		h.Detail(err)
+	}
+}
+
 // CheckBase accepts an https API base, or http on the loopback interface only (a local API, as
-// in development): credentials never cross a network in clear text.
+// in development): credentials never cross a network in clear text. Its errors do not repeat the
+// base: they reach plans and pull requests, and the section of mamela.providers.toml that has the
+// base is named by whoever wraps them.
 func CheckBase(base string) error {
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return fmt.Errorf("API base %q is not a plain URL", base)
+		return errors.New("api_url is not a plain URL (no query, fragment or user name)")
 	}
 	switch {
 	case u.Scheme == "https":
@@ -129,8 +153,73 @@ func CheckBase(base string) error {
 	case u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost"):
 		return nil
 	}
-	return fmt.Errorf("API base %q must be https (http only on 127.0.0.1, ::1 or localhost)", base)
+	return errors.New("api_url must be https (http only on 127.0.0.1, ::1 or localhost)")
 }
+
+// connectionCode is the reason code of a failed request to the API.
+const connectionCode = "MAM-PRV-0012"
+
+// sayConnectionFailure tells what kind of failure a request to the API met, for a person and for a
+// pull request: never the address, which Go's errors carry (the URL, the host, the port, the
+// resolver). The detail goes to the operator's log (HTTP.Detail).
+func sayConnectionFailure(err error) string {
+	var (
+		dns     *net.DNSError
+		certErr *tls.CertificateVerificationError
+		unknown x509.UnknownAuthorityError
+		name    x509.HostnameError
+		invalid x509.CertificateInvalidError
+		timeout interface{ Timeout() bool }
+		why     string
+		fix     = "check that the API is up and that api_url in mamela.providers.toml is right"
+	)
+	switch {
+	case errors.Is(err, ErrCertificatePin):
+		why, fix = "the server certificate does not match the pinned fingerprint", "check tls_fingerprint in mamela.providers.toml, and whether the API's certificate was renewed"
+	case errors.As(err, &certErr), errors.As(err, &unknown), errors.As(err, &name), errors.As(err, &invalid):
+		why, fix = "the server's TLS certificate was not accepted", "give tls_fingerprint in mamela.providers.toml for a self-signed certificate, or use a certificate a CA signed"
+	case errors.As(err, &dns):
+		why, fix = "the name of the API's host did not resolve", "check api_url in mamela.providers.toml and the Control Plane's DNS"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &timeout) && timeout.Timeout():
+		why = "the API did not answer in time"
+	case errors.Is(err, context.Canceled):
+		why, fix = "the request was canceled", "run it again"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		why = "the connection was refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		why = "the connection was reset"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		why, fix = "there is no route to the API", "check the Control Plane's network and api_url in mamela.providers.toml"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		why = "the API closed the connection without an answer"
+	default:
+		why = "the connection failed"
+	}
+	return connectionCode + ": " + why + "; " + fix + " (the API's address is in the Control Plane's log, not here)"
+}
+
+// notAURL is the error of a request that could not be made: the base or the path is not a URL. Go's
+// error repeats the URL.
+func notAURL(err error) error {
+	if errors.Is(err, ErrNotSent) {
+		return err
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return fmt.Errorf("%w: %s: the request is not a valid URL (%v)", ErrNotSent, connectionCode, err)
+}
+
+// addresses are what Redact removes: URLs, and the address of a connection (IPv4 with a port, IPv6
+// in brackets). An address with no port is left: it may be a value of the declaration that a person
+// has to compare (a refused request names the parameter and its value).
+var addresses = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>)\]}]*[^\s"'<>)\]}.,;:]|\[[0-9a-f:.]*:[0-9a-f:.]*\](?::\d+)?|\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b`)
+
+// Redact removes what looks like where an API is from text that may reach a pull request or anyone
+// who does not run the Control Plane: a URL, the address and port of a connection. It is the last
+// line of defence; the errors of this package do not carry addresses to begin with.
+func Redact(s string) string { return addresses.ReplaceAllString(s, "<address removed>") }
 
 func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *File) (*http.Request, error) {
 	u := base + r.Path
@@ -155,7 +244,7 @@ func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *Fil
 	}
 	req, err := http.NewRequestWithContext(ctx, r.Method, u, body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+		return nil, notAURL(err)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -224,7 +313,7 @@ func multipartRequest(ctx context.Context, u string, r protocol.HostRequest, f F
 	}{body, content})
 	if err != nil {
 		content.Close()
-		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+		return nil, notAURL(err)
 	}
 	req.ContentLength = int64(head.Len()) + f.Size + int64(len(tail))
 	req.Header.Set("Content-Type", mw.FormDataContentType())
