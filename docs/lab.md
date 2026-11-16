@@ -131,6 +131,26 @@ mamela controlplane redirect --db <元のstate.db> --url https://<ホストの�
 
 - **バンドルの中身:** 状態データベースの一貫したコピー、CA と署名鍵、ホスト用に書き換えた site、ホスト用に書き換えた `mamela.providers.toml`（秘密は `/etc/mamela/secrets/<provider>-token` と `<provider>-guard-token`）、mamelet のバイナリ、systemd unit（`mamela-serve`。宣言のリポジトリで運用するなら `mamela-api` と `mamelacd`。[gitops.md](gitops.md)）、install.sh。
 - **扱い:** バンドルは mode 0600 で書く。秘密を含むので、ホストにコピーした後に消す。
+- **バンドルはバックアップではない。** 引っ越しのための 1 回限りのスナップショットで、mamelacd の設定・DB は含まない。常用のバックアップと、ホストを失ったときの復旧は 6 と [recovery.md](recovery.md) にある。
 - **ホストでの権限:** serve と `mamela api` は、権限のない専用ユーザー `mamela-cp` で動く（mamelacd は専用の `mamelacd`）。
 - **移した後の plan と apply:** ホストの上で `--site /etc/mamela/site.toml --providers /etc/mamela/providers.toml --db /var/lib/mamela/state.db` を付けて実行する。CP のマシンとその上のリソースは変えない（MAM-POL-0308）。
 - **移行中:** bundle の作成後は元の CP で構成変更・登録を行わず、redirect だけを記録する。バンドルの DB には同じ接続先と revision が準備される。plan と `controlplane.move_to` はエージェントを移動させない。
+
+## 6. バックアップ・復旧・証明書の寿命
+
+詳しい手順は [recovery.md](recovery.md)。Control Plane のホストでの要点だけを書く。
+
+~~~bash
+# バックアップ（鍵と DB の所有者で。serve が動いていてよい）。出力は秘密: ホストの外へ、暗号化して
+sudo -u mamela-cp mamela backup --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --out <新しい名前>.backup
+# 復旧（鍵のディレクトリと DB が空のホストで。mamela serve は止めておく）
+sudo -u mamela-cp mamela restore --in <backup> --site /etc/mamela/site.toml --db /var/lib/mamela/state.db
+# mamelet の証明書の終わりを見る。切れたノードは、トークンを出して登録し直す
+mamela controlplane agents --db /var/lib/mamela/state.db
+mamela controlplane reenroll --db /var/lib/mamela/state.db --node <名前>
+~~~
+
+- **バックアップに入るもの:** DB と、鍵のディレクトリ（CA、revision の署名鍵、サーバー証明書）。site・providers・トークン、mamelacd は入らない（理由は recovery.md の 1）。
+- **一部だけ戻しても気づく:** DB に登録済みの mamelet があるのに CA・署名鍵がなければ、`serve`・`apply`・`api` は起動を拒否する（MAM-PKI-0201）。以前は、新しい CA と鍵を黙って作り、固定した CA を持つ全 mamelet を止めた。DB が mamelet より古いときは、CP のログに MAM-BAK-0101 が出る。
+- **mamelet の証明書は 1 年で、mamelet が残り 1/3 で自分で更新する**（0.3.2 以降の mamelet と CP）。古い mamelet は更新しないので、30 日前から CP のログと plan が警告する（MAM-PKI-0101）。CP のサーバー証明書も、動いたまま 30 日前に出し直す。切れた mamelet は `reenroll` で救う。CA（10 年）と revision の署名鍵は回転しない（限界と手順は recovery.md の 6.4）。
+- **版の混在:** 先に CP を更新し、そのあと mamelet を更新する。旧 CP に新しい mamelet がつないでも、更新の要求が 404 になるだけで何も変わらない。更新した証明書があるあいだは、0.3.2 より古い CP に戻さない。

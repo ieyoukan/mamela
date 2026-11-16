@@ -145,7 +145,7 @@ func printReport(w io.Writer, rep *reconcile.Report) {
 
 // seedMaker makes cloud-init seeds that install mamelet and point it at this Control Plane.
 func seedMaker(site *sitedef.Site, st *store.Store, keys string) (*seed.Maker, error) {
-	pki, err := loadPKI(site)
+	pki, err := loadPKI(context.Background(), site, st)
 	if err != nil {
 		return nil, err
 	}
@@ -165,18 +165,38 @@ func seedMaker(site *sitedef.Site, st *store.Store, keys string) (*seed.Maker, e
 		User: site.Guest.User, SSHPublicKeys: keyList, AllowedOrigins: policy.Default.AllowedAptOrigins, MameletBinary: bin}, nil
 }
 
+// keyDir is the directory of the Control Plane's keys.
+func keyDir(site *sitedef.Site) (string, error) {
+	return sitedef.ExpandHome(site.ControlPlane.StateDir)
+}
+
 // loadPKI loads (creating on first use) the Control Plane's keys; the server certificate names the
-// host mamelet connects to.
-func loadPKI(site *sitedef.Site) (*cp.PKI, error) {
-	dir, err := sitedef.ExpandHome(site.ControlPlane.StateDir)
+// host mamelet connects to. It never makes a new CA or revision key for a database that has mamelets
+// registered (MAM-PKI-0201): they are pinned to the ones that were lost (a database restored without
+// its keys), and new ones would stop every node.
+func loadPKI(ctx context.Context, site *sitedef.Site, st *store.Store) (*cp.PKI, error) {
+	dir, err := keyDir(site)
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(site.ControlPlane.URL)
+	hosts := hostsOf(site.ControlPlane.URL)
+	agents, err := st.AgentCount(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return cp.LoadPKI(dir, []string{u.Hostname()}, wallClock())
+	if err := cp.CheckKeys(dir, agents); err != nil {
+		return nil, told{err.Error()}
+	}
+	return cp.LoadPKI(dir, hosts, wallClock())
+}
+
+// hostsOf is what the server certificate must cover: the host mamelet connects to.
+func hostsOf(rawURL string) []string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	return []string{u.Hostname()}
 }
 
 func defaultImageCache() string {

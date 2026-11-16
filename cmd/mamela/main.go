@@ -38,6 +38,8 @@ Usage:
                                       resources of a state (terraform show -json), to adopt (ADR 0009)
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
   mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
+  mamela backup --out <file>          save the database and the Control Plane's keys (secret: they hold the CA key)
+  mamela restore --in <file>          put a backup back, on a host that has none of it (docs/recovery.md)
   mamela api --socket <path>          serve the Control Plane's local API to mamelacd, which follows a
                                       repository of declarations on GitHub (ADR 0010, 0012)
   mamela provider <new|pome|inspect|catalog|trust|script>
@@ -83,6 +85,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runImport(ctx, args[1:], stdout, stderr)
 	case "serve":
 		return runServe(ctx, args[1:], stdout, stderr)
+	case "backup":
+		return runBackup(ctx, args[1:], stdout, stderr)
+	case "restore":
+		return runRestore(ctx, args[1:], stdout, stderr)
 	case "api":
 		return runAPI(ctx, args[1:], stdout, stderr)
 	case "controlplane":

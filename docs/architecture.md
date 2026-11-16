@@ -220,7 +220,7 @@ Mamela が管理するのは、次の **両方** を満たすものだけであ�
 | Observed State | 最後に見えた実状態（時刻付き） | 観測結果のキャッシュ。実機が最終情報源 |
 | Execution State | 操作、事前条件、リトライ、結果 | SQLite の操作ジャーナル |
 
-SQLite の WAL モードとトランザクションを使い、**単一 Control Plane** の変更を整合させる。DB は API サーバーのローカル永続ディスク上に置き、バックアップ/復元、マイグレーションを運用要件とする。別プロセス/複数ノードからの共有ファイル直接書き込みや NFS 上の WAL 前提運用はしない。
+SQLite の WAL モードとトランザクションを使い、**単一 Control Plane** の変更を整合させる。DB は API サーバーのローカル永続ディスク上に置き、バックアップ/復元（`mamela backup`・`mamela restore`、[recovery.md](recovery.md)）、マイグレーションを運用要件とする。別プロセス/複数ノードからの共有ファイル直接書き込みや NFS 上の WAL 前提運用はしない。
 
 ### 概念テーブル
 
@@ -341,7 +341,7 @@ POST /v1/nodes/{id}/events
 POST /v1/nodes/{id}/heartbeat
 ~~~
 
-初期登録では Token をノード番号（Proxmox の VMID、または Mamela が振る番号）と期待ノードに紐づけ、再利用を拒否。以降は mTLS と証明書ローテーション・失効を導入。Node ID は URL だけでなく証明書主体と照合する。
+初期登録では Token をノード番号（Proxmox の VMID、または Mamela が振る番号）と期待ノードに紐づけ、再利用を拒否。以降は mTLS。証明書は 1 年で、mamelet が残り 1/3 で `POST /v1/nodes/{id}/renew` により自分で更新する（登録の同一性は登録時の証明書の serial のままで、更新で変わらない。失効は再登録）。Node ID は URL だけでなく証明書主体と照合する。切れた証明書の救済、CA・署名鍵の限界、バックアップと復旧は [recovery.md](recovery.md)。
 
 ~~~bash
 mamela get vms
