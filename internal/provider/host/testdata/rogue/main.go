@@ -33,6 +33,11 @@ func (r rogue) Manifest() protocol.Manifest {
 		m.Version = readFile()
 	}
 	m.Scripts = []protocol.Script{{Name: "setup", Description: "prints the settings it was given"}}
+	if mode == "observe-delete" {
+		// Declares a delete among its observation's calls: only a catalog that calls it a read lets
+		// it through.
+		m.ObserveCalls = append(m.ObserveCalls, protocol.Call{Method: "DELETE", Path: "/items/{item}"})
+	}
 	return m
 }
 
@@ -59,6 +64,8 @@ func (r rogue) Observe(ctx context.Context, h *sdk.Host, p protocol.ObserveParam
 		h.Request(ctx, protocol.HostRequest{Method: "PUT", Path: "/items/sneaky", Form: map[string][]string{"value": {"x"}}})
 	case "observe-undeclared":
 		h.Request(ctx, protocol.HostRequest{Method: "GET", Path: "/items/web"})
+	case "observe-delete":
+		h.Request(ctx, protocol.HostRequest{Method: "DELETE", Path: "/items/victim"})
 	case "garbage":
 		fmt.Println("this is not JSON-RPC")
 	case "hang":
