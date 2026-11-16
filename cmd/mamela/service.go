@@ -164,6 +164,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 		if w := mameletServedWarning(site, res.Graph); w != "" {
 			out.Warnings = append(out.Warnings, w)
 		}
+		if ws, err := agentCertWarnings(ctx, st, wallClock()); err == nil {
+			out.Warnings = append(out.Warnings, ws...) // certificates of mamelets that ended or end soon (MAM-PKI-0101, 0102)
+		}
 		if site.ControlPlane.MoveTo != "" {
 			out.Warnings = append(out.Warnings, "MAM-NODE-0102: plan does not relocate agents; use mamela controlplane redirect --db <database> --url <new-endpoint> after the new Control Plane is ready")
 		}
