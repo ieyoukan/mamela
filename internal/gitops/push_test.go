@@ -365,3 +365,22 @@ func TestActiveIntervalAndRetryConfig(t *testing.T) {
 		}
 	}
 }
+
+// A plan that could not be made sets a failure status; the plan that comes next (in sync as the one
+// before it was) replaces it, instead of leaving "could not be planned" on a head that is in sync.
+func TestFailedPlanStatusIsReplaced(t *testing.T) {
+	f := pushFixture(t)
+	head := f.push("v1", "alice")
+	f.once() // converged: in sync
+	f.m.planErr = "an observation failed"
+	f.later(time.Hour) // the resync interval has passed
+	f.once()
+	if s := f.lastStatus(head); s.State != "failure" || s.Description != "could not be planned" {
+		t.Fatalf("after the failed plan: %+v", s)
+	}
+	f.m.planErr = ""
+	f.once()
+	if s := f.lastStatus(head); s.State != "success" {
+		t.Fatalf("the failure was left on a head that is in sync: %+v", s)
+	}
+}
