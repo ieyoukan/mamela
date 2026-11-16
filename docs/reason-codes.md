@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -186,6 +186,35 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 | MAM-ACT-0204 | 復旧対象の操作・資源・プロバイダー契約が一致しない、または旧形式の記録に復旧用の identity がない | 元の契約を使う。旧形式は実物と監査記録を確認する |
 | MAM-ACT-0205 | 明示操作の途中で所有記録やノードの登録が変わったため、新しい登録を保持した | 同名資源の再作成・再登録を確認する。古い操作で新しい登録を消さない |
 
+## MAM-PKI — 証明書と鍵（mamelet の登録、Control Plane の identity）
+
+CP と mamelet の mTLS の証明書、CP の CA と署名鍵。手順は [recovery.md](recovery.md)。
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-PKI-0101 | mamelet の証明書が 30 日以内に切れる（更新されていない）。CP のログ（そのノードが来たとき、6 時間に 1 回、起動時と毎日）、`mamela plan` の警告、`mamela controlplane agents` | 0.3.2 以降の mamelet は、0.3.2 以降の CP から自分で更新する。mamelet を更新するか（[mamelet-update.md](mamelet-update.md)）、切れる前後に `mamela controlplane reenroll --node <名前>` |
+| MAM-PKI-0102 | mamelet の証明書が切れた。CP は握手で断る（CP のログ。TLS の失敗に足す）。ノードの mamelet のログにも出る | 再登録する（`reenroll`、recovery.md の 6.3） |
+| MAM-PKI-0103 | CP のサーバー証明書が 30 日以内に切れるので、動いたまま出し直した（情報）。出し直せないときは、そのエラーと、鍵のディレクトリへの書き込み権限の確認 | 何もしない。出し直せないときは `controlplane.state_dir` の権限 |
+| MAM-PKI-0104 | mamelet が証明書を更新できない（ノードのログ）。CP が古くて要求を知らない（404）か、CP が断った | CP を更新する（先に CP、次に mamelet）。CP のログに理由がある。1 時間ごとに再試行する |
+| MAM-PKI-0105 | 更新の要求を CP が断った。証明書の残りがまだ寿命の半分より多い（409） | 何もしない（mamelet は残り 1/3 になってから頼む） |
+| MAM-PKI-0106 | CP の CA が 1 年以内に切れる（毎日のログ）。mamelet は CA を 1 つだけ固定していて、重ねて信頼できない | recovery.md の 6.4（全ノードの再登録）を、時間を決めて行う |
+| MAM-PKI-0201 | **起動を拒否した。** DB に登録済みの mamelet があるのに、CA か revision の署名鍵のファイルがない（`serve`・`apply`・`api`・`backup`）。新しく作ると、固定している全 mamelet が止まる | 鍵を戻す（`mamela restore`、またはバックアップの `cp/`）。本当に失ったなら `mamela controlplane new-keys --confirm`（DB は残る。全ノードの再登録） |
+| MAM-PKI-0203 | 鍵はあるが DB が新しい（なかったので、起動時に作った）。登録済みの mamelet がなく、全 mamelet が断られる（`serve` の起動時のログ） | DB を戻す（`mamela restore`）。なければ、ノードごとに `reenroll --node <名前> --vmid <vmid>` |
+| MAM-PKI-0301 | `reenroll` の対象のノードが DB にない、または VMID が登録と違う | `mamela controlplane agents` で名前を確かめる。DB を失ったノードは `--vmid` を付ける |
+| MAM-PKI-0302 | `new-keys` を断った。鍵のディレクトリに、CA か署名鍵のファイルが一部ある | 残すなら戻す。替えるなら、古い CA・署名鍵のファイルを自分で移してから |
+
+## MAM-BAK — バックアップと復元
+
+`mamela backup`、`mamela restore`、古い DB の検出。手順は [recovery.md](recovery.md)。
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-BAK-0001 | `backup` の出力先がすでにある（上書きしない） | 新しい名前にする |
+| MAM-BAK-0002 | バックアップできない（DB がない、鍵がまだない）、または、バックアップの archive が復元できない（欠け、書き換え、知らないファイル、manifest と違う sha256） | archive は `mamela backup` が書いたままのものを使う。転送で壊れたなら、取り直す・前のものを使う |
+| MAM-BAK-0003 | `restore` の先に、DB か鍵がすでにある。何も変えていない | 何もないホストで戻す。または自分で移す。`--replace` なら `名前.before-restore-<時刻>` に移して残す |
+| MAM-BAK-0004 | バックアップの DB を、この Mamela は開けない（新しい版の schema など） | バックアップを作った版以上の Mamela で戻す |
+| MAM-BAK-0101 | **DB が mamelet より古い。** ノードが受け入れた revision の serial が、この DB のものより大きい（古いバックアップから戻した）。mamelet は小さい serial の revision を断る（CP のログ。6 時間に 1 回） | より新しいバックアップを戻す。なければ、そのノードの `state.json` の `lastSerial` を 0 にする（recovery.md の 5） |
+
 ## MAM-NODE — ノードの identity と配信
 
 | コード | 意味 | 対処 |
@@ -193,5 +222,7 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 | MAM-NODE-0101 | 同名ノードのマシン ID が変わった | 旧登録の失効を確認し、現ノードで再計画する |
 | MAM-NODE-0102 | `controlplane.move_to` があるが、plan は接続先を変えない | 新しい CP の準備後、`mamela controlplane redirect` を実行する |
 | MAM-NODE-0103 | 宣言が固定した mamelet の sha256 を、この Control Plane は配っていない（`controlplane.mamelet_binary` の sha256 が違う）。plan の警告で、digest には入らない | その binary を `controlplane.mamelet_binary` に置いて `mamela serve` を再起動するか、配っている版を宣言に書く |
+| MAM-NODE-0201 | CP が、ノードの `wait` の要求を断った。同じノードの待ちが 2 つあるところに、新しい要求が来て、古いほうを閉じた（409）。mamelet は通常の間隔に戻るだけ | 何もしない。繰り返すなら、同じ名前の mamelet が 2 つ動いていないか |
+| MAM-NODE-0202 | CP が、登録・更新・報告の要求を断った。本文が大きすぎる（413。登録と更新は 16 KiB、報告は 1 MiB）、または 10 秒以内に届かなかった（408） | mamelet 以外が送っていないか。ネットワークの遅延 |
 
 `mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。
