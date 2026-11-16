@@ -34,7 +34,7 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 
 ## 限界
 
-- **更新の仕組みより前の mamelet は、一度だけ手で置き換える。** 古い mamelet は、`mamelet` の許可を含む revision を、知らない項目として断る。`/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet` する（検証環境では `/tmp/vm-update.sh` のような手順）。これ以降は、宣言で更新できる。
+- **更新の仕組みより前の mamelet は、一度だけ手で置き換える。** 古い mamelet は、`mamelet` の許可を含む revision を、知らない項目として断る。断られていることは、plan が MAM-PLAN-0130 で示す（そのノードの変更は Blocked で、理由が mamelet の言葉で出る）。Control Plane のログにも出る。`/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet` する（検証環境では `/tmp/vm-update.sh` のような手順）。これ以降は、宣言で更新できる。
 - **新しい mamelet が、起動の前に壊れるとき**（ELF が壊れているなど）は、`-version` で見つかる。起動はするが、すぐ落ちるときは、3 回の起動で戻る。起動して動き続けるが、何かを間違えて報告するときは、戻らない（plan が違いを見つけて、また更新を出す）。
 - **Control Plane のホスト**（保護されたノード）の mamelet は、plan では更新しない（ADR 0003）。手で置き換える。
 - **種類の違う Control Plane（古い）** は、`/v1/nodes/<node>/wait` を知らない。mamelet はその場合も動く（今までの間隔）。

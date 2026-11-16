@@ -601,6 +601,67 @@ func TestAProtectedNodeHasNoGrantOfAnyKind(t *testing.T) {
 	}
 }
 
+// A mamelet that refuses the Control Plane's revision is named in the plan, with why and what to do
+// (audit A6: the reason was in the report, and nothing read it, so a node that could not be given a
+// permission looked like one that was merely slow). The change cannot be carried out, so it does not
+// wait for an approval to time out.
+func TestAMameletThatRefusesTheRevisionIsNamedInThePlan(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	e.round()
+	if c := change(t, e.plan(), "NodePackage app/nginx"); c.Status != plan.StatusChange {
+		t.Fatalf("before: %+v", c)
+	}
+	// The node's clock is behind: the revision the Control Plane offers was issued in its future.
+	e.now = e.now.Add(20 * time.Minute)
+	e.agent.Now = func() time.Time { return e.now.Add(-10 * time.Minute) }
+	if rep := e.round(); !strings.Contains(rep.Refused, "issued in the future") {
+		t.Fatalf("the node did not refuse: %q", rep.Refused)
+	}
+	p := e.plan()
+	c := change(t, p, "NodePackage app/nginx")
+	if c.Status != plan.StatusBlocked || c.Note == nil || c.Note.Code != "MAM-PLAN-0130" ||
+		!strings.Contains(c.Note.Message, "app") || !strings.Contains(c.Note.Message, "revision 1") || !strings.Contains(c.Note.Message, "issued in the future") ||
+		!strings.Contains(c.Note.Hint, "clock") {
+		t.Fatalf("the plan does not say why: %+v", c)
+	}
+	// Nothing is approved to wait on: no grant is given, and nothing is installed.
+	if rep := e.applyApproved(p); rep.Stopped != nil || e.os.installs != 0 {
+		t.Fatalf("apply: %+v (installs %d)", rep, e.os.installs)
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 0 {
+		t.Fatalf("a grant was given to a node that refuses: %s", rev.Content())
+	}
+	// Once the clock is right the node accepts, and the plan is as before.
+	e.agent.Now = func() time.Time { return e.now }
+	if rep := e.round(); rep.Refused != "" {
+		t.Fatalf("still refusing: %q", rep.Refused)
+	}
+	if c := change(t, e.plan(), "NodePackage app/nginx"); c.Status != plan.StatusChange || c.Note != nil {
+		t.Fatalf("after: %+v", c)
+	}
+}
+
+// A node that has accepted no revision at all, because it refuses each, is not "silent": the plan says
+// it refuses, in the place where it would otherwise wait for a report that does not come.
+func TestANodeThatRefusesEveryRevisionIsNotWaitedFor(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	st, _ := e.agent.State.Load()
+	st.LastSerial = 99 // it accepted a higher serial than the Control Plane has (a database restored from an older copy)
+	if err := e.agent.State.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	if rep := e.round(); !strings.Contains(rep.Refused, "older than one already accepted") {
+		t.Fatalf("the node did not refuse: %q", rep.Refused)
+	}
+	c := change(t, e.plan(), "NodePackage app/nginx")
+	if c.Status != plan.StatusBlocked || c.Note == nil || c.Note.Code != "MAM-PLAN-0130" || !strings.Contains(c.Note.Message, "serial 1 < 99") ||
+		!strings.Contains(c.Note.Hint, "database") {
+		t.Fatalf("the plan waits for a report: %+v", c)
+	}
+}
+
 func TestOldApprovalCannotGrantToReenrolledNode(t *testing.T) {
 	e := newEnv(t)
 	enroll := func(serial string) {

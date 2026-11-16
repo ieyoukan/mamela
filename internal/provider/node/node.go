@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -57,6 +59,17 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 		if err != nil {
 			return state.Snapshot{}, err
 		}
+		if r.Refused != "" {
+			// mamelet did not accept the revision on offer: no permission reaches this node.
+			if snap.NodeRefusals == nil {
+				snap.NodeRefusals = map[string]state.NodeRefusal{}
+			}
+			refusal := state.NodeRefusal{WorksFrom: r.Serial, Reason: printable(r.Refused, maxRefusal), ObservedAt: nr.Received}
+			if rev != nil {
+				refusal.Serial = rev.Serial
+			}
+			snap.NodeRefusals[r.Node] = refusal
+		}
 		for _, pk := range r.Packages {
 			snap.Packages[r.Node+"/"+pk.Name] = state.Package{Installed: pk.Installed, Version: pk.Version,
 				ChangeSet: pk.ChangeSet, Error: pk.Error, ObservedAt: nr.Received}
@@ -97,6 +110,28 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 		}
 	}
 	return snap, nil
+}
+
+// maxRefusal bounds the reason a mamelet gives for refusing a revision, in characters.
+const maxRefusal = 300
+
+// printable is what a node says of itself, made safe to show in a plan: only printable characters
+// (a node is trusted to report, not to lay out a person's screen or a PR comment), at most limit.
+func printable(s string, limit int) string {
+	var b strings.Builder
+	n := 0
+	for _, r := range s {
+		if n == limit {
+			b.WriteString("…")
+			break
+		}
+		if !unicode.IsPrint(r) {
+			r = '?'
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // Publish requests observations without activating a candidate declaration. Existing desired

@@ -299,6 +299,7 @@ APT インストールは maintainer script の特権実行を含み得るため
 - 承認は Plan digest、対象 ID、操作範囲、期限に結びつけ、変更で失効する。
 - **一度きりの許可（grant）には寿命がある。** apply が許可を revision に入れるとき、期限も記録する（結果を待つ時間に 15 分を足したもの。承認の期限が先ならそちら）。Control Plane は、期限を過ぎた許可と、期限のない許可（0.3.1 以前の Control Plane が入れたもの）を、revision から外して配る。revision 自体の有効期間は取得のたびに付け直されるので、許可の寿命にはならない。期限は DB の revision にだけ持ち、署名する内容（wire）には入れない（旧い mamelet は知らないメンバーを丸ごと断る）。承認が切れたあとは、承認が要る操作の許可を出さない（MAM-NODE-0120）。agent が不在で apply が「結果不明」で止まっても、許可が後から（承認の期限後や、宣言から消したあとに）実行されることはない。
 - **宣言から消えた物には許可を残さない。** plan が revision を用意するとき、宣言にない package・service・manifest・k3s・mamelet の項目を、許可（一度きりの許可、自動起動の repair、manifest の書き込み）ごと外す。外すのは許可と観測の対象だけで、ノード上の物は何も変えない（ADR 0013 の 6）。Control Plane のホスト（保護されたノード）は、宣言にある物の許可もすべて外す。
+- **mamelet が revision を拒否したとき**（未知のメンバー、serial の巻き戻し、時計のずれ、署名の不一致など）、その理由は mamelet の報告（`Refused`）で Control Plane に届く。plan はそのノードの変更を Blocked にして、理由と直し方を示す（MAM-PLAN-0130）。許可は revision で届くので、拒否されているノードには、承認しても何も届かない。Control Plane のログにも、拒否が始まったとき・理由が変わったとき・終わったときに 1 行ずつ出る。
 - Agent は署名不正、期限切れ、対象ノード不一致、未知の操作を拒否する。
 - Provider credential、Agent secret、署名鍵は Resource Graph/ログに含めず、安全な権限境界で渡す。
 - Rollback は best-effort。不可逆な OS / DB 操作は安全性を保証できない。

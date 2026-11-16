@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -449,5 +450,51 @@ func TestAGrantIsHandedOutOnlyUntilItsDeadline(t *testing.T) {
 	publish(grant("op-000000000000000000000003", time.Time{}))
 	if _, err := agent.Round(e.ctx); err != nil || runner.installs != 1 {
 		t.Fatalf("a grant without a deadline: %v, installs %d", err, runner.installs)
+	}
+}
+
+// The Control Plane says in its log when a mamelet starts refusing its revision, and when it stops:
+// once each, not at every report (audit A6: nothing on the Control Plane looked at the reason).
+func TestTheLogSaysWhenAMameletStartsAndStopsRefusing(t *testing.T) {
+	e := newEnv(t)
+	var buf strings.Builder
+	e.srv.Config.Handler = (&Server{Store: e.st, PKI: e.pki, Now: func() time.Time { return e.now }, RevisionTTL: time.Hour,
+		Log: log.New(&buf, "", 0)}).Handler()
+	cfg := e.enroll("web", 7001)
+	agent := e.agent(cfg)
+	if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+		return noderev.Revision{VMID: 7001}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setLast := func(serial int64) {
+		t.Helper()
+		st, err := agent.State.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.LastSerial, st.Revision = serial, nil
+		if err := agent.State.Save(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	round := func() {
+		t.Helper()
+		if _, err := agent.Round(e.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	round()
+	setLast(99) // a database restored from an older copy: the Control Plane's serial is lower than the node's
+	round()
+	round()
+	if out := buf.String(); strings.Count(out, "MAM-PLAN-0130") != 1 || !strings.Contains(out, "web:") || !strings.Contains(out, "older than one already accepted") {
+		t.Fatalf("the log of two refusing rounds:\n%s", out)
+	}
+	setLast(0)
+	round()
+	round()
+	if out := buf.String(); strings.Count(out, "accepts the Control Plane's revision again") != 1 || strings.Count(out, "MAM-PLAN-0130") != 1 {
+		t.Fatalf("the log after it accepts again:\n%s", out)
 	}
 }

@@ -243,6 +243,7 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	prev, _, _ := s.Store.NodeReportOf(r.Context(), a.Node)
 	if err := s.Store.PutAuthenticatedNodeReport(r.Context(), rep, a.CertSerial); err != nil {
 		if errors.Is(err, store.ErrAgentRevoked) {
 			fail(w, http.StatusForbidden, "agent registration changed")
@@ -255,6 +256,15 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		if res.Operation == "repair" {
 			s.logf("%s: %s: %s", a.Node, res.Outcome, res.Detail)
 		}
+	}
+	// A node that does not accept the revision it is offered can be given no permission, and nothing
+	// else says so (the plan does, from the report): log when that starts, changes and ends, not at
+	// each report.
+	switch {
+	case rep.Refused != "" && rep.Refused != prev.Report.Refused:
+		s.logf("%s: MAM-PLAN-0130: mamelet refuses the revision (it works from %d): %q", a.Node, rep.Serial, rep.Refused)
+	case rep.Refused == "" && prev.Report.Refused != "":
+		s.logf("%s: mamelet accepts the Control Plane's revision again (revision %d)", a.Node, rep.Serial)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

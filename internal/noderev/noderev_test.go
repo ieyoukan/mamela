@@ -400,3 +400,23 @@ func TestServedRevisionIsReadableByAnOlderMamelet(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The plan tells a node's refusal apart by the words Verify gives (they are all the Control Plane
+// gets: Report.Refused is text): a revision with a member the mamelet does not know starts
+// "decode revision", one whose content is not valid starts "invalid revision".
+func TestRefusalWordsThePlanRecognizes(t *testing.T) {
+	k := key(1)
+	pub := k.Public().(ed25519.PublicKey)
+	sign := func(payload string) Signed {
+		return Signed{Payload: []byte(payload), Signature: ed25519.Sign(k, []byte(payload))}
+	}
+	good, _ := json.Marshal(sample())
+	unknown := strings.Replace(string(good), `"node":"web"`, `"node":"web","somethingNew":1`, 1)
+	if _, err := Verify(pub, sign(unknown), expect()); err == nil || !strings.HasPrefix(err.Error(), "decode revision") {
+		t.Errorf("an unknown member: %v", err)
+	}
+	invalid := strings.Replace(string(good), `"nginx.service"`, `"a:b"`, 1)
+	if _, err := Verify(pub, sign(invalid), expect()); err == nil || !strings.HasPrefix(err.Error(), "invalid revision") {
+		t.Errorf("an invalid service name: %v", err)
+	}
+}

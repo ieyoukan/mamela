@@ -146,15 +146,15 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 	for _, r := range g.Sorted() {
 		switch r.Kind {
 		case graph.KindNodePackage:
-			p.Changes = append(p.Changes, b.guard(r.NodePackage.Node, b.pkg(r)))
+			p.Changes = append(p.Changes, b.onNode(r.NodePackage.Node, b.pkg(r)))
 		case graph.KindNodeService:
-			p.Changes = append(p.Changes, b.guard(r.NodeService.Node, b.service(r)))
+			p.Changes = append(p.Changes, b.onNode(r.NodeService.Node, b.service(r)))
 		case graph.KindNodeK3s:
-			p.Changes = append(p.Changes, b.guard(r.NodeK3s.Node, b.k3s(r)))
+			p.Changes = append(p.Changes, b.onNode(r.NodeK3s.Node, b.k3s(r)))
 		case graph.KindNodeK3sManifest:
-			p.Changes = append(p.Changes, b.guard(r.NodeK3sManifest.Node, b.k3sManifest(r)))
+			p.Changes = append(p.Changes, b.onNode(r.NodeK3sManifest.Node, b.k3sManifest(r)))
 		case graph.KindNodeMamelet:
-			p.Changes = append(p.Changes, b.guard(r.NodeMamelet.Node, b.mamelet(r)))
+			p.Changes = append(p.Changes, b.onNode(r.NodeMamelet.Node, b.mamelet(r)))
 		default:
 			if r.Provided != nil {
 				p.Changes = append(p.Changes, b.guard(r.Name, b.provided(r)))
@@ -448,6 +448,9 @@ const SilentAgentAfter = 15 * time.Minute
 // reported this one yet (a resource declared after the machine was made is learned at its next poll),
 // so the plan keeps waiting for it.
 func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
+	if note := b.refusal(node); note != nil {
+		return StatusBlocked, note // it does report, and says it refuses what the Control Plane offers
+	}
 	m, _ := b.machine(node)
 	if m.uptime < SilentAgentAfter || b.nodeReported(node) {
 		return StatusWaiting, waiting
@@ -894,6 +897,50 @@ func (b builder) k3sServerOf(node, service string) string {
 		}
 	}
 	return ""
+}
+
+// onNode is a change of a resource on a node. A grant travels in the node's revision, so while the
+// node's mamelet refuses the revisions on offer no change can be carried out, whatever is approved:
+// it is Blocked, with the node's own reason (MAM-PLAN-0130), instead of waiting for an approval and
+// then for a result that does not come. A resource that is in sync stays in sync.
+func (b builder) onNode(node string, c Change) Change {
+	if note := b.refusal(node); note != nil && c.Status == StatusChange {
+		c.Status, c.Note, c.Verdict = StatusBlocked, note, ""
+		c.Operations, c.Diffs = []Operation{}, []Diff{}
+		return c
+	}
+	return b.guard(node, c)
+}
+
+// refusal says that the mamelet of node refuses the Control Plane's revision (nil when it does not),
+// and why, as the node reported it, with what to do about that kind of refusal.
+func (b builder) refusal(node string) *Note {
+	r, ok := b.snap.NodeRefusals[node]
+	if !ok {
+		return nil
+	}
+	from := "no revision"
+	if r.WorksFrom > 0 {
+		from = fmt.Sprintf("revision %d", r.WorksFrom)
+	}
+	hint := "see the reason; mamelet logs it too (journalctl -u mamelet on the node)"
+	switch {
+	case strings.Contains(r.Reason, noderev.ErrRolledBack.Error()):
+		hint = "a mamelet never accepts a serial lower than one it accepted: the Control Plane's database may have been restored from an older copy; restore the newest one"
+	case strings.Contains(r.Reason, noderev.ErrFromFuture.Error()), strings.Contains(r.Reason, noderev.ErrExpired.Error()):
+		hint = "the clocks of the node and the Control Plane differ by more than a few minutes: set the node's clock (NTP)"
+	case strings.Contains(r.Reason, noderev.ErrBadSignature.Error()):
+		hint = "the node trusts another Control Plane's key than this one's: its configuration (revisionKey) or this Control Plane's keys are not the ones it was made with"
+	case strings.Contains(r.Reason, noderev.ErrOtherNode.Error()):
+		hint = "the revision is for another machine: the name and VMID in the node's configuration are not this node's"
+	case strings.HasPrefix(r.Reason, "decode revision"):
+		hint = "the revision has something this mamelet does not know: the node runs a mamelet older than this Control Plane; replace it by hand once and declare its release afterwards (docs/mamelet-update.md)"
+	case strings.HasPrefix(r.Reason, "invalid revision"):
+		hint = "mamelet found the revision invalid: change what the reason names in the declaration (a name or a value its checks do not allow)"
+	}
+	return &Note{Code: "MAM-PLAN-0130",
+		Message: fmt.Sprintf("mamelet on node %s refuses the Control Plane's revision %d (it works from %s): %s", node, r.Serial, from, r.Reason),
+		Hint:    hint}
 }
 
 // guard denies every operation of a change on a node the Control Plane must never change: its own
