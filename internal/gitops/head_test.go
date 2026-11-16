@@ -28,6 +28,7 @@ func TestNextStep(t *testing.T) {
 		{"same head, pending an approval", Head{Revision: "r1", State: HeadPending}, true, true, false, "r1", stepLeave},
 		{"same head, in sync", Head{Revision: "r1", State: HeadInSync}, true, true, false, "r1", stepLeave},
 		{"same head, apply failed", Head{Revision: "r1", State: HeadFailed}, true, true, false, "r1", stepLeave},
+		{"same head, apply failed, a retry is due", Head{Revision: "r1", State: HeadFailed}, true, true, true, "r1", stepPlanAgain},
 		{"same head, in sync, the resync interval has passed", Head{Revision: "r1", State: HeadInSync}, true, true, true, "r1", stepPlanAgain},
 	} {
 		if got := nextStep(c.last, c.known, c.sameHead, c.drift, c.rev); got != c.want {

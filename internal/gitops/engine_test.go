@@ -24,18 +24,19 @@ import (
 // the tree; the world is the revision last applied. A plan has one change while the world is not
 // its revision (state overrides that).
 type fakeMamela struct {
-	files     map[string]map[string]string // tree -> path -> content
-	approved  map[string]bool
-	plans     map[string]string // digest -> revision
-	world     string
-	applied   []string // revisions applied, in order
-	planned   int
-	state     func(rev string) api.Planned // optional
-	stale     bool                         // the next apply finds the world changed
-	down      bool                         // the API does not answer
-	planErr   string                       // planning fails (an observation that fails)
-	attempts  int                          // plans asked for
-	nextPlans int
+	files      map[string]map[string]string // tree -> path -> content
+	approved   map[string]bool
+	plans      map[string]string // digest -> revision
+	world      string
+	applied    []string // revisions applied, in order
+	planned    int
+	state      func(rev string) api.Planned // optional
+	stale      bool                         // the next apply finds the world changed
+	down       bool                         // the API does not answer
+	planErr    string                       // planning fails (an observation that fails)
+	attempts   int                          // plans asked for
+	nextPlans  int
+	applyFails int // the next applies fail
 }
 
 func newFakeMamela() *fakeMamela {
@@ -126,6 +127,10 @@ func (m *fakeMamela) Approved(_ context.Context, digest string) (bool, error) {
 func (m *fakeMamela) Apply(_ context.Context, digest string) (api.Applied, error) {
 	if !m.approved[digest] {
 		return api.Applied{Text: "MAM-REC-0001: not approved"}, nil
+	}
+	if m.applyFails > 0 {
+		m.applyFails--
+		return api.Applied{Text: "stopped: MAM-REC-0004: the step failed: boom"}, nil
 	}
 	if m.stale {
 		m.stale = false

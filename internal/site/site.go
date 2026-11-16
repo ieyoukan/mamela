@@ -35,7 +35,8 @@ type Site struct {
 	Guest   GuestInit `toml:"guest"`
 	Budget  Budget    `toml:"budget"`
 	Network Network   `toml:"network"`
-	// ControlPlane is optional: without it, machines get no mamelet.
+	// ControlPlane is optional: without it, machines are made and configured but get no mamelet (a plain
+	// seed: login user, network, guest agent), and a declaration has nothing for mamelet to do.
 	ControlPlane ControlPlane `toml:"controlplane"`
 }
 

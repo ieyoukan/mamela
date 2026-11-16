@@ -55,6 +55,7 @@ func main() {
 		State:  mamelet.FileState{Path: cfg.StateDir + "/state.json"}, Now: time.Now, Version: version}
 
 	lastErr := ""
+	var seen int64 // the newest revision serial the Control Plane has told of
 	for {
 		rep, err := agent.Round(ctx)
 		logRound(rep, err, &lastErr)
@@ -64,7 +65,13 @@ func main() {
 			}
 			return
 		}
-		if sleep(ctx, interval) != nil {
+		// The next round comes as soon as the Control Plane has a newer revision for this node (an
+		// approved operation), or after the interval. When the round failed, the interval.
+		var w mamelet.Waiter
+		if err == nil {
+			w = client
+		}
+		if seen, err = mamelet.Pause(ctx, w, max(seen, rep.Serial), interval, time.Now, sleep); err != nil {
 			return
 		}
 	}

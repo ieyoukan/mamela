@@ -156,6 +156,13 @@ func (s *Store) NodeRevision(ctx context.Context, node string) (*noderev.Revisio
 	return latestNodeRevision(ctx, s.db, node)
 }
 
+// NodeRevisionSerial is the serial of the node's newest revision (0: none).
+func (s *Store) NodeRevisionSerial(ctx context.Context, node string) (int64, error) {
+	var n sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(serial) FROM node_revisions WHERE node = ?`, node).Scan(&n)
+	return n.Int64, err
+}
+
 type queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }

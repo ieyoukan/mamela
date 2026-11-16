@@ -231,3 +231,55 @@ func TestUserDataSeed(t *testing.T) {
 		t.Error("a static network in user-data")
 	}
 }
+
+// A site without a Control Plane makes plain seeds: the login user, the keys, the network and the
+// guest agent, and nothing of mamelet (no binary, no token, no configuration, no unit), with no
+// database. The image is reproducible and named by its content.
+func TestPlainSeedHasNoMamelet(t *testing.T) {
+	m := &Maker{User: "mamela", SSHPublicKeys: []string{"ssh-ed25519 AAAA alice@laptop"}, Plain: true}
+	static := graph.Network{Mode: graph.NetworkStatic, Address: "192.0.2.10/24", Gateway: "192.0.2.1", DNS: []string{"192.0.2.1"}}
+	name, img, err := m.New(context.Background(), "web", 7001, static)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, img2, _ := m.New(context.Background(), "web", 7001, static); again != name || !bytes.Equal(img, img2) {
+		t.Fatal("a plain seed is not reproducible")
+	}
+	if !strings.HasPrefix(name, "mamela-seed-web-7001-") || !strings.HasSuffix(name, ".iso") {
+		t.Fatalf("name %s", name)
+	}
+	label, files := readISO(t, img)
+	if label != "CIDATA" || len(files) != 3 || files["mamelet"] != nil {
+		t.Fatalf("label %q, files %v", label, files)
+	}
+	ud := string(files["user-data"])
+	for _, want := range []string{"#cloud-config", `"name":"mamela"`, "ssh-ed25519 AAAA alice@laptop", "qemu-guest-agent", `"lock_passwd":true`} {
+		if !strings.Contains(ud, want) {
+			t.Errorf("user-data lacks %q:\n%s", want, ud)
+		}
+	}
+	for _, not := range []string{"mamelet", "enroll", "token", "config.json"} {
+		if strings.Contains(strings.ToLower(ud), not) {
+			t.Errorf("user-data mentions %q:\n%s", not, ud)
+		}
+	}
+	if !strings.Contains(string(files["network-config"]), "192.0.2.10/24") {
+		t.Errorf("network-config: %s", files["network-config"])
+	}
+	// As user-data alone (a cloud): DHCP only, no mamelet either.
+	_, cloud, err := m.NewUserData(context.Background(), "web", 7001, graph.Network{Mode: graph.NetworkDHCP}, "")
+	if err != nil || strings.Contains(string(cloud), "mamelet") {
+		t.Fatalf("cloud user-data: %v\n%s", err, cloud)
+	}
+	if _, _, err := m.NewUserData(context.Background(), "web", 7001, static, ""); err == nil {
+		t.Fatal("a cloud seed with a static network")
+	}
+	// Refusals are the same as for the other seeds: a name that is not a node's, an SSH key over two lines.
+	if _, _, err := m.New(context.Background(), "Bad Name", 7001, static); err == nil {
+		t.Error("a bad node name")
+	}
+	m.SSHPublicKeys = []string{"ssh-ed25519 AAAA\nssh-ed25519 BBBB"}
+	if _, _, err := m.New(context.Background(), "web", 7001, static); err == nil {
+		t.Error("a key over two lines")
+	}
+}

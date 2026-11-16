@@ -47,6 +47,16 @@ type Config struct {
 	// on the Control Plane's host. Planning only observes: nothing changes by itself.
 	Resync   string `toml:"resync"`
 	SelfHeal bool   `toml:"self_heal"`
+	// ActiveInterval is how often GitHub is read while something is under way (a declaration waits
+	// for what it depends on: a machine, an agent's report): default 10s, 5s or more, never more
+	// than Interval. Idle, Interval applies.
+	ActiveInterval string `toml:"active_interval"`
+	// Retry is how long after a failed apply the head is planned (and, with sync = "push",
+	// approved and applied) again, up to RetryMax times (default 3; 0 never): default 5m, 1m or
+	// more, "0" never. A failed apply is safe to repeat: it observes first and continues. A new
+	// commit starts over.
+	Retry    string `toml:"retry"`
+	RetryMax *int   `toml:"retry_max"`
 	// MamelaSocket is the Control Plane's local API (`mamela api`); StateDB mamelacd's own database.
 	MamelaSocket string `toml:"mamela_socket"`
 	StateDB      string `toml:"state_db"`
@@ -94,8 +104,61 @@ func (c Config) Check() error {
 	if _, err := c.interval(); err != nil {
 		return err
 	}
-	_, err := c.resync()
-	return err
+	if _, err := c.resync(); err != nil {
+		return err
+	}
+	if _, err := c.activeInterval(); err != nil {
+		return err
+	}
+	if _, err := c.retry(); err != nil {
+		return err
+	}
+	if c.RetryMax != nil && (*c.RetryMax < 0 || *c.RetryMax > 20) {
+		return fmt.Errorf("retry_max %d: 0 to 20", *c.RetryMax)
+	}
+	return nil
+}
+
+// activeInterval is how often GitHub is read while something is under way.
+func (c Config) activeInterval() (time.Duration, error) {
+	iv, err := c.interval()
+	if err != nil {
+		return 0, err
+	}
+	if c.ActiveInterval == "" {
+		return min(10*time.Second, iv), nil
+	}
+	d, err := time.ParseDuration(c.ActiveInterval)
+	if err != nil || d < 5*time.Second || d > iv {
+		return 0, fmt.Errorf("active_interval %q: 5s or more, and not more than interval (%s)", c.ActiveInterval, iv)
+	}
+	return d, nil
+}
+
+// ActiveIntervalOrDefault is how often GitHub is read while something is under way.
+func (c Config) ActiveIntervalOrDefault() time.Duration {
+	d, _ := c.activeInterval()
+	return d
+}
+
+// retry is how long after a failed apply the head is tried again (0: never).
+func (c Config) retry() (time.Duration, error) {
+	if c.Retry == "" {
+		return 5 * time.Minute, nil
+	}
+	d, err := time.ParseDuration(c.Retry)
+	if err != nil || (d != 0 && d < time.Minute) {
+		return 0, fmt.Errorf("retry %q: 1m or more, or 0 for never", c.Retry)
+	}
+	return d, nil
+}
+
+// retryMax is how many times a failed head is tried again.
+func (c Config) retryMax() int {
+	if c.RetryMax == nil {
+		return 3
+	}
+	return *c.RetryMax
 }
 
 // resync is how often drift is looked for (0: never).

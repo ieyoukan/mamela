@@ -39,6 +39,9 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
    # self_approval = false         # 作者が自分の PR を承認できないようにする
    approval_ttl = "24h"            # 承認の期限（7 日まで）
    # resync = "10m"                # 収束済みの宣言を plan し直して、ずれを探す間隔（既定 10m、"0" で止める）
+   # active_interval = "10s"       # 何かが進んでいるあいだ（待ちがある宣言）の poll の間隔（既定 10s、5s 以上、interval 以下）
+   # retry = "5m"                  # apply が失敗したあと、同じ先頭をやり直すまでの間隔（既定 5m、"0" でやり直さない）
+   # retry_max = 3                 # やり直す回数の上限（既定 3、0 から 20）
    # self_heal = true              # sync = "push" のとき、ずれを戻す plan を作者の名前で承認する
    interval = "1m"                 # GitHub を読む間隔
    mamela_socket = "/run/mamela/api.sock"
@@ -84,6 +87,16 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 - **ずれがあれば:** commit status に変更の数が出て、ログに `drifted` と出る。そのずれを戻す plan は、`mamela approve <digest>`（ホスト）で承認する。
 - **`self_heal = true`（`sync = "push"` のとき）:** ずれを戻す plan を、先頭の作者の名前で承認して、次の poll で apply する。削除を含む plan と、blocked の plan は承認しない（ホストの承認が要る）。
 - 宣言のとおりに戻すだけで、宣言にないものは消さない。
+
+## 速さ（段をつなげる、待ちを短くする、やり直す）
+
+1 つの変更は、いくつかの段（VM、k3s の導入、サービスの起動、版上げの 1 台ごと）に分かれ、段ごとに plan、承認、apply がある。待つのは、承認の人（人の承認が要るとき）と、世界の変化（VM の起動、mamelet の報告）だけにする。
+
+- **段をつなげる（`sync = "push"`）:** 1 回の poll の中で、plan → push による承認 → apply → 次の段の plan → … と続ける（1 宣言につき 1 回の poll で最大 12 段）。次の poll を待たない。削除を含む plan、blocked の plan、ずれ（`self_heal` なし）の plan は承認しないので、そこで止まる。
+- **待ちがあるときは短く poll する（`active_interval`）:** 宣言が「依存するものを待っている」（`waiting`、plan できなかった）あいだ、または段が 12 を超えて続くあいだは、次の poll を `active_interval`（既定 10 秒）で行う。何もないときは `interval`（既定 1 分）。GitHub への読み取りは、1 poll で数回である。
+- **失敗はやり直す（`retry`、`retry_max`）:** apply が失敗すると、`retry`（既定 5 分）あとに、同じ先頭を plan し直し、承認（`sync = "push"` ならその push）して apply する。最大 `retry_max` 回（既定 3）。apply は世界を見直して続きから進むので、繰り返してよい。commit status に `(retry 1/3 in 5m0s)`、上限を超えると `(gave up after 4 tries)` と出る。新しいコミットは数え直す。`sync = "approval"` では、やり直しの plan にも承認のコメントが要る。
+
+mamelet は、次の poll を待たずに、自分の revision が新しくなった（承認した操作が許可された）ときに、すぐ動く。Control Plane の `GET /v1/nodes/<node>/wait?after=<serial>&seconds=<n>` が、新しい revision が出るか、最大 30 秒で返る。古い Control Plane は、このリクエストを知らない（404）ので、mamelet は今までどおり `intervalSeconds`（既定 30 秒）ごとに動く。
 
 ## しないこと
 

@@ -71,7 +71,7 @@ func (e *Engine) planAndPost(ctx context.Context, pr int, sha, dir string, atHea
 	}
 	// Re-observation can give a new plan while still waiting for the same thing: keep the new
 	// plan, but do not post the same pending status and comment every poll.
-	if hadPrevious && repeats(previous, p, sha, atHead) {
+	if hadPrevious && repeats(previous, p, sha, atHead) && !e.statusIsStale(ctx, sha, dir) {
 		return p, nil
 	}
 	state, desc := planStatus(p)
@@ -105,6 +105,14 @@ func (e *Engine) planFailed(ctx context.Context, pr int, sha, dir string, err er
 		}
 	}
 	return errNotPlanned
+}
+
+// statusIsStale says whether the head's commit status is the failure of a plan that could not be
+// made (its state is "unplanned"): the plan that follows replaces it, even if it says what the last
+// saved plan did.
+func (e *Engine) statusIsStale(ctx context.Context, sha, dir string) bool {
+	h, known, err := e.Store.Head(ctx, e.Config.Repo, dir)
+	return err == nil && known && h.SHA == sha && h.State == HeadUnplanned
 }
 
 // repeats says whether p says what the previous plan of the same commit did, with nothing to

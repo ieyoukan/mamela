@@ -407,6 +407,30 @@ func (b builder) machine(node string) (machine, bool) {
 	return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
 }
 
+// nodeReported is whether the agent on node has reported anything of the declaration.
+func (b builder) nodeReported(node string) bool {
+	if b.g == nil {
+		return false
+	}
+	for _, r := range b.g.Resources {
+		var seen bool
+		switch {
+		case r.NodePackage != nil && r.NodePackage.Node == node:
+			_, seen = b.snap.Packages[r.Name]
+		case r.NodeService != nil && r.NodeService.Node == node:
+			_, seen = b.snap.Services[r.Name]
+		case r.NodeK3s != nil && r.NodeK3s.Node == node:
+			_, seen = b.snap.K3s[r.Name]
+		case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == node:
+			_, seen = b.snap.K3sManifests[r.Name]
+		}
+		if seen {
+			return true
+		}
+	}
+	return false
+}
+
 // SilentAgentAfter is how long a machine may run before Mamela says that its agent has never reported.
 // A first boot with cloud-init takes a few minutes; this is well beyond it.
 const SilentAgentAfter = 15 * time.Minute
@@ -415,9 +439,13 @@ const SilentAgentAfter = 15 * time.Minute
 // machine is young, but once it has been running long past a first boot, the agent is not coming
 // by itself (the machine may be stuck at boot, for example in emergency mode, or cannot reach the Control
 // Plane), and the plan says so.
+//
+// An agent that has reported other resources of the machine is not silent: it has only not
+// reported this one yet (a resource declared after the machine was made is learned at its next poll),
+// so the plan keeps waiting for it.
 func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
 	m, _ := b.machine(node)
-	if m.uptime < SilentAgentAfter {
+	if m.uptime < SilentAgentAfter || b.nodeReported(node) {
 		return StatusWaiting, waiting
 	}
 	return StatusBlocked, &Note{Code: "MAM-PLAN-0110",

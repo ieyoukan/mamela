@@ -18,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/reconcile"
+	"github.com/ieyoukan/mamela/internal/seed"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
@@ -280,6 +281,17 @@ func applyPlan(ctx context.Context, st *store.Store, site *sitedef.Site, digest 
 			if made.Seeds, err = seedMaker(site, st, keys); err != nil {
 				return applyResult{}, err
 			}
+		} else if site != nil {
+			// No Control Plane: machines are made without mamelet (the declaration has nothing for it to do).
+			keys, err := site.SSHPublicKeys()
+			if err != nil {
+				return applyResult{}, fmt.Errorf("guest.ssh_public_key_file: %w", err)
+			}
+			var keyList []string
+			if keys != "" {
+				keyList = strings.Split(keys, "\n")
+			}
+			made.Seeds = &seed.Maker{User: site.Guest.User, SSHPublicKeys: keyList, Plain: true}
 		}
 		rt.SetArtifacts(made)
 		rt.SetLimits(siteLimits(site))

@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -170,6 +171,35 @@ func (c *Client) Revision(ctx context.Context) (noderev.Signed, error) {
 		errs = append(errs, fmt.Errorf("%s: %w", server, err))
 	}
 	return noderev.Signed{}, errors.Join(errs...)
+}
+
+// WaitChange waits up to d for a revision newer than serial; it returns the newest serial and whether it is newer. A
+// Control Plane that does not know the request answers with an error: the caller then waits by itself.
+func (c *Client) WaitChange(ctx context.Context, serial int64, d time.Duration) (int64, bool, error) {
+	server := c.active
+	if server == "" {
+		server = c.servers()[0]
+	}
+	secs := max(int(d/time.Second), 1)
+	u := c.nodeURL(server, "/wait") + "?after=" + strconv.FormatInt(serial, 10) + "&seconds=" + strconv.Itoa(secs)
+	var out struct {
+		Serial  int64 `json:"serial"`
+		Changed bool  `json:"changed"`
+	}
+	wctx, cancel := context.WithTimeout(ctx, d+15*time.Second)
+	defer cancel()
+	if err := do(wctx, c.waitHTTP(), http.MethodGet, u, nil, &out); err != nil {
+		return 0, false, err
+	}
+	return out.Serial, out.Changed, nil
+}
+
+// waitHTTP is the client for waiting requests: the same certificate, a longer timeout (the request
+// itself carries the deadline).
+func (c *Client) waitHTTP() *http.Client {
+	hc := *c.http
+	hc.Timeout = 0
+	return &hc
 }
 
 // Report sends a report.
