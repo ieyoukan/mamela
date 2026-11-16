@@ -25,6 +25,7 @@ type env struct {
 	st  *store.Store
 	pki *PKI
 	srv *httptest.Server
+	cp  *Server // the Server behind srv (its fields are read per request, so a test may change them)
 	now time.Time
 	dir string // the Control Plane's keys
 }
@@ -47,7 +48,7 @@ func newEnv(t *testing.T) *env {
 	srv.TLS = s.TLSConfig()
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
-	e.st, e.pki, e.srv, e.dir = st, pki, srv, dir
+	e.st, e.pki, e.srv, e.cp, e.dir = st, pki, srv, s, dir
 	return e
 }
 
