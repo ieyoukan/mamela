@@ -20,7 +20,7 @@ func TestAPIConnectionErrorsShowNoAddress(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	u, _ := url.Parse(srv.URL)
 	srv.Close() // nothing is listening any more
-	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL + "/lab-internal/api", Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL + "/site-internal/api", Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
 
 	var logged bytes.Buffer
 	log.SetOutput(&logged)
@@ -37,7 +37,7 @@ func TestAPIConnectionErrorsShowNoAddress(t *testing.T) {
 		t.Fatal("observe succeeded against an API that is not there")
 	}
 	t.Logf("the plan's error: %v", err)
-	for _, secret := range []string{u.Host, u.Hostname(), u.Port(), "lab-internal"} {
+	for _, secret := range []string{u.Host, u.Hostname(), u.Port(), "site-internal"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("the plan's error shows %q:\n%v", secret, err)
 		}
