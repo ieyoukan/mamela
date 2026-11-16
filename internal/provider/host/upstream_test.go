@@ -99,6 +99,14 @@ func TestConnectionErrorsShowNoAddress(t *testing.T) {
 			t.Errorf("pin: %v", err)
 		}
 	})
+	t.Run("a path that makes the URL invalid", func(t *testing.T) {
+		// The gate checks paths before they get here; the upstream still must not repeat the URL.
+		_, _, err := HTTP{Base: "https://lab-host.example:8006/api", Client: &http.Client{}}.Do(t.Context(), protocol.HostRequest{Method: "GET", Path: "/items/\x7f"})
+		mustNotShow(t, "bad path", err, "lab-host.example", "8006", "/api")
+		if !errors.Is(err, ErrNotSent) || !strings.Contains(err.Error(), "MAM-PRV-0012") {
+			t.Errorf("bad path: %v", err)
+		}
+	})
 	t.Run("a base that is not a URL", func(t *testing.T) {
 		_, _, err := HTTP{Base: "https://lab-host.example:8006/api\x7f", Client: &http.Client{}}.Do(t.Context(), get)
 		mustNotShow(t, "bad base", err, "lab-host.example", "8006")

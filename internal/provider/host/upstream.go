@@ -244,7 +244,7 @@ func newRequest(ctx context.Context, base string, r protocol.HostRequest, f *Fil
 	}
 	req, err := http.NewRequestWithContext(ctx, r.Method, u, body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+		return nil, notAURL(err)
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -313,7 +313,7 @@ func multipartRequest(ctx context.Context, u string, r protocol.HostRequest, f F
 	}{body, content})
 	if err != nil {
 		content.Close()
-		return nil, fmt.Errorf("%w: %v", ErrNotSent, err)
+		return nil, notAURL(err)
 	}
 	req.ContentLength = int64(head.Len()) + f.Size + int64(len(tail))
 	req.Header.Set("Content-Type", mw.FormDataContentType())
