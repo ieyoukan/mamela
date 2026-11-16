@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -106,7 +107,7 @@ func schemaVersion(ctx context.Context, q queryer) (int, error) {
 // migrateFrom applies the migrations after version v0 in one transaction: all of them, or none. It
 // reports false, having done nothing, when the database is no longer at v0.
 func (s *Store) migrateFrom(ctx context.Context, v0 int, copyPath string) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginForMigration(ctx)
 	if err != nil {
 		return false, fmt.Errorf("store: waiting to migrate the database: %w", err)
 	}
@@ -140,6 +141,24 @@ func (s *Store) migrateFrom(ctx context.Context, v0 int, copyPath string) (bool,
 		return false, err
 	}
 	return true, tx.Commit()
+}
+
+// beginForMigration takes the write lock for the migration. Another program may hold it for the whole
+// of its own migration (a slow disk, a large database), which can outlast busy_timeout, so it waits
+// longer than any other transaction does.
+func (s *Store) beginForMigration(ctx context.Context) (*sql.Tx, error) {
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err == nil || !isBusy(err) || time.Now().After(deadline) {
+			return tx, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // copyBeforeMigrating writes a consistent copy of the database to a new file of its own (mode 0600:
