@@ -206,3 +206,27 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 ## 互換性
 
 形を変えるときは `mamela-graph/v2` にする。v1 のまま意味を変えない。
+
+### Pome の版と Mamela のバイナリ
+
+Pome は kind と spec のメンバーを出し、Go の graph がそれを検査する。Pome が出すものを、バイナリが知らなければ拒む。新しい Pome を古いバイナリで読むと、知らない kind は MAM-GRAPH-0005、知らない member は MAM-GRAPH-0003 になる。逆に、新しいバイナリは古い Pome を読める。ただし Pome 0.1.0 と 0.2.0 は、ADR 0006 でなくなった `VirtualMachine` を出すので、その PR（#12）以降のバイナリは MAM-GRAPH-0005 で拒む。
+
+Mamela のバイナリにはまだ版のタグがなく、`mamela version` は build した revision を出す。次の表の「要るバイナリ」は、その kind を最初に受け付けた PR のマージコミットで、`git merge-base --is-ancestor <コミット> <mamela version の revision>` が成り立つバイナリなら読める。
+
+| Pome | 版 | その版で足したもの（出す kind） | 要るバイナリ |
+| --- | --- | --- | --- |
+| `pome/mamela` | 0.1.0 | `VirtualMachine`、`NodePackage`、`NodeService` | PR #12 より前のバイナリだけ（以降は MAM-GRAPH-0005） |
+| `pome/mamela` | 0.2.0 | 上に、`NodeK3s` とプロバイダーの kind（`mamela-graph/v2`）。`VirtualMachine`（旧 `Vm` の API）も出す | PR #12 より前のバイナリだけ（以降は MAM-GRAPH-0005） |
+| `pome/mamela` | 0.3.0 | `NodePackage`、`NodeService`、プロバイダーの kind（`provided`、`provided_after`、`on_node`） | PR #12（`d2c2d03`）以降 |
+| `pome/mamela` | 0.3.1 | `NodeMamelet`（`Mamela.mamelet`） | PR #23（`37ab2b5`）以降 |
+| `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
+| `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
+
+新しい kind や member を出す版を公開する PR は、この表に行を足す（[releasing.md](releasing.md)）。Emela は依存の中で最も高い版を選ぶので、`pome/k3s` が要求する `pome/mamela` の版を上げると、K3s を使う宣言すべてが、その版の要るバイナリを求める。
+
+**表を機械で扱う案（実装はしていない）:**
+
+1. 表を、リポジトリの 1 つのデータ（Pome の版ごとに、出す kind と member、要るバイナリ）にして、この表をそこから作る。
+2. CI で、各 Pome の最新版のソースが書く kind と、Go の graph が知る kind を、そのデータと突き合わせる。kind を足す PR が、データを更新しないと落ちる。
+3. MAM-GRAPH-0005 と MAM-GRAPH-0003 の hint が、データから「この kind は Pome の `<名前>` `<版>` から。Mamela を `<版>` 以降にする」と言う。
+4. バイナリに版のタグ（`mamela/vX.Y.Z`）を付けて、表を revision ではなく版で書く。公開の手順（releasing.md）の、タグを付ける前の確認に「表にその版の行がある」を足す。

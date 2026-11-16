@@ -20,6 +20,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-EVAL-0101 | ビルドに失敗した | コンパイルエラー、Pome でない、キャッシュにない依存（ネットワークからは取らない） |
 | MAM-EVAL-0102 | ビルドが時間内に終わらなかった | |
 | MAM-EVAL-0103 | キャッシュにある依存が Pome.lock の hash と違う（ビルドしていない） | キャッシュが書き換わった・壊れた。該当する依存をキャッシュから消し、`emela pome install`（`scripts/install-toolchain.sh`）で取り直す |
+| MAM-EVAL-0104 | `Pome.toml` の `[replace]` が、Pome のないディレクトリを指している（ビルドしていない） | パスは、その `Pome.toml` のあるディレクトリからの相対。例を単体でコピーすると届かなくなる。リポジトリ全体をコピーする、パスを直す、または `[replace]` を消して `[dependencies]` の公開版を使う（Pome キャッシュに `emela pome install` で入れておく） |
 | MAM-EVAL-0201 | ビルド結果を検査できない | WASI 0.3 component 以外、または読めない形式 |
 | MAM-EVAL-0202 | 許可されていない import がある（実行していない） | `Std.Env` / `Std.Random` / `Std.Clock` / `Std.FileSystem` / `Std.Http` を使っている |
 | MAM-EVAL-0301 | 宣言が error で終わった | 宣言の中の `fail` |
