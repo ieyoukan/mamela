@@ -1,6 +1,7 @@
 package gitops
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -234,10 +235,14 @@ func TestPhasesFollowEachOtherInOnePoll(t *testing.T) {
 	}
 }
 
-// A chain that never ends is cut at maxChain per poll, and the next poll comes soon.
+// A chain that never ends (each phase another change; the same change coming back is stopped
+// instead, see TestAppliedButNeverConvergingStops) is cut at maxChain per poll, and the next poll
+// comes soon.
 func TestChainIsBounded(t *testing.T) {
 	f := pushFixture(t)
-	f.m.state = func(rev string) api.Planned { return api.Planned{Text: "again", Changes: 1} }
+	f.m.state = func(rev string) api.Planned {
+		return api.Planned{Text: fmt.Sprintf("phase %d", f.m.applyCalls), Changes: 1}
+	}
 	f.push("v1", "alice")
 	f.once()
 	if n := len(f.m.applied); n < 2 || n > maxChain || !f.e.Busy() {
@@ -375,7 +380,7 @@ func TestFailedPlanStatusIsReplaced(t *testing.T) {
 	f.m.planErr = "an observation failed"
 	f.later(time.Hour) // the resync interval has passed
 	f.once()
-	if s := f.lastStatus(head); s.State != "failure" || s.Description != "could not be planned" {
+	if s := f.lastStatus(head); s.State != "failure" || !strings.HasPrefix(s.Description, "could not be planned: an observation failed") {
 		t.Fatalf("after the failed plan: %+v", s)
 	}
 	f.m.planErr = ""

@@ -54,7 +54,10 @@ type Config struct {
 	// Retry is how long after a failed apply the head is planned (and, with sync = "push",
 	// approved and applied) again, up to RetryMax times (default 3; 0 never): default 5m, 1m or
 	// more, "0" never. A failed apply is safe to repeat: it observes first and continues. A new
-	// commit starts over.
+	// commit starts over. Retry is also how long after the evaluator was unavailable (not the
+	// declaration's fault) the declaration is evaluated again, with no limit; RetryMax also limits how
+	// many times in a row the same change may come back (stale, or applied and still planned) before
+	// a push stops approving it (MAM-GIT-0101).
 	Retry    string `toml:"retry"`
 	RetryMax *int   `toml:"retry_max"`
 	// MamelaSocket is the Control Plane's local API (`mamela api`); StateDB mamelacd's own database.
@@ -205,19 +208,28 @@ func (c Config) IntervalOrDefault() time.Duration {
 	return d
 }
 
-// Open reads the configuration and the GitHub token, opens mamelacd's database, and checks that
-// the Control Plane's API answers in this version.
-func Open(ctx context.Context, configPath string, logf func(string, ...any)) (*Engine, func(), error) {
+// LoadConfig reads and checks the configuration. It does not read the token or reach anything.
+func LoadConfig(configPath string) (Config, error) {
 	var cfg Config
 	md, err := toml.DecodeFile(configPath, &cfg)
 	if err != nil {
-		return nil, nil, err
+		return cfg, err
 	}
 	if un := md.Undecoded(); len(un) > 0 {
-		return nil, nil, fmt.Errorf("%s: unknown keys %v", configPath, un)
+		return cfg, fmt.Errorf("%s: unknown keys %v", configPath, un)
 	}
 	if err := cfg.Check(); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", configPath, err)
+		return cfg, fmt.Errorf("%s: %w", configPath, err)
+	}
+	return cfg, nil
+}
+
+// Open reads the configuration and the GitHub token, opens mamelacd's database, and checks that
+// the Control Plane's API answers in this version.
+func Open(ctx context.Context, configPath string, logf func(string, ...any)) (*Engine, func(), error) {
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return nil, nil, err
 	}
 	token, err := os.ReadFile(cfg.TokenFile)
 	if err != nil {
@@ -239,6 +251,6 @@ func Open(ctx context.Context, configPath string, logf func(string, ...any)) (*E
 		return nil, nil, err
 	}
 	e := &Engine{Config: cfg, Store: st, Mamela: client, Logf: logf,
-		GitHub: &GitHub{API: ghAPI, Repo: cfg.Repo, Token: strings.TrimSpace(string(token))}}
+		GitHub: &GitHub{API: ghAPI, Repo: cfg.Repo, Token: strings.TrimSpace(string(token)), TokenFile: cfg.TokenFile}}
 	return e, func() { st.Close() }, nil
 }

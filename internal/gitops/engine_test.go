@@ -37,6 +37,13 @@ type fakeMamela struct {
 	attempts   int                          // plans asked for
 	nextPlans  int
 	applyFails int // the next applies fail
+	// applyCalls counts the applies asked for; alwaysStale makes every apply find the world changed;
+	// downAfterApply makes the API stop answering once an apply is done; revErr makes evaluating
+	// fail (the API refuses it: 422) with that message.
+	applyCalls     int
+	alwaysStale    bool
+	downAfterApply bool
+	revErr         string
 }
 
 func newFakeMamela() *fakeMamela {
@@ -75,6 +82,9 @@ func (m *fakeMamela) Tree(_ context.Context, tarball []byte) (string, error) {
 func (m *fakeMamela) Revision(_ context.Context, tree, dir string) (string, error) {
 	if m.down {
 		return "", errDown
+	}
+	if m.revErr != "" {
+		return "", &api.Error{Status: 422, Message: m.revErr}
 	}
 	rev, ok := m.files[tree][dir+"/rev"]
 	if !ok {
@@ -128,6 +138,13 @@ func (m *fakeMamela) Apply(_ context.Context, digest string) (api.Applied, error
 	if !m.approved[digest] {
 		return api.Applied{Text: "MAM-REC-0001: not approved"}, nil
 	}
+	m.applyCalls++
+	if m.downAfterApply {
+		defer func() { m.down = true }()
+	}
+	if m.alwaysStale {
+		return api.Applied{Text: "stopped: MAM-REC-0002: the world changed", Stale: true}, nil
+	}
 	if m.applyFails > 0 {
 		m.applyFails--
 		return api.Applied{Text: "stopped: MAM-REC-0004: the step failed: boom"}, nil
@@ -152,18 +169,20 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
-	st, err := OpenStore(ctx, filepath.Join(t.TempDir(), "mamelacd.db"), func() time.Time { now = now.Add(time.Second); return now })
+	dbPath := filepath.Join(t.TempDir(), "mamelacd.db")
+	st, err := OpenStore(ctx, dbPath, func() time.Time { now = now.Add(time.Second); return now })
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
+	st.db.ExecContext(ctx, "PRAGMA synchronous = OFF") // a test's database need not survive a power cut: fsync is most of its time
 	gh := fakegithub.New("me/infra", "token")
 	server := httptest.NewServer(gh)
 	t.Cleanup(server.Close)
 	m := newFakeMamela()
 	e := &Engine{Store: st, Mamela: m, GitHub: &GitHub{API: server.URL, Repo: "me/infra", Token: "token"},
 		Config: Config{Repo: "me/infra", Branch: "main", Dirs: []string{"infra"}, Authors: []string{"alice"}, Approvers: []string{"alice", "bob"},
-			MamelaSocket: "x", StateDB: "x", TokenFile: "x"}}
+			MamelaSocket: "x", StateDB: dbPath, TokenFile: "x"}}
 	f := &fixture{t: t, e: e, m: m, gh: gh}
 	gh.SetBranch("main", f.commit("v0")) // a head no pull request made: not planned
 	return f

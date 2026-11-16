@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/api"
 )
@@ -18,6 +19,9 @@ import (
 //	a new head, neither merged from a trusted pull request nor (sync = "push") by an author
 //	                                                      -> HeadUntrusted (not planned)
 //	a new head that cannot be evaluated                  -> HeadError (until another commit)
+//	a new head the evaluator could not evaluate for now  -> HeadEvalRetry: evaluated again after the retry interval
+//	the same change keeps coming back (stale, or applied
+//	  and still planned) retry_max + 1 times in a row    -> HeadStopped (until another commit, or a host approval)
 //	an approved plan of exactly the head's declaration   -> applied: HeadFailed, or planned again
 //	waiting, blocked or unplanned (same head)            -> planned again
 //	in sync (same head), the resync interval has passed  -> planned again, to find drift
@@ -46,6 +50,25 @@ const (
 
 // errNotEvaluated: the declaration at the head could not be evaluated, and that was reported.
 var errNotEvaluated = errors.New("could not be evaluated")
+
+// errEvalLater: the evaluator could not evaluate it for now (not the declaration's fault); it will
+// be tried again.
+var errEvalLater = errors.New("could not be evaluated for now")
+
+// transientEvaluation lists what, in the API's refusal of an evaluation, says the evaluator is not
+// available for now and the declaration is not at fault: the toolchain is missing or being replaced
+// (MAM-EVAL-0001), a build did not finish in time (MAM-EVAL-0102), the disk is full. The API answers
+// 422 to all failures of an evaluation, so the words are what tells them apart.
+var transientEvaluation = []string{"MAM-EVAL-0001", "MAM-EVAL-0102", "no space left on device", "disk quota exceeded"}
+
+func evaluatorUnavailable(err error) bool {
+	for _, marker := range transientEvaluation {
+		if strings.Contains(err.Error(), marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // headSync is one declaration at the head of the branch, being brought about.
 type headSync struct {
@@ -95,19 +118,30 @@ func (h *headSync) step(ctx context.Context) error {
 		return err
 	}
 	sameHead := known && last.SHA == sha
+	// The plans of a head that was in sync and drifted keep undoing a drift (B7): whatever state the
+	// head went through since (waiting, blocked, not plannable, failed), a push does not approve
+	// them unless self_heal says so.
+	resync := sameHead && e.resyncDue(last)
+	h.drift = sameHead && (last.Drift || resync)
+	evalRetry := sameHead && last.State == HeadEvalRetry
 	switch {
 	case !sameHead && owner == 0 && by == "":
 		e.logf("mamelacd: %s: the head %s of %s was not merged from a trusted author's pull request: not planned", dir, short(sha), e.Config.Branch)
 		return h.record(ctx, "", HeadUntrusted, "")
 	case sameHead && (last.State == HeadUntrusted || last.State == HeadError):
 		return nil // nothing changes until another commit arrives
+	case evalRetry && !e.evalRetryDue(last):
+		return nil
 	}
 
 	rev := last.Revision
-	if !sameHead {
+	if !sameHead || evalRetry {
 		rev, err = h.evaluate(ctx)
 		if errors.Is(err, errNotEvaluated) {
 			return h.record(ctx, "", HeadError, "")
+		}
+		if errors.Is(err, errEvalLater) {
+			return h.record(ctx, "", HeadEvalRetry, "")
 		}
 		if err != nil {
 			return err
@@ -123,11 +157,11 @@ func (h *headSync) step(ctx context.Context) error {
 		return h.apply(ctx, rev, p)
 	}
 
-	h.drift = sameHead && e.resyncDue(last)
 	if h.retry, err = e.retryDue(ctx, last, sameHead); err != nil {
 		return err
 	}
-	switch nextStep(last, known, sameHead, h.drift || h.retry, rev) {
+	// A head whose evaluation was being retried is a new head, as far as what to do with it goes.
+	switch nextStep(last, known, sameHead && !evalRetry, resync || h.retry, rev) {
 	case stepLeave:
 		return nil
 	case stepUnchanged:
@@ -184,7 +218,15 @@ func (h *headSync) record(ctx context.Context, rev, state, digest string) error 
 	if state == HeadWaiting || state == HeadUnplanned {
 		h.e.busy = true // what it waits for may be there soon: read GitHub sooner
 	}
-	return h.e.Store.SetHead(ctx, h.e.Config.Repo, Head{Dir: h.dir, SHA: h.sha, Revision: rev, State: state, Digest: digest})
+	return h.store(ctx, rev, state, digest)
+}
+
+// store writes the state of the declaration at the head, without saying anything about the next poll.
+func (h *headSync) store(ctx context.Context, rev, state, digest string) error {
+	// Drift is kept until the head is in sync again (B7); a head that is not a resync of a converged
+	// one never had it.
+	return h.e.Store.SetHead(ctx, h.e.Config.Repo, Head{Dir: h.dir, SHA: h.sha, Revision: rev, State: state, Digest: digest,
+		Drift: h.drift && state != HeadInSync})
 }
 
 // recordPlanned records the state after the head was planned (planned: its result, err: how it went).
@@ -195,10 +237,79 @@ func (h *headSync) recordPlanned(ctx context.Context, rev string, planned api.Pl
 	case err != nil:
 		return err
 	}
+	if h.pushApproves(planned) {
+		n, err := h.repeats(ctx, planned)
+		if err != nil {
+			return err
+		}
+		if n > h.e.Config.retryMax() {
+			return h.giveUp(ctx, rev, planned, n)
+		}
+	}
 	if err := h.record(ctx, rev, headState(planned), planned.Digest); err != nil {
 		return err
 	}
 	return h.approveByPush(ctx, planned)
+}
+
+// repeatWindow: applies of a head that follow each other within this are one run (a change that
+// comes back, poll after poll). A drift that is repaired once in a while is not a run.
+const repeatWindow = time.Hour
+
+// repeats counts how many times in a row the head's declaration was applied with what p is again:
+// applies that ended stale (the world changed under them), and applies that were done and left the
+// same change planned. A failed apply is counted by retry_max, a different change is progress.
+func (h *headSync) repeats(ctx context.Context, p api.Planned) (int, error) {
+	e := h.e
+	applies, err := e.Store.AppliesOf(ctx, e.Config.Repo, h.dir, h.sha)
+	if err != nil {
+		return 0, err
+	}
+	shape := planShape(p)
+	n, newer := 0, e.Store.Now()
+	for _, q := range applies { // the newest first
+		at := time.UnixMilli(q.AppliedMs)
+		if newer.Sub(at) > repeatWindow || !(q.Outcome == outcomeStale || q.Outcome == outcomeApplied && q.Shape == shape) {
+			break
+		}
+		n++
+		newer = at
+	}
+	return n, nil
+}
+
+// giveUp stops applying a head on its own: the same change came back n times in a row. It says so
+// (the commit's status, the log, and a comment where the author reads: MAM-GIT-0101) and leaves the
+// head until another commit arrives, or a person approves the plan on the host.
+func (h *headSync) giveUp(ctx context.Context, rev string, p api.Planned, n int) error {
+	e := h.e
+	if err := h.record(ctx, rev, HeadStopped, p.Digest); err != nil {
+		return err
+	}
+	e.logf("mamelacd: %s: %s: the same change came back %d times in a row (the world changed under the apply, or it was applied and is still planned): not applied again by itself; push another commit, or approve plan %s on the host", h.dir, CodeStopped, n, short(p.Digest))
+	e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), fmt.Sprintf("%s: stopped: the same change came back %d times in a row. Push again, or approve %s on the host", CodeStopped, n, short(p.Digest)))
+	fresh, err := e.Store.See(ctx, fmt.Sprintf("stopped %s %s %s", e.Config.Repo, h.dir, h.sha))
+	if err != nil || !fresh {
+		return err
+	}
+	return h.tell(ctx, fmt.Sprintf("### Mamela: `%s` at the head %s of `%s` is not applied again (%s)\n\n"+
+		"**What:** the same change came back %d times in a row after being applied: each apply either found the world changed under it (stale, MAM-REC-0002) or was done and the change is still planned. The plan now:\n\n```text\n%s\n```\n\n"+
+		"**Why:** applying it again would repeat what did not settle (`retry_max` = %d). Something else changes the world, or the change does not show in what Mamela observes.\n\n"+
+		"**How:** find out which (`mamela plan`, and the apply's journal on the Control Plane's host). Then push another commit (it starts over), or approve this plan on the host: `mamela approve %s` (it is applied at the next poll).\n",
+		h.dir, short(h.sha), e.Config.Branch, CodeStopped, n, clip(p.Text), e.Config.retryMax(), p.Digest))
+}
+
+// pushApproves says whether a push approves plan p of the head: the head's author is trusted, the plan
+// changes something that is no deletion and is not blocked, and (B7) it is no drift repair unless
+// self_heal says so.
+func (h *headSync) pushApproves(p api.Planned) bool {
+	return h.by != "" && p.Changes > 0 && p.Blocked == 0 && p.Removals == 0 && (!h.drift || h.e.Config.SelfHeal)
+}
+
+// tell reports something about the head where its author reads: on the pull request merged as it,
+// else on the commit itself (Engine.tell).
+func (h *headSync) tell(ctx context.Context, body string) error {
+	return h.e.tell(ctx, h.owner, h.sha, body)
 }
 
 // approveByPush approves a plan of the head as the head's author (sync = "push", ADR 0014): the
@@ -262,7 +373,9 @@ func (e *Engine) retryDue(ctx context.Context, last Head, sameHead bool) (bool, 
 }
 
 // evaluate evaluates the head's declaration at the Control Plane: its revision. If the API refuses
-// it, that is reported on the pull request that was merged as the head (errNotEvaluated).
+// it, that is the declaration's fault (errNotEvaluated: reported where its author reads, and in the
+// commit's status and the log) unless the evaluator is unavailable for now (errEvalLater: the head
+// is evaluated again after the retry interval).
 func (h *headSync) evaluate(ctx context.Context) (string, error) {
 	e := h.e
 	tree, err := e.tree(ctx, h.sha)
@@ -276,13 +389,35 @@ func (h *headSync) evaluate(ctx context.Context) (string, error) {
 	if !api.Refused(err) {
 		return "", err
 	}
-	e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "could not be evaluated")
-	body := fmt.Sprintf("### Mamela: `%s` at the head %s of `%s` could not be evaluated\n\n```text\n%s\n```\n",
+	why := failureSummary(err.Error(), 90)
+	if evaluatorUnavailable(err) {
+		again := e.evalRetryAfter()
+		e.logf("mamelacd: %s at %s: the evaluator is not available (%s): evaluated again in %s (%s)", h.dir, short(h.sha), why, again, CodeEvalLater)
+		e.GitHub.Status(ctx, h.sha, "pending", statusContext(h.dir), fmt.Sprintf("not evaluated for now (%s): trying again in %s", why, again))
+		return "", errEvalLater
+	}
+	e.logf("mamelacd: %s at the head %s of %s could not be evaluated: %s", h.dir, short(h.sha), e.Config.Branch, why)
+	e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "could not be evaluated: "+why)
+	body := fmt.Sprintf("### Mamela: `%s` at the head %s of `%s` could not be evaluated\n\n```text\n%s\n```\n\nIt is evaluated again when another commit arrives.\n",
 		h.dir, short(h.sha), e.Config.Branch, clip(err.Error()))
-	if err := e.GitHub.Comment(ctx, h.owner, body); err != nil {
+	if err := h.tell(ctx, body); err != nil {
 		return "", err
 	}
 	return "", errNotEvaluated
+}
+
+// evalRetryAfter is how long after an evaluation that could not be done (the evaluator was not
+// available) the declaration is evaluated again: the retry interval; with retry = "0" (an apply is
+// never repeated) the poll interval, as evaluating changes nothing.
+func (e *Engine) evalRetryAfter() time.Duration {
+	if d, _ := e.Config.retry(); d > 0 {
+		return d
+	}
+	return e.Config.IntervalOrDefault()
+}
+
+func (e *Engine) evalRetryDue(last Head) bool {
+	return e.Store.Now().UnixMilli()-last.UpdatedMs >= e.evalRetryAfter().Milliseconds()
 }
 
 // noteMovedDeclaration tells the merged pull request that the head is not the declaration that
@@ -318,6 +453,11 @@ func (e *Engine) approvedPlan(ctx context.Context, dir, rev string) (Plan, bool,
 
 // apply applies an approved plan of the declaration at the head, reports it, and plans the head
 // again: the end of one phase is not convergence (a next phase may need its own approval).
+//
+// What the apply did is recorded as soon as it is known, and the head with it: from there on, what
+// fails (the comment, the next plan) is done again by the next poll, which finds the head in a state
+// that is planned again. Otherwise the head would stay pending with a status that says "applying"
+// (A7b).
 func (h *headSync) apply(ctx context.Context, rev string, p Plan) error {
 	e := h.e
 	e.GitHub.Status(ctx, h.sha, "pending", statusContext(h.dir), "applying "+short(p.Digest))
@@ -330,12 +470,16 @@ func (h *headSync) apply(ctx context.Context, rev string, p Plan) error {
 		return err
 	}
 	e.logf("mamelacd: %s plan %s %s", h.dir, short(p.Digest), outcome)
+	state := HeadUnplanned // applied: the head is planned again, now or at the next poll
+	if outcome == outcomeFailed {
+		state = HeadFailed
+	}
+	if err := h.store(ctx, rev, state, p.Digest); err != nil {
+		return err
+	}
 	pr := h.owner
 	if pr == 0 {
 		pr = p.PR // the merged pull request is not among the recent ones any more
-	}
-	if err := h.reportApply(ctx, pr, p, outcome, text); err != nil {
-		return err
 	}
 	if outcome == outcomeFailed {
 		// Without a pull request to comment on (sync = "push"), this is the only place the reason shows.
@@ -346,10 +490,18 @@ func (h *headSync) apply(ctx context.Context, rev string, p Plan) error {
 			return err
 		}
 		e.GitHub.Status(ctx, h.sha, "failure", statusContext(h.dir), "failed "+short(p.Digest)+": "+why+hint)
-		return h.record(ctx, rev, HeadFailed, p.Digest)
+		return h.reportApply(ctx, pr, p, outcome, text)
+	}
+	if err := h.reportApply(ctx, pr, p, outcome, text); err != nil {
+		return err
 	}
 	h.moved = true // the next phase is planned below; it may be approved and applied at once
 	next, err := e.planAndPost(ctx, pr, h.sha, h.dir, true)
+	if err != nil && !errors.Is(err, errNotPlanned) {
+		// The status said "applying": it is not, any more. The next poll plans again, soon.
+		e.busy = true
+		e.GitHub.Status(ctx, h.sha, "pending", statusContext(h.dir), "applied "+short(p.Digest)+": planning the next phase did not work, trying again at the next poll")
+	}
 	return h.recordPlanned(ctx, rev, next, err)
 }
 
@@ -409,18 +561,39 @@ func applyOutcome(a api.Applied, err error) (outcome, text string) {
 }
 
 // reportApply comments the apply on pull request pr, and on the pull request the plan was posted
-// on when that is another.
+// on when that is another. A comment GitHub did not take is kept and posted by the next poll
+// (flushReports): the apply is done, and its report is not lost with a failed request.
 func (h *headSync) reportApply(ctx context.Context, pr int, p Plan, outcome, text string) error {
 	e := h.e
 	if pr > 0 {
 		comment := fmt.Sprintf("### Mamela apply: `%s` %s (plan `%s`, the head %s of `%s`)\n\n```text\n%s\n```\n",
 			p.Dir, outcome, p.Digest, short(h.sha), e.Config.Branch, clip(text))
 		if err := e.GitHub.Comment(ctx, pr, comment); err != nil {
-			return err
+			e.logf("mamelacd: %s: the result of plan %s could not be posted on #%d (%v): it is posted at the next poll", h.dir, short(p.Digest), pr, err)
+			if err := e.Store.SaveReport(ctx, p.Digest, pr, comment); err != nil {
+				return err
+			}
 		}
 	}
 	if p.PR != pr && p.PR > 0 {
 		e.GitHub.Comment(ctx, p.PR, fmt.Sprintf("Plan `%s` was applied as the head %s of `%s` (%s): see #%d.", p.Digest, short(h.sha), e.Config.Branch, outcome, pr))
 	}
 	return nil
+}
+
+// flushReports posts the results of applies that GitHub did not take when they were done.
+func (e *Engine) flushReports(ctx context.Context) (errs []error) {
+	reports, err := e.Store.PendingReports(ctx, e.Config.Repo)
+	if err != nil {
+		return []error{err}
+	}
+	for _, r := range reports {
+		if err := e.GitHub.Comment(ctx, r.PR, r.Body); err != nil {
+			return append(errs, fmt.Errorf("the result of plan %s on #%d: %w", short(r.Digest), r.PR, err))
+		}
+		if err := e.Store.ClearReport(ctx, r.Digest); err != nil {
+			return append(errs, err)
+		}
+	}
+	return errs
 }
