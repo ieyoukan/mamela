@@ -26,6 +26,9 @@ const providerUsage = `Usage:
                                               classified with its Pome's catalogs (and --catalog files)
   mamela provider catalog [--json] <pome-dir> [<provider>]
                                               show the API catalogs the providers' Pomes ship (ADR 0008)
+  mamela provider pin [--providers <file>] [--check] <pome-dir | declaration-dir> [<provider>]
+                                              show the program and catalog digests to pin in the providers
+                                              file, and whether they are (ADR 0015); changes nothing
   mamela provider new [--name <n>] [--mamela <checkout>] <go-module> <dir>
                                               write a new provider's repository: a provider on
                                               provider/kit, a fake API, its catalog, the conformance
@@ -58,6 +61,8 @@ func runProvider(ctx context.Context, args []string, stdout, stderr io.Writer) i
 		return runProviderScript(ctx, args[1:], stdout, stderr)
 	case "catalog":
 		return runProviderCatalog(args[1:], stdout, stderr)
+	case "pin":
+		return runProviderPin(ctx, args[1:], stdout, stderr)
 	case "new":
 		return runProviderNew(args[1:], stdout, stderr)
 	case "pome":
