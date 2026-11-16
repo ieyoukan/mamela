@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -61,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/enroll", s.enroll)
 	mux.HandleFunc("GET /v1/mamelet/{sha256}", s.mamelet)
 	mux.HandleFunc("GET /v1/nodes/{node}/revision", s.revision)
+	mux.HandleFunc("GET /v1/nodes/{node}/wait", s.wait)
 	mux.HandleFunc("POST /v1/nodes/{node}/report", s.report)
 	return mux
 }
@@ -166,6 +168,61 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, _ := json.Marshal(signed)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(out)
+}
+
+// MaxWait bounds how long a request for a newer revision waits.
+const MaxWait = 30 * time.Second
+
+// waitPoll is how often a waiting request looks for a newer revision.
+const waitPoll = time.Second
+
+// wait answers when the node's newest revision is newer than ?after=<serial>, or after
+// ?seconds=<n> (at most MaxWait): {"serial": N, "changed": bool}. It lets mamelet act on a grant at
+// once instead of at its next poll. It reveals nothing a revision request does not (the node's own
+// certificate is required) and changes nothing.
+func (s *Server) wait(w http.ResponseWriter, r *http.Request) {
+	a, ok := s.agentFor(w, r)
+	if !ok {
+		return
+	}
+	after, err1 := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	secs, err2 := strconv.Atoi(r.URL.Query().Get("seconds"))
+	if err1 != nil || err2 != nil || after < 0 || secs < 1 {
+		fail(w, http.StatusBadRequest, "after (a serial) and seconds (1 or more) are required")
+		return
+	}
+	deadline := time.NewTimer(min(time.Duration(secs)*time.Second, MaxWait))
+	defer deadline.Stop()
+	tick := time.NewTicker(waitPoll)
+	defer tick.Stop()
+	for {
+		serial, err := s.Store.NodeRevisionSerial(r.Context(), a.Node)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "could not read the revision")
+			return
+		}
+		if serial > after {
+			s.waited(w, serial, true)
+			return
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-deadline.C:
+			s.waited(w, serial, false)
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func (s *Server) waited(w http.ResponseWriter, serial int64, changed bool) {
+	out, _ := json.Marshal(struct {
+		Serial  int64 `json:"serial"`
+		Changed bool  `json:"changed"`
+	}{serial, changed})
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(out)
 }

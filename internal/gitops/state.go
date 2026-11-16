@@ -166,6 +166,13 @@ func (s *Store) Unapplied(ctx context.Context, repo, dir, revision string) ([]Pl
 	return s.plans(ctx, `WHERE repo = ? AND dir = ? AND revision = ? AND applied_ms = 0 AND changes > 0 ORDER BY posted_ms DESC, rowid DESC`, repo, dir, revision)
 }
 
+// FailedApplies counts the plans of a declaration at a commit whose apply failed.
+func (s *Store) FailedApplies(ctx context.Context, repo, dir, sha string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plans WHERE repo = ? AND dir = ? AND sha = ? AND outcome = ?`, repo, dir, sha, outcomeFailed).Scan(&n)
+	return n, err
+}
+
 // Applied records that a plan was applied, and how it went.
 func (s *Store) Applied(ctx context.Context, digest, outcome string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE plans SET applied_ms = ?, outcome = ? WHERE digest = ?`, s.nowMs(), outcome, digest)

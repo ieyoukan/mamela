@@ -347,6 +347,14 @@ func TestStoppedMachineAndSilentAgent(t *testing.T) {
 		!strings.Contains(c.Note.Hint, "mamela act") {
 		t.Fatalf("silent agent: %+v", c.Note)
 	}
+	// An agent that reported something of the machine is not silent: a resource declared later, on a
+	// machine that has run for long, only waits for its next poll (MAM-PLAN-0103), it is not blocked.
+	s.Packages["app-server/nginx"] = state.Package{Installed: true, Version: "1.24.0", ObservedAt: t0}
+	delete(s.Services, "app-server/nginx")
+	c = find(t, Build(g, s, policy.Default), "NodeService app-server/nginx")
+	if c.Status != StatusWaiting || c.Note.Code == "MAM-PLAN-0110" {
+		t.Fatalf("a new resource on a machine whose agent reports: %+v", c)
+	}
 }
 
 // A k3s agent's service starts only once its server's runs (its start would wait for the server).

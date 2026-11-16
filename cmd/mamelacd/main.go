@@ -79,15 +79,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "mamelacd: done")
 		return 0
 	}
-	logger.Printf("mamelacd: following %s (%s), every %s, through %s", e.Config.Repo, e.Config.Branch, e.Config.IntervalOrDefault(), e.Config.MamelaSocket)
+	logger.Printf("mamelacd: following %s (%s), every %s (%s while something is under way), through %s", e.Config.Repo, e.Config.Branch, e.Config.IntervalOrDefault(), e.Config.ActiveIntervalOrDefault(), e.Config.MamelaSocket)
 	for {
 		if err := e.Once(ctx); err != nil {
 			logger.Printf("mamelacd: %v", err)
 		}
+		wait := e.Config.IntervalOrDefault()
+		if e.Busy() {
+			wait = e.Config.ActiveIntervalOrDefault()
+		}
 		select {
 		case <-ctx.Done():
 			return 0
-		case <-time.After(e.Config.IntervalOrDefault()):
+		case <-time.After(wait):
 		}
 	}
 }

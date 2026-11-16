@@ -30,13 +30,12 @@ func (f *fixture) push(rev, login string) string {
 func TestPushIsTheApproval(t *testing.T) {
 	f := pushFixture(t)
 	head := f.push("v1", "alice")
-	f.once()
-	if len(f.m.applied) != 0 || f.lastStatus(head).State != "pending" {
-		t.Fatalf("after the first poll: applied %v, status %+v", f.m.applied, f.gh.Statuses(head))
-	}
-	f.once()
+	f.once() // planned, approved by the push, and applied: no waiting for the next poll
 	if len(f.m.applied) != 1 || f.m.world != "v1" {
-		t.Fatalf("after the second poll: applied %v", f.m.applied)
+		t.Fatalf("after the first poll: applied %v, statuses %+v", f.m.applied, f.gh.Statuses(head))
+	}
+	if f.e.Busy() {
+		t.Fatal("busy after converging")
 	}
 	if s := f.lastStatus(head); s.State != "success" {
 		t.Fatalf("the head's status: %+v", s)
@@ -49,7 +48,6 @@ func TestPushIsTheApproval(t *testing.T) {
 	}
 	// The next push is the next approval.
 	f.push("v2", "alice")
-	f.once()
 	f.once()
 	if len(f.m.applied) != 2 || f.m.world != "v2" {
 		t.Fatalf("second push: applied %v", f.m.applied)
@@ -209,5 +207,161 @@ func TestResyncConfig(t *testing.T) {
 	c.Sync = SyncPush
 	if err := c.Check(); err != nil {
 		t.Errorf("self_heal with push: %v", err)
+	}
+}
+
+// later makes time pass for mamelacd's store (not for the fakes).
+func (f *fixture) later(d time.Duration) {
+	f.t.Helper()
+	clock := f.e.Store.clock
+	f.e.Store.clock = func() time.Time { return clock().Add(d) }
+}
+
+// The phases of one change (each needs its plan approved and applied before the next can be
+// planned) follow each other in one poll: the push is the approval of all of them.
+func TestPhasesFollowEachOtherInOnePoll(t *testing.T) {
+	f := pushFixture(t)
+	f.m.state = func(rev string) api.Planned {
+		if len(f.m.applied) < 3 {
+			return api.Planned{Text: "phase", Changes: 1}
+		}
+		return api.Planned{Text: "converged"}
+	}
+	head := f.push("v1", "alice")
+	f.once()
+	if len(f.m.applied) != 3 || f.lastStatus(head).State != "success" || f.e.Busy() {
+		t.Fatalf("applied %d, status %+v, busy %v", len(f.m.applied), f.lastStatus(head), f.e.Busy())
+	}
+}
+
+// A chain that never ends is cut at maxChain per poll, and the next poll comes soon.
+func TestChainIsBounded(t *testing.T) {
+	f := pushFixture(t)
+	f.m.state = func(rev string) api.Planned { return api.Planned{Text: "again", Changes: 1} }
+	f.push("v1", "alice")
+	f.once()
+	if n := len(f.m.applied); n < 2 || n > maxChain || !f.e.Busy() {
+		t.Fatalf("applied %d (max %d), busy %v", n, maxChain, f.e.Busy())
+	}
+}
+
+// A declaration that waits for what it depends on makes the next poll come sooner; one that waits
+// for a person's approval does not.
+func TestBusyWhileWaiting(t *testing.T) {
+	f := pushFixture(t)
+	f.m.state = func(rev string) api.Planned { return api.Planned{Text: "waiting", Waiting: 1} }
+	f.push("v1", "alice")
+	f.once()
+	if !f.e.Busy() {
+		t.Fatal("not busy while waiting")
+	}
+	f = pushFixture(t)
+	f.m.state = func(rev string) api.Planned { return api.Planned{Text: "del", Changes: 1, Removals: 1} }
+	f.push("v1", "alice")
+	f.once()
+	if f.e.Busy() {
+		t.Fatal("busy while waiting for the host's approval")
+	}
+	var c Config
+	if c.ActiveIntervalOrDefault() != 10*time.Second {
+		t.Fatalf("default active interval %v", c.ActiveIntervalOrDefault())
+	}
+}
+
+// A failed apply is tried again after the retry interval, up to retry_max times; the status says so.
+func TestFailedApplyIsRetried(t *testing.T) {
+	f := pushFixture(t)
+	f.e.Config.Retry = "1m"
+	f.m.applyFails = 2
+	head := f.push("v1", "alice")
+	f.once()
+	if s := f.lastStatus(head); s.State != "failure" || !strings.Contains(s.Description, "(retry 1/3 in 1m0s)") || len(s.Description) > 140 {
+		t.Fatalf("after the first failure: %+v", s)
+	}
+	planned := f.m.planned
+	f.once()
+	if f.m.planned != planned {
+		t.Fatal("tried again before the retry interval")
+	}
+	f.later(2 * time.Minute)
+	f.once() // the second failure
+	if s := f.lastStatus(head); s.State != "failure" || !strings.Contains(s.Description, "(retry 2/3 in 1m0s)") {
+		t.Fatalf("after the second failure: %+v", s)
+	}
+	f.later(2 * time.Minute)
+	f.once() // succeeds
+	if f.m.world != "v1" || f.lastStatus(head).State != "success" {
+		t.Fatalf("not retried to success: world %q, status %+v", f.m.world, f.lastStatus(head))
+	}
+}
+
+// After retry_max retries a failed head is left alone until another commit; that commit starts over.
+func TestRetryGivesUp(t *testing.T) {
+	f := pushFixture(t)
+	f.e.Config.Retry = "1m"
+	one := 1
+	f.e.Config.RetryMax = &one
+	f.m.applyFails = 100
+	head := f.push("v1", "alice")
+	f.once()
+	f.later(2 * time.Minute)
+	f.once()
+	if s := f.lastStatus(head); !strings.Contains(s.Description, "gave up after 2 tries") {
+		t.Fatalf("status: %+v", s)
+	}
+	planned := f.m.planned
+	f.later(2 * time.Minute)
+	f.once()
+	f.once()
+	if f.m.planned != planned {
+		t.Fatal("tried again after giving up")
+	}
+	f.m.applyFails = 0
+	f.push("v2", "alice")
+	f.once()
+	if f.m.world != "v2" {
+		t.Fatalf("a new commit did not start over: %q", f.m.world)
+	}
+}
+
+// retry = "0" never tries again.
+func TestRetryCanBeOff(t *testing.T) {
+	f := pushFixture(t)
+	f.e.Config.Retry = "0"
+	f.m.applyFails = 1
+	head := f.push("v1", "alice")
+	f.once()
+	if s := f.lastStatus(head); strings.Contains(s.Description, "retry") {
+		t.Fatalf("status: %+v", s)
+	}
+	planned := f.m.planned
+	f.later(time.Hour)
+	f.once()
+	if f.m.planned != planned {
+		t.Fatal("retried with retry = 0")
+	}
+}
+
+func TestActiveIntervalAndRetryConfig(t *testing.T) {
+	c := Config{Repo: "me/infra", Branch: "main", Dirs: []string{"infra"}, TokenFile: "x", Authors: []string{"alice"}, Approvers: []string{"alice"}, MamelaSocket: "x", StateDB: "x"}
+	for _, tc := range []struct {
+		name string
+		set  func(*Config)
+		ok   bool
+	}{
+		{"active 5s", func(c *Config) { c.ActiveInterval = "5s" }, true},
+		{"active 2s", func(c *Config) { c.ActiveInterval = "2s" }, false},
+		{"active more than interval", func(c *Config) { c.ActiveInterval = "2m" }, false},
+		{"retry 1m", func(c *Config) { c.Retry = "1m" }, true},
+		{"retry 10s", func(c *Config) { c.Retry = "10s" }, false},
+		{"retry 0", func(c *Config) { c.Retry = "0" }, true},
+		{"retry_max 21", func(c *Config) { n := 21; c.RetryMax = &n }, false},
+		{"retry_max 0", func(c *Config) { n := 0; c.RetryMax = &n }, true},
+	} {
+		cc := c
+		tc.set(&cc)
+		if err := cc.Check(); (err == nil) != tc.ok {
+			t.Errorf("%s: %v", tc.name, err)
+		}
 	}
 }

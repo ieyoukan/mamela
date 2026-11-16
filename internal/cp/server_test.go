@@ -302,3 +302,50 @@ func TestServesMameletBySHA256(t *testing.T) {
 		}
 	}
 }
+
+// A mamelet that waits for a newer revision gets it as soon as it is published (not at its next
+// poll), and an answer "nothing new" when the wait ends; the request is the node's own.
+func TestWaitForANewRevision(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.enroll("web", 7001)
+	publish := func(pkg string) {
+		t.Helper()
+		if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+			return noderev.Revision{VMID: 7001, Packages: []noderev.Package{{Name: pkg}}}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish("curl")
+	c, err := mamelet.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Nothing newer than serial 1: the wait ends unchanged.
+	start := time.Now()
+	serial, changed, err := c.WaitChange(e.ctx, 1, time.Second)
+	if err != nil || changed || serial != 1 || time.Since(start) < 900*time.Millisecond {
+		t.Fatalf("no news: %d %v %v after %v", serial, changed, err, time.Since(start))
+	}
+	// Already newer than what the node has: at once.
+	start = time.Now()
+	if serial, changed, err = c.WaitChange(e.ctx, 0, 20*time.Second); err != nil || !changed || serial != 1 || time.Since(start) > time.Second {
+		t.Fatalf("already newer: %d %v %v after %v", serial, changed, err, time.Since(start))
+	}
+	// Published during the wait: it ends with it, long before the deadline.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		publish("jq")
+	}()
+	start = time.Now()
+	if serial, changed, err = c.WaitChange(e.ctx, 1, 20*time.Second); err != nil || !changed || serial != 2 || time.Since(start) > 5*time.Second {
+		t.Fatalf("published during the wait: %d %v %v after %v", serial, changed, err, time.Since(start))
+	}
+	// A node waits for its own revisions only (the certificate is checked as for a revision request,
+	// see TestOnlyTheNodesCurrentCertificateIsAccepted); one that has none yet just waits.
+	other := e.enroll("db", 7002)
+	oc, _ := mamelet.NewClient(other)
+	if _, _, err := oc.WaitChange(e.ctx, 0, time.Second); err != nil {
+		t.Fatalf("a node without a revision waiting: %v", err)
+	}
+}

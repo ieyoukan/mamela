@@ -40,7 +40,13 @@ type Engine struct {
 	Logf   func(format string, args ...any)
 
 	trees map[string]string // commit -> the tree's name at the API
+	// busy: the last poll left something under way that the next poll may move on.
+	busy bool
 }
+
+// Busy says whether the last poll left something under way (a declaration waits for what it depends
+// on, or a chain of phases was cut short): the next poll should come after ActiveInterval.
+func (e *Engine) Busy() bool { return e.busy }
 
 func (e *Engine) logf(format string, args ...any) {
 	if e.Logf != nil {
@@ -52,6 +58,7 @@ func (e *Engine) logf(format string, args ...any) {
 // (plan.go), handle approval comments (comments.go), and bring the declarations at the head of the
 // branch about (head.go). An error of one pull request or declaration does not stop the others.
 func (e *Engine) Once(ctx context.Context) error {
+	e.busy = false
 	e.trees = map[string]string{} // the API keeps a few recent trees only: send them again each poll
 	open, err := e.GitHub.PRs(ctx, "open", recentPRs)
 	if err != nil {
