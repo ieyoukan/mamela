@@ -349,3 +349,24 @@ func TestWaitForANewRevision(t *testing.T) {
 		t.Fatalf("a node without a revision waiting: %v", err)
 	}
 }
+
+// mamelet fetches the binary an approved update names from the Control Plane, with the client it
+// already has (pinned to the CA); a sha256 the Control Plane does not serve is a clear error.
+func TestMameletClientFetchesTheBinary(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.enroll("web", 7001)
+	bin := []byte("\x7fELF mamelet, the next release")
+	e.srv.Config.Handler = (&Server{Store: e.st, PKI: e.pki, Now: func() time.Time { return e.now }, MameletBinary: bin}).Handler()
+	c, err := mamelet.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(bin)
+	got, err := c.Mamelet(e.ctx, hex.EncodeToString(sum[:]))
+	if err != nil || string(got) != string(bin) {
+		t.Fatalf("fetch: %q %v", got, err)
+	}
+	if _, err := c.Mamelet(e.ctx, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "does not serve") {
+		t.Fatalf("a binary that is not served: %v", err)
+	}
+}

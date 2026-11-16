@@ -173,6 +173,40 @@ func (c *Client) Revision(ctx context.Context) (noderev.Signed, error) {
 	return noderev.Signed{}, errors.Join(errs...)
 }
 
+// Mamelet fetches the mamelet binary with this sha256 from the Control Plane, which serves it to
+// anyone, over the TLS this client is pinned to; the caller checks the sha256.
+func (c *Client) Mamelet(ctx context.Context, sha string) ([]byte, error) {
+	server := c.active
+	if server == "" {
+		server = c.servers()[0]
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server+"/v1/mamelet/"+url.PathEscape(sha), nil)
+	if err != nil {
+		return nil, err
+	}
+	hc := *c.http
+	hc.Timeout = 5 * time.Minute
+	resp, err := hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errors.New("the Control Plane does not serve a mamelet with this sha256 (it serves the binary of its controlplane.mamelet_binary)")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: %s", req.URL.Path, resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, noderev.MaxMamelet+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > noderev.MaxMamelet {
+		return nil, fmt.Errorf("the binary is larger than %d bytes", noderev.MaxMamelet)
+	}
+	return data, nil
+}
+
 // WaitChange waits up to d for a revision newer than serial; it returns the newest serial and whether it is newer. A
 // Control Plane that does not know the request answers with an error: the caller then waits by itself.
 func (c *Client) WaitChange(ctx context.Context, serial int64, d time.Duration) (int64, bool, error) {

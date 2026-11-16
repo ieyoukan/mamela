@@ -46,11 +46,32 @@ type Revision struct {
 	// Manifests are the manifests a k3s server should have in its auto-deploy directory: mamelet
 	// observes them, and writes one only with an approved, one-time Write.
 	Manifests []Manifest `json:"manifests,omitempty"`
+	// Mamelet, when set, is an approved, one-time update of mamelet itself to the release with this
+	// sha256: mamelet fetches it from the Control Plane, checks the sha256, keeps the previous binary
+	// and restarts into the new one.
+	Mamelet *MameletUpdate `json:"mamelet,omitempty"`
 	// ControlPlane is the URL mamelet should reach the Control Plane at from now on
 	// ("https://host:port"), when the Control Plane moves (ADR 0003). The CA and the key that
 	// sign revisions stay the same, so the new address is trusted exactly as the old one was.
 	ControlPlane string `json:"controlPlane,omitempty"`
 }
+
+// MameletUpdate is an approved update of mamelet to the binary with SHA256.
+type MameletUpdate struct {
+	SHA256 string `json:"sha256"`
+	Once
+}
+
+// MameletPath is where mamelet's binary is (its systemd unit runs it from there); the update keeps
+// the previous one next to it as MameletPrevPath, and stages the new one as MameletNextPath.
+const (
+	MameletPath     = "/usr/local/sbin/mamelet"
+	MameletPrevPath = MameletPath + ".prev"
+	MameletNextPath = MameletPath + ".next"
+)
+
+// MaxMamelet bounds a downloaded mamelet binary.
+const MaxMamelet = 64 << 20
 
 // K3s is a k3s release, pinned by the sha256 of its binary for the node's architecture, and the
 // node's place in its cluster.
@@ -172,6 +193,7 @@ const (
 	ActionInstall = "install"     // k3s only
 	ActionWrite   = "write"       // a k3s manifest only
 	ActionRemove  = "remove-node" // a k3s server only: delete a Kubernetes node
+	ActionUpdate  = "update-mamelet"
 )
 
 var (
@@ -300,6 +322,9 @@ func (r *Revision) Check() error {
 			add("k3s: remove grant %+v is not valid", rm.Once)
 		}
 	}
+	if u := r.Mamelet; u != nil && (!hexSHA256.MatchString(u.SHA256) || !operationPattern.MatchString(u.Operation) || u.Attempt < 1 || u.Action != ActionUpdate) {
+		add("mamelet: update grant %+v is not valid", *u)
+	}
 	for _, m := range r.Manifests {
 		switch {
 		case !manifestPattern.MatchString(m.Name):
@@ -426,6 +451,9 @@ type Report struct {
 	Packages []PackageState `json:"packages"`
 	Services []ServiceState `json:"services"`
 	K3s      *K3sState      `json:"k3s,omitempty"`
+	// MameletSHA256 is the sha256 of the mamelet binary that is running (not of the file on disk,
+	// which an update replaces before it restarts into it).
+	MameletSHA256 string `json:"mameletSha256,omitempty"`
 	// Manifests are the observed files of the revision's manifests.
 	Manifests []ManifestState `json:"manifests,omitempty"`
 	Results   []Result        `json:"results"`

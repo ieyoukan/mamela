@@ -78,6 +78,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0212 | ApprovalRequired | 動いている k3s の版上げ。バイナリ（sha256 で固定）を置き換え、そのノードの k3s を再起動する。server の再起動中は API が使えず、agent の再起動中はそのノードが Ready でない |
 | MAM-POL-0213 | ApprovalRequired | k3s の自動適用ディレクトリへのマニフェストの書き込み。k3s は cluster-admin の権限で適用し、変わるたびにまた適用する。plan に全文が出る |
 | MAM-POL-0214 | ApprovalRequired | Kubernetes のノードを、クラスタから消す（Ready なら先に drain する）。宣言に無いノードだけ。削除なので、承認は Control Plane のホストだけが行う（`mamela approve`） |
+| MAM-POL-0215 | ApprovalRequired | mamelet 自身を、宣言した sha256 の binary（Control Plane が配る）に置き換えて再起動する。前の binary は残し、新しいものが報告しなければ戻る。ノードは 1 台ずつ |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
@@ -114,6 +115,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0116 | k3s の版上げの順番待ち。server が先、agent は名前の順に 1 台ずつ（agent は server より新しい版にしない） |
 | MAM-PLAN-0117 | mamelet からの k3s のマニフェストの報告を待つ |
 | MAM-PLAN-0118 | k3s のノードのマシンを再起動する変更（仕様の変更での再起動など）は、クラスタのマシンを 1 台ずつ、名前の順（agent が server より先）に行う。先のマシンの再起動が済むまで待つ。全 Kubernetes ノードが Ready でなければ MAM-PLAN-0115 |
+| MAM-PLAN-0119 | ノードの mamelet が、どの版で動いているかを報告していない。更新の仕組みより前の mamelet は報告しない。一度だけ手で置き換える（[mamelet の更新](mamelet-update.md)） |
+| MAM-PLAN-0120 | mamelet の更新は 1 台ずつ、名前の順。前のノードが宣言した版で動くまで待つ。前のノードの更新が失敗したなら、それが先に直す |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
@@ -189,5 +192,6 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 |---|---|---|
 | MAM-NODE-0101 | 同名ノードのマシン ID が変わった | 旧登録の失効を確認し、現ノードで再計画する |
 | MAM-NODE-0102 | `controlplane.move_to` があるが、plan は接続先を変えない | 新しい CP の準備後、`mamela controlplane redirect` を実行する |
+| MAM-NODE-0103 | 宣言が固定した mamelet の sha256 を、この Control Plane は配っていない（`controlplane.mamelet_binary` の sha256 が違う）。plan の警告で、digest には入らない | その binary を `controlplane.mamelet_binary` に置いて `mamela serve` を再起動するか、配っている版を宣言に書く |
 
 `mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。

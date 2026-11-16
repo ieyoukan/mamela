@@ -223,3 +223,33 @@ func TestNodeRemovalIsChecked(t *testing.T) {
 		}
 	}
 }
+
+func TestMameletUpdateIsChecked(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	rev := func(u *MameletUpdate) Revision {
+		return Revision{Schema: Schema, Node: "web", VMID: 7001, Serial: 1, IssuedAt: time.Unix(1, 0), ExpiresAt: time.Unix(100, 0), Mamelet: u}
+	}
+	once := Once{Operation: "op-000000000000000000000001", Attempt: 1, Action: ActionUpdate}
+	if r := rev(&MameletUpdate{SHA256: sha, Once: once}); r.Check() != nil {
+		t.Fatalf("a valid update: %v", r.Check())
+	}
+	bad := once
+	bad.Action = ActionInstall
+	noAttempt := once
+	noAttempt.Attempt = 0
+	for name, r := range map[string]Revision{
+		"a short sha256":   rev(&MameletUpdate{SHA256: "abcd", Once: once}),
+		"an uppercase one": rev(&MameletUpdate{SHA256: strings.ToUpper(sha), Once: once}),
+		"another action":   rev(&MameletUpdate{SHA256: sha, Once: bad}),
+		"attempt 0":        rev(&MameletUpdate{SHA256: sha, Once: noAttempt}),
+		"no operation":     rev(&MameletUpdate{SHA256: sha, Once: Once{Attempt: 1, Action: ActionUpdate}}),
+	} {
+		if r.Check() == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// A grant is part of the content: a revision with one is not the revision without.
+	if string(rev(nil).Content()) == string(rev(&MameletUpdate{SHA256: sha, Once: once}).Content()) {
+		t.Error("the update grant is not in the content")
+	}
+}

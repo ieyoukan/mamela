@@ -31,6 +31,8 @@ type Snapshot struct {
 	Provided map[string]Provided `json:"provided,omitempty"`
 	// K3s by "<node>/k3s". Absent means "not observed".
 	K3s map[string]K3s `json:"k3s,omitempty"`
+	// Mamelets by resource name ("<node>/mamelet"): the mamelet each node's agent reported running.
+	Mamelets map[string]Mamelet `json:"mamelets,omitempty"`
 	// K3sManifests by resource name ("<node>/manifest/<name>"). Absent means "not observed".
 	K3sManifests map[string]K3sManifest `json:"k3sManifests,omitempty"`
 	// Nodes are the machines of providers' node kinds, by resource name (ADR 0004).
@@ -79,6 +81,13 @@ type K3s struct {
 	Running    bool      `json:"running,omitempty"`   // the k3s service is active
 	Stale      bool      `json:"stale,omitempty"`     // it started before the binary in place was written
 	Nodes      []K3sNode `json:"nodes,omitempty"`     // a running server's view of the cluster
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+// Mamelet is an observed mamelet: the sha256 of the binary that runs, and the release it says it is.
+type Mamelet struct {
+	SHA256     string    `json:"sha256,omitempty"`
+	Version    string    `json:"version,omitempty"`
 	ObservedAt time.Time `json:"observedAt"`
 }
 
@@ -205,6 +214,13 @@ func (s Snapshot) normalized() Snapshot {
 		for k, v := range s.K3s {
 			v.ObservedAt = v.ObservedAt.UTC()
 			n.K3s[k] = v
+		}
+	}
+	if len(s.Mamelets) > 0 {
+		n.Mamelets = map[string]Mamelet{}
+		for k, v := range s.Mamelets {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.Mamelets[k] = v
 		}
 	}
 	if len(s.K3sManifests) > 0 {

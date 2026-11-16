@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -280,5 +281,91 @@ func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
 	e.round()
 	if k := change(t, e.plan(), id); k.Status != plan.StatusInSync || len(k.Operations) != 0 {
 		t.Fatalf("after the removal: %+v", k)
+	}
+}
+
+// mameletOS runs a staged mamelet (-version) as a mamelet does, and is tinyOS for the rest.
+type mameletOS struct{ *tinyOS }
+
+func (o mameletOS) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
+	if strings.HasSuffix(program, "mamelet.next") {
+		return []byte("mamelet test\n"), nil, 0, nil
+	}
+	return o.tinyOS.Run(ctx, program, args, env)
+}
+
+// The mamelet a node runs is declared by its sha256. Another one in the declaration is a plan with
+// an approval; mamelet then fetches exactly that binary, keeps the previous one, and (after its
+// restart) reports it, and the next plan is in sync.
+func TestMameletUpdateThroughMamelet(t *testing.T) {
+	sum := func(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+	root := t.TempDir()
+	self := filepath.Join(root, "running")
+	setRunning := func(content string) {
+		t.Helper()
+		os.MkdirAll(filepath.Join(root, "usr/local/sbin"), 0o755)
+		for _, p := range []string{self, filepath.Join(root, noderev.MameletPath)} {
+			if err := os.WriteFile(p, []byte(content), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	graphOf := func(sha string) *graph.Graph {
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+			`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+			`{"kind":"NodeMamelet","name":"app/mamelet","spec":{"node":"app","version":"0.9.1","sha256":"` + sha + `"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	e := newEnv(t)
+	oldSHA, newSHA := sum("old mamelet"), sum("new mamelet")
+	setRunning("old mamelet")
+	newAgent := func() *mamelet.Agent {
+		cp := e.agent.CP.(storeCP)
+		cp.binaries = map[string][]byte{newSHA: []byte("new mamelet")}
+		return &mamelet.Agent{Config: e.agent.Config, CP: cp, State: e.agent.State, Now: e.agent.Now,
+			System: &mamelet.System{Runner: mameletOS{e.os}, AllowedOrigins: []string{"Ubuntu:"}, Root: root, SelfPath: self}}
+	}
+	e.agent = newAgent()
+	e.g = graphOf(oldSHA)
+	e.publish()
+	e.round()
+	if m := change(t, e.plan(), "NodeMamelet app/mamelet"); m.Status != plan.StatusInSync {
+		t.Fatalf("the declared mamelet runs: %+v", m)
+	}
+
+	// Declare the next release: a plan with an approval, naming the sha256.
+	e.g = graphOf(newSHA)
+	e.publish()
+	e.round()
+	p := e.plan()
+	m := change(t, p, "NodeMamelet app/mamelet")
+	if m.Status != plan.StatusChange || m.Verdict != policy.ApprovalRequired || len(m.Operations) != 1 || m.Operations[0].Op != policy.OpUpdateMamelet ||
+		!slices.Contains(m.Diffs, plan.Diff{Field: "sha256", From: oldSHA, To: newSHA}) {
+		t.Fatalf("update: %+v", m)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, noderev.MameletPath)); string(b) != "old mamelet" {
+		t.Fatal("changed before approval")
+	}
+	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone {
+		t.Fatalf("apply: %+v", rep)
+	}
+	b, _ := os.ReadFile(filepath.Join(root, noderev.MameletPath))
+	prev, _ := os.ReadFile(filepath.Join(root, noderev.MameletPrevPath))
+	if string(b) != "new mamelet" || string(prev) != "old mamelet" {
+		t.Fatalf("installed %q, previous %q", b, prev)
+	}
+
+	// The restart: the new binary runs and reports itself; the plan is in sync.
+	setRunning("new mamelet")
+	e.agent = newAgent()
+	if back, err := e.agent.Boot(); err != nil || back {
+		t.Fatalf("boot: %v %v", back, err)
+	}
+	e.round()
+	if m := change(t, e.plan(), "NodeMamelet app/mamelet"); m.Status != plan.StatusInSync {
+		t.Fatalf("after the update: %+v", m)
 	}
 }

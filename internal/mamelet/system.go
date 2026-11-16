@@ -28,7 +28,8 @@ const (
 	progDpkgQuery = "/usr/bin/dpkg-query"
 	progAptGet    = "/usr/bin/apt-get"
 	progSystemctl = "/usr/bin/systemctl"
-	progK3s       = "/usr/local/bin/k3s" // kubectl on the server: list nodes (K3sNodes); cordon, drain, delete one (RemoveK3sNode)
+	progMameletNx = noderev.MameletNextPath // a staged update, only to run it with -version (update.go)
+	progK3s       = "/usr/local/bin/k3s"    // kubectl on the server: list nodes (K3sNodes); cordon, drain, delete one (RemoveK3sNode)
 )
 
 // ExecRunner runs programs directly (no shell), with a minimal environment.
@@ -36,7 +37,7 @@ type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
 	switch program {
-	case progDpkgQuery, progAptGet, progSystemctl, progK3s:
+	case progDpkgQuery, progAptGet, progSystemctl, progK3s, progMameletNx:
 	default:
 		return nil, nil, -1, fmt.Errorf("mamelet does not run %s", program)
 	}
@@ -65,6 +66,9 @@ type System struct {
 	// HTTP downloads k3s (nil: a client with a timeout); K3sReleases overrides where from (tests).
 	HTTP        *http.Client
 	K3sReleases string
+	// SelfPath overrides the file mamelet hashes to tell which binary runs (tests); selfSHA caches it.
+	SelfPath string
+	selfSHA  string
 	// Addresses overrides how the node's IPv4 addresses are read (tests).
 	Addresses func() []string
 }

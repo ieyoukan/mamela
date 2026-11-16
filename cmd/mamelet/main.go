@@ -25,8 +25,13 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", "/etc/mamelet/config.json", "configuration written by cloud-init")
 	once := flag.Bool("once", false, "run one round and exit")
+	showVersion := flag.Bool("version", false, "print the version and exit (an update runs the new binary with this before it replaces mamelet)")
 	flag.Parse()
 	log.SetFlags(0) // journald adds timestamps
+	if *showVersion {
+		fmt.Println("mamelet", version)
+		return
+	}
 
 	cfg, err := mamelet.LoadConfig(*configPath)
 	if err != nil {
@@ -54,11 +59,25 @@ func main() {
 		System: &mamelet.System{Runner: mamelet.ExecRunner{}, AllowedOrigins: cfg.AllowedOrigins},
 		State:  mamelet.FileState{Path: cfg.StateDir + "/state.json"}, Now: time.Now, Version: version}
 
+	// An update of mamelet that has not proved itself: count this start, and go back to the previous
+	// binary if the new one keeps failing (update.go).
+	if back, err := agent.Boot(); err != nil {
+		log.Printf("mamelet: update state: %v", err)
+	} else if back {
+		rollBack(agent, "the new mamelet failed to start or to report in time")
+	}
+
 	lastErr := ""
 	var seen int64 // the newest revision serial the Control Plane has told of
 	for {
 		rep, err := agent.Round(ctx)
 		logRound(rep, err, &lastErr)
+		if agent.Restarting() {
+			restart(agent)
+		}
+		if err != nil && agent.UpdateOverdue() {
+			rollBack(agent, "the new mamelet did not report in time")
+		}
 		if *once {
 			if err != nil {
 				os.Exit(1)
@@ -75,6 +94,27 @@ func main() {
 			return
 		}
 	}
+}
+
+// restart replaces this process with the binary at its path (an update put a new one there, or a
+// rollback put the previous one back). It returns only if that failed: the update is then undone.
+func restart(agent *mamelet.Agent) {
+	log.Printf("mamelet: restarting into %s", noderev.MameletPath)
+	err := syscall.Exec(noderev.MameletPath, os.Args, os.Environ())
+	log.Printf("mamelet: cannot restart: %v", err)
+	if aerr := agent.AbortRestart(err); aerr != nil {
+		log.Printf("mamelet: going back to the previous mamelet: %v", aerr)
+	}
+}
+
+// rollBack puts the previous mamelet back and restarts into it.
+func rollBack(agent *mamelet.Agent, why string) {
+	log.Printf("mamelet: going back to the previous mamelet: %s", why)
+	if err := agent.Rollback(why); err != nil {
+		log.Printf("mamelet: cannot go back: %v", err)
+		return
+	}
+	restart(agent)
 }
 
 func enroll(ctx context.Context, cfg mamelet.Config) error {

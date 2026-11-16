@@ -113,3 +113,19 @@ fn static_network() {
     "\"network\":{\"address\":\"192.0.2.10/24\",\"dns\":[\"192.0.2.1\",\"198.51.100.1\"],\"gateway\":\"192.0.2.1\",\"mode\":\"static\"}",
   )
 }
+
+@test
+fn mamelet_release_is_declared() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.mamelet(app(), "0.9.1", "ab")
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"NodeMamelet\",\"name\":\"app-server/mamelet\",\"spec\":{\"node\":\"app-server\",\"sha256\":\"ab\",\"version\":\"0.9.1\"}},",
+      "{\"kind\":\"TestVM\",\"name\":\"app-server\",\"provider\":\"test\",\"spec\":{\"network\":{\"mode\":\"dhcp\"}}}",
+      "],\"schema\":\"mamela-graph/v2\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
+}

@@ -71,6 +71,12 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			snap.Services[r.Node+"/"+sv.Name] = state.Service{Exists: sv.Exists, Enabled: sv.Enabled, Running: sv.Running,
 				RepairStart: repair, ObservedAt: nr.Received}
 		}
+		if r.MameletSHA256 != "" {
+			if snap.Mamelets == nil {
+				snap.Mamelets = map[string]state.Mamelet{}
+			}
+			snap.Mamelets[r.Node+"/mamelet"] = state.Mamelet{SHA256: r.MameletSHA256, Version: r.Version, ObservedAt: nr.Received}
+		}
 		for _, m := range r.Manifests {
 			if snap.K3sManifests == nil {
 				snap.K3sManifests = map[string]state.K3sManifest{}
@@ -176,6 +182,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				for i := range r.Manifests {
 					r.Manifests[i].Write = nil
 				}
+				r.Mamelet = nil
 			}
 			return r, nil
 		}); err != nil {
@@ -324,6 +331,17 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			k := *rev.K3s
 			k.Remove = &noderev.NodeRemoval{Node: target, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionRemove}}
 			rev.K3s = &k
+			return nil
+		}
+	case step.Op == policy.OpUpdateMamelet && r.NodeMamelet != nil:
+		// Exactly the release the approved plan showed, which is the declared one, or nothing happens.
+		m := *r.NodeMamelet
+		if want := approvedDiff(step.Approved, "sha256"); want != m.SHA256 {
+			return fmt.Errorf("the approved plan updates mamelet to %q, the declaration pins %q (plan again)", want, m.SHA256)
+		}
+		node, what = m.Node, "update mamelet to "+m.SHA256[:12]
+		grant = func(rev *noderev.Revision) error {
+			rev.Mamelet = &noderev.MameletUpdate{SHA256: m.SHA256, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionUpdate}}
 			return nil
 		}
 	case step.Op == policy.OpWriteK3sManifest && r.NodeK3sManifest != nil:

@@ -68,6 +68,8 @@ type State struct {
 	// ControlPlane is the URL a verified revision told mamelet to use (ADR 0003): tried before the
 	// configured one, which stays the fallback.
 	ControlPlane string `json:"controlPlane,omitempty"`
+	// Update is an update of mamelet itself that has not proved itself yet (update.go).
+	Update *PendingUpdate `json:"update,omitempty"`
 }
 
 // Mover is a ControlPlane that can be pointed at another URL of the same Control Plane.
@@ -134,6 +136,8 @@ type Agent struct {
 	State   StateStore
 	Now     func() time.Time
 	Version string
+
+	restart bool // an update replaced the binary: restart into it (Restarting)
 }
 
 // Round fetches the revision, observes, makes the allowed changes and reports. The returned
@@ -145,6 +149,9 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 	}
 	rep := noderev.Report{Node: a.Config.Node, VMID: a.Config.VMID, Version: a.Version,
 		Packages: []noderev.PackageState{}, Services: []noderev.ServiceState{}, Results: []noderev.Result{}}
+	if self, err := a.System.SelfSHA256(); err == nil {
+		rep.MameletSHA256 = self
+	}
 	key := ed25519.PublicKey(a.Config.RevisionKey)
 	expect := func() noderev.Expectation {
 		return noderev.Expectation{Node: a.Config.Node, VMID: a.Config.VMID, Now: a.Now(), LastSerial: st.LastSerial}
@@ -211,6 +218,7 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 	if err := a.CP.Report(ctx, rep); err != nil {
 		return rep, fmt.Errorf("send report: %w", err)
 	}
+	a.confirmUpdate(&st)
 	return rep, nil
 }
 
@@ -333,6 +341,13 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		}
 	}
 
+	if u := rev.Mamelet; u != nil && online {
+		if _, done := st.Attempts[attemptKey(u.Operation, u.Attempt)]; !done {
+			changed = true
+			a.updateMamelet(ctx, u, st, record)
+		}
+	}
+
 	if k := rev.K3s; k != nil && k.Remove != nil && online && k.Role == noderev.K3sServer {
 		rm := k.Remove
 		if _, done := st.Attempts[attemptKey(rm.Operation, rm.Attempt)]; !done {
@@ -443,6 +458,11 @@ func (a *Agent) knownResults(rev *noderev.Revision, st State) []noderev.Result {
 			if r, ok := st.Attempts[attemptKey(m.Write.Operation, m.Write.Attempt)]; ok {
 				out = append(out, r)
 			}
+		}
+	}
+	if u := rev.Mamelet; u != nil {
+		if r, ok := st.Attempts[attemptKey(u.Operation, u.Attempt)]; ok {
+			out = append(out, r)
 		}
 	}
 	if k := rev.K3s; k != nil && k.Install != nil {
