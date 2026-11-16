@@ -4,8 +4,10 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -697,36 +699,68 @@ func TestContradictingUnitsAreRefused(t *testing.T) {
 	}
 }
 
-// A graph of the most resources a document may have is decoded in well under a second: the check
-// for a resource declared twice used to look at every resource for each one (32 seconds for
-// 10,000).
-func TestDecodeManyResources(t *testing.T) {
+// manyItems is a document of one machine and n-1 items of a provider.
+func manyItems(n int) string {
 	var b strings.Builder
 	b.WriteString(`{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp))
-	const n = MaxResources - 1 // one more is left for a resource declared twice below
 	for i := 1; i < n; i++ {
 		b.WriteString(`,{"kind":"KVItem","name":"item-` + itoa(i) + `","provider":"kv-example","spec":{"value":"v1"}}`)
 	}
 	b.WriteString(`]}`)
-	start := time.Now()
-	g, err := Decode([]byte(b.String()))
-	if err != nil {
-		t.Fatal(err)
+	return b.String()
+}
+
+// The cost of decoding grows with the number of resources, not with its square: the check for a
+// resource declared twice used to look at every resource for each one (32 seconds for 10,000).
+// The time of 10 times the resources must be nowhere near 100 times (it is about 10); the best of
+// a few runs is compared, so that a busy machine does not decide. BenchmarkDecode10000 is the
+// absolute figure (well under a second).
+func TestDecodeManyResources(t *testing.T) {
+	// CPU time of the process, not the wall clock: a busy machine delays a test, it does not make
+	// it compute more.
+	cpu := func() time.Duration {
+		var ru syscall.Rusage
+		if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+			t.Skip("no CPU time here:", err)
+		}
+		return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
 	}
-	if len(g.Resources) != n {
-		t.Fatalf("%d resources", len(g.Resources))
+	best := func(n int) time.Duration {
+		doc := []byte(manyItems(n))
+		fastest := time.Hour
+		for range 3 {
+			runtime.GC() // what an earlier run left is not this one's to collect
+			start := cpu()
+			if _, err := Decode(doc); err != nil {
+				t.Fatal(err)
+			}
+			fastest = min(fastest, cpu()-start)
+		}
+		return fastest
 	}
-	if d := time.Since(start); d > time.Second {
-		t.Errorf("decoding %d resources took %s", n, d)
+	small, large := best(1000), best(MaxResources-1)
+	if large > 40*small {
+		t.Errorf("decoding %d resources took %s, %d took %s: more than linear", MaxResources-1, large, 1000, small)
 	}
 	// The same item declared again the same way is still one resource, and differently still refused.
-	again := strings.Replace(b.String(), `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v1"}}]}`, 1)
-	if g, err := Decode([]byte(again)); err != nil || len(g.Resources) != n {
+	doc := manyItems(MaxResources - 1)
+	again := strings.Replace(doc, `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v1"}}]}`, 1)
+	if g, err := Decode([]byte(again)); err != nil || len(g.Resources) != MaxResources-1 {
 		t.Errorf("declared twice the same way: %v", err)
 	}
-	other := strings.Replace(b.String(), `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v2"}}]}`, 1)
-	_, err = Decode([]byte(other))
+	other := strings.Replace(doc, `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v2"}}]}`, 1)
+	_, err := Decode([]byte(other))
 	assertCode(t, err, CodeDuplicateResource)
+}
+
+func BenchmarkDecode10000(b *testing.B) {
+	doc := []byte(manyItems(MaxResources))
+	b.ResetTimer()
+	for range b.N {
+		if _, err := Decode(doc); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 // A cycle is reported with the way round (B14, low).
