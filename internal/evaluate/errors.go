@@ -13,6 +13,7 @@ const (
 	CodeBuildFailed        Code = "MAM-EVAL-0101"
 	CodeBuildTimeout       Code = "MAM-EVAL-0102"
 	CodeDependencyMismatch Code = "MAM-EVAL-0103"
+	CodeReplaceMissing     Code = "MAM-EVAL-0104"
 	CodeNotComponent       Code = "MAM-EVAL-0201"
 	CodeImportDenied       Code = "MAM-EVAL-0202"
 	CodeProgramError       Code = "MAM-EVAL-0301"
