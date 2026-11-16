@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/tree"
@@ -102,34 +104,72 @@ var (
 	byRe     = regexp.MustCompile(`^[a-z]+:[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 )
 
+// DefaultReadTimeout is how long a request has to arrive in (its headers and body) when the Server
+// names none.
+const DefaultReadTimeout = 60 * time.Second
+
 // Server serves the API. Requests run one at a time: a plan or an apply holds the others.
 type Server struct {
 	Backend Backend
 	WorkDir string // extracted trees, one directory per tarball digest
 	Mamela  string // the version, for /v1/info
 	Logf    func(format string, args ...any)
+	// ReadTimeout is how long a request has to arrive in (default DefaultReadTimeout). It does not
+	// limit the handling: an apply takes as long as it takes.
+	ReadTimeout time.Duration
 
-	mu sync.Mutex
+	mu       sync.Mutex
+	stopping atomic.Bool
 }
+
+// HTTPServer is the http.Server that serves the API: a request that does not arrive in time is dropped.
+func (s *Server) HTTPServer(errorLog *log.Logger) *http.Server {
+	t := s.ReadTimeout
+	if t <= 0 {
+		t = DefaultReadTimeout
+	}
+	return &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: t, ErrorLog: errorLog}
+}
+
+// Stop makes the server refuse the requests that have not begun to be handled (503): those waiting
+// their turn behind a running apply do not start when the program is stopping. What runs goes on.
+func (s *Server) Stop() { s.stopping.Store(true) }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/info", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, Info{API: Version, Mamela: s.Mamela})
 	})
-	mux.HandleFunc("POST /v1/trees", s.locked(s.trees))
-	mux.HandleFunc("POST /v1/plan", s.locked(s.plan))
-	mux.HandleFunc("POST /v1/revision", s.locked(s.revision))
-	mux.HandleFunc("POST /v1/approve", s.locked(s.approve))
-	mux.HandleFunc("POST /v1/approved", s.locked(s.approved))
-	mux.HandleFunc("POST /v1/apply", s.locked(s.apply))
+	mux.HandleFunc("POST /v1/trees", s.locked(tree.MaxTarball, s.trees))
+	mux.HandleFunc("POST /v1/plan", s.locked(maxRequest, s.plan))
+	mux.HandleFunc("POST /v1/revision", s.locked(maxRequest, s.revision))
+	mux.HandleFunc("POST /v1/approve", s.locked(maxRequest, s.approve))
+	mux.HandleFunc("POST /v1/approved", s.locked(maxRequest, s.approved))
+	mux.HandleFunc("POST /v1/apply", s.locked(maxRequest, s.apply))
 	return mux
 }
 
-func (s *Server) locked(h http.HandlerFunc) http.HandlerFunc {
+// locked runs h with the others held off, after the request body has arrived in full (at most max
+// bytes): a client that opens the socket and does not finish sending holds up no one but itself, and
+// the read has its time (ReadTimeout, as the HTTP server sets it).
+func (s *Server) locked(max int64, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(io.LimitReader(r.Body, max+1))
+		switch {
+		case err != nil:
+			fail(w, http.StatusRequestTimeout, fmt.Errorf("the request body did not arrive: %w", err))
+			return
+		case int64(len(data)) > max:
+			fail(w, http.StatusRequestEntityTooLarge, fmt.Errorf("the request is over %d bytes", max))
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(data))
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if s.stopping.Load() {
+			fail(w, http.StatusServiceUnavailable, errors.New("the Control Plane's API is stopping; send the request again when it is back"))
+			return
+		}
 		h(w, r)
 	}
 }
@@ -143,13 +183,9 @@ func (s *Server) logf(format string, args ...any) {
 // trees extracts a tarball (internal/tree refuses links, paths that leave the tree and special
 // files) and names it by its digest. The same tarball is extracted once.
 func (s *Server) trees(w http.ResponseWriter, r *http.Request) {
-	data, err := io.ReadAll(io.LimitReader(r.Body, tree.MaxTarball+1))
+	data, err := io.ReadAll(r.Body) // already in memory, at most tree.MaxTarball (see locked)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err)
-		return
-	}
-	if len(data) > tree.MaxTarball {
-		fail(w, http.StatusRequestEntityTooLarge, fmt.Errorf("the tarball is over %d bytes", tree.MaxTarball))
 		return
 	}
 	sum := sha256.Sum256(data)
@@ -317,7 +353,7 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request) {
 const maxRequest = 1 << 20
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	data, err := io.ReadAll(io.LimitReader(r.Body, maxRequest))
+	data, err := io.ReadAll(r.Body) // already in memory, at most maxRequest (see locked)
 	if err == nil {
 		err = json.Unmarshal(data, v, json.RejectUnknownMembers(true))
 	}
