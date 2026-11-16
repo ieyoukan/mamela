@@ -39,6 +39,18 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if len(args) > 0 && args[0] == "gitops-units" {
 		return runGitopsUnits(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "agents" {
+		return runAgents(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "reenroll" {
+		return runReenroll(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "new-keys" {
+		return runNewKeys(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "trust" {
+		return runTrust(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || args[0] != "bundle" {
 		fmt.Fprint(stderr, controlPlaneUsage)
 		return 2
@@ -328,6 +340,11 @@ func isLoopbackHost(h string) bool {
 
 const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<address>:<port> [--host <vm>] [flags]
        mamela controlplane redirect --db <state.db> --url https://<address>:<port>
+       mamela controlplane agents [--db <state.db>]            the registered mamelets and when their certificates end
+       mamela controlplane reenroll --node <name>              a one-time token for a mamelet whose certificate ended
+       mamela controlplane new-keys [--confirm]                new CA and keys, keeping the database (every node must enroll again)
+       mamela controlplane trust                               the "ca" and "revisionKey" members of a mamelet's config.json
+       (backup and restore: mamela backup, mamela restore; docs/recovery.md)
 
 Packs what a Control Plane host needs (ADR 0003) into one archive: a consistent copy of the state
 database, the Control Plane's keys, the site and the providers' APIs (mamela.providers.toml, with

@@ -67,11 +67,12 @@ func main() {
 		rollBack(agent, "the new mamelet failed to start or to report in time")
 	}
 
-	lastErr := ""
+	lastErr, certMsg := "", ""
 	var seen int64 // the newest revision serial the Control Plane has told of
 	for {
 		rep, err := agent.Round(ctx)
 		logRound(rep, err, &lastErr)
+		keepCertificate(ctx, cfg, client, time.Now(), &certMsg)
 		if agent.Restarting() {
 			restart(agent)
 		}
@@ -130,6 +131,30 @@ func enroll(ctx context.Context, cfg mamelet.Config) error {
 		log.Printf("mamelet: remove the used enrollment token: %v", err)
 	}
 	return nil
+}
+
+// keepCertificate renews the client certificate once less than a third of its life is left, and says
+// (once per change, not every round) when it cannot, or when it has ended. A Control Plane older
+// than this mamelet does not know the request: the certificate is then used as it is.
+func keepCertificate(ctx context.Context, cfg mamelet.Config, client *mamelet.Client, now time.Time, last *string) {
+	end := client.CertNotAfter().Format("2006-01-02")
+	msg := ""
+	if client.CertExpired(now) {
+		msg = fmt.Sprintf("MAM-PKI-0102: the client certificate ended %s, so the Control Plane refuses this node\n"+
+			"  hint: ask the Control Plane's operator for a new one-time token (mamela controlplane reenroll --node %s), write it to %s, "+
+			"delete %s/cert.pem and restart mamelet (docs/recovery.md)", end, cfg.Node, cfg.EnrollTokenFile, cfg.StateDir)
+	} else if renewed, err := client.RenewIfDue(ctx, now); renewed {
+		log.Printf("mamelet: renewed the client certificate (valid until %s)", client.CertNotAfter().Format("2006-01-02"))
+	} else if errors.Is(err, mamelet.ErrRenewUnsupported) {
+		msg = fmt.Sprintf("MAM-PKI-0104: the client certificate ends %s, and the Control Plane does not renew certificates (it is older than this mamelet)\n"+
+			"  hint: update the Control Plane (mamela serve) before then; a certificate that ended needs the node enrolled again (docs/recovery.md)", end)
+	} else if err != nil {
+		msg = fmt.Sprintf("MAM-PKI-0104: could not renew the client certificate (it ends %s): %v\n  hint: it is tried again every hour; the Control Plane's log says why it refused", end, err)
+	}
+	if msg != "" && msg != *last {
+		log.Printf("mamelet: %s", msg)
+	}
+	*last = msg
 }
 
 // logRound logs what changed and errors, but not every quiet round.

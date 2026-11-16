@@ -10,7 +10,7 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 4. plan を見る。ノードごとに `update-mamelet`（承認が要る）が出る。ノードは **1 台ずつ、名前の順** で、前のノードが宣言した版で動くまで、次は待つ（MAM-PLAN-0120）。
 5. 承認して apply する（`sync = "push"` なら push が承認）。
 
-先に新しい Control Plane（`mamela`、`mamela serve`）にしてから、mamelet を更新する（新しい mamelet の報告は、古い Control Plane が読めない）。
+先に新しい Control Plane（`mamela`、`mamela serve`）にしてから、mamelet を更新する（新しい mamelet の報告は、古い Control Plane が読めない）。0.3.2 の mamelet は、証明書を自分で更新する。古い Control Plane は更新の要求を知らない（404）が、mamelet は何もせずに動き続ける。更新できない古い mamelet は、登録から 1 年で切れる（30 日前から CP のログと plan が警告する。[recovery.md](recovery.md) の 6）。
 
 0.3.2 から、許可（承認した操作を mamelet に許す印）には期限がある。Control Plane を更新する時点で進行中だった apply の許可（期限を持たない）は配られなくなるので、その apply は結果不明で止まる。更新のあとにもう一度 apply する。revision の形は変わらない（期限は Control Plane の中だけにあり、署名する内容に入らない）ので、古い mamelet はそのまま revision を読める。
 

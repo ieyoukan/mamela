@@ -1,6 +1,7 @@
 # ADR 0003 — Control Plane は、自分が適用する宣言の外にある専用のホストに常駐させる
 
 - 状態: Proposed
+- **後の変更（0.3.2）:** mamelet の証明書は 1 年で切れるので、mamelet が残り 1/3 で自分で更新する。サーバー証明書は動いたまま出し直す。CP のホストを失ったときの復旧（`mamela backup`・`mamela restore`、一部だけ戻したときの起動拒否）は [recovery.md](../recovery.md) にある。
 - 日付: 2026-11-11
 - 対象: `mamela serve`（mamelet が revision を取りに来て、報告を送る相手）と、状態データベース
 
