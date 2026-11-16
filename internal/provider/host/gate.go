@@ -214,6 +214,11 @@ func (g *gate) send(ctx context.Context, r protocol.HostRequest) (protocol.HostR
 		status, body, err = upstream.Do(ctx, r)
 	}
 	rec.Status = status
+	if err != nil {
+		// Whatever the upstream is, what it says goes to the provider, the record and the plan's
+		// errors: never an address.
+		err = redacted{err}
+	}
 	switch {
 	case err != nil && errors.Is(err, ErrNotSent):
 		rec.Outcome, rec.Reason = NotSent, err.Error()
@@ -326,6 +331,13 @@ func (g *gate) check(r protocol.HostRequest, rec *Request) (int, protocol.Call, 
 	}
 	return -1, protocol.Call{}, "unknown phase"
 }
+
+// redacted is an upstream's error with the addresses taken out of its text (Redact); errors.Is and
+// errors.As still see the cause.
+type redacted struct{ error }
+
+func (r redacted) Error() string { return Redact(r.error.Error()) }
+func (r redacted) Unwrap() error { return r.error }
 
 func (g *gate) what() string {
 	if g.permit != nil {

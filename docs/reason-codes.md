@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -20,6 +20,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-EVAL-0101 | ビルドに失敗した | コンパイルエラー、Pome でない、キャッシュにない依存（ネットワークからは取らない） |
 | MAM-EVAL-0102 | ビルドが時間内に終わらなかった | |
 | MAM-EVAL-0103 | キャッシュにある依存が Pome.lock の hash と違う（ビルドしていない） | キャッシュが書き換わった・壊れた。該当する依存をキャッシュから消し、`emela pome install`（`scripts/install-toolchain.sh`）で取り直す |
+| MAM-EVAL-0104 | `Pome.toml` の `[replace]` が、Pome のないディレクトリを指している（ビルドしていない） | パスは、その `Pome.toml` のあるディレクトリからの相対。例を単体でコピーすると届かなくなる。リポジトリ全体をコピーする、パスを直す、または `[replace]` を消して `[dependencies]` の公開版を使う（Pome キャッシュに `emela pome install` で入れておく） |
 | MAM-EVAL-0201 | ビルド結果を検査できない | WASI 0.3 component 以外、または読めない形式 |
 | MAM-EVAL-0202 | 許可されていない import がある（実行していない） | `Std.Env` / `Std.Random` / `Std.Clock` / `Std.FileSystem` / `Std.Http` を使っている |
 | MAM-EVAL-0301 | 宣言が error で終わった | 宣言の中の `fail` |
@@ -156,6 +157,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PRV-0006 | プロバイダーのプログラムが止まった、または時間内に答えなかった | stderr の詳細を見る |
 | MAM-PRV-0007 | プロバイダーが、頼まれたことをできなかったと答えた | メッセージに従う |
 | MAM-PRV-0008 | プロバイダーの変更が、運用者の選んだカタログが許さない値を送る（カタログの `values`。たとえば IAM の path・信頼ポリシー・付けるポリシー）。plan の時点で止め、apply でも送る前に確かめる | プロバイダーの不具合か、宣言が許されない値を求めている。カタログを広げるのは、プロバイダーの作者がカタログを直し、運用者がそれを読んで（`mamela provider catalog`）選び直すときだけ |
+| MAM-PRV-0009 | 宣言のツリーの Pome のプログラム（`program_sha256`）またはカタログ（`catalog_sha256`）が、運用者が `mamela.providers.toml` で固定したものと違う。何も起動せず、API に何も送らない。plan と apply の両方で確かめる（ADR 0015） | 宣言の Pome が変わった（版上げ、`[replace]`、`Pome.lock`）。意図した版上げなら、新しいプログラムとカタログを読み（`mamela provider catalog`、`mamela provider inspect`）、`mamela provider pin <宣言のディレクトリ> <provider>` が出す値を設定に書く。意図していなければ、宣言のツリーを誰が変えたかを調べる |
+| MAM-PRV-0010 | プロバイダーが固定されていない（`program_sha256`、`pome:` のカタログの `catalog_sha256` がない）。警告（`mamela plan` が stderr に出す。従来どおり動く）。`strict_pins = true` のときは、設定の読み込みで拒否する | 宣言のツリーを書ける人が、運用者の資格情報で動くプログラムとカタログを選べる状態。`mamela provider pin` が出す値を設定に書き、すべて固定したら `strict_pins = true` にする |
+| MAM-PRV-0011 | カタログが、データを変えうる呼び出しを `read` としている（`PUT`・`PATCH`・`DELETE`、または `fixed` のない `POST`）。そのカタログは読み込まない。どのカタログのどの項目かをメッセージが言う | カタログの作者が、その呼び出しの効果を `change`・`restart`・`lose-data` に直す。RPC 型の API の読み取りなら、呼び出しを区別する `fixed`（`Action=...`、`X-Amz-Target`）を書く |
+| MAM-PRV-0012 | provider の API への要求が失敗した（拒否された、名前が引けない、時間切れ、TLS の証明書、固定した指紋と違う、切られた）。メッセージは種類だけを言い、接続先（URL、host、port、path）は出さない（plan のエラーは PR コメントに載る）。接続先は Control Plane のログにある | API が動いているか、`api_url`・`tls_fingerprint` が合っているかを確かめる。メッセージの直し方に従う |
 
 ## MAM-SITE — site の規則
 
