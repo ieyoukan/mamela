@@ -183,6 +183,9 @@ func (e *Evaluator) build(ctx context.Context, dir, work string) (string, error)
 			Message: fmt.Sprintf("%s is not a Pome (no Pome.toml)", dir),
 			Hint:    "pass the directory that contains Pome.toml and src/main.emel"}
 	}
+	if err := checkReplacements(abs); err != nil {
+		return "", err
+	}
 	out := filepath.Join(work, "out")
 	home := filepath.Join(work, "home")
 	cache := e.PomeCache
