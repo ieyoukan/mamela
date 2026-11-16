@@ -126,44 +126,79 @@ func (e Entry) In(param string) string {
 	return in(param, e.Query, e.Form, e.Header, e.JSON)
 }
 
+// checkRead says whether a call that a catalog classifies as a read can only read. Reads go through
+// the host in every phase without a person's approval (observe, lookup, guard, and apply for reads
+// that are not bound to the permit), so what a catalog calls a read must be one by the HTTP
+// method as well:
+//   - GET (and HEAD) read;
+//   - PUT, PATCH and DELETE are changes by definition and are never reads;
+//   - POST reads only in an RPC-style API that sends every call as POST to one path and tells the
+//     calls apart by a fixed parameter (EC2's Action=DescribeInstances, a JSON API's X-Amz-Target):
+//     the entry must carry one.
+//
+// This is a check of the catalog's own consistency, not a barrier against a catalog's author: a
+// catalog that lies about an RPC-style call still passes. What decides whose catalog runs is the
+// operator's pin (ADR 0015).
+func checkRead(method string, fixed map[string]string) error {
+	switch method {
+	case "GET", "HEAD":
+		return nil
+	case "POST":
+		if len(fixed) > 0 {
+			return nil
+		}
+		return errors.New("a POST is a read only when the API tells its calls apart by a fixed parameter (Action=..., X-Amz-Target), and this one has none; " +
+			"give it one, or classify it change, restart or lose-data")
+	}
+	return fmt.Errorf("%s changes what it names, so it is not a read (only GET and HEAD read); classify it change, restart or lose-data", method)
+}
+
 // Check verifies the catalog's own consistency.
 func (c Catalog) Check() error {
 	seen := map[string]bool{}
 	byPath := map[string][]Call{}
-	for _, e := range c.Entries {
+	for i, e := range c.Entries {
+		// Where a message points in the catalog file: its API and the entry's number (from 1).
+		at := fmt.Sprintf("catalog %s, entry %d", c.API, i+1)
 		if err := checkCall(e.Method, e.Path, e.Query, e.Form, e.Header, e.JSON, e.Fixed); err != nil {
-			return fmt.Errorf("catalog %s: %w", c.API, err)
+			return fmt.Errorf("%s: %w", at, err)
 		}
 		if err := checkFixed(e.Method, e.Path, e.Fixed, e.In); err != nil {
-			return fmt.Errorf("catalog %s: %w", c.API, err)
+			return fmt.Errorf("%s: %w", at, err)
+		}
+		if e.Effect == EffectRead {
+			if err := checkRead(e.Method, e.Fixed); err != nil {
+				// MAM-PRV-0011 (docs/reason-codes.md): the protocol package has no reason codes of its own.
+				return fmt.Errorf("MAM-PRV-0011: %s (%s %s) says effect \"read\": %w", at, e.Method, e.Path, err)
+			}
 		}
 		key := e.Method + " " + e.Path + " " + fixedKey(e.Fixed)
 		if seen[key] {
-			return fmt.Errorf("catalog %s: %s twice", c.API, key)
+			return fmt.Errorf("%s: %s twice", at, strings.TrimSpace(key))
 		}
 		seen[key] = true
 		byPath[e.Method+" "+e.Path] = append(byPath[e.Method+" "+e.Path], Call{Method: e.Method, Path: e.Path, Fixed: e.Fixed})
 		if !containsEffect([]Effect{EffectRead, EffectCreate, EffectChange, EffectRestart, EffectLoseData}, e.Effect) {
-			return fmt.Errorf("catalog %s: %s %s: effect %q", c.API, e.Method, e.Path, e.Effect)
+			return fmt.Errorf("%s (%s %s): effect %q is not one of read, create, change, restart, lose-data", at, e.Method, e.Path, e.Effect)
 		}
 		for _, m := range e.Measures {
 			if e.In(m.Param) == "" || !slices.Contains([]string{MeasureCPU, MeasureMemoryMiB, MeasureDiskGiB}, m.Name) ||
 				!slices.Contains([]string{FormatCount, FormatSize, FormatDrive, FormatTable, FormatCPUUnits}, m.Format) || (m.Format == FormatTable) != (len(m.Table) > 0) {
-				return fmt.Errorf("catalog %s: %s %s: measure %+v", c.API, e.Method, e.Path, m)
+				return fmt.Errorf("%s (%s %s): measure %+v is not valid (a parameter of the call, a name of cpu, memoryMiB or diskGiB, a known format, and a table exactly for the table format)", at, e.Method, e.Path, m)
 			}
 		}
 		for p, vs := range e.Values {
 			if e.In(p) == "" || len(vs) == 0 {
-				return fmt.Errorf("catalog %s: %s %s: values for %s, which is not one of its parameters", c.API, e.Method, e.Path, p)
+				return fmt.Errorf("%s (%s %s): values for %s, which is not one of its parameters (or lists no value)", at, e.Method, e.Path, p)
 			}
 		}
 		for _, b := range e.Bind {
 			if e.In(b) == "" || e.Effect == EffectRead {
-				return fmt.Errorf("catalog %s: %s %s: bind %s must be a parameter of a call that changes something", c.API, e.Method, e.Path, b)
+				return fmt.Errorf("%s (%s %s): bind %s must be a parameter of a call that changes something", at, e.Method, e.Path, b)
 			}
 		}
 		if e.Precondition != "" && e.In(e.Precondition) == "" {
-			return fmt.Errorf("catalog %s: %s %s: the precondition %s is not one of its parameters", c.API, e.Method, e.Path, e.Precondition)
+			return fmt.Errorf("%s (%s %s): the precondition %s is not one of its parameters", at, e.Method, e.Path, e.Precondition)
 		}
 	}
 	if err := checkDistinct(byPath); err != nil {

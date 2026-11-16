@@ -40,6 +40,12 @@ const (
 	CodePermit     Code = "MAM-PRV-0005" // the permit does not match the change, expired or was used
 	CodeProvider   Code = "MAM-PRV-0006" // the provider program failed (exited, timed out)
 	CodeFailed     Code = "MAM-PRV-0007" // the provider reported that it could not do what was asked
+	// MAM-PRV-0008 (a value the catalog does not allow) is in internal/provider/external. The codes
+	// below are in the same table (docs/reason-codes.md):
+	//   MAM-PRV-0009  the program or catalog is not the one the operator pinned (external/pin.go)
+	//   MAM-PRV-0010  a provider is not pinned (a warning; an error with strict_pins)
+	//   MAM-PRV-0011  a catalog calls a call that changes something a read (protocol/catalog.go)
+	//   MAM-PRV-0012  a request to the API failed (host/upstream.go), told without the address
 )
 
 // Error is a failure written for a person.
@@ -50,15 +56,17 @@ type Error struct {
 	Detail  string // the provider's standard error, trimmed
 }
 
+// Error is the text a person reads, and plans carry it on to pull requests: it never has an address
+// in it (Redact).
 func (e *Error) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: %s", e.Code, e.Message)
+	fmt.Fprintf(&b, "%s: %s", e.Code, Redact(e.Message))
 	if e.Hint != "" {
-		fmt.Fprintf(&b, "\n  hint: %s", e.Hint)
+		fmt.Fprintf(&b, "\n  hint: %s", Redact(e.Hint))
 	}
 	if d := strings.TrimSpace(e.Detail); d != "" {
 		b.WriteString("\n  detail:\n")
-		for _, line := range strings.Split(d, "\n") {
+		for _, line := range strings.Split(Redact(d), "\n") {
 			b.WriteString("    " + line + "\n")
 		}
 	}
