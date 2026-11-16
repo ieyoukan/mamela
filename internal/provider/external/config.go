@@ -2,6 +2,7 @@ package external
 
 import (
 	"io"
+	"log"
 	"maps"
 	"slices"
 
@@ -283,7 +284,7 @@ func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catal
 					return errors.New("the server sent no certificate")
 				}
 				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); hex.EncodeToString(got[:]) != want {
-					return errors.New("the server certificate does not match the pinned fingerprint")
+					return host.ErrCertificatePin
 				}
 				return nil
 			}}}
@@ -302,7 +303,10 @@ func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catal
 				r.Header.Set("Authorization", authorization)
 			}
 			return nil
-		}}
+		},
+		// What goes wrong with a request says where the API is: that is for the operator's log. The
+		// errors that reach plans and pull requests say only what kind of failure it was.
+		Detail: func(err error) { log.Printf("mamela: provider %s: a request to the API failed: %v", name, err) }}
 	credential := a.Auth + "\x00" + a.TokenID + "\x00" + token
 	switch {
 	case a.Auth == "aws-sigv4" && a.Profile != "":
