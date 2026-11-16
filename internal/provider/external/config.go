@@ -2,6 +2,7 @@ package external
 
 import (
 	"io"
+	"log"
 	"maps"
 	"slices"
 
@@ -42,9 +43,18 @@ import (
 //	token_file      = "~/.config/mamela/pve-token"
 //	tls_fingerprint = "AA:BB:..."        # pin the server certificate (SHA-256)
 //	catalog         = "pome:proxmox"     # a catalog the provider's Pome ships (ADR 0008)
+//	program_sha256  = "..."              # the provider's program that may run with this API (ADR 0015)
+//	catalog_sha256  = "..."              # the catalog the Pome ships, as reviewed (ADR 0015)
+//
+// A declaration's tree chooses the Pomes it imports, and so a provider's program and the catalog a
+// "pome:<name>" names. The pins (`mamela provider pin` prints them) make the operator the one who
+// chooses; strict_pins = true refuses a provider without them.
 type Config struct {
 	Provider map[string]APIConfig `toml:"provider"`
-	dir      string
+	// StrictPins refuses a provider that is not pinned (MAM-PRV-0010), instead of running it with a
+	// warning as before pins existed.
+	StrictPins bool `toml:"strict_pins,omitempty"`
+	dir        string
 	// shipped are the catalogs each provider's Pome ships (ADR 0008), by provider and name:
 	// catalog = "pome:<name>" names one.
 	shipped map[string]map[string][]byte
@@ -61,6 +71,12 @@ type APIConfig struct {
 	APIURL    string `toml:"api_url"`
 	TokenFile string `toml:"token_file"`
 	Catalog   string `toml:"catalog"`
+	// ProgramSHA256 pins the provider's program: the sha256 (hex) of its provider.wasm. A program
+	// that is not this one does not start (MAM-PRV-0009). It belongs to the provider's section.
+	ProgramSHA256 string `toml:"program_sha256,omitempty"`
+	// CatalogSHA256 pins the catalog the Pome ships that Catalog names ("pome:<name>"): its sha256
+	// (hex), as `mamela provider catalog` prints it. A different catalog does not start.
+	CatalogSHA256 string `toml:"catalog_sha256,omitempty"`
 	// Auth is how the token is sent: "bearer" (the default), "proxmox" (with TokenID), or
 	// "aws-sigv4" (TokenID is the access key ID, the token file holds the secret access key; each
 	// request is signed for Region and Service).
@@ -126,8 +142,8 @@ func LoadConfig(path string) (Config, error) {
 			}
 			continue
 		}
-		if a.APIURL != "" || a.Catalog != "" {
-			return c, fmt.Errorf("%s: provider %s: with apis, api_url and catalog belong to each api's section", path, name)
+		if a.APIURL != "" || a.Catalog != "" || a.CatalogSHA256 != "" {
+			return c, fmt.Errorf("%s: provider %s: with apis, api_url, catalog and catalog_sha256 belong to each api's section", path, name)
 		}
 		for api, sub := range a.APIs {
 			if len(sub.APIs) > 0 || sub.Guard != nil {
@@ -136,6 +152,11 @@ func LoadConfig(path string) (Config, error) {
 			if err := checkAPI(a.inherit(sub)); err != nil {
 				return c, fmt.Errorf("%s: provider %s api %s: %w", path, name, api, err)
 			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.Provider)) {
+		if err := c.checkPinSettings(path, name); err != nil {
+			return c, err
 		}
 	}
 	return c, nil
@@ -283,7 +304,7 @@ func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catal
 					return errors.New("the server sent no certificate")
 				}
 				if got := sha256.Sum256(cs.PeerCertificates[0].Raw); hex.EncodeToString(got[:]) != want {
-					return errors.New("the server certificate does not match the pinned fingerprint")
+					return host.ErrCertificatePin
 				}
 				return nil
 			}}}
@@ -302,7 +323,10 @@ func (c Config) apiWith(name string, a APIConfig) (host.Upstream, protocol.Catal
 				r.Header.Set("Authorization", authorization)
 			}
 			return nil
-		}}
+		},
+		// What goes wrong with a request says where the API is: that is for the operator's log. The
+		// errors that reach plans and pull requests say only what kind of failure it was.
+		Detail: func(err error) { log.Printf("mamela: provider %s: a request to the API failed: %v", name, err) }}
 	credential := a.Auth + "\x00" + a.TokenID + "\x00" + token
 	switch {
 	case a.Auth == "aws-sigv4" && a.Profile != "":

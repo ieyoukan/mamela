@@ -171,7 +171,8 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 	if err := st.SavePlanPrograms(ctx, p.Digest, rt.Programs()); err != nil {
 		return nil, err
 	}
-	out := &planned{Plan: p, Graph: res.Graph, Policy: pol, Site: site, Programs: rt.Programs(), Manifests: rt.Manifests()}
+	out := &planned{Plan: p, Graph: res.Graph, Policy: pol, Site: site, Programs: rt.Programs(), Manifests: rt.Manifests(),
+		Warnings: rt.Warnings()} // a provider that is not pinned (MAM-PRV-0010, ADR 0015)
 	if site != nil && site.ControlPlane.Enabled() {
 		if w := mameletServedWarning(site, res.Graph); w != "" {
 			out.Warnings = append(out.Warnings, w)

@@ -8,7 +8,7 @@ Early development — no production-ready implementation yet. Evaluation, planni
 
 ## Try the current implementation
 
-Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for). The examples use the Mamela Pome in this checkout (`[replace]` in their `Pome.toml`); the published versions are the `pome/mamela/v*` tags (v0.3.1 adds `Mamela.mamelet`). v0.2.0 has the older `Vm` API and is not a compatible substitute for these examples.
+Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for). The examples use the Mamela Pome in this checkout (`[replace]` in their `Pome.toml`), so run them from the checkout (an example copied out alone fails with MAM-EVAL-0104); their `[dependencies]` name the version of that checkout, which `scripts/check.sh` enforces. The published versions are the `pome/mamela/v*` tags (v0.3.1 adds `Mamela.mamelet`). v0.2.0 has the older `Vm` API and is not a compatible substitute for these examples. How a Pome version is raised, tagged and taken into use, and which Mamela binary a version needs: [docs/releasing.md](docs/releasing.md).
 
 ```sh
 # From a Mamela checkout:
@@ -16,7 +16,7 @@ scripts/install-toolchain.sh
 go run ./cmd/mamela eval --twice examples/homelab
 ```
 
-For a separate project, use `emela new`, declare the Mamela and provider dependencies in `Pome.toml`, and use `[replace]` entries pointing at their local Pomes until compatible versions are published. The examples' `Pome.toml` files show the required dependencies. Evaluation alone does not create infrastructure.
+For a separate project, use `emela new`, declare the Mamela and provider dependencies in `Pome.toml`, and use `[replace]` entries pointing at their local Pomes until compatible versions are published (a path is relative to that `Pome.toml`; where it leads nowhere, Mamela stops with MAM-EVAL-0104). The examples' `Pome.toml` files show the required dependencies. Evaluation alone does not create infrastructure.
 
 If you use mise, `mise use go@1.27.3 github:emela-lang/emela@0.27.0 wasmtime@50.0.1` gives you the
 same emela and wasmtime, and Mamela uses them from PATH. `mamela toolchain` shows which toolchain
@@ -40,7 +40,7 @@ and `scripts/check.sh`.
 
 ## Documents
 
-- [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md)
+- [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md) / [Releasing Pomes](docs/releasing.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
 - [Writing a provider](docs/provider-authoring.md) (`mamela provider new` writes one that passes its tests) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md) / [ADR 0009: provider kit, generated Pomes, moving from Terraform](docs/adr/0009-provider-kit-and-imports.md)
 - [Running from a repository of declarations with mamelacd (pull requests, approval by comment)](docs/gitops.md) / [ADR 0010](docs/adr/0010-gitops-from-the-control-plane.md), [ADR 0012](docs/adr/0012-mamelacd.md) (its trust boundary: section 6), [ADR 0011: continuous sync and checks while writing (proposal)](docs/adr/0011-continuous-sync-and-authoring-checks.md)
