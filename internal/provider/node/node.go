@@ -6,6 +6,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -135,17 +136,14 @@ func printable(s string, limit int) string {
 }
 
 // Publish requests observations without activating a candidate declaration. Existing desired
-// values and grants of what the declaration has survive unchanged; new targets have no permission
-// to change the machine.
+// values and grants survive unchanged, whatever the candidate declares or no longer declares: a
+// plan is made of declarations that nobody approved (a pull request, a branch), and must not take
+// away what the declaration in force allows. New targets have no permission to change the machine.
+// What a declaration no longer has loses its permissions only when a plan made from it is approved
+// and applied (Prune).
 //
-// What the declaration no longer has is dropped from the revision with every permission it carried
-// (a one-time grant, a standing repair, a manifest's write): a permission is for something the
-// declaration wants. Only the permission goes: nothing is done to the machine (the package, the
-// service or the file stays as it is, ADR 0013 section 6), and mamelet merely stops watching it.
-//
-// A protected node is the exception that goes further: local safety revokes all grants, including
-// those of what the declaration still has. Control Plane relocation is not an observation and is
-// never published by plan.
+// A protected node is the exception: local safety revokes all grants, including undeclared ones.
+// Control Plane relocation is not an observation and is never published by plan.
 func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, _ string, nodeIDs map[string]int64) error {
 	for _, machine := range g.Sorted() {
 		vmid := int(nodeIDs[machine.Name])
@@ -157,11 +155,8 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		var svcs []noderev.Service
 		var k3s *noderev.K3s
 		var manifests []noderev.Manifest
-		var declaresK3s, declaresMamelet bool
 		for _, r := range g.Sorted() {
 			switch {
-			case r.NodeMamelet != nil && r.NodeMamelet.Node == name:
-				declaresMamelet = true
 			case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == name:
 				manifests = append(manifests, noderev.Manifest{Name: r.NodeK3sManifest.Name, Content: r.NodeK3sManifest.Content})
 			case r.NodePackage != nil && r.NodePackage.Node == name:
@@ -169,7 +164,6 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			case r.NodeService != nil && r.NodeService.Node == name:
 				svcs = append(svcs, noderev.Service{Name: r.NodeService.Service})
 			case r.NodeK3s != nil && r.NodeK3s.Node == name:
-				declaresK3s = true
 				kr, ok, err := k3sRevision(ctx, st, *r.NodeK3s, g.StaticIP(r.NodeK3s.Server))
 				if err != nil {
 					return err
@@ -186,21 +180,9 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 					return r, fmt.Errorf("MAM-NODE-0101: node %s changed identity; revoke its old registration before reusing its name", name)
 				}
 				r = *prev
-				r.Packages = slices.DeleteFunc(slices.Clone(prev.Packages), func(p noderev.Package) bool {
-					return !slices.ContainsFunc(pkgs, func(d noderev.Package) bool { return d.Name == p.Name })
-				})
-				r.Services = slices.DeleteFunc(slices.Clone(prev.Services), func(s noderev.Service) bool {
-					return !slices.ContainsFunc(svcs, func(d noderev.Service) bool { return d.Name == s.Name })
-				})
-				r.Manifests = slices.DeleteFunc(slices.Clone(prev.Manifests), func(m noderev.Manifest) bool {
-					return !slices.ContainsFunc(manifests, func(d noderev.Manifest) bool { return d.Name == m.Name })
-				})
-				if !declaresK3s {
-					r.K3s = nil // with its join token and its grants
-				}
-				if !declaresMamelet {
-					r.Mamelet = nil
-				}
+				r.Packages = slices.Clone(prev.Packages)
+				r.Services = slices.Clone(prev.Services)
+				r.Manifests = slices.Clone(prev.Manifests)
 			}
 			for _, m := range manifests {
 				if findManifest(&r, m.Name) == nil {
@@ -249,6 +231,88 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		}
 	}
 	return nil
+}
+
+// errNoRevision ends a Prune of a node that has no revision (there is nothing to take away).
+var errNoRevision = errors.New("no revision")
+
+// Prune takes away, from the revision of each machine g declares, what g no longer has: the
+// package, service, manifest, k3s and mamelet items, with every permission they carry (a one-time
+// grant, a standing repair, a manifest's write). A permission is for something the declaration in
+// force wants. It returns the nodes whose revision changed.
+//
+// It is for the declaration of a plan that has been approved, when that plan is applied
+// (reconcile.Reconciler.Prune), and never for planning: a plan is made of declarations that nobody
+// has approved (a pull request, a branch), and what they leave out must not take away what the
+// declaration in force allows (see Publish). It takes away permissions and what mamelet watches,
+// and does nothing to the machine: the package stays installed, the service stays as it is, the
+// manifest stays in the directory (ADR 0013 section 6). A machine g does not declare, and a node
+// that has no revision, are left alone.
+func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, error) {
+	var changed []string
+	for _, machine := range g.Sorted() {
+		if machine.Provided == nil {
+			continue
+		}
+		name := machine.Name
+		declared := declaredOn(g, name)
+		before, err := st.NodeRevision(ctx, name)
+		if err != nil {
+			return changed, fmt.Errorf("prune node %s: %w", name, err)
+		}
+		if before == nil {
+			continue
+		}
+		after, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
+			if prev == nil {
+				return noderev.Revision{}, errNoRevision
+			}
+			r := *prev
+			r.Packages = slices.DeleteFunc(slices.Clone(prev.Packages), func(p noderev.Package) bool { return !declared.packages[p.Name] })
+			r.Services = slices.DeleteFunc(slices.Clone(prev.Services), func(s noderev.Service) bool { return !declared.services[s.Name] })
+			r.Manifests = slices.DeleteFunc(slices.Clone(prev.Manifests), func(m noderev.Manifest) bool { return !declared.manifests[m.Name] })
+			if !declared.k3s {
+				r.K3s = nil // with its join token and its grants
+			}
+			if !declared.mamelet {
+				r.Mamelet = nil
+			}
+			return r, nil
+		})
+		switch {
+		case errors.Is(err, errNoRevision):
+		case err != nil:
+			return changed, fmt.Errorf("prune node %s: %w", name, err)
+		case after.Serial != before.Serial:
+			changed = append(changed, name)
+		}
+	}
+	return changed, nil
+}
+
+// declared is what a declaration has on one node.
+type declared struct {
+	packages, services, manifests map[string]bool
+	k3s, mamelet                  bool
+}
+
+func declaredOn(g *graph.Graph, node string) declared {
+	d := declared{packages: map[string]bool{}, services: map[string]bool{}, manifests: map[string]bool{}}
+	for _, r := range g.Resources {
+		switch {
+		case r.NodePackage != nil && r.NodePackage.Node == node:
+			d.packages[r.NodePackage.Package] = true
+		case r.NodeService != nil && r.NodeService.Node == node:
+			d.services[r.NodeService.Service] = true
+		case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == node:
+			d.manifests[r.NodeK3sManifest.Name] = true
+		case r.NodeK3s != nil && r.NodeK3s.Node == node:
+			d.k3s = true
+		case r.NodeMamelet != nil && r.NodeMamelet.Node == node:
+			d.mamelet = true
+		}
+	}
+	return d
 }
 
 // k3sRevision is what a node's revision says about k3s: the release, the role, the cluster's

@@ -174,7 +174,10 @@ func newEnv(t *testing.T) *env {
 		e.agent.Round(ctx)
 		return nil
 	}}
-	e.rec = &reconcile.Reconciler{Store: st, Provider: machineWorld{e: e, nodes: e.nodes}, Owner: "test", Lease: time.Hour}
+	e.rec = &reconcile.Reconciler{Store: st, Provider: machineWorld{e: e, nodes: e.nodes}, Owner: "test", Lease: time.Hour,
+		Prune: func(ctx context.Context, declaration *graph.Graph) ([]string, error) {
+			return node.Prune(ctx, st, declaration)
+		}} // as cmd/mamela applies a plan
 	return e
 }
 
@@ -330,25 +333,37 @@ func TestPlanPreservesActiveServiceAndPendingGrants(t *testing.T) {
 	if string(before.Content()) != string(after.Content()) {
 		t.Fatal("planning changed the active desired state or its grants")
 	}
+	// Removing a declaration from a candidate must not revoke active permissions either: a plan is
+	// made of declarations nobody approved (a pull request), and closing it would not bring them back.
+	e.g, err = graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.publish()
+	after, _ = e.st.NodeRevision(e.ctx, "app")
+	if string(before.Content()) != string(after.Content()) {
+		t.Fatal("candidate removal changed active revision")
+	}
 }
 
-// What the declaration no longer has loses its permissions, and is no longer watched: a permission
-// is for something the declaration wants (audit B16: the standing repair of a service that was
-// removed from the declaration stayed for ever). Everything else of the revision stays, and the
-// machine is not touched.
-func TestWhatTheDeclarationDropsLosesItsPermissions(t *testing.T) {
+// What the declaration no longer has loses its permissions, and is no longer watched, when a plan
+// made from that declaration is approved and applied (audit B16: the standing repair of a service
+// that was removed from the declaration stayed for ever). Planning it, which anybody can do with a
+// candidate, takes nothing away; everything else of the revision stays; the machine is not touched.
+func TestWhatTheDeclarationDropsLosesItsPermissionsWhenItsPlanIsApplied(t *testing.T) {
 	e := newEnv(t)
 	e.os.installed, e.os.exists, e.os.enabled, e.os.running = true, true, true, true
 	e.pol.AutoStartServices = []string{"nginx"}
 	e.publish()
 	e.round()
 	e.applyApproved(e.plan()) // the standing repair is activated by apply
+	soon := e.now.Add(time.Minute)
 	_, err := e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
 		r := *prev
 		r.Packages = slices.Clone(prev.Packages)
-		r.Packages[0].Install = &noderev.Install{Operation: "op-000000000000000000000001", Attempt: 1, ChangeSet: "sha256:" + strings.Repeat("0", 64)}
+		r.Packages[0].Install = &noderev.Install{Operation: "op-000000000000000000000001", Attempt: 1, ChangeSet: "sha256:" + strings.Repeat("0", 64), Expires: soon}
 		r.Services = slices.Clone(prev.Services)
-		r.Services[0].Once = []noderev.Once{{Operation: "op-000000000000000000000002", Attempt: 1, Action: noderev.ActionStop}}
+		r.Services[0].Once = []noderev.Once{{Operation: "op-000000000000000000000002", Attempt: 1, Action: noderev.ActionStop, Expires: soon}}
 		r.Manifests = []noderev.Manifest{{Name: "argocd", Content: "kind: Namespace\n"}}
 		r.ControlPlane = "https://active.example:8443"
 		return r, nil
@@ -356,15 +371,33 @@ func TestWhatTheDeclarationDropsLosesItsPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Services) != 1 || !slices.Contains(rev.Services[0].Repair, noderev.ActionStart) {
-		t.Fatalf("setup: %+v", rev)
+	before, _ := e.st.NodeRevision(e.ctx, "app")
+	if len(before.Services) != 1 || !slices.Contains(before.Services[0].Repair, noderev.ActionStart) || len(before.Grants()) != 2 {
+		t.Fatalf("setup: %s", before.Content())
 	}
 
-	e.g, err = graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
+	gone, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.g = gone
+	// Planning it, as a candidate, takes nothing away.
 	e.publish()
+	p := e.plan()
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); string(rev.Content()) != string(before.Content()) {
+		t.Fatalf("planning a declaration took something away: %s", rev.Content())
+	}
+	// Neither does applying a plan nobody approved.
+	if _, err := e.rec.Apply(e.ctx, p.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); string(rev.Content()) != string(before.Content()) {
+		t.Fatalf("a plan nobody approved took something away: %s", rev.Content())
+	}
+	// Applying the approved plan does.
+	if rep := e.applyApproved(p); rep.Stopped != nil {
+		t.Fatalf("apply: %+v", rep)
+	}
 	rev, _ := e.st.NodeRevision(e.ctx, "app")
 	if len(rev.Packages) != 0 || len(rev.Services) != 0 || len(rev.Manifests) != 0 || rev.K3s != nil || rev.Mamelet != nil || len(rev.Grants()) != 0 {
 		t.Fatalf("the revision still has what the declaration dropped: %s", rev.Content())
@@ -372,12 +405,28 @@ func TestWhatTheDeclarationDropsLosesItsPermissions(t *testing.T) {
 	if rev.ControlPlane != "https://active.example:8443" {
 		t.Fatalf("the Control Plane's address is not the declaration's to take away: %+v", rev)
 	}
+	if !slices.Contains(eventKinds(e, p.Digest), "pruned") {
+		t.Fatal("what was taken away is not in the event log")
+	}
 	// Nothing was done to the machine: it keeps running, and mamelet does nothing about it.
 	e.os.running = false
 	e.round()
-	if e.os.running || e.os.starts != 0 || e.os.installs != 0 {
+	if e.os.running || e.os.starts != 0 || e.os.installs != 0 || !e.os.installed || !e.os.enabled {
 		t.Fatalf("mamelet acted on what is no longer declared (starts %d, installs %d)", e.os.starts, e.os.installs)
 	}
+}
+
+// eventKinds are the kinds of the events the store has logged for a plan.
+func eventKinds(e *env, digest string) []string {
+	events, err := e.st.Events(e.ctx, digest)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var out []string
+	for _, ev := range events {
+		out = append(out, ev.Kind)
+	}
+	return out
 }
 
 func TestRepairPolicyChangeIsPlannedEvenWithoutServiceDrift(t *testing.T) {
@@ -519,12 +568,14 @@ func TestGrantEndsShortlyAfterTheApplyStoppedWaiting(t *testing.T) {
 
 // What the declaration no longer has is no longer granted: the audit's reproduction (A2) approved an
 // installation of nginx, timed out, dropped nginx from the declaration, and 30 days later mamelet
-// installed it.
+// installed it. Dropping it from a candidate does not take the grant away (a plan nobody approved
+// changes nothing); applying the approved plan of the declaration that dropped it does, and so does
+// the grant's own deadline, whatever happens to the declaration.
 func TestGrantDoesNotOutliveItsDeclaration(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		wait time.Duration
-	}{{"at once", 0}, {"30 days later", 30 * 24 * time.Hour}} {
+	}{{"the plan of the declaration is applied", 0}, {"30 days later", 30 * 24 * time.Hour}} {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newEnv(t)
 			e.publish()
@@ -539,7 +590,15 @@ func TestGrantDoesNotOutliveItsDeclaration(t *testing.T) {
 				t.Fatal(err)
 			}
 			e.g = g
-			e.publish()
+			e.publish() // as a candidate
+			if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 1 {
+				t.Fatalf("a candidate took the grant away: %s", rev.Content())
+			}
+			if tc.wait == 0 {
+				if rep := e.applyApproved(e.plan()); rep.Stopped != nil {
+					t.Fatalf("apply: %+v", rep)
+				}
+			}
 			e.now = e.now.Add(tc.wait)
 			e.round()
 			if e.os.installs != 0 {

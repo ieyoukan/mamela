@@ -84,5 +84,6 @@ apply 後の修復・許可解除、再登録後の古い承認の拒否、削�
 - **残る:** plan が有効な許可を変えなくなったため、宣言から外したサービスの自動起動の許可（standing の repair）は、
   revision に残り続ける。宣言から外れたものの許可を apply で失効させる処理は、
   [削除の設計案](../design/declarative-removal.md)の retain と合わせて入れる。
-  → 追記（2026-11-17、0.3.2）: apply ではなく plan が revision を用意するときに、宣言にない物の項目と許可を外す
-  （`node.Publish`。外すだけで、足したり変えたりはしない）。ノード上の物は変えない。[アーキテクチャ](../architecture.md)の「宣言から消えた物には許可を残さない」。
+  → 追記（2026-11-17、0.3.2）: 承認した plan を apply するとき（`reconcile.Reconciler.Prune`、`node.Prune`）に、
+  その plan の宣言にない物の項目と許可を外す。plan（候補の宣言を含む）は、何も外さない（`node.Publish` は足すだけ）。
+  ノード上の物は変えない。[アーキテクチャ](../architecture.md)の「宣言から消えた物には許可を残さない」。

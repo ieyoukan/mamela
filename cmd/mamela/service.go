@@ -171,8 +171,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 		if site.ControlPlane.MoveTo != "" {
 			out.Warnings = append(out.Warnings, "MAM-NODE-0102: plan does not relocate agents; use mamela controlplane redirect --db <database> --url <new-endpoint> after the new Control Plane is ready")
 		}
-		// Observation targets only. Active values and grants are given by apply, never plan; what the
-		// declaration no longer has loses its permissions here (node.Publish), which only takes away.
+		// Observation targets only. Active values and grants are changed by apply, never plan: what a
+		// declaration no longer has loses its permissions when the approved plan is applied (node.Prune
+		// through the Reconciler), not here, where the declaration may be a candidate nobody approved.
 		ids := map[string]int64{}
 		for name, n := range snap.Nodes {
 			if n.Managed {
@@ -330,7 +331,10 @@ func applyPlan(ctx context.Context, st *store.Store, site *sitedef.Site, digest 
 	// 2. Reconcile.
 	fmt.Fprintf(out, "== apply %s\n", p.Digest)
 	host, _ := os.Hostname()
-	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour, Providers: providers}
+	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour, Providers: providers,
+		Prune: func(ctx context.Context, declaration *graph.Graph) ([]string, error) {
+			return node.Prune(ctx, st, declaration)
+		}}
 	rep, applyErr := rec.Apply(ctx, p.Digest)
 	if rep != nil {
 		printReport(out, rep)
