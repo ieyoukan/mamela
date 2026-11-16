@@ -167,7 +167,8 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 		if site.ControlPlane.MoveTo != "" {
 			out.Warnings = append(out.Warnings, "MAM-NODE-0102: plan does not relocate agents; use mamela controlplane redirect --db <database> --url <new-endpoint> after the new Control Plane is ready")
 		}
-		// Observation targets only. Active values and grants are changed by apply, never plan.
+		// Observation targets only. Active values and grants are given by apply, never plan; what the
+		// declaration no longer has loses its permissions here (node.Publish), which only takes away.
 		ids := map[string]int64{}
 		for name, n := range snap.Nodes {
 			if n.Managed {

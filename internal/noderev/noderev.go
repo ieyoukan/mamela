@@ -163,6 +163,9 @@ type Install struct {
 	// most once, so a failure is not repeated every round, and a retry is a new attempt.
 	Attempt   int    `json:"attempt"`
 	ChangeSet string `json:"changeSet"` // digest of the approved apt-get -s change set
+	// Expires is the Control Plane's own deadline for the grant (see ForMamelet): it is kept with
+	// the stored revision and never sent.
+	Expires time.Time `json:"expires,omitzero"`
 }
 
 // Service is a systemd service and its desired state.
@@ -182,6 +185,9 @@ type Once struct {
 	Operation string `json:"operation"`
 	Attempt   int    `json:"attempt"`
 	Action    string `json:"action"` // enable, start, disable or stop
+	// Expires is the Control Plane's own deadline for the grant (see ForMamelet): it is kept with
+	// the stored revision and never sent.
+	Expires time.Time `json:"expires,omitzero"`
 }
 
 // Service actions mamelet knows. Anything else makes the whole revision invalid.
@@ -376,6 +382,110 @@ func (r Revision) Content() []byte {
 	return out
 }
 
+// ForMamelet is the revision as the Control Plane hands it to mamelet at now. A one-time grant is
+// for the apply that asked for it: the Control Plane gives each a deadline (Expires) when it issues
+// it, and from then on stops handing it out. A grant without a deadline (one that an older Control
+// Plane issued) is not handed out either. The deadlines themselves are bookkeeping and are not sent
+// (a mamelet of an older release rejects members it does not know). Everything else, including the
+// serial, is as stored: a mamelet accepts the same serial again, so the grant simply is not in it.
+func (r Revision) ForMamelet(now time.Time) Revision {
+	live := func(expires time.Time) bool { return !expires.IsZero() && now.Before(expires) }
+	r.Packages = slices.Clone(r.Packages)
+	for i := range r.Packages {
+		if in := r.Packages[i].Install; in != nil {
+			if live(in.Expires) {
+				c := *in
+				c.Expires = time.Time{}
+				r.Packages[i].Install = &c
+			} else {
+				r.Packages[i].Install = nil
+			}
+		}
+	}
+	once := func(o *Once) *Once {
+		if o == nil || !live(o.Expires) {
+			return nil
+		}
+		c := *o
+		c.Expires = time.Time{}
+		return &c
+	}
+	r.Services = slices.Clone(r.Services)
+	for i := range r.Services {
+		var keep []Once
+		for _, o := range r.Services[i].Once {
+			if c := once(&o); c != nil {
+				keep = append(keep, *c)
+			}
+		}
+		r.Services[i].Once = keep
+	}
+	r.Manifests = slices.Clone(r.Manifests)
+	for i := range r.Manifests {
+		r.Manifests[i].Write = once(r.Manifests[i].Write)
+	}
+	if k := r.K3s; k != nil {
+		c := *k
+		c.Install = once(k.Install)
+		c.Remove = nil
+		if rm := k.Remove; rm != nil {
+			if o := once(&rm.Once); o != nil {
+				c.Remove = &NodeRemoval{Node: rm.Node, Once: *o}
+			}
+		}
+		r.K3s = &c
+	}
+	if u := r.Mamelet; u != nil {
+		r.Mamelet = nil
+		if o := once(&u.Once); o != nil {
+			r.Mamelet = &MameletUpdate{SHA256: u.SHA256, Once: *o}
+		}
+	}
+	return r
+}
+
+// Grant is a one-time grant in a revision: what the Control Plane let mamelet do once, for the
+// operation that asked for it.
+type Grant struct {
+	Operation string
+	Attempt   int
+	Action    string // install, write, remove-node, update-mamelet, or a service action
+	Expires   time.Time
+}
+
+// Grants lists every one-time grant of the revision (a standing repair is not one).
+func (r Revision) Grants() []Grant {
+	var out []Grant
+	add := func(o Once) { out = append(out, Grant{o.Operation, o.Attempt, o.Action, o.Expires}) }
+	for _, p := range r.Packages {
+		if in := p.Install; in != nil {
+			out = append(out, Grant{in.Operation, in.Attempt, ActionInstall, in.Expires})
+		}
+	}
+	for _, s := range r.Services {
+		for _, o := range s.Once {
+			add(o)
+		}
+	}
+	for _, m := range r.Manifests {
+		if m.Write != nil {
+			add(*m.Write)
+		}
+	}
+	if k := r.K3s; k != nil {
+		if k.Install != nil {
+			add(*k.Install)
+		}
+		if k.Remove != nil {
+			add(k.Remove.Once)
+		}
+	}
+	if u := r.Mamelet; u != nil {
+		add(u.Once)
+	}
+	return out
+}
+
 // Signed is a revision with the Control Plane's Ed25519 signature over the exact payload bytes.
 type Signed struct {
 	Payload   []byte `json:"payload"`   // the revision as JSON (base64 on the wire)
@@ -386,6 +496,13 @@ type Signed struct {
 func Sign(key ed25519.PrivateKey, r Revision) (Signed, error) {
 	if err := r.Check(); err != nil {
 		return Signed{}, err
+	}
+	for _, g := range r.Grants() {
+		if !g.Expires.IsZero() {
+			// The deadline is the Control Plane's bookkeeping, and an older mamelet rejects members it
+			// does not know: the revision goes through ForMamelet first.
+			return Signed{}, fmt.Errorf("the grant of operation %s still has its deadline: the revision is signed as ForMamelet gives it", g.Operation)
+		}
 	}
 	payload, err := json.Marshal(r, json.Deterministic(true))
 	if err != nil {

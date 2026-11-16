@@ -264,16 +264,7 @@ func (rt *Runtime) CheckGraph(g *graph.Graph) error {
 		}
 	}
 	for _, r := range g.Resources {
-		node := ""
-		switch {
-		case r.NodePackage != nil:
-			node = r.NodePackage.Node
-		case r.NodeService != nil:
-			node = r.NodeService.Node
-		case r.NodeK3s != nil:
-			node = r.NodeK3s.Node
-		}
-		m, ok := provided[node]
+		m, ok := provided[spec.NodeOf(r)]
 		if !ok {
 			continue
 		}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/ieyoukan/mamela/examples/kv/kvapi"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/provider/host"
+	"github.com/ieyoukan/mamela/internal/provider/spec/spectest"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -483,6 +485,37 @@ func TestWaitsFor(t *testing.T) {
 		got := waitsFor(d, provided)
 		if c.want == "" && got != "" || c.want != "" && !strings.Contains(got, c.want) {
 			t.Errorf("web %+v: %q, want %q", c.web, got, c.want)
+		}
+	}
+}
+
+// A resource of a node kind must be on a machine, whatever the kind (audit B17: a manifest and a
+// mamelet on a provider's resource that is not a machine were not refused). The kinds come from
+// graph.Resource, so a kind that is added is checked too.
+func TestCheckGraphRefusesEveryNodeKindOnAResourceThatIsNotAMachine(t *testing.T) {
+	srv := httptest.NewServer(kvapi.New())
+	defer srv.Close()
+	data := wasm(t, "../host/testdata/rogue")
+	sum := sha256.Sum256(data)
+	rt, err := Start(t.Context(), []store.Program{{Provider: "kv-example", Version: "0.1.0", Source: "test",
+		Digest: "sha256:" + hex.EncodeToString(sum[:]), Data: data}},
+		Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}, wasmtime(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	// KVItem is a kind of the provider that is not a node kind: the resource n is no machine.
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"KVItem","name":"` + spectest.Node + `","provider":"kv-example","spec":{"value":"v1"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rt.CheckGraph(g); err != nil {
+		t.Fatalf("the declaration without a node resource: %v", err)
+	}
+	for _, r := range spectest.NodeResources(t) {
+		on := &graph.Graph{Resources: append(slices.Clone(g.Resources), r)}
+		if err := rt.CheckGraph(on); err == nil || !strings.Contains(err.Error(), "which is not a machine") {
+			t.Errorf("a %s on a resource that is not a machine: %v", r.Kind, err)
 		}
 	}
 }

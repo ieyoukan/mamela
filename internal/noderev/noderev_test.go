@@ -2,6 +2,7 @@ package noderev
 
 import (
 	"crypto/ed25519"
+	"encoding/json/v2"
 	"errors"
 	"strings"
 	"testing"
@@ -251,5 +252,151 @@ func TestMameletUpdateIsChecked(t *testing.T) {
 	// A grant is part of the content: a revision with one is not the revision without.
 	if string(rev(nil).Content()) == string(rev(&MameletUpdate{SHA256: sha, Once: once}).Content()) {
 		t.Error("the update grant is not in the content")
+	}
+}
+
+// allGrants is a revision with every kind of one-time grant, each with the deadline the Control
+// Plane gave it.
+func allGrants(deadline time.Time) Revision {
+	op := func(n string) string { return "op-0123456789abcdef012345" + n }
+	r := sample()
+	r.Packages[0].Install.Expires = deadline
+	r.Services[0].Once[0].Expires = deadline
+	r.Manifests = []Manifest{{Name: "argocd", Content: "kind: Namespace\n", Write: &Once{Operation: op("10"), Attempt: 1, Action: ActionWrite, Expires: deadline}}}
+	r.K3s = &K3s{Version: "v1.33.5+k3s1", SHA256: strings.Repeat("b", 64), Role: K3sServer, Token: strings.Repeat("c", 64),
+		Install: &Once{Operation: op("11"), Attempt: 1, Action: ActionInstall, Expires: deadline},
+		Remove:  &NodeRemoval{Node: "gone", Once: Once{Operation: op("12"), Attempt: 1, Action: ActionRemove, Expires: deadline}}}
+	r.Mamelet = &MameletUpdate{SHA256: strings.Repeat("d", 64), Once: Once{Operation: op("13"), Attempt: 1, Action: ActionUpdate, Expires: deadline}}
+	r.ControlPlane = "https://cp.example:8443"
+	return r
+}
+
+// A one-time grant is handed out until its deadline, and never after (audit A2).
+func TestForMamelet(t *testing.T) {
+	deadline := t0.Add(30 * time.Minute)
+	full := allGrants(deadline)
+	if n := len(full.Grants()); n != 6 {
+		t.Fatalf("the revision has %d grants, the test means every kind (6): %v", n, full.Grants())
+	}
+	live := full.ForMamelet(t0)
+	if n := len(live.Grants()); n != 6 {
+		t.Fatalf("before the deadline %d of 6 grants are handed out", n)
+	}
+	for _, g := range live.Grants() {
+		if !g.Expires.IsZero() {
+			t.Errorf("the deadline of %s is sent", g.Operation)
+		}
+	}
+	for name, at := range map[string]time.Time{"at the deadline": deadline, "after": deadline.Add(24 * time.Hour)} {
+		gone := full.ForMamelet(at)
+		if n := len(gone.Grants()); n != 0 {
+			t.Errorf("%s: %d grants are still handed out: %s", name, n, gone.Content())
+		}
+		// Everything else is as stored: the same serial, and what mamelet watches and may repair.
+		if gone.Serial != full.Serial || gone.Packages[0].Name != "nginx" || !strings.Contains(string(gone.Content()), `"repair":["start"]`) ||
+			gone.K3s == nil || gone.K3s.Token != full.K3s.Token || gone.Manifests[0].Content != full.Manifests[0].Content ||
+			gone.ControlPlane != full.ControlPlane {
+			t.Errorf("%s: more than the grants changed: %s", name, gone.Content())
+		}
+	}
+	// A grant without a deadline (an older Control Plane issued it) is not handed out.
+	if n := len(allGrants(time.Time{}).ForMamelet(t0).Grants()); n != 0 {
+		t.Errorf("%d grants without a deadline are handed out", n)
+	}
+	// ForMamelet does not change the stored revision.
+	if full.Packages[0].Install == nil || full.Packages[0].Install.Expires.IsZero() || full.K3s.Remove == nil || full.Mamelet == nil {
+		t.Fatal("the stored revision was changed")
+	}
+}
+
+// A revision with a deadline is never signed: the deadline is not part of the wire.
+func TestSignRefusesGrantDeadlines(t *testing.T) {
+	r := allGrants(t0.Add(time.Hour))
+	if _, err := Sign(key(1), r); err == nil || !strings.Contains(err.Error(), "ForMamelet") {
+		t.Fatalf("signed a revision with deadlines: %v", err)
+	}
+	if _, err := Sign(key(1), r.ForMamelet(t0)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// legacy is the revision as a mamelet of release 0.3.1 and before decodes it: strictly, so a member
+// it does not know refuses the whole revision (the wire must not grow while a node may run one).
+type legacyOnce struct {
+	Operation string `json:"operation"`
+	Attempt   int    `json:"attempt"`
+	Action    string `json:"action"`
+}
+
+type legacyRevision struct {
+	Schema    string    `json:"schema"`
+	Node      string    `json:"node"`
+	VMID      int       `json:"vmid"`
+	Serial    int64     `json:"serial"`
+	IssuedAt  time.Time `json:"issuedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Packages  []struct {
+		Name    string `json:"name"`
+		Install *struct {
+			Operation string `json:"operation"`
+			Attempt   int    `json:"attempt"`
+			ChangeSet string `json:"changeSet"`
+		} `json:"install,omitempty"`
+	} `json:"packages"`
+	Services []struct {
+		Name    string       `json:"name"`
+		Enabled bool         `json:"enabled"`
+		Running bool         `json:"running"`
+		Repair  []string     `json:"repair"`
+		Once    []legacyOnce `json:"once"`
+	} `json:"services"`
+	K3s *struct {
+		Version string      `json:"version"`
+		SHA256  string      `json:"sha256"`
+		Role    string      `json:"role"`
+		Server  string      `json:"server,omitempty"`
+		Token   string      `json:"token"`
+		Install *legacyOnce `json:"install,omitempty"`
+		Remove  *struct {
+			Node string `json:"node"`
+			legacyOnce
+		} `json:"remove,omitempty"`
+	} `json:"k3s,omitempty"`
+	Manifests []struct {
+		Name    string      `json:"name"`
+		Content string      `json:"content"`
+		Write   *legacyOnce `json:"write,omitempty"`
+	} `json:"manifests,omitempty"`
+	Mamelet *struct {
+		SHA256 string `json:"sha256"`
+		legacyOnce
+	} `json:"mamelet,omitempty"`
+	ControlPlane string `json:"controlPlane,omitempty"`
+}
+
+// A Control Plane that gives its grants deadlines still sends a revision an older mamelet reads
+// (the Control Plane is updated first, while the nodes still run what they ran).
+func TestServedRevisionIsReadableByAnOlderMamelet(t *testing.T) {
+	k := key(1)
+	signed, err := Sign(k, allGrants(t0.Add(time.Hour)).ForMamelet(t0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old legacyRevision
+	if err := json.Unmarshal(signed.Payload, &old, json.RejectUnknownMembers(true)); err != nil {
+		t.Fatalf("a mamelet of the previous release refuses the revision: %v\n%s", err, signed.Payload)
+	}
+	if old.Packages[0].Install == nil || old.K3s.Remove == nil || old.Mamelet == nil || old.Manifests[0].Write == nil || len(old.Services[0].Once) != 1 {
+		t.Fatalf("a grant did not arrive: %+v", old)
+	}
+	// The check can fail: the stored form, with the deadlines, is refused by the strict decoder.
+	stored, _ := json.Marshal(allGrants(t0.Add(time.Hour)))
+	if err := json.Unmarshal(stored, new(legacyRevision), json.RejectUnknownMembers(true)); err == nil {
+		t.Fatal("the legacy decoder accepts deadlines: this test would not notice them on the wire")
+	}
+	// A mamelet of this release reads it as well.
+	var self Revision
+	if err := json.Unmarshal(signed.Payload, &self, json.RejectUnknownMembers(true)); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -194,4 +194,6 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 | MAM-NODE-0102 | `controlplane.move_to` があるが、plan は接続先を変えない | 新しい CP の準備後、`mamela controlplane redirect` を実行する |
 | MAM-NODE-0103 | 宣言が固定した mamelet の sha256 を、この Control Plane は配っていない（`controlplane.mamelet_binary` の sha256 が違う）。plan の警告で、digest には入らない | その binary を `controlplane.mamelet_binary` に置いて `mamela serve` を再起動するか、配っている版を宣言に書く |
 
+| MAM-NODE-0120 | 承認が切れたので、ノードに許可を出さなかった。apply が長く（イメージの取り込みなどで）、承認の期限を過ぎてからノードの操作に着いた | 承認し直して、もう一度 apply する |
+
 `mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。

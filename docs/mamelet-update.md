@@ -12,6 +12,8 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 
 先に新しい Control Plane（`mamela`、`mamela serve`）にしてから、mamelet を更新する（新しい mamelet の報告は、古い Control Plane が読めない）。
 
+0.3.2 から、許可（承認した操作を mamelet に許す印）には期限がある。Control Plane を更新する時点で進行中だった apply の許可（期限を持たない）は配られなくなるので、その apply は結果不明で止まる。更新のあとにもう一度 apply する。revision の形は変わらない（期限は Control Plane の中だけにあり、署名する内容に入らない）ので、古い mamelet はそのまま revision を読める。
+
 ## 更新の中身（mamelet が一度だけ行う）
 
 1. Control Plane から binary を取る（mamelet がもともと信頼している CA の TLS）。承認した sha256 と違えば、何も変えずに失敗する。

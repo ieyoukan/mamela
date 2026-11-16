@@ -100,9 +100,17 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 }
 
 // Publish requests observations without activating a candidate declaration. Existing desired
-// values and grants survive unchanged; new targets have no permission to change the machine.
-// A protected node is the exception: local safety revokes all grants, including undeclared ones.
-// Control Plane relocation is not an observation and is never published by plan.
+// values and grants of what the declaration has survive unchanged; new targets have no permission
+// to change the machine.
+//
+// What the declaration no longer has is dropped from the revision with every permission it carried
+// (a one-time grant, a standing repair, a manifest's write): a permission is for something the
+// declaration wants. Only the permission goes: nothing is done to the machine (the package, the
+// service or the file stays as it is, ADR 0013 section 6), and mamelet merely stops watching it.
+//
+// A protected node is the exception that goes further: local safety revokes all grants, including
+// those of what the declaration still has. Control Plane relocation is not an observation and is
+// never published by plan.
 func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, _ string, nodeIDs map[string]int64) error {
 	for _, machine := range g.Sorted() {
 		vmid := int(nodeIDs[machine.Name])
@@ -114,8 +122,11 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		var svcs []noderev.Service
 		var k3s *noderev.K3s
 		var manifests []noderev.Manifest
+		var declaresK3s, declaresMamelet bool
 		for _, r := range g.Sorted() {
 			switch {
+			case r.NodeMamelet != nil && r.NodeMamelet.Node == name:
+				declaresMamelet = true
 			case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == name:
 				manifests = append(manifests, noderev.Manifest{Name: r.NodeK3sManifest.Name, Content: r.NodeK3sManifest.Content})
 			case r.NodePackage != nil && r.NodePackage.Node == name:
@@ -123,6 +134,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			case r.NodeService != nil && r.NodeService.Node == name:
 				svcs = append(svcs, noderev.Service{Name: r.NodeService.Service})
 			case r.NodeK3s != nil && r.NodeK3s.Node == name:
+				declaresK3s = true
 				kr, ok, err := k3sRevision(ctx, st, *r.NodeK3s, g.StaticIP(r.NodeK3s.Server))
 				if err != nil {
 					return err
@@ -139,9 +151,21 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 					return r, fmt.Errorf("MAM-NODE-0101: node %s changed identity; revoke its old registration before reusing its name", name)
 				}
 				r = *prev
-				r.Packages = slices.Clone(prev.Packages)
-				r.Services = slices.Clone(prev.Services)
-				r.Manifests = slices.Clone(prev.Manifests)
+				r.Packages = slices.DeleteFunc(slices.Clone(prev.Packages), func(p noderev.Package) bool {
+					return !slices.ContainsFunc(pkgs, func(d noderev.Package) bool { return d.Name == p.Name })
+				})
+				r.Services = slices.DeleteFunc(slices.Clone(prev.Services), func(s noderev.Service) bool {
+					return !slices.ContainsFunc(svcs, func(d noderev.Service) bool { return d.Name == s.Name })
+				})
+				r.Manifests = slices.DeleteFunc(slices.Clone(prev.Manifests), func(m noderev.Manifest) bool {
+					return !slices.ContainsFunc(manifests, func(d noderev.Manifest) bool { return d.Name == m.Name })
+				})
+				if !declaresK3s {
+					r.K3s = nil // with its join token and its grants
+				}
+				if !declaresMamelet {
+					r.Mamelet = nil
+				}
 			}
 			for _, m := range manifests {
 				if findManifest(&r, m.Name) == nil {
@@ -176,7 +200,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				}
 				if r.K3s != nil {
 					k := *r.K3s
-					k.Install = nil
+					k.Install, k.Remove = nil, nil
 					r.K3s = &k
 				}
 				for i := range r.Manifests {
@@ -279,6 +303,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 	}
 	var node, what string
 	configure := step.Op == policy.OpConfigureService
+	var exp time.Time // when the grant below stops being handed out (set before it is issued)
 	var grant func(r *noderev.Revision) error
 	switch r := step.Resource; {
 	case step.Op == policy.OpInstallPackage && r.NodePackage != nil:
@@ -292,7 +317,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			if pk == nil {
 				return fmt.Errorf("package %s is not in the revision of %s (plan again)", r.NodePackage.Package, node)
 			}
-			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest}
+			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest, Expires: exp}
 			return nil
 		}
 	case (step.Op == policy.OpInstallK3s || step.Op == policy.OpUpgradeK3s) && r.NodeK3s != nil:
@@ -313,7 +338,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 				return fmt.Errorf("the revision of %s names server %q, the approved plan %q (plan again)", node, kr.Server, want)
 			}
 			k := kr
-			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall}
+			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall, Expires: exp}
 			rev.K3s = &k
 			return nil
 		}
@@ -329,7 +354,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 				return fmt.Errorf("%s has no k3s server in its revision (plan again)", node)
 			}
 			k := *rev.K3s
-			k.Remove = &noderev.NodeRemoval{Node: target, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionRemove}}
+			k.Remove = &noderev.NodeRemoval{Node: target, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionRemove, Expires: exp}}
 			rev.K3s = &k
 			return nil
 		}
@@ -341,7 +366,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		}
 		node, what = m.Node, "update mamelet to "+m.SHA256[:12]
 		grant = func(rev *noderev.Revision) error {
-			rev.Mamelet = &noderev.MameletUpdate{SHA256: m.SHA256, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionUpdate}}
+			rev.Mamelet = &noderev.MameletUpdate{SHA256: m.SHA256, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionUpdate, Expires: exp}}
 			return nil
 		}
 	case step.Op == policy.OpWriteK3sManifest && r.NodeK3sManifest != nil:
@@ -352,7 +377,7 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			if want := approvedDiff(step.Approved, "sha256"); want != noderev.ManifestSHA256(m.Content) {
 				return fmt.Errorf("the manifest %s is not the one the approved plan showed (plan again)", m.Name)
 			}
-			w := &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionWrite}
+			w := &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionWrite, Expires: exp}
 			if cur := findManifest(rev, m.Name); cur != nil {
 				cur.Content, cur.Write = m.Content, w
 			} else {
@@ -387,13 +412,18 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			sv.Once = slices.DeleteFunc(slices.Clone(sv.Once), func(o noderev.Once) bool {
 				return (o.Action == noderev.ActionStart || o.Action == noderev.ActionStop) == (action == noderev.ActionStart || action == noderev.ActionStop)
 			})
-			sv.Once = append(sv.Once, noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: action})
+			sv.Once = append(sv.Once, noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: action, Expires: exp})
 			return nil
 		}
 	default:
 		return fmt.Errorf("mamelet does not carry out %s", step.Op)
 	}
 
+	if !configure {
+		if exp, err = p.deadline(ctx, step); err != nil {
+			return fmt.Errorf("%s on %s: %w", what, node, err)
+		}
+	}
 	if _, err := p.Store.PublishNodeRevisionForAgent(ctx, node, inputs.Snapshot.AgentRegistrations[node], func(prev *noderev.Revision) (noderev.Revision, error) {
 		if prev == nil {
 			return noderev.Revision{}, fmt.Errorf("node %s has no revision yet (plan with --site first)", node)
@@ -413,6 +443,30 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		return nil
 	}
 	return p.await(ctx, node, what, step.OperationID, attempt)
+}
+
+// GrantGrace is how long a grant stays good after the apply that issued it has stopped waiting for
+// mamelet's answer (the outcome is then unknown): a mamelet that was only slow, or restarting, still
+// does it, and the next apply confirms it by observation. A grant never outlives the approval it
+// comes from, and never the declaration that has the item (Publish takes it away with the item).
+const GrantGrace = 15 * time.Minute
+
+// deadline is when a grant issued now for an operation of the approved plan stops being handed
+// out: while the apply waits for the result and the grace after it, or until the approval ends if
+// that is sooner. An operation that needs approval is not granted once the approval has ended.
+func (p *Provider) deadline(ctx context.Context, step reconcile.Step) (time.Time, error) {
+	end := p.Clock().Add(p.timeout() + GrantGrace)
+	approval, err := p.Store.ValidApproval(ctx, step.PlanDigest)
+	switch {
+	case err != nil:
+		return time.Time{}, err
+	case approval == nil && step.Approved.Verdict == policy.ApprovalRequired:
+		return time.Time{}, fmt.Errorf("MAM-NODE-0120: the approval of plan %s has ended, so no permission is given to the node; "+
+			"approve the plan again and apply it", step.PlanDigest)
+	case approval != nil && approval.ExpiresAt.Before(end):
+		end = approval.ExpiresAt
+	}
+	return end.UTC(), nil
 }
 
 // serviceActions are the service operations mamelet carries out, as one-time grants.
@@ -436,11 +490,16 @@ func approvedDiff(c plan.Change, field string) string {
 	return ""
 }
 
-func (p *Provider) await(ctx context.Context, node, what, opID string, attempt int) error {
-	timeout, interval := p.Timeout, p.PollInterval
-	if timeout == 0 {
-		timeout = 10 * time.Minute
+// timeout is how long Apply waits for mamelet's result.
+func (p *Provider) timeout() time.Duration {
+	if p.Timeout == 0 {
+		return 10 * time.Minute
 	}
+	return p.Timeout
+}
+
+func (p *Provider) await(ctx context.Context, node, what, opID string, attempt int) error {
+	timeout, interval := p.timeout(), p.PollInterval
 	if interval == 0 {
 		interval = 2 * time.Second
 	}

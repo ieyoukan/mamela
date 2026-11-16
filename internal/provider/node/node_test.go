@@ -98,7 +98,7 @@ func (c storeCP) Revision(ctx context.Context) (noderev.Signed, error) {
 		return noderev.Signed{}, fmt.Errorf("no revision: %v", err)
 	}
 	r.IssuedAt, r.ExpiresAt = c.now(), c.now().Add(time.Hour)
-	return noderev.Sign(c.key, *r)
+	return noderev.Sign(c.key, r.ForMamelet(c.now())) // as the Control Plane hands it out
 }
 
 func (c storeCP) Report(ctx context.Context, r noderev.Report) error {
@@ -219,6 +219,26 @@ func (e *env) applyApproved(p *plan.Plan) *reconcile.Report {
 	return rep
 }
 
+// granted checks that the node's revision holds a one-time grant of the action, and that the grant
+// has the deadline the Control Plane gave it (a grant without one is never handed out).
+func (e *env) granted(action string) {
+	e.t.Helper()
+	rev, err := e.st.NodeRevision(e.ctx, "app")
+	if err != nil || rev == nil {
+		e.t.Fatalf("no revision: %v", err)
+	}
+	for _, g := range rev.Grants() {
+		if g.Action != action {
+			continue
+		}
+		if g.Expires.IsZero() || !g.Expires.After(e.now.Add(-time.Hour)) || g.Expires.After(e.now.Add(time.Hour+node.GrantGrace)) {
+			e.t.Errorf("the %s grant's deadline %s is not near now (%s) and within the approval", action, g.Expires, e.now)
+		}
+		return
+	}
+	e.t.Fatalf("no %s grant in %s", action, rev.Content())
+}
+
 func change(t *testing.T, p *plan.Plan, id string) plan.Change {
 	for _, c := range p.Changes {
 		if c.ID() == id {
@@ -248,6 +268,7 @@ func TestInstallEnableStartThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone || e.os.installs != 1 {
 		t.Fatalf("install: %+v (installs %d)", rep, e.os.installs)
 	}
+	e.granted(noderev.ActionInstall)
 
 	p = e.plan()
 	if svc := change(t, p, "NodeService app/nginx"); svc.Verdict != policy.ApprovalRequired || len(svc.Operations) != 2 {
@@ -256,6 +277,8 @@ func TestInstallEnableStartThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || !e.os.enabled || !e.os.running {
 		t.Fatalf("service: %+v", rep)
 	}
+	e.granted(noderev.ActionEnable)
+	e.granted(noderev.ActionStart)
 	for _, c := range e.plan().Changes {
 		if c.Status != plan.StatusInSync {
 			t.Errorf("not converged: %s %s", c.ID(), c.Status)
@@ -307,15 +330,53 @@ func TestPlanPreservesActiveServiceAndPendingGrants(t *testing.T) {
 	if string(before.Content()) != string(after.Content()) {
 		t.Fatal("planning changed the active desired state or its grants")
 	}
-	// Removing a declaration from a candidate must not revoke active permissions either.
+}
+
+// What the declaration no longer has loses its permissions, and is no longer watched: a permission
+// is for something the declaration wants (audit B16: the standing repair of a service that was
+// removed from the declaration stayed for ever). Everything else of the revision stays, and the
+// machine is not touched.
+func TestWhatTheDeclarationDropsLosesItsPermissions(t *testing.T) {
+	e := newEnv(t)
+	e.os.installed, e.os.exists, e.os.enabled, e.os.running = true, true, true, true
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.publish()
+	e.round()
+	e.applyApproved(e.plan()) // the standing repair is activated by apply
+	_, err := e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Packages = slices.Clone(prev.Packages)
+		r.Packages[0].Install = &noderev.Install{Operation: "op-000000000000000000000001", Attempt: 1, ChangeSet: "sha256:" + strings.Repeat("0", 64)}
+		r.Services = slices.Clone(prev.Services)
+		r.Services[0].Once = []noderev.Once{{Operation: "op-000000000000000000000002", Attempt: 1, Action: noderev.ActionStop}}
+		r.Manifests = []noderev.Manifest{{Name: "argocd", Content: "kind: Namespace\n"}}
+		r.ControlPlane = "https://active.example:8443"
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Services) != 1 || !slices.Contains(rev.Services[0].Repair, noderev.ActionStart) {
+		t.Fatalf("setup: %+v", rev)
+	}
+
 	e.g, err = graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	e.publish()
-	after, _ = e.st.NodeRevision(e.ctx, "app")
-	if string(before.Content()) != string(after.Content()) {
-		t.Fatal("candidate removal changed active revision")
+	rev, _ := e.st.NodeRevision(e.ctx, "app")
+	if len(rev.Packages) != 0 || len(rev.Services) != 0 || len(rev.Manifests) != 0 || rev.K3s != nil || rev.Mamelet != nil || len(rev.Grants()) != 0 {
+		t.Fatalf("the revision still has what the declaration dropped: %s", rev.Content())
+	}
+	if rev.ControlPlane != "https://active.example:8443" {
+		t.Fatalf("the Control Plane's address is not the declaration's to take away: %+v", rev)
+	}
+	// Nothing was done to the machine: it keeps running, and mamelet does nothing about it.
+	e.os.running = false
+	e.round()
+	if e.os.running || e.os.starts != 0 || e.os.installs != 0 {
+		t.Fatalf("mamelet acted on what is no longer declared (starts %d, installs %d)", e.os.starts, e.os.installs)
 	}
 }
 
@@ -379,10 +440,164 @@ func TestSilentMameletIsAnUnknownOutcome(t *testing.T) {
 	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0003" {
 		t.Fatalf("report %+v", rep)
 	}
-	// mamelet comes back, picks up the grant and installs; the next apply confirms by observation.
+	// mamelet comes back soon, picks up the grant (it stays good for a while after the apply gave up
+	// waiting, and never beyond the approval) and installs; the next apply confirms by observation.
 	e.round()
 	if e.os.installs != 1 {
 		t.Fatalf("installs %d", e.os.installs)
+	}
+}
+
+// An approval that has ended gives nothing, even to an apply that began while it was good: a long
+// apply (an image import, hours) may reach a node's operation after it.
+func TestNoGrantFromAnApprovalThatHasEnded(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	e.round()
+	p := e.plan()
+	if _, err := e.st.Approve(e.ctx, p.Digest, "test", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	c := change(t, p, "NodePackage app/nginx")
+	step := reconcile.Step{OperationID: reconcile.OperationID(p.Digest, c.ID(), policy.OpInstallPackage), PlanDigest: p.Digest,
+		Op: policy.OpInstallPackage, Resource: e.g.Resources[slices.IndexFunc(e.g.Resources, func(r graph.Resource) bool { return r.NodePackage != nil })], Approved: c}
+	if _, err := e.st.Intend(e.ctx, step.OperationID, p.Digest, c.ID(), string(step.Op)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := e.st.Claim(e.ctx, step.OperationID, "test", time.Hour); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	e.now = e.now.Add(2 * time.Minute)
+	err := e.nodes.Apply(e.ctx, step)
+	if err == nil || !strings.Contains(err.Error(), "MAM-NODE-0120") {
+		t.Fatalf("an approval that ended gave a grant: %v", err)
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 0 {
+		t.Fatalf("a grant is in the revision: %s", rev.Content())
+	}
+}
+
+// A one-time grant belongs to the apply that asked for it. When mamelet never answers, the grant
+// does not wait for it for ever: after the approval has ended, a mamelet that comes back does nothing
+// (audit A2: it used to install, 30 days later, what nobody had approved for that long).
+func TestGrantEndsWithItsApproval(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	e.round()
+	p := e.plan()
+	e.nodes.Sleep = func(_ context.Context, d time.Duration) error { e.now = e.now.Add(d); return nil }
+	if rep := e.applyApproved(p); rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0003" {
+		t.Fatalf("report %+v", rep)
+	}
+	e.now = e.now.Add(2 * time.Hour) // the approval was for an hour
+	e.round()
+	if e.os.installs != 0 {
+		t.Fatalf("a grant ran %s after its approval ended (installs %d)", "2h", e.os.installs)
+	}
+}
+
+// A grant ends sooner than its approval when the apply that asked for it has long stopped waiting:
+// the approval is up to a day, the wait is minutes.
+func TestGrantEndsShortlyAfterTheApplyStoppedWaiting(t *testing.T) {
+	e := newEnv(t)
+	e.publish()
+	e.round()
+	p := e.plan()
+	e.nodes.Sleep = func(_ context.Context, d time.Duration) error { e.now = e.now.Add(d); return nil }
+	if _, err := e.st.Approve(e.ctx, p.Digest, "test", 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if rep, err := e.rec.Apply(e.ctx, p.Digest); err != nil || rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0003" {
+		t.Fatalf("report %+v %v", rep, err)
+	}
+	e.now = e.now.Add(3 * time.Hour)
+	e.round()
+	if e.os.installs != 0 {
+		t.Fatalf("a grant ran 3h after the apply gave up (installs %d)", e.os.installs)
+	}
+}
+
+// What the declaration no longer has is no longer granted: the audit's reproduction (A2) approved an
+// installation of nginx, timed out, dropped nginx from the declaration, and 30 days later mamelet
+// installed it.
+func TestGrantDoesNotOutliveItsDeclaration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wait time.Duration
+	}{{"at once", 0}, {"30 days later", 30 * 24 * time.Hour}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			e.publish()
+			e.round()
+			p := e.plan()
+			e.nodes.Sleep = func(_ context.Context, d time.Duration) error { e.now = e.now.Add(d); return nil }
+			if rep := e.applyApproved(p); rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0003" {
+				t.Fatalf("report %+v", rep)
+			}
+			g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1}}]}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.g = g
+			e.publish()
+			e.now = e.now.Add(tc.wait)
+			e.round()
+			if e.os.installs != 0 {
+				t.Fatalf("installed %d times after nginx left the declaration", e.os.installs)
+			}
+		})
+	}
+}
+
+// The Control Plane's own host is never changed (ADR 0003): publishing takes every grant away from
+// it, of every kind, even of what the declaration has (audit B17: the removal of a Kubernetes node
+// was left).
+func TestAProtectedNodeHasNoGrantOfAnyKind(t *testing.T) {
+	e := newEnv(t)
+	sha := strings.Repeat("a", 64)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"TestVM","name":"app","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},` +
+		`{"kind":"NodePackage","name":"app/nginx","spec":{"node":"app","package":"nginx","state":"Present"}},` +
+		`{"kind":"NodeService","name":"app/nginx","spec":{"node":"app","service":"nginx","enabled":true,"running":true}},` +
+		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3sManifest","name":"app/manifest/argocd","spec":{"node":"app","name":"argocd","content":"kind: Namespace\n"}},` +
+		`{"kind":"NodeMamelet","name":"app/mamelet","spec":{"node":"app","version":"0.9.1","sha256":"` + sha + `"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.g = g
+	e.publish()
+	op := func(n string) string { return "op-0123456789abcdef012345" + n }
+	soon := e.now.Add(time.Minute)
+	_, err = e.st.PublishNodeRevision(e.ctx, "app", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Packages = slices.Clone(prev.Packages)
+		r.Packages[0].Install = &noderev.Install{Operation: op("00"), Attempt: 1, ChangeSet: "sha256:" + strings.Repeat("0", 64), Expires: soon}
+		r.Services = slices.Clone(prev.Services)
+		r.Services[0].Repair = []string{noderev.ActionStart}
+		r.Services[0].Once = []noderev.Once{{Operation: op("01"), Attempt: 1, Action: noderev.ActionStop, Expires: soon}}
+		r.Manifests = slices.Clone(prev.Manifests)
+		r.Manifests[0].Write = &noderev.Once{Operation: op("02"), Attempt: 1, Action: noderev.ActionWrite, Expires: soon}
+		r.K3s = &noderev.K3s{Version: "v1.37.2+k3s1", SHA256: sha, Role: noderev.K3sServer, Token: sha,
+			Install: &noderev.Once{Operation: op("03"), Attempt: 1, Action: noderev.ActionInstall, Expires: soon},
+			Remove:  &noderev.NodeRemoval{Node: "gone", Once: noderev.Once{Operation: op("04"), Attempt: 1, Action: noderev.ActionRemove, Expires: soon}}}
+		r.Mamelet = &noderev.MameletUpdate{SHA256: sha, Once: noderev.Once{Operation: op("05"), Attempt: 1, Action: noderev.ActionUpdate, Expires: soon}}
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 6 {
+		t.Fatalf("setup: %d grants, want one of each kind: %s", len(rev.Grants()), rev.Content())
+	}
+	e.pol.ProtectedNodes = []string{"app"}
+	e.publish()
+	rev, _ := e.st.NodeRevision(e.ctx, "app")
+	if len(rev.Grants()) != 0 || (len(rev.Services) == 1 && len(rev.Services[0].Repair) != 0) {
+		t.Fatalf("a protected node still has permissions: %s", rev.Content())
+	}
+	if len(rev.Packages) != 1 || len(rev.Services) != 1 || rev.K3s == nil || len(rev.Manifests) != 1 {
+		t.Fatalf("it is still watched: %s", rev.Content())
 	}
 }
 

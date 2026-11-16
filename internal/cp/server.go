@@ -162,7 +162,9 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		ttl = 24 * time.Hour
 	}
 	rev.IssuedAt, rev.ExpiresAt = now.UTC(), now.Add(ttl).UTC()
-	signed, err := noderev.Sign(s.PKI.RevisionKey, *rev)
+	// The validity period is renewed on every fetch, so it cannot end a grant: each grant has its own
+	// deadline (set when it was issued), and one past it is not handed out.
+	signed, err := noderev.Sign(s.PKI.RevisionKey, rev.ForMamelet(now))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "could not sign the revision: "+err.Error())
 		return
