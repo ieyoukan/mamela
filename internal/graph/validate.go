@@ -8,24 +8,19 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ieyoukan/mamela/internal/names"
 )
 
+// The shapes of node names, package and service names, manifest names, k3s releases and sha256s
+// are in internal/names, shared with the revision the Control Plane signs from the declaration:
+// what the graph accepts is signed (A11 of the 0.3.2 audit).
 var (
-	// A node name is a DNS label: it becomes a hostname.
-	nodeNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	// Debian package names (Debian Policy 5.6.1).
-	packageNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
-	// systemd unit name without the ".service" suffix; no path separators or whitespace.
-	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,254}$`)
+	mameletVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
-	// A k3s release ("v1.33.5+k3s1") and a sha256 in hex.
-	k3sManifestNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	K3sVersionRe      = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
-	sha256Re          = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	mameletVersionRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	providedKindRe    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
-	providerNameRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	providedNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
+	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
+	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 )
 
 // Validate checks the meaning of a decoded graph: names, ranges, references and duplicates.
@@ -95,7 +90,7 @@ func Validate(g *Graph) error {
 		case KindNodePackage:
 			s := r.NodePackage
 			checkNodeRef(add, r, s.Node, nodes)
-			if !packageNameRe.MatchString(s.Package) {
+			if !names.Package(s.Package) {
 				add(r, CodeInvalidValue, "spec.package", fmt.Sprintf("%q is not a valid Debian package name", s.Package),
 					"package names use lowercase letters, digits and '+', '-', '.'")
 			}
@@ -109,11 +104,11 @@ func Validate(g *Graph) error {
 		case KindNodeK3s:
 			s := r.NodeK3s
 			checkNodeRef(add, r, s.Node, nodes)
-			if !K3sVersionRe.MatchString(s.Version) {
+			if !names.K3sVersion(s.Version) {
 				add(r, CodeInvalidValue, "spec.version", fmt.Sprintf("%q is not a k3s release", s.Version),
 					"write the release tag, such as \"v1.33.5+k3s1\"")
 			}
-			if !sha256Re.MatchString(s.SHA256) {
+			if !names.SHA256(s.SHA256) {
 				add(r, CodeInvalidValue, "spec.sha256", "sha256 is not 64 lowercase hex digits",
 					"copy it from the release's sha256sum file for the node's architecture")
 			}
@@ -138,7 +133,7 @@ func Validate(g *Graph) error {
 				add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Node),
 					"k3s applies manifests on a server: declare the server with K3s.server on that node")
 			}
-			if !k3sManifestNameRe.MatchString(s.Name) {
+			if !names.Manifest(s.Name) {
 				add(r, CodeInvalidValue, "spec.name", fmt.Sprintf("%q is not a valid manifest name", s.Name),
 					"use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)")
 			}
@@ -157,7 +152,7 @@ func Validate(g *Graph) error {
 		case KindNodeMamelet:
 			s := r.NodeMamelet
 			checkNodeRef(add, r, s.Node, nodes)
-			if !sha256Re.MatchString(s.SHA256) {
+			if !names.SHA256(s.SHA256) {
 				add(r, CodeInvalidValue, "spec.sha256", fmt.Sprintf("%q is not a sha256 in lowercase hex", s.SHA256),
 					"the sha256 of the linux/amd64 mamelet binary: shasum -a 256 mamelet-linux-amd64")
 			}
@@ -171,7 +166,7 @@ func Validate(g *Graph) error {
 		case KindNodeService:
 			s := r.NodeService
 			checkNodeRef(add, r, s.Node, nodes)
-			if !serviceNameRe.MatchString(s.Service) {
+			if !names.Service(s.Service) {
 				add(r, CodeInvalidValue, "spec.service", fmt.Sprintf("%q is not a valid systemd service name", s.Service),
 					"write the unit name without \".service\", for example \"nginx\"")
 			}
@@ -241,7 +236,7 @@ type addFunc func(r Resource, code Code, field, message, hint string)
 
 // ValidNodeName reports whether a machine's name can be its hostname (a DNS label): checked for a
 // provider's node kinds once the providers say which kinds are machines.
-func ValidNodeName(name string) bool { return nodeNameRe.MatchString(name) }
+func ValidNodeName(name string) bool { return names.Node(name) }
 
 func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]int) {
 	switch nodes[node] {

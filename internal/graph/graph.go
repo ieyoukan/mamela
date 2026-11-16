@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"strings"
 
+	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -193,7 +194,7 @@ type NodeMameletSpec struct {
 }
 
 // MaxK3sManifest bounds a manifest's content.
-const MaxK3sManifest = 64 << 10
+const MaxK3sManifest = names.MaxManifest
 
 // K3sRole is what a node is in its k3s cluster.
 type K3sRole string
