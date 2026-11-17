@@ -2,8 +2,6 @@ package graph
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -60,57 +58,4 @@ func (g *Graph) Warnings() []Warning {
 		}
 	}
 	return out
-}
-
-// Release is a k3s release ("v1.37.2+k3s1"), or the version a kubelet reports for it, which may
-// leave the k3s revision out ("v1.37.2"): Kubernetes' version and, when there is one, k3s's
-// revision of it.
-type Release struct {
-	Major, Minor, Patch int
-	K3s                 int  // the revision after "+k3s"
-	HasK3s              bool // whether there is one
-}
-
-var releaseRe = regexp.MustCompile(`^v([0-9]{1,4})\.([0-9]{1,4})\.([0-9]{1,4})(?:\+k3s([0-9]{1,4}))?$`)
-
-// ParseRelease reads "v1.37.2+k3s1" or "v1.37.2".
-func ParseRelease(s string) (Release, bool) {
-	m := releaseRe.FindStringSubmatch(s)
-	if m == nil {
-		return Release{}, false
-	}
-	n := func(i int) int { v, _ := strconv.Atoi(m[i]); return v }
-	r := Release{Major: n(1), Minor: n(2), Patch: n(3)}
-	if m[4] != "" {
-		r.K3s, r.HasK3s = n(4), true
-	}
-	return r, true
-}
-
-func (r Release) String() string {
-	s := fmt.Sprintf("v%d.%d.%d", r.Major, r.Minor, r.Patch)
-	if r.HasK3s {
-		s += fmt.Sprintf("+k3s%d", r.K3s)
-	}
-	return s
-}
-
-// Compare is -1, 0 or 1 as r is older than, the same as, or newer than o. The k3s revision counts
-// only when both have one: a kubelet that does not report it is not older than the declaration.
-func (r Release) Compare(o Release) int {
-	for _, d := range [][2]int{{r.Major, o.Major}, {r.Minor, o.Minor}, {r.Patch, o.Patch}} {
-		if d[0] != d[1] {
-			if d[0] < d[1] {
-				return -1
-			}
-			return 1
-		}
-	}
-	if r.HasK3s && o.HasK3s && r.K3s != o.K3s {
-		if r.K3s < o.K3s {
-			return -1
-		}
-		return 1
-	}
-	return 0
 }

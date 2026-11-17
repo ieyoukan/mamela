@@ -41,20 +41,6 @@ type wireNodePackage struct {
 	State   *string `json:"state"`
 }
 
-type wireNodeK3s struct {
-	Node    *string        `json:"node"`
-	Role    *string        `json:"role"`
-	Server  jsontext.Value `json:"server"` // optional
-	Version *string        `json:"version"`
-	SHA256  *string        `json:"sha256"`
-}
-
-type wireNodeK3sManifest struct {
-	Node    *string `json:"node"`
-	Name    *string `json:"name"`
-	Content *string `json:"content"`
-}
-
 type wireNodeMamelet struct {
 	Node    *string        `json:"node"`
 	Version jsontext.Value `json:"version"` // optional

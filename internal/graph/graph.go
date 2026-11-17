@@ -13,7 +13,6 @@ import (
 	"net/netip"
 	"strings"
 
-	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -180,28 +179,6 @@ type NodePackageSpec struct {
 	State   PackageState
 }
 
-// NodeK3sSpec says a node runs k3s: this exact release, whose binary for the node's architecture
-// has this sha256, as a server or as an agent of the server on another node. Mamela writes the
-// systemd unit itself; the Control Plane gives the cluster's nodes its join token. Nothing else of
-// the node's configuration comes from the declaration.
-type NodeK3sSpec struct {
-	Node    string
-	Role    K3sRole
-	Server  string // for an agent: the node of its server
-	Version string // "v1.33.5+k3s1"
-	SHA256  string // hex, of the release's binary for the node's architecture
-}
-
-// NodeK3sManifestSpec says a k3s server has this manifest in its auto-deploy directory
-// (/var/lib/rancher/k3s/server/manifests/mamela-<name>.yaml). k3s applies a manifest with
-// cluster-admin rights, so the plan shows the whole content, and writing or changing it needs an
-// approval. The content is the declaration's: nothing is downloaded.
-type NodeK3sManifestSpec struct {
-	Node    string // a k3s server
-	Name    string // [a-z0-9-]: the file is mamela-<name>.yaml
-	Content string // YAML, at most MaxK3sManifest bytes
-}
-
 // NodeMameletSpec says a node runs the mamelet whose binary has this sha256. The Control Plane
 // serves that binary (the site's controlplane.mamelet_binary); mamelet on the node fetches it,
 // checks the sha256, keeps the previous binary and restarts into the new one. The resource's name
@@ -211,17 +188,6 @@ type NodeMameletSpec struct {
 	Version string // a label for people (shown in the plan); optional
 	SHA256  string // hex, of the linux/amd64 binary
 }
-
-// MaxK3sManifest bounds a manifest's content.
-const MaxK3sManifest = names.MaxManifest
-
-// K3sRole is what a node is in its k3s cluster.
-type K3sRole string
-
-const (
-	K3sServer K3sRole = "server"
-	K3sAgent  K3sRole = "agent"
-)
 
 // NodeServiceSpec is the desired state of a systemd service on a node.
 type NodeServiceSpec struct {
@@ -281,6 +247,3 @@ func (g *Graph) StaticIP(name string) string {
 	}
 	return ""
 }
-
-// K3sServerURL is the URL a k3s agent joins its server at, for a server with a static address.
-func K3sServerURL(ip string) string { return "https://" + ip + ":6443" }

@@ -30,20 +30,6 @@ type canonNodePackage struct {
 	State   string `json:"state"`
 }
 
-type canonNodeK3s struct {
-	Node    string `json:"node"`
-	Role    string `json:"role"`
-	Server  string `json:"server,omitempty"`
-	SHA256  string `json:"sha256"`
-	Version string `json:"version"`
-}
-
-type canonNodeK3sManifest struct {
-	Content string `json:"content"`
-	Name    string `json:"name"`
-	Node    string `json:"node"`
-}
-
 type canonNodeMamelet struct {
 	Node    string `json:"node"`
 	SHA256  string `json:"sha256"`
