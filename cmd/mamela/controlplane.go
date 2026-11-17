@@ -397,6 +397,8 @@ RuntimeDirectoryMode=0755
 ExecStart=/usr/local/bin/mamela api --socket /run/mamela/api.sock --socket-group mamela-api --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --providers /etc/mamela/providers.toml
 Restart=always
 RestartSec=10
+# A stop lets a running apply finish (mamela api --drain-timeout, 10 minutes), and then a minute to wind down.
+TimeoutStopSec=660
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

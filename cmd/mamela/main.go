@@ -27,6 +27,7 @@ Usage:
   mamela plan [flags] <pome-dir>      show and save what would change, and what needs approval
   mamela plan --replay <plan-digest>  recompute a saved plan and check it is unchanged
   mamela approve <plan-digest>        approve exactly that plan
+  mamela revoke <plan-digest>         end the approval of a plan (an apply under way stops before what it has not begun)
   mamela apply <plan-digest>          carry out an approved plan (each provider's guard checks before and after)
   mamela guard <pome-dir>             run the providers' safety checks, as before an apply (read-only)
   mamela act <op> <resource> <pome-dir>  an explicit operation of a provider (delete, reboot, adopt...);
@@ -70,6 +71,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runPlan(ctx, args[1:], stdout, stderr)
 	case "approve":
 		return runApprove(ctx, args[1:], stdout, stderr)
+	case "revoke":
+		return runRevoke(ctx, args[1:], stdout, stderr)
 	case "apply":
 		return runApply(ctx, args[1:], stdout, stderr)
 	case "guard":

@@ -53,6 +53,26 @@ type planOptions struct {
 	Tools         func() (tools, error)
 }
 
+// currentPolicy is the policy in force: the policy file (the built-in policy when there is none), and
+// this Control Plane's own host as a protected node (ADR 0003). A plan is made under it and stored
+// with it; apply names it the same way and refuses a plan made under another (MAM-REC-0010).
+func currentPolicy(site *sitedef.Site, file string) (policy.Policy, error) {
+	pol := policy.Default
+	if file != "" {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			return policy.Policy{}, err
+		}
+		if pol, err = policy.Decode(b); err != nil {
+			return policy.Policy{}, fmt.Errorf("%s: %w", file, err)
+		}
+	}
+	if site != nil && site.ControlPlane.Host != "" {
+		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
+	}
+	return pol, nil
+}
+
 // planned is a saved plan with what was used to make it.
 type planned struct {
 	Plan      *plan.Plan
@@ -118,20 +138,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 			return nil, err
 		}
 	}
-	pol := policy.Default
-	if o.PolicyFile != "" {
-		b, err := os.ReadFile(o.PolicyFile)
-		if err != nil {
-			return nil, err
-		}
-		if pol, err = policy.Decode(b); err != nil {
-			return nil, fmt.Errorf("%s: %w", o.PolicyFile, err)
-		}
-	}
-	if site != nil && site.ControlPlane.Host != "" {
-		// This Control Plane's own host: shown, never changed (ADR 0003). The policy is stored with
-		// the plan, so apply derives the same denial.
-		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
+	pol, err := currentPolicy(site, o.PolicyFile)
+	if err != nil {
+		return nil, err
 	}
 	rt.SetLimits(siteLimits(site))
 	provided, err := rt.Observe(ctx, res.Graph, snap.AsOf)
@@ -155,6 +164,9 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 	if err := st.SavePlan(ctx, res.Graph, snap, pol, p); err != nil {
 		return nil, err
 	}
+	// Plans nobody approved pile up (mamela api plans a branch's head again and again): old ones go.
+	// Failing to tidy up must not fail the plan.
+	_, _, _ = st.PruneIfDue(ctx, store.Retention)
 	// The programs the plan was made with: apply runs exactly these.
 	if err := st.SavePlanPrograms(ctx, p.Digest, rt.Programs()); err != nil {
 		return nil, err
@@ -228,6 +240,7 @@ func (e *noPlanError) Error() string { return "no plan " + e.Digest }
 // has providers' programs to run.
 type applyOptions struct {
 	ProvidersFile string
+	PolicyFile    string // "": the built-in policy, as for plan
 	ImageCache    string
 	Tools         func() (tools, error)
 }
@@ -328,8 +341,12 @@ func applyPlan(ctx context.Context, st *store.Store, site *sitedef.Site, digest 
 
 	// 2. Reconcile.
 	fmt.Fprintf(out, "== apply %s\n", p.Digest)
-	host, _ := os.Hostname()
-	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: fmt.Sprintf("%s/%d", host, os.Getpid()), Lease: 3 * time.Hour, Providers: providers}
+	pol, err := currentPolicy(site, o.PolicyFile)
+	if err != nil {
+		return applyResult{}, err
+	}
+	rec := &reconcile.Reconciler{Store: st, Provider: prov, Owner: reconcile.WorkerName(), Lease: 3 * time.Hour, Providers: providers,
+		PolicyDigest: pol.Digest()}
 	rep, applyErr := rec.Apply(ctx, p.Digest)
 	if rep != nil {
 		printReport(out, rep)
