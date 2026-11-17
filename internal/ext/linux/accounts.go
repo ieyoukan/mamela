@@ -3,6 +3,7 @@ package linux
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -20,6 +21,16 @@ type accounts struct {
 	users, groups map[string]int // by name
 	userOf        map[int]string // the first name of each id
 	groupOf       map[int]string
+	// entries are the users' lines of /etc/passwd (the first of each name), and members the members
+	// each group lists (NodeUser's).
+	entries map[string]passwdEntry
+	members map[string][]string
+}
+
+// passwdEntry is a user's line of /etc/passwd.
+type passwdEntry struct {
+	uid, gid    int
+	home, shell string
 }
 
 // parseAccounts reads the contents of /etc/passwd and /etc/group. A line it cannot read is left out.
@@ -45,7 +56,57 @@ func parseAccounts(passwd, group string) accounts {
 	}
 	read(passwd, a.users, a.userOf)
 	read(group, a.groups, a.groupOf)
+	a.entries, a.members = map[string]passwdEntry{}, map[string][]string{}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(passwd, "\n") {
+		f := strings.Split(line, ":")
+		if seen[f[0]] {
+			continue
+		}
+		seen[f[0]] = true
+		if len(f) != 7 || !ValidAccount(f[0]) {
+			continue
+		}
+		uid, err1 := strconv.Atoi(f[2])
+		gid, err2 := strconv.Atoi(f[3])
+		if err1 == nil && err2 == nil && uid >= 0 && gid >= 0 {
+			a.entries[f[0]] = passwdEntry{uid: uid, gid: gid, home: f[5], shell: f[6]}
+		}
+	}
+	for _, line := range strings.Split(group, "\n") {
+		f := strings.Split(line, ":")
+		if _, listed := a.members[f[0]]; listed || len(f) != 4 || !ValidAccount(f[0]) {
+			continue
+		}
+		a.members[f[0]] = []string{}
+		for _, m := range strings.Split(f[3], ",") {
+			if m != "" {
+				a.members[f[0]] = append(a.members[f[0]], m)
+			}
+		}
+	}
 	return a
+}
+
+// memberOf are the groups that list user as a member (its supplementary groups), sorted.
+func (a accounts) memberOf(user string) []string {
+	var out []string
+	for g, ms := range a.members {
+		if slices.Contains(ms, user) {
+			out = append(out, g)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// inGroup is whether user (whose primary group is gid) is in group g: its primary group, or a
+// group that lists it.
+func (a accounts) inGroup(user string, gid int, g string) bool {
+	if id, ok := a.groups[g]; ok && id == gid {
+		return true
+	}
+	return slices.Contains(a.members[g], user)
 }
 
 // userName is the name of a user id, or "#<id>" when the node has none for it.

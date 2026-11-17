@@ -54,6 +54,18 @@ func golden(t *testing.T, name string, got []byte) {
 	}
 }
 
+// manifestOf is the node provider's manifest with only the linux kinds named (the core's and k3s's
+// kinds all): a scenario's plan names the digest of the contract it was made with, and a linux kind
+// that comes later does not change the scenarios of the kinds before it.
+func manifestOf(linux ...graph.Kind) spec.Manifest {
+	m := node.Manifest()
+	m.Kinds = slices.DeleteFunc(slices.Clone(m.Kinds), func(k spec.Kind) bool {
+		_, ours := kindOf(k.Kind)
+		return ours && !slices.Contains(linux, k.Kind)
+	})
+	return m
+}
+
 var gt0 = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 
 const (
@@ -208,7 +220,7 @@ func TestGoldenFilePlans(t *testing.T) {
 				t.Fatal(err)
 			}
 			snap := s.world.snapshot(g)
-			providers := spec.Providers{node.Manifest()}.Digest()
+			providers := spec.Providers{manifestOf(KindFile)}.Digest()
 			p := plan.BuildFor(g, snap, s.pol, providers)
 			dir := "plan/" + s.name + "/"
 			golden(t, dir+"graph.json", append(g.Canonical(), '\n'))

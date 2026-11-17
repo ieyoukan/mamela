@@ -1,0 +1,12 @@
+Plan sha256:8cd44c01ad66
+  revision  sha256:7669c4df8512
+  observed  2026-11-17T12:01:00Z (snapshot sha256:060434b25cb0)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0146 user app on web has home /home/app, not the declared /srv/app: Mamela never moves a home
+      hint: declare home "/home/app", or leave home out (it is used only when Mamela makes the user)
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -158,7 +158,13 @@ func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error 
 		return err
 	}
 	defer dir.Close()
-	base, tmp := path.Base(p), tempName(path.Base(p))
+	return replaceFile(dir, path.Base(p), w.Content, fs.FileMode(mode), uid, gid)
+}
+
+// replaceFile writes content into a temporary file in dir (synced, owned by uid:gid, with mode),
+// renames it over base, and syncs dir.
+func replaceFile(dir *os.Root, base, content string, mode fs.FileMode, uid, gid int) error {
+	tmp := tempName(base)
 	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
 	}
@@ -174,7 +180,7 @@ func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error 
 			dir.Remove(tmp)
 		}
 	}()
-	if _, err := f.WriteString(w.Content); err != nil {
+	if _, err := f.WriteString(content); err != nil {
 		return err
 	}
 	if err := f.Sync(); err != nil {
@@ -183,7 +189,7 @@ func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error 
 	if err := f.Chown(uid, gid); err != nil {
 		return err
 	}
-	if err := f.Chmod(fs.FileMode(mode)); err != nil {
+	if err := f.Chmod(mode); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {

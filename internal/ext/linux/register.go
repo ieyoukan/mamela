@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"encoding/json/jsontext"
+	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -15,9 +16,12 @@ import (
 )
 
 // kinds are the extension's kinds, in canonical order. A kind declares what it adds to each layer
-// (fileKind in file.go) and adds itself here; NodeUser, NodeAptRepo and NodeArtifact take the orders
-// doc.go reserves for them.
-var kinds = []kind{fileKind}
+// (fileKind in file.go) and adds itself here; NodeAptRepo and NodeArtifact take the orders doc.go
+// reserves for them.
+var kinds = []kind{
+	userKind, // 6
+	fileKind, // 9
+}
 
 // kind is what one kind of the extension adds to each layer. Every function works on its own
 // members of Part and Observed, and leaves the others' alone.
@@ -30,6 +34,12 @@ type kind struct {
 	content func(r graph.Resource) int
 	// warnings are the kind's warnings of the graph (in the canonical order of its resources).
 	warnings func(g *graph.Graph) []graph.Warning
+	// warningCodes are the codes of those warnings, and codes the codes of the kind's plan notes
+	// (NodeFile's are in warningCodes and planCodes): each is the extension's alone.
+	warningCodes []graph.Code
+	codes        []string
+	// programs are the programs mamelet runs for the kind (absolute paths), besides systemctl.
+	programs []string
 
 	planner    plan.Planner
 	startGate  func(k *plan.Kit, node, service string) *plan.Note
@@ -64,6 +74,8 @@ func init() {
 	planners := map[graph.Kind]plan.Planner{}
 	grants := map[policy.Op]node.GrantFunc{}
 	var manifest []spec.Kind
+	wcodes, codes := slices.Clone(warningCodes), slices.Clone(planCodes)
+	var programs []string
 	for _, k := range kinds {
 		defs = append(defs, k.def)
 		planners[k.def.Kind] = k.planner
@@ -72,8 +84,9 @@ func init() {
 			policy.RegisterOp(Name, o.op, o.decision)
 			grants[o.op] = o.grant
 		}
+		wcodes, codes, programs = append(wcodes, k.warningCodes...), append(codes, k.codes...), append(programs, k.programs...)
 	}
-	graph.Register(graph.Extension{Name: Name, Kinds: defs, Check: checkGraph, Warnings: graphWarnings, WarningCodes: warningCodes})
+	graph.Register(graph.Extension{Name: Name, Kinds: defs, Check: checkGraph, Warnings: graphWarnings, WarningCodes: wcodes})
 
 	plan.Register(plan.Extension{
 		Name:     Name,
@@ -97,7 +110,7 @@ func init() {
 			}
 			return out
 		},
-		Codes: planCodes,
+		Codes: codes,
 	})
 
 	noderev.RegisterPart(Name, noderev.Part{Grants: partGrants, ForMamelet: partForMamelet})
@@ -139,9 +152,10 @@ func init() {
 	})
 
 	mamelet.Register(mamelet.Extension{
-		Name:  Name,
-		Wire:  Version,
-		Check: checkPart,
+		Name:     Name,
+		Wire:     Version,
+		Check:    checkPart,
+		Programs: programs,
 		Observe: func(ctx context.Context, s *mamelet.System, rev *noderev.Revision, rep *noderev.Report) {
 			raw, ok := rev.Ext[Name]
 			if !ok {
@@ -195,6 +209,6 @@ func init() {
 	})
 }
 
-// planCodes are the codes of the extension's plan notes (doc.go reserves ranges for the kinds that
-// follow).
+// planCodes are the codes of NodeFile's plan notes; the other kinds name theirs in kind.codes (doc.go
+// reserves their ranges).
 var planCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept}

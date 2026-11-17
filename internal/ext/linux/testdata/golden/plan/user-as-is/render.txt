@@ -1,0 +1,14 @@
+Plan sha256:10fe8c3a8eef
+  revision  sha256:9bf6623de120
+  observed  2026-11-17T12:01:00Z (snapshot sha256:13b23370032b)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+= NodeUser web/user/app  [in sync]
+    warning MAM-PLAN-0148 user app on web is also in groups adm, sudo, which the declaration does not name: Mamela adds memberships and never removes one, so they stay
+      hint: declare the group if it is meant, or take the user out of it by hand (gpasswd -d app adm)
+    warning MAM-PLAN-0148 user app on web is a system user (uid 998), but is declared as a user (not a system user): Mamela does not change that, which only says how the user is made
+      hint: declare system: true to match the node
+
+Summary: 2 in sync.
+Nothing has been changed: a plan only describes.

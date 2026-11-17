@@ -1,0 +1,12 @@
+Plan sha256:1cd618835569
+  revision  sha256:24edc8f8fc52
+  observed  2026-11-17T12:01:00Z (snapshot sha256:82b4f970277c)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0146 user app cannot be made on web with uid 1001: user alice has it
+      hint: declare another uid, or leave uid out (useradd chooses one)
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

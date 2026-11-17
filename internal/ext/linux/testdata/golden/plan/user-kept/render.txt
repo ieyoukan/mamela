@@ -1,0 +1,12 @@
+Plan sha256:9c1b1c579673
+  revision  sha256:964c60033b1e
+  observed  2026-11-17T12:01:00Z (snapshot sha256:986b89d45db4)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+= NodeUser web/user/app  [retained]
+    MAM-PLAN-0311 not in this declaration: the user stays on the node as it is, with its groups, home and SSH keys (Mamela never deletes a user), and mamelet stops watching it once this plan is applied
+      hint: remove it by hand on the node (userdel) if it should go
+
+Summary: 1 retained, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -1,0 +1,15 @@
+Plan sha256:4d9876483dfa
+  revision  sha256:d3ae3f0c695b
+  observed  2026-11-17T12:01:00Z (snapshot sha256:efd481885232)
+  policy    sha256:b2ad900beffb
+
+. NodePackage web/docker-ce  [waiting]
+    MAM-PLAN-0105 waits for the agent on web to work out what installing docker-ce would change
+= TestVM web  [in sync]  via test
+. NodeUser web/user/app  [waiting]
+    warning MAM-GRAPH-0206 user app is added to group docker on web: its members control the Docker daemon, which runs containers as root with the host's files, so the user can become root there
+      hint: declare the group only if the user is meant to administer the node; Mamela never removes a membership, so taking it out of the declaration later does not take it away
+    MAM-PLAN-0147 waits for group docker on web (for user app): package docker-ce is not installed there yet, and a package may make it
+
+Summary: 2 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.
