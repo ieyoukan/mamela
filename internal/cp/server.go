@@ -37,11 +37,16 @@ type Server struct {
 	// MameletBinary is the mamelet a cloud machine's user-data seed fetches (ADR 0005): served at
 	// /v1/mamelet/<its sha256> to anyone, since it is no secret; the seed checks the sha256.
 	MameletBinary []byte
+	// MameletFile, when set, is where MameletBinary comes from: it is read again when the file's size
+	// or modification time changes, so a binary that is replaced is served without a restart (the
+	// declaration pins the new sha256, and an update fetches it at once).
+	MameletFile string
 	// BodyTimeout is how long a request may take to deliver its body (zero: 10 seconds).
 	BodyTimeout time.Duration
 
 	mu    sync.Mutex
 	sum   binarySum                 // the sha256 of MameletBinary
+	file  fileStamp                 // the size and modification time MameletBinary was read at
 	said  map[string]time.Time      // when a warning was last logged, by what it is about
 	waits map[string][]*waitingNode // the requests waiting for a revision, by node, oldest first
 }
@@ -68,28 +73,53 @@ const (
 	CertWarnWithin = 30 * 24 * time.Hour
 )
 
+// fileStamp is what tells that a file was replaced, without reading it.
+type fileStamp struct {
+	size int64
+	mod  time.Time
+}
+
 // binarySHA256 is the sha256 of MameletBinary, computed once for the slice the server has.
 func (s *Server) binarySHA256() string {
+	_, sum := s.binary()
+	return sum
+}
+
+// binary is the mamelet the server serves and its sha256. With MameletFile, a file that was
+// replaced (another size or modification time: a stat, not a read, per request) is read again.
+func (s *Server) binary() ([]byte, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.MameletFile != "" {
+		if fi, err := os.Stat(s.MameletFile); err == nil && (fi.Size() != s.file.size || !fi.ModTime().Equal(s.file.mod)) {
+			if b, err := os.ReadFile(s.MameletFile); err == nil {
+				changed := s.file != (fileStamp{})
+				s.MameletBinary, s.file = b, fileStamp{size: fi.Size(), mod: fi.ModTime()}
+				if changed {
+					s.logf("%s was replaced: serving the new mamelet", s.MameletFile)
+				}
+			}
+		}
+	}
 	if len(s.MameletBinary) == 0 {
-		return ""
+		return nil, ""
 	}
 	if len(s.sum.of) != len(s.MameletBinary) || &s.sum.of[0] != &s.MameletBinary[0] {
 		sum := sha256.Sum256(s.MameletBinary)
 		s.sum = binarySum{of: s.MameletBinary, hex: hex.EncodeToString(sum[:])}
 	}
-	return s.sum.hex
+	return s.MameletBinary, s.sum.hex
 }
 
 // mamelet serves the mamelet binary, only under its own sha256.
 func (s *Server) mamelet(w http.ResponseWriter, r *http.Request) {
-	if want := s.binarySHA256(); want == "" || r.PathValue("sha256") != want {
+	bin, want := s.binary()
+	if want == "" || r.PathValue("sha256") != want {
 		http.Error(w, "no such mamelet", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Write(s.MameletBinary)
+	w.Write(bin)
 }
 
 // TLSConfig requires TLS 1.3; client certificates are verified when given (enrollment has none).

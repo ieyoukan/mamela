@@ -5,7 +5,7 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 ## 手順
 
 1. 新しい mamelet を作る（`scripts/build-mamelet.sh`。linux/amd64）。
-2. Control Plane のホストの `controlplane.mamelet_binary`（サイト設定）に置き、`mamela serve` を再起動する（配るのはこのファイル）。
+2. Control Plane のホストの `controlplane.mamelet_binary`（サイト設定）に置く（配るのはこのファイル）。`mamela serve` は、ファイルの大きさか更新時刻が変わると読み直すので、再起動は要らない（0.3.2 より前の serve は起動時にしか読まないので、再起動する）。
 3. その sha256 を宣言に書く（`Mamela.mamelet(graph, node, "0.9.1", "<sha256>")`）。ノードごとに 1 つ。
 4. plan を見る。ノードごとに `update-mamelet`（承認が要る）が出る。ノードは **1 台ずつ、名前の順** で、前のノードが宣言した版で動くまで、次は待つ（MAM-PLAN-0120）。
 5. 承認して apply する（`sync = "push"` なら push が承認）。
