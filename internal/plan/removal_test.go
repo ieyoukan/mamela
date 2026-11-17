@@ -159,3 +159,29 @@ func TestObjectOfAnotherDeclarationIsBlocked(t *testing.T) {
 		t.Errorf("render:\n%s", buf.String())
 	}
 }
+
+// An object of another declaration that both declare alike (a template two declarations use) has
+// nothing to change: it is in sync, with the note of whose it is, not blocked (found on the lab:
+// a shared template made the whole declaration fail in gitops).
+func TestSharedObjectOfAnotherDeclarationInSyncIsNotBlocked(t *testing.T) {
+	g := desired(t)
+	s := converged()
+	for id, p := range s.Provided {
+		if p.Declared {
+			p.Kept = &state.Kept{Code: "MAM-PLAN-0307", Message: "it is in this declaration (shop), but Mamela made it for another declaration (blog)", Hint: "declare it in one place"}
+			p.Changes = nil
+			s.Provided[id] = p
+		}
+	}
+	s.AddProvided(s.Provided)
+	p := Build(g, s, policy.Default)
+	m := find(t, p, "TestVM app-server")
+	if m.Status != StatusInSync || m.Note == nil || m.Note.Code != "MAM-PLAN-0307" || len(m.Operations) != 0 {
+		t.Fatalf("the shared machine: %+v", m)
+	}
+	for _, c := range p.Changes {
+		if c.Status == StatusBlocked {
+			t.Errorf("blocked: %s %+v", c.ID(), c.Note)
+		}
+	}
+}
