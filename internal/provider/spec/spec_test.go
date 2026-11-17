@@ -112,7 +112,7 @@ func TestEveryNodeKindIsOnItsNode(t *testing.T) {
 // What a template says of a manifest is the manifest's name.
 func TestFieldsOfAManifestNameTheManifest(t *testing.T) {
 	r := graph.Resource{Kind: graph.KindNodeK3sManifest, Name: "app/manifest/argocd",
-		NodeK3sManifest: &graph.NodeK3sManifestSpec{Node: "app", Name: "argocd", Content: "kind: Namespace\n"}}
+		Ext: &graph.NodeK3sManifestSpec{Node: "app", Name: "argocd", Content: "kind: Namespace\n"}}
 	if f := fields(r); f["node"] != "app" || f["name"] != "argocd" {
 		t.Fatalf("fields %v", f)
 	}

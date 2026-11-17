@@ -157,14 +157,14 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		var manifests []noderev.Manifest
 		for _, r := range g.Sorted() {
 			switch {
-			case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == name:
-				manifests = append(manifests, noderev.Manifest{Name: r.NodeK3sManifest.Name, Content: r.NodeK3sManifest.Content})
+			case graph.K3sManifestOf(r) != nil && graph.K3sManifestOf(r).Node == name:
+				manifests = append(manifests, noderev.Manifest{Name: graph.K3sManifestOf(r).Name, Content: graph.K3sManifestOf(r).Content})
 			case r.NodePackage != nil && r.NodePackage.Node == name:
 				pkgs = append(pkgs, noderev.Package{Name: r.NodePackage.Package})
 			case r.NodeService != nil && r.NodeService.Node == name:
 				svcs = append(svcs, noderev.Service{Name: r.NodeService.Service})
-			case r.NodeK3s != nil && r.NodeK3s.Node == name:
-				kr, ok, err := k3sRevision(ctx, st, *r.NodeK3s, g.StaticIP(r.NodeK3s.Server))
+			case graph.K3sOf(r) != nil && graph.K3sOf(r).Node == name:
+				kr, ok, err := k3sRevision(ctx, st, *graph.K3sOf(r), g.StaticIP(graph.K3sOf(r).Server))
 				if err != nil {
 					return err
 				}
@@ -304,9 +304,9 @@ func declaredOn(g *graph.Graph, node string) declared {
 			d.packages[r.NodePackage.Package] = true
 		case r.NodeService != nil && r.NodeService.Node == node:
 			d.services[r.NodeService.Service] = true
-		case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == node:
-			d.manifests[r.NodeK3sManifest.Name] = true
-		case r.NodeK3s != nil && r.NodeK3s.Node == node:
+		case graph.K3sManifestOf(r) != nil && graph.K3sManifestOf(r).Node == node:
+			d.manifests[graph.K3sManifestOf(r).Name] = true
+		case graph.K3sOf(r) != nil && graph.K3sOf(r).Node == node:
 			d.k3s = true
 		case r.NodeMamelet != nil && r.NodeMamelet.Node == node:
 			d.mamelet = true
@@ -366,17 +366,17 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest, Expires: exp}
 			return nil
 		}
-	case (step.Op == policy.OpInstallK3s || step.Op == policy.OpUpgradeK3s) && r.NodeK3s != nil:
-		kr, ok, err := k3sRevision(ctx, p.Store, *r.NodeK3s, inputs.Revision.StaticIP(r.NodeK3s.Server))
+	case (step.Op == policy.OpInstallK3s || step.Op == policy.OpUpgradeK3s) && graph.K3sOf(r) != nil:
+		kr, ok, err := k3sRevision(ctx, p.Store, *graph.K3sOf(r), inputs.Revision.StaticIP(graph.K3sOf(r).Server))
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return fmt.Errorf("k3s server address is not observed; plan again")
 		}
-		node, what = r.NodeK3s.Node, "install k3s "+r.NodeK3s.Version
+		node, what = graph.K3sOf(r).Node, "install k3s "+graph.K3sOf(r).Version
 		if step.Op == policy.OpUpgradeK3s {
-			what = "upgrade to k3s " + r.NodeK3s.Version
+			what = "upgrade to k3s " + graph.K3sOf(r).Version
 		}
 		grant = func(rev *noderev.Revision) error {
 			// An agent joins the server the approved plan named, or nothing happens.
@@ -388,13 +388,13 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			rev.K3s = &k
 			return nil
 		}
-	case step.Op == policy.OpRemoveK3sNode && r.NodeK3s != nil && r.NodeK3s.Role == graph.K3sServer:
+	case step.Op == policy.OpRemoveK3sNode && graph.K3sOf(r) != nil && graph.K3sOf(r).Role == graph.K3sServer:
 		// The node to remove is the one the approved plan named, and no other.
 		target := approvedDiff(step.Approved, "remove-node")
 		if !noderev.ValidNode(target) {
 			return fmt.Errorf("the approved plan names no Kubernetes node to remove (plan again)")
 		}
-		node, what = r.NodeK3s.Node, "remove Kubernetes node "+target
+		node, what = graph.K3sOf(r).Node, "remove Kubernetes node "+target
 		grant = func(rev *noderev.Revision) error {
 			if rev.K3s == nil || rev.K3s.Role != noderev.K3sServer {
 				return fmt.Errorf("%s has no k3s server in its revision (plan again)", node)
@@ -415,8 +415,8 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			rev.Mamelet = &noderev.MameletUpdate{SHA256: m.SHA256, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionUpdate, Expires: exp}}
 			return nil
 		}
-	case step.Op == policy.OpWriteK3sManifest && r.NodeK3sManifest != nil:
-		m := *r.NodeK3sManifest
+	case step.Op == policy.OpWriteK3sManifest && graph.K3sManifestOf(r) != nil:
+		m := *graph.K3sManifestOf(r)
 		node, what = m.Node, "write k3s manifest "+m.Name
 		grant = func(rev *noderev.Revision) error {
 			// Exactly the content the approved plan showed, or nothing happens.

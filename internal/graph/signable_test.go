@@ -65,10 +65,10 @@ func signable(t testing.TB, kind, v string) (accepted bool) {
 			rev.Packages = append(rev.Packages, noderev.Package{Name: r.NodePackage.Package})
 		case r.NodeService != nil:
 			rev.Services = append(rev.Services, noderev.Service{Name: r.NodeService.Service})
-		case r.NodeK3sManifest != nil:
-			rev.Manifests = append(rev.Manifests, noderev.Manifest{Name: r.NodeK3sManifest.Name, Content: r.NodeK3sManifest.Content})
-		case r.NodeK3s != nil:
-			rev.K3s = &noderev.K3s{Version: r.NodeK3s.Version, SHA256: r.NodeK3s.SHA256, Role: string(r.NodeK3s.Role),
+		case K3sManifestOf(r) != nil:
+			rev.Manifests = append(rev.Manifests, noderev.Manifest{Name: K3sManifestOf(r).Name, Content: K3sManifestOf(r).Content})
+		case K3sOf(r) != nil:
+			rev.K3s = &noderev.K3s{Version: K3sOf(r).Version, SHA256: K3sOf(r).SHA256, Role: string(K3sOf(r).Role),
 				Token: strings.Repeat("cd", 32)}
 		}
 	}

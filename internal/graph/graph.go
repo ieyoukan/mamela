@@ -30,10 +30,6 @@ type Kind = protocol.ResourceKind
 const (
 	KindNodePackage Kind = "NodePackage"
 	KindNodeService Kind = "NodeService"
-	KindNodeK3s     Kind = "NodeK3s"
-	// KindNodeK3sManifest is a manifest in the auto-deploy directory of a k3s server: k3s applies
-	// what is in it (a Helm chart, a workload) and applies it again whenever it changes.
-	KindNodeK3sManifest Kind = "NodeK3sManifest"
 	// KindNodeMamelet is the mamelet release a node runs: its sha256 is declared, like a k3s
 	// binary's, and a node that runs another one is updated (with an approval).
 	KindNodeMamelet Kind = "NodeMamelet"
@@ -45,21 +41,12 @@ func CoreKind(k Kind) bool {
 	return k == KindNodePackage || k == KindNodeService || k == KindNodeMamelet
 }
 
-// Builtin reports whether a kind is one of Mamela's own (not a provider's).
+// Builtin reports whether a kind is one of Mamela's own, the core's or a node extension's (not a
+// provider's). Machines are providers' node kinds (ADR 0004, 0006); the built-in kinds are what
+// lives on them.
 func Builtin(k Kind) bool {
-	_, ok := kindOrder[k]
-	return ok
-}
-
-// kindOrder fixes the canonical order of the built-in kinds. Machines are providers' node kinds
-// (ADR 0004, 0006); the built-in kinds are what lives on them.
-var kindOrder = map[Kind]int{
-	KindNodePackage: 1,
-	KindNodeService: 2,
-	KindNodeK3s:     3,
-
-	KindNodeK3sManifest: 4,
-	KindNodeMamelet:     5,
+	_, ext := extKinds[k]
+	return CoreKind(k) || ext
 }
 
 // Graph is a decoded and validated desired state.
@@ -67,17 +54,17 @@ type Graph struct {
 	Resources []Resource
 }
 
-// Resource is one desired resource. Exactly one of the spec pointers is set, matching Kind.
+// Resource is one desired resource. Exactly one of the spec pointers (or Ext) is set, matching Kind.
 type Resource struct {
 	Kind Kind
 	Name string
 
 	NodePackage *NodePackageSpec
 	NodeService *NodeServiceSpec
-	NodeK3s     *NodeK3sSpec
-
-	NodeK3sManifest *NodeK3sManifestSpec
-	NodeMamelet     *NodeMameletSpec
+	NodeMamelet *NodeMameletSpec
+	// Ext is the spec of a node extension's kind (KindOf): the extension's own type, which the
+	// core does not look into.
+	Ext any
 	// Provided is set for a resource of a provider's kind: Mamela does not know the kind; the
 	// provider does (its manifest and its diff).
 	Provided *ProvidedSpec
@@ -105,12 +92,12 @@ func (r Resource) Node() string {
 		return r.NodePackage.Node
 	case r.NodeService != nil:
 		return r.NodeService.Node
-	case r.NodeK3s != nil:
-		return r.NodeK3s.Node
-	case r.NodeK3sManifest != nil:
-		return r.NodeK3sManifest.Node
 	case r.NodeMamelet != nil:
 		return r.NodeMamelet.Node
+	case r.Ext != nil:
+		if d, ok := extKinds[r.Kind]; ok {
+			return d.Node(r.Ext)
+		}
 	}
 	return ""
 }

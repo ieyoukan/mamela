@@ -58,8 +58,8 @@ func deletedNodes(c Change) []string {
 func (b k3sPlanner) machineRestartGate(r graph.Resource) *Note {
 	var mine *graph.NodeK3sSpec
 	for _, o := range b.Resources() {
-		if o.NodeK3s != nil && o.NodeK3s.Node == r.Name {
-			mine = o.NodeK3s
+		if graph.K3sOf(o) != nil && graph.K3sOf(o).Node == r.Name {
+			mine = graph.K3sOf(o)
 		}
 	}
 	if mine == nil || !b.Snapshot().K3s[mine.Node+"/k3s"].Running {
@@ -70,7 +70,7 @@ func (b k3sPlanner) machineRestartGate(r graph.Resource) *Note {
 		server = mine.Node
 	}
 	for _, o := range b.Resources() {
-		k := o.NodeK3s
+		k := graph.K3sOf(o)
 		if k == nil || !restartsBefore(k, mine) || (k.Node != server && k.Server != server) {
 			continue
 		}
@@ -108,7 +108,7 @@ func restartsBefore(k, mine *graph.NodeK3sSpec) bool {
 
 // k3s plans a k3s server on a node from mamelet's report of it.
 func (b k3sPlanner) k3s(r graph.Resource) Change {
-	want := r.NodeK3s
+	want := graph.K3sOf(r)
 	c := NewChange(r)
 	if ok, note := b.NodeReady(want.Node); !ok {
 		c.Status, c.Note = StatusWaiting, note
@@ -187,14 +187,14 @@ func (b k3sPlanner) k3s(r graph.Resource) Change {
 // server's own are never touched. It is a deletion:
 // the policy's removal = retain keeps it, and only the Control Plane's host approves it.
 func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c Change) Change {
-	want := r.NodeK3s
+	want := graph.K3sOf(r)
 	if want.Role != graph.K3sServer || !got.Running || !b.Policy().Deletes() ||
 		!slices.ContainsFunc(got.Nodes, func(n state.K3sNode) bool { return n.Name == want.Node }) {
 		return c
 	}
 	declared := map[string]bool{}
 	for _, o := range b.Resources() {
-		if k := o.NodeK3s; k != nil && (k.Node == want.Node || k.Server == want.Node) {
+		if k := graph.K3sOf(o); k != nil && (k.Node == want.Node || k.Server == want.Node) {
 			declared[k.Node] = true
 		}
 	}
@@ -229,7 +229,7 @@ func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c Change) Change
 // k3sManifest plans a manifest file in a k3s server's auto-deploy directory. Its whole content is
 // in the diff: that is what is approved, and what k3s then applies with cluster-admin rights.
 func (b k3sPlanner) k3sManifest(r graph.Resource) Change {
-	want := r.NodeK3sManifest
+	want := graph.K3sManifestOf(r)
 	c := NewChange(r)
 	if ok, note := b.NodeReady(want.Node); !ok {
 		c.Status, c.Note = StatusWaiting, note
@@ -282,10 +282,10 @@ func rollbackWarning(want *graph.NodeK3sSpec, running string) *Note {
 // (an upgrade in place that takes it far back), whether the upgrade is planned or waits.
 func (b k3sPlanner) rollbackWarnings(r graph.Resource) []Note {
 	got, ok := b.Snapshot().K3s[r.Name]
-	if !ok || !got.Running || got.SHA256 == r.NodeK3s.SHA256 {
+	if !ok || !got.Running || got.SHA256 == graph.K3sOf(r).SHA256 {
 		return nil
 	}
-	if w := rollbackWarning(r.NodeK3s, b.k3sRunning(r, got)); w != nil {
+	if w := rollbackWarning(graph.K3sOf(r), b.k3sRunning(r, got)); w != nil {
 		return []Note{*w}
 	}
 	return nil
@@ -306,7 +306,7 @@ func rollbackSize(n, d graph.Release) string {
 // The kubelet may report "v1.37.2" for "v1.37.2+k3s1": the k3s revision counts only when it is
 // reported.
 func (b k3sPlanner) k3sVersionNote(r graph.Resource, got state.K3s) *Note {
-	want := r.NodeK3s
+	want := graph.K3sOf(r)
 	if !got.Running {
 		return nil // what the node last said is from before it stopped
 	}
@@ -337,11 +337,11 @@ func k3sCurrent(got state.K3s, want *graph.NodeK3sSpec) bool {
 // unknown).
 func (b k3sPlanner) k3sRunning(r graph.Resource, got state.K3s) string {
 	nodes := got.Nodes
-	if r.NodeK3s.Role == graph.K3sAgent {
-		nodes = b.Snapshot().K3s[r.NodeK3s.Server+"/k3s"].Nodes
+	if graph.K3sOf(r).Role == graph.K3sAgent {
+		nodes = b.Snapshot().K3s[graph.K3sOf(r).Server+"/k3s"].Nodes
 	}
 	for _, n := range nodes {
-		if n.Name == r.NodeK3s.Node {
+		if n.Name == graph.K3sOf(r).Node {
 			return n.Version
 		}
 	}
@@ -355,12 +355,12 @@ func (b k3sPlanner) k3sRunning(r graph.Resource, got state.K3s) string {
 // Kubernetes node is Ready, as the server sees it: a restart on top of an unhealthy cluster would
 // take more of it down.
 func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *Note {
-	want := r.NodeK3s
+	want := graph.K3sOf(r)
 	nodes := got.Nodes
 	if want.Role == graph.K3sAgent {
 		srv, ok := b.Snapshot().K3s[want.Server+"/k3s"]
 		for _, other := range b.Resources() {
-			o := other.NodeK3s
+			o := graph.K3sOf(other)
 			if o == nil || o.Node != want.Server {
 				continue
 			}
@@ -370,7 +370,7 @@ func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *Note {
 			}
 		}
 		for _, other := range b.Resources() {
-			o := other.NodeK3s
+			o := graph.K3sOf(other)
 			if !got.Running || o == nil || o.Role != graph.K3sAgent || o.Server != want.Server || o.Node >= want.Node {
 				continue
 			}
@@ -413,7 +413,7 @@ func (b k3sPlanner) declaredNodes(nodes []state.K3sNode, want *graph.NodeK3sSpec
 	}
 	declared := map[string]bool{}
 	for _, r := range b.Resources() {
-		if o := r.NodeK3s; o != nil && (o.Node == server || o.Server == server) {
+		if o := graph.K3sOf(r); o != nil && (o.Node == server || o.Server == server) {
 			declared[o.Node] = true
 		}
 	}
@@ -447,8 +447,8 @@ func (b k3sPlanner) k3sServerOf(node, service string) string {
 		return ""
 	}
 	for _, r := range b.Resources() {
-		if r.NodeK3s != nil && r.NodeK3s.Node == node && r.NodeK3s.Role == graph.K3sAgent {
-			return r.NodeK3s.Server
+		if graph.K3sOf(r) != nil && graph.K3sOf(r).Node == node && graph.K3sOf(r).Role == graph.K3sAgent {
+			return graph.K3sOf(r).Server
 		}
 	}
 	return ""

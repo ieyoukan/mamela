@@ -46,7 +46,7 @@ func K3sServerURL(ctx context.Context, st *store.Store, server string) (string, 
 // declaresNode is whether the declaration has a k3s node called node that joins server (or is it).
 func declaresNode(g *graph.Graph, server, node string) bool {
 	for _, r := range g.Sorted() {
-		if k := r.NodeK3s; k != nil && k.Node == node && (k.Server == server || k.Node == server) {
+		if k := graph.K3sOf(r); k != nil && k.Node == node && (k.Server == server || k.Node == server) {
 			return true
 		}
 	}

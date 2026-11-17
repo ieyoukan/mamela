@@ -197,7 +197,7 @@ func TestNodeK3s(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k := g.Sorted()[0].NodeK3s; k == nil || k.SHA256 != sha {
+	if k := K3sOf(g.Sorted()[0]); k == nil || k.SHA256 != sha {
 		t.Fatalf("%+v", g)
 	}
 	for name, d := range map[string]string{
@@ -226,7 +226,7 @@ func TestNodeK3s(t *testing.T) {
 	cluster := func(rs ...string) string {
 		return `{"schema":"mamela-graph/v2","resources":[` + strings.Join(rs, ",") + `]}`
 	}
-	if g, err := Decode([]byte(cluster(vm("s"), vm("a"), k("s", "server", ""), k("a", "agent", "s")))); err != nil || g.Sorted()[0].NodeK3s.Server != "s" {
+	if g, err := Decode([]byte(cluster(vm("s"), vm("a"), k("s", "server", ""), k("a", "agent", "s")))); err != nil || K3sOf(g.Sorted()[0]).Server != "s" {
 		t.Errorf("a server and an agent: %v", err)
 	}
 	for name, d := range map[string]string{
@@ -477,8 +477,8 @@ func TestNodeK3sManifest(t *testing.T) {
 	}
 	var m *NodeK3sManifestSpec
 	for _, r := range g.Sorted() {
-		if r.NodeK3sManifest != nil {
-			m = r.NodeK3sManifest
+		if K3sManifestOf(r) != nil {
+			m = K3sManifestOf(r)
 		}
 	}
 	if m == nil || m.Node != "web" || m.Name != "argocd" || m.Content != "kind: Namespace\n" {

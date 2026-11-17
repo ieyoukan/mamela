@@ -46,10 +46,6 @@ const (
 	OpStartService     Op = "start-service"
 	OpStopService      Op = "stop-service"
 	OpConfigureService Op = "configure-service-repair"
-	OpInstallK3s       Op = "install-k3s"
-	OpUpgradeK3s       Op = "upgrade-k3s"
-	OpWriteK3sManifest Op = "write-k3s-manifest"
-	OpRemoveK3sNode    Op = "remove-k3s-node"
 	OpUpdateMamelet    Op = "update-mamelet"
 )
 
@@ -164,21 +160,9 @@ func (p Policy) Decide(s Subject) Decision {
 	switch s.Op {
 	case OpConfigureService:
 		return Decision{Auto, "MAM-POL-0103", "apply activates the service repair policy shown in this plan", ""}
-	case OpInstallK3s:
-		return Decision{ApprovalRequired, "MAM-POL-0210", "installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root",
-			"check the version and sha256 against the k3s release page before approving"}
-	case OpUpgradeK3s:
-		return Decision{ApprovalRequired, "MAM-POL-0212", "replaces the k3s binary (a release pinned by sha256) and restarts k3s on this node: a server's API is unavailable while it restarts, and an agent's node is not Ready",
-			"check the release against the k3s release page and that agents are not newer than the server; back up the server's data first"}
-	case OpWriteK3sManifest:
-		return Decision{ApprovalRequired, "MAM-POL-0213", "puts a manifest in k3s's auto-deploy directory: k3s applies it with cluster-admin rights, and again whenever it changes",
-			"read the whole manifest in this plan; a HelmChart or a workload in it runs with the rights its YAML asks for"}
 	case OpUpdateMamelet:
 		return Decision{ApprovalRequired, "MAM-POL-0215", "replaces mamelet (the node's agent, which runs as root) with the binary of the declared sha256, which the Control Plane serves, and restarts it; the previous binary is kept, and mamelet goes back to it if the new one does not report",
 			"check the sha256 against the binary you built and put in controlplane.mamelet_binary; nodes are updated one at a time"}
-	case OpRemoveK3sNode:
-		return Decision{ApprovalRequired, "MAM-POL-0214", "deletes a Kubernetes node from the cluster (its pods are drained first when the node is Ready): the node is not declared any more",
-			"check the node's name in this plan; only the Control Plane's host can approve it (mamela approve), as with every deletion"}
 	case OpInstallPackage:
 		if s.Removes {
 			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",
@@ -206,6 +190,9 @@ func (p Policy) Decide(s Subject) Decision {
 		return Decision{Denied, "MAM-POL-0303", "the resource exists but Mamela did not create it (Foreign); Mamela never changes it",
 			"rename the declaration, or adopt the resource by hand"}
 	default:
+		if d, ok := extOps[s.Op]; ok {
+			return d.decision
+		}
 		return Decision{Denied, "MAM-POL-0399", "the operation is not known to the policy",
 			"this is a bug in Mamela; unknown operations are always denied"}
 	}
@@ -242,4 +229,59 @@ func Decode(data []byte) (Policy, error) {
 		return Policy{}, fmt.Errorf("policy: removal %q: \"delete\" or \"retain\"", p.Removal)
 	}
 	return p, nil
+}
+
+// The operations of node extensions (k3s, docs/design/node-extensions.md) are registered, each with
+// its one decision. An extension's operation always needs an approval or is denied: an extension
+// cannot make something run without a person's approval (Auto is the core's to give, from the
+// policy's own settings).
+
+type extOp struct {
+	owner    string
+	decision Decision
+}
+
+var (
+	extOps = map[Op]extOp{}
+	// coreOps are the core's operations; coreCodes the codes of the core's decisions. A code is in
+	// the plan's JSON, so it never changes meaning, and no extension may take one.
+	coreOps   = []Op{OpChangeForeign, OpInstallPackage, OpEnableService, OpDisableService, OpStartService, OpStopService, OpConfigureService, OpUpdateMamelet}
+	coreCodes = []Code{"MAM-POL-0101", "MAM-POL-0102", "MAM-POL-0103", "MAM-POL-0204", "MAM-POL-0205", "MAM-POL-0206", "MAM-POL-0207",
+		"MAM-POL-0208", "MAM-POL-0209", "MAM-POL-0215", "MAM-POL-0303", "MAM-POL-0304", "MAM-POL-0305", "MAM-POL-0306", "MAM-POL-0308",
+		"MAM-POL-0309", "MAM-POL-0310", "MAM-POL-0311", "MAM-POL-0399"}
+)
+
+// RegisterOp adds an operation of the node extension owner, with its decision. It panics when the
+// decision would let the operation run without an approval, and when the operation or the code is
+// taken already: programming errors, found when the program starts.
+func RegisterOp(owner string, op Op, d Decision) {
+	switch {
+	case owner == "" || owner == "core":
+		panic("policy: an extension needs a name of its own")
+	case d.Verdict != ApprovalRequired && d.Verdict != Denied:
+		panic(fmt.Sprintf("policy: extension %s: operation %s: verdict %q; an extension's operation needs an approval or is denied", owner, op, d.Verdict))
+	case op == "" || slices.Contains(coreOps, op):
+		panic(fmt.Sprintf("policy: extension %s: operation %q is the core's", owner, op))
+	case d.Code == "" || d.Message == "" || slices.Contains(coreCodes, d.Code):
+		panic(fmt.Sprintf("policy: extension %s: operation %s needs a code of its own and a message", owner, op))
+	}
+	if other, taken := extOps[op]; taken {
+		panic(fmt.Sprintf("policy: extension %s: operation %s is %s's", owner, op, other.owner))
+	}
+	for o, e := range extOps {
+		if e.decision.Code == d.Code {
+			panic(fmt.Sprintf("policy: extension %s: code %s is the code of %s (%s)", owner, d.Code, o, e.owner))
+		}
+	}
+	extOps[op] = extOp{owner: owner, decision: d}
+}
+
+// Ops are every operation the policy knows, the core's and the extensions', sorted.
+func Ops() []Op {
+	ops := slices.Clone(coreOps)
+	for op := range extOps {
+		ops = append(ops, op)
+	}
+	slices.Sort(ops)
+	return ops
 }

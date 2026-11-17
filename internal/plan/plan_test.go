@@ -604,8 +604,8 @@ func k3sObserved(g *graph.Graph, sha string) state.Snapshot {
 	s := state.Empty(t0)
 	s.K3s = map[string]state.K3s{}
 	for _, r := range g.Sorted() {
-		if r.NodeK3s != nil {
-			machineObserved(&s, g, r.NodeK3s.Node, true, true, true, 600)
+		if graph.K3sOf(r) != nil {
+			machineObserved(&s, g, graph.K3sOf(r).Node, true, true, true, 600)
 			s.K3s[r.Name] = state.K3s{Installed: true, SHA256: sha, ObservedAt: t0}
 		}
 	}

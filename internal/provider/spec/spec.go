@@ -20,6 +20,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -155,11 +156,11 @@ func fields(r graph.Resource) map[string]string {
 		f["package"] = r.NodePackage.Package
 	case r.NodeService != nil:
 		f["service"] = r.NodeService.Service
-	case r.NodeK3s != nil:
-		f["version"], f["sha256"] = r.NodeK3s.Version, r.NodeK3s.SHA256
-	case r.NodeK3sManifest != nil:
-		// The manifest's own name, not the resource's ("app/manifest/argocd").
-		f["name"] = r.NodeK3sManifest.Name
+	case r.Ext != nil:
+		// A node extension's kind: the fields its definition gives.
+		if d, ok := graph.KindOf(r.Kind); ok && d.Fields != nil {
+			maps.Copy(f, d.Fields(r.Ext))
+		}
 	case r.NodeMamelet != nil:
 		f["version"], f["sha256"] = r.NodeMamelet.Version, r.NodeMamelet.SHA256
 	case r.Provided != nil:
