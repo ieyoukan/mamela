@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -122,6 +123,12 @@ type Reconciler struct {
 	// since retains what it deleted, a node it since protects). "" asks for no check; mamela always
 	// sets it.
 	PolicyDigest string
+	// Prune, when set, takes away what the plan's declaration no longer has from what the providers
+	// were once allowed to do (the node provider's permissions). It runs once, at the start of the
+	// apply of an approved plan, after the plan's checks and before any operation: the declaration of
+	// an approved plan is the one in force, while a plan that nobody approved (a pull request) is
+	// only a candidate and takes nothing away. It returns what it changed, for the event log.
+	Prune func(ctx context.Context, declaration *graph.Graph) (changed []string, err error)
 }
 
 // OperationID is the idempotency key of one operation of one plan.
@@ -182,6 +189,16 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 	approval, err := r.Store.ValidApproval(ctx, planDigest)
 	if err != nil {
 		return nil, err
+	}
+
+	if approval != nil && r.Prune != nil {
+		changed, err := r.Prune(ctx, in.Revision)
+		if err != nil {
+			return nil, fmt.Errorf("take away what the declaration no longer has (nothing was changed): %w", err)
+		}
+		if len(changed) > 0 {
+			r.event(ctx, planDigest, "", "pruned", "took away the permissions of what the approved declaration no longer has, on "+strings.Join(changed, ", "))
+		}
 	}
 
 	fresh, err := r.Provider.Observe(ctx)

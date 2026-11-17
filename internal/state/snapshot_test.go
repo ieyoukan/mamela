@@ -1,6 +1,7 @@
 package state
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,5 +57,24 @@ func TestNodesRoundTrip(t *testing.T) {
 	}
 	if got.Digest() != s.Digest() || got.Nodes["web"].ID != 7007 {
 		t.Fatalf("nodes do not round-trip: %+v", got.Nodes)
+	}
+}
+
+// A refusal round-trips (a plan is recomputed from the stored snapshot), and a world where no node
+// refuses is encoded as it always was: no new member, so no stored plan's digest changes.
+func TestNodeRefusalsRoundTripAndAreAbsentWithoutOne(t *testing.T) {
+	s := Empty(time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC))
+	if strings.Contains(string(s.Canonical()), "nodeRefusals") {
+		t.Fatalf("a snapshot without a refusal has the member: %s", s.Canonical())
+	}
+	s.NodeRefusals = map[string]NodeRefusal{"web": {Serial: 7, WorksFrom: 5, Reason: "the revision is older than one already accepted: serial 7 < 9",
+		ObservedAt: time.Date(2026, 11, 17, 9, 0, 0, 0, time.FixedZone("JST", 9*3600))}}
+	got, err := Decode(s.Canonical())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := got.NodeRefusals["web"]
+	if got.Digest() != s.Digest() || r.Serial != 7 || r.WorksFrom != 5 || !r.ObservedAt.Equal(time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("a refusal does not round-trip: %+v", got.NodeRefusals)
 	}
 }

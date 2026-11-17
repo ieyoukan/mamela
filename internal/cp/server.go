@@ -341,7 +341,9 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		ttl = 24 * time.Hour
 	}
 	rev.IssuedAt, rev.ExpiresAt = now.UTC(), now.Add(ttl).UTC()
-	signed, err := noderev.Sign(s.PKI.RevisionKey, *rev)
+	// The validity period is renewed on every fetch, so it cannot end a grant: each grant has its own
+	// deadline (set when it was issued), and one past it is not handed out.
+	signed, err := noderev.Sign(s.PKI.RevisionKey, rev.ForMamelet(now))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "could not sign the revision: "+err.Error())
 		return
@@ -496,6 +498,7 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	prev, _, _ := s.Store.NodeReportOf(r.Context(), a.Node)
 	if err := s.Store.PutAuthenticatedNodeReport(r.Context(), rep, a.CertSerial); err != nil {
 		if errors.Is(err, store.ErrAgentRevoked) {
 			fail(w, http.StatusForbidden, "agent registration changed")
@@ -509,6 +512,15 @@ func (s *Server) report(w http.ResponseWriter, r *http.Request) {
 		if res.Operation == "repair" {
 			s.logf("%s: %s: %s", a.Node, res.Outcome, res.Detail)
 		}
+	}
+	// A node that does not accept the revision it is offered can be given no permission, and nothing
+	// else says so (the plan does, from the report): log when that starts, changes and ends, not at
+	// each report.
+	switch {
+	case rep.Refused != "" && rep.Refused != prev.Report.Refused:
+		s.logf("%s: MAM-PLAN-0130: mamelet refuses the revision (it works from %d): %q", a.Node, rep.Serial, rep.Refused)
+	case rep.Refused == "" && prev.Report.Refused != "":
+		s.logf("%s: mamelet accepts the Control Plane's revision again (revision %d)", a.Node, rep.Serial)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
