@@ -39,7 +39,9 @@
 - `examples/homelab`: VM 1 台 + nginx の宣言例。
 - `internal/component`: WASM コンポーネントのトップレベル import を読み、許可リストで検査。
 - `internal/evaluate`: オフラインビルド → import 検査 → 制限付き実行 → 厳格なデコード。拒否・制限のテスト用 Pome は `internal/evaluate/testdata/`。
-- `internal/graph`: 厳格なデコード、意味の検証、正規化、digest。
+- `internal/graph`: 厳格なデコード、意味の検証、正規化、digest。警告（`Graph.Warnings`）。
+- `internal/names`: node・パッケージ・サービス・manifest の名前、k3s の版、sha256 の形の定義。graph と、署名する revision（`internal/noderev`）の両方が使う（graph が受理したものは署名できる）。
+- `internal/safetext`: 見たとおりに表示されない文字（制御文字、bidi 制御、ゼロ幅文字）の検出と、可視のエスケープ。graph が拒否し、plan とエラーが引用するときに使う。
 - `mamela eval [--twice] [--json] <pome>`: 人が読める要約、または正規化済み JSON。
 - `scripts/check.sh` と CI: 上記すべてのテストと、例の決定性チェック。
 

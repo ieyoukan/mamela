@@ -122,3 +122,40 @@ func TestRemovalPlanIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A declared object that Mamela made for another declaration is blocked, with the reason, not
+// changed with an ordinary approval (B4 of the 0.3.2 audit); what runs on a machine of another
+// declaration waits too.
+func TestObjectOfAnotherDeclarationIsBlocked(t *testing.T) {
+	g := desired(t)
+	s := converged()
+	// The machine is declared here, and was made for another declaration.
+	for id, p := range s.Provided {
+		if p.Declared {
+			p.Kept = &state.Kept{Code: "MAM-PLAN-0307", Message: "it is in this declaration (shop), but Mamela made it for another declaration (blog)", Hint: "declare it in one place"}
+			p.Changes = []state.ProvidedChange{providedChange(id, "resize-vm", protocol.EffectRestart)}
+			s.Provided[id] = p
+		}
+	}
+	s.AddProvided(s.Provided)
+	p := Build(g, s, policy.Default)
+	m := find(t, p, "TestVM app-server")
+	if m.Status != StatusBlocked || m.Note == nil || m.Note.Code != "MAM-PLAN-0307" || !strings.Contains(m.Note.Message, "blog") ||
+		m.Note.Hint == "" || len(m.Operations) != 0 || len(m.ProviderChanges) != 0 || m.Creates {
+		t.Fatalf("the machine of another declaration: %+v", m)
+	}
+	for _, id := range []string{"NodePackage app-server/nginx", "NodeService app-server/nginx"} {
+		c := find(t, p, id)
+		if c.Status != StatusWaiting || c.Note == nil || c.Note.Code != "MAM-PLAN-0307" || !strings.Contains(c.Note.Message, "app-server") {
+			t.Errorf("%s on it: %+v", id, c)
+		}
+	}
+	if p.Removals() != 0 {
+		t.Errorf("deletions: %d", p.Removals())
+	}
+	var buf bytes.Buffer
+	Render(&buf, p)
+	if !strings.Contains(buf.String(), "! TestVM app-server") || !strings.Contains(buf.String(), "MAM-PLAN-0307") {
+		t.Errorf("render:\n%s", buf.String())
+	}
+}

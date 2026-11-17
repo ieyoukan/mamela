@@ -4,8 +4,12 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"net/netip"
+	"runtime"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // machine is a provider's machine ("TestVM" of provider "test") with a network.
@@ -384,7 +388,18 @@ func TestNodeOnAProvidersMachine(t *testing.T) {
 	if g.StaticIP("web") != "192.0.2.40" {
 		t.Fatalf("static IP of a provider's machine: %q", g.StaticIP("web"))
 	}
-	_, err = Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + machine("web", dhcp) + `,` + pkg + `]}`))
+	// Which resources of a name are machines is for the providers' manifests to say (a machine
+	// "web" may have a disk "web"): the graph accepts several of one name, and CheckGraph refuses
+	// a name that is two machines once the providers run (B14 of the 0.3.2 audit).
+	g, err = Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + `{"kind":"Disk","name":"web","provider":"proxmox","spec":{"gib":10}}` + `,` + pkg + `]}`))
+	if err != nil {
+		t.Fatalf("a machine and a disk of one name: %v", err)
+	}
+	if g.StaticIP("web") != "192.0.2.40" {
+		t.Errorf("static IP of the machine that has a disk of its name: %q", g.StaticIP("web"))
+	}
+	// A node that no resource of a provider has is still refused.
+	_, err = Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + m + `,` + strings.Replace(pkg, "web", "db", -1) + `]}`))
 	assertCode(t, err, CodeDanglingNode)
 }
 
@@ -529,6 +544,391 @@ func TestNodeMamelet(t *testing.T) {
 	} {
 		if _, err := Decode([]byte(d)); err == nil {
 			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// What a person reads in a plan must be what is applied (A9 of the 0.3.2 audit). A carriage
+// return, an escape, a bidirectional control or a zero-width character in a manifest (which k3s
+// applies with cluster-admin rights) or in a provider's text can make a plan show something other
+// than what runs; the graph refuses them, and says where.
+func TestTextThatHidesWhatItIsIsRefused(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	server := `{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	manifest := func(content string) string {
+		c, _ := json.Marshal(content)
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) + `,` + server + `,` +
+			`{"kind":"NodeK3sManifest","name":"web/manifest/m","spec":{"node":"web","name":"m","content":` + string(c) + `}}]}`
+	}
+	if _, err := Decode([]byte(manifest("kind: Namespace\n\tname: a\n"))); err != nil {
+		t.Fatalf("a manifest with newlines and tabs: %v", err)
+	}
+	if _, err := Decode([]byte(manifest("metadata:\n  name: é日本語 \U0001F600\n"))); err != nil {
+		t.Fatalf("a manifest with ordinary non-ASCII text: %v", err)
+	}
+	for name, content := range map[string]string{
+		"a carriage return":        "image: safe\r      image: evil\n",
+		"an escape":                "a: b\x1b[2K\n",
+		"a backspace":              "a: b\x08c\n",
+		"a bell":                   "a: b\x07\n",
+		"a delete":                 "a: b\x7f\n",
+		"a C1 control":             "a: b\u009b2K\n",
+		"a next line":              "a: b\u0085c\n",
+		"a line separator":         "a: b\u2028c\n",
+		"a right-to-left override": "a: \u202eevil\n",
+		"a bidi isolate":           "a: \u2066evil\u2069\n",
+		"a left-to-right mark":     "a: \u200eb\n",
+		"a zero-width space":       "a: b\u200bc\n",
+		"a zero-width joiner":      "a: b\u200dc\n",
+		"a word joiner":            "a: b\u2060c\n",
+		"a byte order mark":        "a: b\ufeffc\n",
+		"a form feed":              "a: b\fc\n",
+		"a tag character":          "a: b\U000e0041\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode([]byte(manifest(content)))
+			assertCode(t, err, Code("MAM-GRAPH-0109"))
+			if !strings.Contains(err.Error(), "line ") || !strings.Contains(err.Error(), "U+") {
+				t.Errorf("the problem does not say where and what:\n%v", err)
+			}
+		})
+	}
+	// A provider's spec is text a person reads in the plan too; its member names as well.
+	for name, spec := range map[string]string{
+		"an escape in a value":       `{"value":"a\u001b[2Kb"}`,
+		"a bidi override in a value": `{"value":"a\u202eb"}`,
+		"a zero-width space":         `{"labels":["a\u200bb"]}`,
+		"an escape in a member":      `{"a\u001b":"b"}`,
+		"a carriage return":          `{"value":"a\rb"}`,
+	} {
+		t.Run("spec: "+name, func(t *testing.T) {
+			_, err := Decode([]byte(item(spec)))
+			assertCode(t, err, Code("MAM-GRAPH-0109"))
+		})
+	}
+	if _, err := Decode([]byte(item(`{"value":"line 1\nline 2\tcolumn","name":"é日本語"}`))); err != nil {
+		t.Fatalf("a spec with a newline, a tab and non-ASCII text: %v", err)
+	}
+}
+
+// The error is read in a terminal and in a pull request: what it quotes is shown as escapes, so
+// that it cannot rewrite what is on the screen either.
+func TestProblemTextIsEscaped(t *testing.T) {
+	in := `{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"NodePackage","name":"x\u001b[2K\u202e/y","spec":{"node":"x\u001b[2K","package":"nginx","state":"Present"}}]}`
+	_, err := Decode([]byte(in))
+	if err == nil {
+		t.Fatal("accepted")
+	}
+	for _, r := range err.Error() {
+		if r == '\x1b' || r == '\u202e' || (r < ' ' && r != '\n') {
+			t.Fatalf("the error has a raw control character %U:\n%q", r, err.Error())
+		}
+	}
+	if !strings.Contains(err.Error(), `\x1b`) {
+		t.Errorf("the escape is not shown as one:\n%v", err)
+	}
+}
+
+// A spec.network that is not a network (B14 of the 0.3.2 audit) used to make the whole network
+// check pass as "no network": a string, a list, a member of the wrong type or an unknown member.
+func TestNetworkOfTheWrongShapeIsRefused(t *testing.T) {
+	doc := func(network string) string {
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("web", network) + `]}`
+	}
+	for name, network := range map[string]string{
+		"a string":                  `"dhcp"`,
+		"a number":                  `7`,
+		"a list":                    `["dhcp"]`,
+		"a bool":                    `true`,
+		"an unknown member":         `{"mode":"dhcp","extra":1}`,
+		"an unknown member only":    `{"kind":"dhcp"}`,
+		"a mode that is a number":   `{"mode":1}`,
+		"dns that is a string":      `{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1","dns":"192.0.2.1"}`,
+		"an address that is a list": `{"mode":"static","address":["192.0.2.10/24"],"gateway":"192.0.2.1","dns":["192.0.2.1"]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode([]byte(doc(network)))
+			assertCode(t, err, CodeInvalidValue)
+			if !strings.Contains(err.Error(), "spec.network") || !strings.Contains(err.Error(), "hint:") {
+				t.Errorf("the problem does not say where and what to do:\n%v", err)
+			}
+		})
+	}
+	// An address declared twice is still found when the other machine's network is of the wrong shape.
+	static := `{"mode":"static","address":"192.0.2.10/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`
+	if _, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine("a", static) + `,` + machine("b", static) + `]}`)); err == nil {
+		t.Error("the same address twice")
+	}
+}
+
+// One unit declared twice, or k3s declared and its service declared not running, contradict
+// themselves (B14).
+func TestContradictingUnitsAreRefused(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	k3s := `{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	svc := func(service string, enabled, running bool) string {
+		return `{"kind":"NodeService","name":"web/` + service + `","spec":{"enabled":` + strconv.FormatBool(enabled) + `,"node":"web","running":` + strconv.FormatBool(running) + `,"service":"` + service + `"}}`
+	}
+	doc := func(rs ...string) string {
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp) + `,` + strings.Join(rs, ",") + `]}`
+	}
+	for name, in := range map[string]string{
+		"the unit with and without .service":      doc(svc("nginx", true, true), svc("nginx.service", true, false)),
+		"enabled in one, not in the other":        doc(svc("nginx.service", true, true), svc("nginx", false, true)),
+		"k3s declared, its service not running":   doc(k3s, svc("k3s", true, false)),
+		"k3s declared, its service.service stops": doc(k3s, svc("k3s.service", true, false)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode([]byte(in))
+			assertCode(t, err, CodeConflict)
+			if !strings.Contains(err.Error(), "web/") || !strings.Contains(err.Error(), "hint:") {
+				t.Errorf("the problem does not say which and what to do:\n%v", err)
+			}
+		})
+	}
+	for name, in := range map[string]string{
+		"the same unit twice, the same way":           doc(svc("nginx", true, true), svc("nginx.service", true, true)),
+		"two different units":                         doc(svc("nginx", true, true), svc("redis", true, false)),
+		"k3s declared and its service runs":           doc(k3s, svc("k3s", true, true)),
+		"k3s's service not running, k3s not declared": doc(svc("k3s", false, false)),
+	} {
+		if _, err := Decode([]byte(in)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// manyItems is a document of one machine and n-1 items of a provider.
+func manyItems(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"schema":"mamela-graph/v2","resources":[` + machine("web", dhcp))
+	for i := 1; i < n; i++ {
+		b.WriteString(`,{"kind":"KVItem","name":"item-` + itoa(i) + `","provider":"kv-example","spec":{"value":"v1"}}`)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// The cost of decoding grows with the number of resources, not with its square: the check for a
+// resource declared twice used to look at every resource for each one (32 seconds for 10,000).
+// The time of 10 times the resources must be nowhere near 100 times (it is about 10); the best of
+// a few runs is compared, so that a busy machine does not decide. BenchmarkDecode10000 is the
+// absolute figure (well under a second).
+func TestDecodeManyResources(t *testing.T) {
+	// CPU time of the process, not the wall clock: a busy machine delays a test, it does not make
+	// it compute more.
+	cpu := func() time.Duration {
+		var ru syscall.Rusage
+		if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+			t.Skip("no CPU time here:", err)
+		}
+		return time.Duration(ru.Utime.Nano() + ru.Stime.Nano())
+	}
+	best := func(n int) time.Duration {
+		doc := []byte(manyItems(n))
+		fastest := time.Hour
+		for range 3 {
+			runtime.GC() // what an earlier run left is not this one's to collect
+			start := cpu()
+			if _, err := Decode(doc); err != nil {
+				t.Fatal(err)
+			}
+			fastest = min(fastest, cpu()-start)
+		}
+		return fastest
+	}
+	small, large := best(1000), best(MaxResources-1)
+	if large > 40*small {
+		t.Errorf("decoding %d resources took %s, %d took %s: more than linear", MaxResources-1, large, 1000, small)
+	}
+	// The same item declared again the same way is still one resource, and differently still refused.
+	doc := manyItems(MaxResources - 1)
+	again := strings.Replace(doc, `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v1"}}]}`, 1)
+	if g, err := Decode([]byte(again)); err != nil || len(g.Resources) != MaxResources-1 {
+		t.Errorf("declared twice the same way: %v", err)
+	}
+	other := strings.Replace(doc, `]}`, `,{"kind":"KVItem","name":"item-1","provider":"kv-example","spec":{"value":"v2"}}]}`, 1)
+	_, err := Decode([]byte(other))
+	assertCode(t, err, CodeDuplicateResource)
+}
+
+func BenchmarkDecode10000(b *testing.B) {
+	doc := []byte(manyItems(MaxResources))
+	b.ResetTimer()
+	for range b.N {
+		if _, err := Decode(doc); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// A cycle is reported with the way round (B14, low).
+func TestCycleSaysTheWayRound(t *testing.T) {
+	r := func(name, after string) string {
+		return `{"kind":"Thing","name":"` + name + `","provider":"test","spec":{},"after":[` + after + `]}`
+	}
+	_, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + r("a", `"Thing b"`) + `,` + r("b", `"Thing c"`) + `,` + r("c", `"Thing a"`) + `,` + r("d", `"Thing d"`) + `,` + r("e", `"Thing a"`) + `]}`))
+	assertCode(t, err, CodeCycle)
+	for _, want := range []string{
+		"Thing a needs itself through after: Thing a -> Thing b -> Thing c -> Thing a",
+		"Thing b needs itself through after: Thing b -> Thing c -> Thing a -> Thing b",
+		"Thing c needs itself through after: Thing c -> Thing a -> Thing b -> Thing c",
+		"Thing d needs itself through after: Thing d -> Thing d",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "Thing e needs itself") {
+		t.Errorf("a resource that only waits for a cycle is not in it:\n%v", err)
+	}
+}
+
+// Optional members are left out, not written as null (the schema refuses null everywhere), and a
+// k3s server's empty server is not a way to say it has none (B14, low).
+func TestOptionalMembersAreNotNull(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	k := func(role, server string) string {
+		return `{"schema":"mamela-graph/v2","resources":[` + machine("s", dhcp) + `,` +
+			`{"kind":"NodeK3s","name":"s/k3s","spec":{"node":"s","role":"` + role + `",` + server + `"sha256":"` + sha + `","version":"v1.37.2+k3s1"}}]}`
+	}
+	for name, c := range map[string]struct {
+		in   string
+		code Code
+	}{
+		"a server with a null server":   {k("server", `"server":null,`), CodeWrongType},
+		"a server with an empty server": {k("server", `"server":"",`), CodeInvalidValue},
+		"an agent with a null server":   {k("agent", `"server":null,`), CodeWrongType},
+		"a null mamelet version":        {`{"schema":"mamela-graph/v2","resources":[` + machine("s", dhcp) + `,{"kind":"NodeMamelet","name":"s/mamelet","spec":{"node":"s","sha256":"` + sha + `","version":null}}]}`, CodeWrongType},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Decode([]byte(c.in))
+			assertCode(t, err, c.code)
+		})
+	}
+	if _, err := Decode([]byte(k("server", ``))); err != nil {
+		t.Fatalf("a server without a server: %v", err)
+	}
+	// An empty label is how the Mamela Pome says a mamelet has none.
+	if _, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine("s", dhcp) + `,{"kind":"NodeMamelet","name":"s/mamelet","spec":{"node":"s","sha256":"` + sha + `","version":""}}]}`)); err != nil {
+		t.Fatalf("a mamelet without a label: %v", err)
+	}
+}
+
+// The advice fits the problem: a null, a depth or an unknown member is not about integers, and the
+// removed Mamela.k3s_server is not what to declare a server with (B14, low).
+func TestHintsFitTheProblem(t *testing.T) {
+	deep := strings.Repeat(`{"a":`, 33) + `1` + strings.Repeat(`}`, 33)
+	for name, in := range map[string]string{
+		"a null in a spec":      item(`{"n":null}`),
+		"a spec too deep":       item(deep),
+		"a spec of a list":      item(`[1]`),
+		"a package of a number": `{"schema":"mamela-graph/v1","resources":[{"kind":"NodePackage","name":"a/nginx","spec":{"node":"a","package":1,"state":"Present"}}]}`,
+	} {
+		_, err := Decode([]byte(in))
+		if err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+		if strings.Contains(err.Error(), "numbers must be integers") {
+			t.Errorf("%s: the hint is about integers:\n%v", name, err)
+		}
+		if !strings.Contains(err.Error(), "hint:") {
+			t.Errorf("%s: no hint:\n%v", name, err)
+		}
+	}
+	if _, err := Decode([]byte(item(`{"n":1.5}`))); err == nil || !strings.Contains(err.Error(), "whole numbers") {
+		t.Errorf("a float: %v", err)
+	}
+	sha := strings.Repeat("ab", 32)
+	_, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine("a", dhcp) + `,{"kind":"NodeK3s","name":"a/k3s","spec":{"node":"a","role":"agent","server":"x","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}]}`))
+	if err == nil || strings.Contains(err.Error(), "k3s_server") || !strings.Contains(err.Error(), "K3s.server") {
+		t.Errorf("an agent of no server: %v", err)
+	}
+}
+
+// A valid declaration that is probably not what was meant gets a warning, not a refusal (B14,
+// B15 of the 0.3.2 audit): an agent newer than its server, and a k3s that nothing starts.
+func TestWarnings(t *testing.T) {
+	sha := strings.Repeat("ab", 32)
+	k := func(node, role, server, version string) string {
+		srv := ""
+		if server != "" {
+			srv = `"server":"` + server + `",`
+		}
+		return `{"kind":"NodeK3s","name":"` + node + `/k3s","spec":{"node":"` + node + `","role":"` + role + `",` + srv + `"sha256":"` + sha + `","version":"` + version + `"}}`
+	}
+	svc := func(node string) string {
+		return `{"kind":"NodeService","name":"` + node + `/k3s","spec":{"enabled":true,"node":"` + node + `","running":true,"service":"k3s"}}`
+	}
+	cluster := func(rs ...string) *Graph {
+		g, err := Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + machine("cp", dhcp) + `,` + machine("w1", dhcp) + `,` + strings.Join(rs, ",") + `]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	codes := func(g *Graph) []string {
+		var out []string
+		for _, w := range g.Warnings() {
+			out = append(out, string(w.Code)+" "+w.Resource)
+		}
+		return out
+	}
+	same := func(got []string, want ...string) {
+		t.Helper()
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("warnings %q, want %q", got, want)
+		}
+	}
+	// A cluster that is as it should be: nothing to say.
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), k("w1", "agent", "cp", "v1.37.2+k3s1"), svc("cp"), svc("w1"))))
+	// An agent older than its server is how an upgrade goes (the server first).
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), k("w1", "agent", "cp", "v1.36.9+k3s1"), svc("cp"), svc("w1"))))
+	// An agent newer than its server: by minor, by patch, by the k3s revision.
+	same(codes(cluster(k("cp", "server", "", "v1.28.0+k3s1"), k("w1", "agent", "cp", "v1.99.0+k3s1"), svc("cp"), svc("w1"))), "MAM-GRAPH-0201 NodeK3s w1/k3s")
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), k("w1", "agent", "cp", "v1.37.3+k3s1"), svc("cp"), svc("w1"))), "MAM-GRAPH-0201 NodeK3s w1/k3s")
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), k("w1", "agent", "cp", "v1.37.2+k3s2"), svc("cp"), svc("w1"))), "MAM-GRAPH-0201 NodeK3s w1/k3s")
+	// k3s installed, but no service that starts it (the binary is placed and the plan says in sync).
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), k("w1", "agent", "cp", "v1.37.2+k3s1"), svc("cp"))), "MAM-GRAPH-0202 NodeK3s w1/k3s")
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"))), "MAM-GRAPH-0202 NodeK3s cp/k3s")
+	// k3s.service is the same unit as k3s.
+	svc2 := strings.NewReplacer(`"service":"k3s"`, `"service":"k3s.service"`, `"name":"cp/k3s"`, `"name":"cp/k3s.service"`).Replace(svc("cp"))
+	same(codes(cluster(k("cp", "server", "", "v1.37.2+k3s1"), svc2)))
+	w := cluster(k("cp", "server", "", "v1.37.2+k3s1")).Warnings()[0]
+	if !strings.Contains(w.Message, "cp") || !strings.Contains(w.Hint, "K3s") && !strings.Contains(w.Hint, "service") {
+		t.Errorf("the warning does not say what and what to do: %+v", w)
+	}
+	// Warnings are in the order of the resources, and the same each time.
+	g := cluster(k("cp", "server", "", "v1.28.0+k3s1"), k("w1", "agent", "cp", "v1.99.0+k3s1"))
+	same(codes(g), "MAM-GRAPH-0202 NodeK3s cp/k3s", "MAM-GRAPH-0201 NodeK3s w1/k3s", "MAM-GRAPH-0202 NodeK3s w1/k3s")
+}
+
+func TestParseRelease(t *testing.T) {
+	for in, want := range map[string]Release{
+		"v1.37.2+k3s1": {Major: 1, Minor: 37, Patch: 2, K3s: 1, HasK3s: true},
+		"v1.37.2":      {Major: 1, Minor: 37, Patch: 2},
+	} {
+		if got, ok := ParseRelease(in); !ok || got != want || got.String() != in {
+			t.Errorf("ParseRelease(%q) = %+v %v", in, got, ok)
+		}
+	}
+	for _, in := range []string{"", "latest", "1.37.2", "v1.37", "v1.37.2+k3s", "v1.37.2+rke2r1", "v1.37.2-rc1", " v1.37.2"} {
+		if _, ok := ParseRelease(in); ok {
+			t.Errorf("ParseRelease(%q) accepted", in)
+		}
+	}
+	rel := func(s string) Release { r, _ := ParseRelease(s); return r }
+	for _, c := range []struct {
+		a, b string
+		want int
+	}{
+		{"v1.37.2+k3s1", "v1.37.2+k3s1", 0}, {"v1.37.2+k3s1", "v1.37.2", 0}, {"v1.37.2", "v1.37.2+k3s5", 0},
+		{"v1.37.3", "v1.37.2+k3s9", 1}, {"v1.36.9+k3s1", "v1.37.0", -1}, {"v1.37.2+k3s2", "v1.37.2+k3s1", 1},
+		{"v1.99.0", "v1.28.0", 1}, {"v1.9.0", "v1.10.0", -1},
+	} {
+		if got := rel(c.a).Compare(rel(c.b)); got != c.want {
+			t.Errorf("%s compared with %s = %d, want %d", c.a, c.b, got, c.want)
 		}
 	}
 }

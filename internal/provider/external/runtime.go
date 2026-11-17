@@ -275,32 +275,17 @@ func (rt *Runtime) names() []string {
 }
 
 // CheckGraph verifies that every provider a declaration uses is running, and handles the kind, and
-// that a node resource on a provider's resource is on a machine (a node kind).
+// that a node resource on a provider's resource is on a machine (a node kind), the only one of
+// its name.
 func (rt *Runtime) CheckGraph(g *graph.Graph) error {
-	provided := map[string]graph.Resource{}
-	for _, r := range g.Resources {
-		if r.Provided != nil {
-			provided[r.Name] = r
+	if err := checkNodeResources(g, func(r graph.Resource) (known, machine bool) {
+		s, running := rt.sessionOf(r.Provided.Provider)
+		if !running {
+			return false, false
 		}
-	}
-	for _, r := range g.Resources {
-		node := ""
-		switch {
-		case r.NodePackage != nil:
-			node = r.NodePackage.Node
-		case r.NodeService != nil:
-			node = r.NodeService.Node
-		case r.NodeK3s != nil:
-			node = r.NodeK3s.Node
-		}
-		m, ok := provided[node]
-		if !ok {
-			continue
-		}
-		s, running := rt.sessionOf(m.Provided.Provider)
-		if running && !slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == m.Kind && k.Node }) {
-			return fmt.Errorf("%s is on %s, which is not a machine: provider %s does not declare kind %s a node kind", r.ID(), m.ID(), m.Provided.Provider, m.Kind)
-		}
+		return true, slices.ContainsFunc(s.Manifest().Kinds, func(k protocol.Kind) bool { return k.Kind == r.Kind && k.Node })
+	}); err != nil {
+		return err
 	}
 	for _, r := range g.Resources {
 		if r.Provided == nil {
@@ -316,6 +301,51 @@ func (rt *Runtime) CheckGraph(g *graph.Graph) error {
 		}
 		if s.Manifest().Kinds[i].Node && !graph.ValidNodeName(r.Name) {
 			return fmt.Errorf("%s is a machine, and %q is not a valid hostname: use 1-63 lowercase letters, digits and '-', starting and ending with a letter or digit", r.ID(), r.Name)
+		}
+	}
+	return nil
+}
+
+// checkNodeResources checks that the node of every node resource (a package, a service, k3s) is
+// one machine. Resources of several providers may share a name (a machine "web" and its disk
+// "web"); the node is the one of them that is a machine, which the providers' manifests say
+// (kindOf: whether the provider runs, and whether the kind is a node kind). Without that, the
+// graph cannot tell them apart (MAM-GRAPH-0103).
+func checkNodeResources(g *graph.Graph, kindOf func(graph.Resource) (known, machine bool)) error {
+	byName := map[string][]graph.Resource{}
+	for _, r := range g.Resources {
+		if r.Provided != nil {
+			byName[r.Name] = append(byName[r.Name], r)
+		}
+	}
+	for _, r := range g.Resources {
+		node := r.Node()
+		if node == "" {
+			continue
+		}
+		var machines, others []graph.Resource
+		unknown := 0
+		for _, m := range byName[node] {
+			switch known, machine := kindOf(m); {
+			case !known:
+				unknown++
+			case machine:
+				machines = append(machines, m)
+			default:
+				others = append(others, m)
+			}
+		}
+		switch {
+		case len(machines) > 1:
+			ids := make([]string, len(machines))
+			for i, m := range machines {
+				ids[i] = fmt.Sprintf("%s (provider %s)", m.ID(), m.Provided.Provider)
+			}
+			return fmt.Errorf("MAM-GRAPH-0103: %s is on node %s, which names more than one machine: %s; a machine's name must be unique (rename one of them)",
+				r.ID(), node, strings.Join(ids, " and "))
+		case len(machines) == 0 && len(others) > 0 && unknown == 0:
+			m := others[0]
+			return fmt.Errorf("%s is on %s, which is not a machine: provider %s does not declare kind %s a node kind", r.ID(), m.ID(), m.Provided.Provider, m.Kind)
 		}
 	}
 	return nil
@@ -391,8 +421,22 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 			if o.Kind != d.Kind || o.Name != d.Name {
 				return nil, fmt.Errorf("provider %s: observe reported %s as %s %s", name, d.ID, o.Kind, o.Name)
 			}
-			out[d.ID] = state.Provided{Provider: name, Kind: d.Kind, Name: d.Name, Declared: true, Observed: o,
+			p := state.Provided{Provider: name, Kind: d.Kind, Name: d.Name, Declared: true, Observed: o,
 				SpecDigest: state.SpecDigest(d.Spec), ObservedAt: asOf}
+			// An object Mamela made for another declaration (ADR 0013) is not this one's to change,
+			// though it declares a resource of the same name: the plan leaves it as it is and says why.
+			if o.Owned {
+				stack, err := rt.creations.CreationStack(ctx, name, d.ID)
+				if err != nil {
+					return nil, err
+				}
+				if stack != "" && stack != rt.stack {
+					p.Kept = &state.Kept{Code: "MAM-PLAN-0307",
+						Message: fmt.Sprintf("it is in this declaration (%s), but Mamela made it for another declaration (%s): declared in two places, it is the other's to change", stackName(rt.stack), stack),
+						Hint:    "declare it in one place: remove it from the declaration that made it (that deletes it, if its provider can delete this kind), or give it another name in this one"}
+				}
+			}
+			out[d.ID] = p
 		}
 		// What the provider found that is not declared: never changed. What Mamela made for this
 		// declaration is to be deleted (ADR 0013); the rest is kept.
@@ -483,6 +527,14 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		}
 	}
 	return out, nil
+}
+
+// stackName is how a plan says which declaration it is for (an unnamed Pome has no stack).
+func stackName(stack string) string {
+	if stack == "" {
+		return "this one, which has no name"
+	}
+	return stack
 }
 
 // Verify classifies the requests a change of provider name sends, with the host's catalog.

@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -41,7 +41,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0004 | 必要なメンバーがない、または `null` |
 | MAM-GRAPH-0005 | 知らない kind。組み込みの kind をプロバイダーのリソースとして書いた。組み込みの `VirtualMachine`（ADR 0006 でなくなった）。マシンはプロバイダーの Pome で宣言する（Proxmox なら `github.com/ieyoukan/mamela-proxmox/pome`）。Mamela の Pome は 0.3.0 を使う |
 | MAM-GRAPH-0006 | 文書が大きすぎる |
-| MAM-GRAPH-0007 | 値の型が違う（整数でない数値など） |
+| MAM-GRAPH-0007 | 値の型が違う（整数でない数値、文字列のところの数値など）。省略できるメンバー（k3s の `server`、mamelet の `version`）に `null` を書いた（書かずに省略する）。プロバイダーの `spec` の `null`、深さ 32 を超える入れ子、2^53 を超える整数 |
 | MAM-GRAPH-0008 | 同じメンバーが 2 回ある |
 | MAM-GRAPH-0009 | 文書の後にデータが続いている |
 | MAM-GRAPH-0010 | リソースが多すぎる |
@@ -53,12 +53,23 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 |---|---|
 | MAM-GRAPH-0101 | 名前が正しくない（プロバイダーのリソースの kind・provider・name の形） |
 | MAM-GRAPH-0102 | 同じリソースが 2 回宣言されている |
-| MAM-GRAPH-0103 | 参照している node が Graph にない（プロバイダーのマシンとして宣言されていない）、同じ名前のリソースが 2 つある。k3s の agent の server が、k3s の server として宣言されていない。`after` の参照（`"Kind name"`）が、同じ Graph のプロバイダーのリソースではない（宣言していない、組み込みの kind のリソース、書き間違い） |
+| MAM-GRAPH-0103 | 参照している node が Graph にない（プロバイダーのリソースとして宣言されていない）。k3s の agent の server が、k3s の server として宣言されていない。`after` の参照（`"Kind name"`）が、同じ Graph のプロバイダーのリソースではない（宣言していない、組み込みの kind のリソース、書き間違い）。**プロバイダーが動いたあと（plan の観測の前）**: 同じ名前のマシンが 2 台ある（どのリソースか示す）、node が machine（マニフェストで `node: true` の kind）ではないリソースを指している。同じ名前でも、machine と disk のように kind が違えば、machine だけが node になる |
 | MAM-GRAPH-0104 | 名前が `<node>/<package>` などの形と合わない |
 | MAM-GRAPH-0105 | 廃止（ADR 0006）。値が範囲外（組み込みの VirtualMachine の vCPU・メモリ・ディスク）。マシンの大きさの上限は site の予算（MAM-SITE-0305）が決める |
-| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、`Present` 以外の状態、k3s の版・sha256・役割、マシンの `spec.network`） |
+| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、`Present` 以外の状態、k3s の版・sha256・役割、k3s の server の空の `server`、マシンの `spec.network`）。`spec.network` が、`mode`・`address`・`gateway`・`dns` だけを持つオブジェクトでない（文字列・配列・未知のメンバー・型違い）ものも、これで拒否する |
 | MAM-GRAPH-0107 | 同じ固定アドレスが複数のマシンに宣言されている（マシンの `spec.network.address`） |
-| MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに報告する。循環の中の依存を 1 つ外す |
+| MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに、そのリソースから一周する経路（`Thing a -> Thing b -> Thing a`）を示して報告する。経路の中の依存を 1 つ外す |
+| MAM-GRAPH-0109 | 文字列が、見たとおりのものとして表示されない文字を含む。C0・DEL・C1 の制御文字（k3s の manifest の内容と provider の `spec` の文字列は、改行 `\n` とタブ `\t` だけ許す。復帰 `\r`、ESC、ベルを含む）、bidi 制御（U+202A–202E、U+2066–2069、U+200E/F、U+061C）、ゼロ幅文字（U+200B–200D、U+2060、U+FEFF）、U+2028/2029、タグ文字、UTF-8 でないバイト。plan の表示を偽装できるので（k3s は manifest を cluster-admin で適用する）、何がどこ（行・列、`spec` では JSON pointer）にあるかを示して拒否する。manifest は LF の改行で書き、YAML に必要な文字はエスケープ（`"\u202e"`）で書く |
+| MAM-GRAPH-0110 | 同じものへの宣言が矛盾している。同じ node の同じ unit（`nginx` と `nginx.service` は同じ）を、`enabled`・`running` を変えて 2 回宣言した。k3s を宣言した（`NodeK3s`）node で、k3s の service を `running=false` にした。宣言を 1 つにするか、同じにする |
+
+## MAM-GRAPH — 警告（拒否ではない）
+
+宣言として正しいが、意図とは違いそうなもの。plan の、そのリソースの `warnings` に出る。plan の状態も操作も変えない。
+
+| コード | 意味 |
+|---|---|
+| MAM-GRAPH-0201 | k3s の agent の版が、その server の版より新しい（Kubernetes は API server より新しい kubelet を支えない）。server の版を先に宣言する（版上げは server が先） |
+| MAM-GRAPH-0202 | k3s を宣言したのに、その service（`NodeService`、名前は `k3s`）を宣言していない。バイナリは入るが、起動も維持もされず、plan は in sync になる。`Mamela.service(graph, node, "k3s", enabled: true, running: true)` を足す |
 
 ## MAM-POL — ポリシーの判定
 
@@ -115,9 +126,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0115 | k3s の版上げは、全 Kubernetes ノードが Ready のあいだだけ進む。Ready でないノードがある、または server がノードを報告していない（server の k3s を調べる） |
 | MAM-PLAN-0116 | k3s の版上げの順番待ち。server が先、agent は名前の順に 1 台ずつ（agent は server より新しい版にしない） |
 | MAM-PLAN-0117 | mamelet からの k3s のマニフェストの報告を待つ |
-| MAM-PLAN-0118 | k3s のノードのマシンを再起動する変更（仕様の変更での再起動など）は、クラスタのマシンを 1 台ずつ、名前の順（agent が server より先）に行う。先のマシンの再起動が済むまで待つ。全 Kubernetes ノードが Ready でなければ MAM-PLAN-0115 |
+| MAM-PLAN-0118 | k3s のノードのマシンを再起動する変更（仕様の変更での再起動など）は、クラスタのマシンを 1 台ずつ、agent が先（agent は名前の順）、server が最後に行う。先のマシンの再起動が済むまで待つ。全 Kubernetes ノードが Ready でなければ MAM-PLAN-0115 |
 | MAM-PLAN-0119 | ノードの mamelet が、どの版で動いているかを報告していない。更新の仕組みより前の mamelet は報告しない。一度だけ手で置き換える（[mamelet の更新](mamelet-update.md)） |
 | MAM-PLAN-0120 | mamelet の更新は 1 台ずつ、名前の順。前のノードが宣言した版で動くまで待つ。前のノードの更新が失敗したなら、それが先に直す |
+| MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
@@ -129,6 +141,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0304 | 現在の宣言にないが、プロバイダーにその種類を削除する操作（`removes`）がないので保持する |
 | MAM-PLAN-0305 | 現在の宣言にないが、policy の `removal = "retain"` なので保持する |
 | MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
+| MAM-PLAN-0307 | 現在の宣言にあるが、Mamela が別の宣言（stack）のために作った物なので、何も変えない（Blocked。その上のパッケージ・サービス・k3s は待つ）。同じ名前のリソースが 2 つの宣言にある。宣言を 1 か所にする（作った宣言から消すと、プロバイダーがその kind を削除できるなら、それは削除の plan になる）か、こちらの名前を変える |
+| MAM-PLAN-0401 | 警告。動いている k3s の版から 7 マイナー版以上戻す宣言（`v1.37.2` から `v1.30.0` など）。Kubernetes は版を戻すことを支えず、新しい版が保存したものを古い版が読めないことがある。打ち間違いなら version と sha256 を直す。本当に戻すなら、その版のときに取ったスナップショットから復旧する（Mamela はクラスタを巻き戻さない）。plan の状態も操作も変えない |
 
 ## MAM-REC — 実行
 
