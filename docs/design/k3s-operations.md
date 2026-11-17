@@ -1,6 +1,8 @@
 # Kubernetes（k3s）の運用を IaC で補償できるか（調査、2026-11-15）
 
-> 実装した（feat/k3s-upgrade）: 「動いているプロセスの観測」（`stale`）、版上げでの再起動（`upgrade-k3s`）、Ready の確認と server、agent の順の 1 台ずつの進め方。下の「足すもの」の 1 と 2 に当たる。
+> 実装した（feat/k3s-upgrade）: 「動いているプロセスの観測」（`stale`）、版上げでの再起動（`upgrade-k3s`）、Ready の確認と server、agent の順の 1 台ずつの進め方。下の「足すもの」の 1 と 2 に当たる。ノードの削除（`remove-k3s-node`）は 3 に当たる。
+>
+> 0.3.2 で直した（[監査](../reviews/2026-11-17-iac-audit.md) A10、B5、B14、B15）: 宣言の `version` を、Kubernetes のノードが報告する版と照合する（食い違えば待ち、MAM-PLAN-0121。sha256 だけで in sync になっていた）。マシンの再起動は、文書どおり agent が先、server が最後にする（名前の順だった）。手で join したノード（mamelet が一度も登録していない NotReady のノード）を、取り残されたノードとして消さない。警告を足した: agent が server より新しい版（MAM-GRAPH-0201）、`NodeService`（`k3s`）の書き忘れ（MAM-GRAPH-0202）、7 マイナー版以上の巻き戻し（MAM-PLAN-0401）。k3s の service を `running=false` にする宣言は拒否する（MAM-GRAPH-0110）。
 
 k3s の運用で起きることを並べ、Mamela の今の機能が何を保証し、何を保証しないかを調べた。「検証した」は実機（検証環境の 3 VM）で確かめたこと、「コードから」はコードを読んで言えること、「未検証」は推測である。
 
@@ -28,14 +30,14 @@ k3s の運用で起きることを並べ、Mamela の今の機能が何を保証
 | 場面 | 今 | 備考 |
 |---|---|---|
 | 新規導入（server、agent、参加トークン） | 検証した | 版と sha256 を固定。3 回の承認で `Ready` |
-| 版上げ | 検証した: 動かない（上記） | 再起動と、動いている版の観測がない |
-| 版上げの順序（server を先、agent を 1 台ずつ） | なし | plan の依存は「待つ」だけ。健全性の確認で止める仕組みがない |
-| 上げる前の確認（全ノード Ready、直前の上げが終わっている） | なし | Mamela は Kubernetes の API を見ない |
+| 版上げ | 検証した: server、agent の順に 1 台ずつ収束（2 往復。下の「実機で試した結果」） | 動いている版の観測（`stale`）と再起動（`upgrade-k3s`）。版だけ上げて sha256 を忘れた宣言は、Kubernetes のノードが報告する版と食い違い、待ちになる（MAM-PLAN-0121） |
+| 版上げの順序（server を先、agent を 1 台ずつ） | 検証した（MAM-PLAN-0116） | マシンの再起動は逆に、agent が先、server が最後（MAM-PLAN-0118） |
+| 上げる前の確認（全ノード Ready、直前の上げが終わっている） | 検証した（MAM-PLAN-0115） | server の mamelet が `k3s kubectl` で読んだノードの Ready を見る。Mamela 本体は Kubernetes の API を見ない |
 | drain と cordon | なし | Kubernetes の操作。Mamela の範囲外にするのが自然 |
-| 失敗時の巻き戻し | なし | バイナリは上書き。古いバイナリは残らない |
+| 失敗時の巻き戻し | なし | バイナリは上書き。古いバイナリは残らない。7 マイナー版以上戻す宣言には警告が出る（MAM-PLAN-0401） |
 | server のバックアップ（スナップショット） | なし | k3s の `etcd-snapshot` または SQLite のコピーが要る |
-| ノードを足す | コードから: できる | agent の宣言を足す。参加トークンは Control Plane が持つ |
-| ノードを減らす | 未対応 | `K3s` の kind に削除の操作がない。VM だけ消えて、Kubernetes にノードの残骸が残る |
+| ノードを足す | 検証した: できる（push から Ready まで約 3 分） | agent の宣言を足す（`NodeService`（`k3s`）も。書き忘れると警告、MAM-GRAPH-0202）。参加トークンは Control Plane が持つ |
+| ノードを減らす | 検証した: できる（`remove-k3s-node`、MAM-POL-0214。承認はホストだけ） | 宣言から消した agent のノードを、drain して消す。手で join したノードは消さない |
 | 手で書き換えた unit | 検証した（テスト）: 止まる | `MAM-PLAN-0204`。手で直すまで進まない |
 | server のアドレスが変わる | コードから: 入れ直しを承認に出す | |
 | OS のパッチと reboot | 範囲外 | reboot は明示的な操作（`mamela act`） |
@@ -54,9 +56,9 @@ k3s の運用で起きることを並べ、Mamela の今の機能が何を保証
 
 ## 足すもの（優先順）
 
-1. 観測に「動いているプロセスの版」を足す（mamelet が `/proc/<pid>/exe` の版を見る）。宣言の版と違えば、plan に「再起動」を出す。
-2. 版上げを 1 台ずつ段にする（server、agent の順。各段の前に Ready を観測）。
-3. 削除（ADR 0013）を `K3s` の kind に足す。ノードを減らすとき、Kubernetes の側のノードも片付ける。
+1. 観測に「動いているプロセスの版」を足す（mamelet が `/proc/<pid>/exe` の版を見る）。宣言の版と違えば、plan に「再起動」を出す。→ 実装した（`stale`）
+2. 版上げを 1 台ずつ段にする（server、agent の順。各段の前に Ready を観測）。→ 実装した
+3. 削除（ADR 0013）を `K3s` の kind に足す。ノードを減らすとき、Kubernetes の側のノードも片付ける。→ 実装した（`remove-k3s-node`）
 4. server のスナップショットを、版上げの前の観測条件にする。
 5. 巻き戻し: 古いバイナリを 1 世代残す（初めは、再び宣言を戻して上げ直す手順だけでもよい）。
 

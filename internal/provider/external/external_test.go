@@ -519,3 +519,111 @@ func TestCheckGraphRefusesEveryNodeKindOnAResourceThatIsNotAMachine(t *testing.T
 		}
 	}
 }
+
+// A node resource is on the machine of its name, and that machine is the only one: resources of
+// other kinds may share the name (a machine "web" and its disk "web"), but two machines may not
+// (B14 of the 0.3.2 audit; the graph cannot tell machines from the other kinds, the providers'
+// manifests can).
+func TestNodeResourcesAreOnOneMachine(t *testing.T) {
+	g := func(resources ...string) *graph.Graph {
+		t.Helper()
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + strings.Join(resources, ",") + `]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	item := func(kind, name, provider string) string {
+		return `{"kind":"` + kind + `","name":"` + name + `","provider":"` + provider + `","spec":{}}`
+	}
+	pkg := `{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}}`
+	svc := `{"kind":"NodeService","name":"web/nginx","spec":{"enabled":true,"node":"web","running":true,"service":"nginx"}}`
+	k3s := `{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","sha256":"` + strings.Repeat("ab", 32) + `","version":"v1.37.2+k3s1"}}`
+	manifest := `{"kind":"NodeK3sManifest","name":"web/manifest/m","spec":{"node":"web","name":"m","content":"a: b"}}`
+	mamelet := `{"kind":"NodeMamelet","name":"web/mamelet","spec":{"node":"web","sha256":"` + strings.Repeat("cd", 32) + `"}}`
+	// Which kinds are machines: the providers' manifests (here, Vm and Instance are node kinds).
+	machines := map[string]bool{"Vm": true, "Instance": true}
+	running := map[string]bool{"a": true, "b": true}
+	kindOf := func(r graph.Resource) (bool, bool) { return running[r.Provided.Provider], machines[string(r.Kind)] }
+
+	for name, rs := range map[string][]string{
+		"a machine and a disk of its name":           {item("Vm", "web", "a"), item("Disk", "web", "a"), pkg, svc, k3s, manifest, mamelet},
+		"the disk first":                             {item("Disk", "web", "b"), item("Vm", "web", "a"), pkg},
+		"nothing on the name":                        {item("Vm", "web", "a"), item("Disk", "web", "a")},
+		"node resources of other machines are apart": {item("Vm", "web", "a"), item("Vm", "db", "b"), pkg},
+	} {
+		if err := checkNodeResources(g(rs...), kindOf); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	err := checkNodeResources(g(item("Vm", "web", "a"), item("Instance", "web", "b"), pkg), kindOf)
+	if err == nil || !strings.Contains(err.Error(), "MAM-GRAPH-0103") || !strings.Contains(err.Error(), "Vm web (provider a)") ||
+		!strings.Contains(err.Error(), "Instance web (provider b)") || !strings.Contains(err.Error(), "NodePackage web/nginx") {
+		t.Errorf("two machines of one name: %v", err)
+	}
+	for name, node := range map[string]string{"a package": pkg, "a service": svc, "k3s": k3s, "a manifest": manifest, "mamelet": mamelet} {
+		err := checkNodeResources(g(item("Disk", "web", "a"), k3s, node), kindOf) // a manifest needs a server in the graph
+		if err == nil || !strings.Contains(err.Error(), "is not a machine") || !strings.Contains(err.Error(), "Disk web") {
+			t.Errorf("%s on a disk: %v", name, err)
+		}
+	}
+	// A provider that does not run says nothing about its kinds: the check waits for it.
+	running["a"] = false
+	if err := checkNodeResources(g(item("Disk", "web", "a"), pkg), kindOf); err != nil {
+		t.Errorf("a provider that does not run: %v", err)
+	}
+	if err := checkNodeResources(g(item("Disk", "web", "a"), item("Vm", "web", "b"), pkg), kindOf); err != nil {
+		t.Errorf("a disk of a provider that does not run, and a machine: %v", err)
+	}
+}
+
+// stacked is a record of creations, each made for a declaration (its stack, ADR 0013).
+type stacked struct {
+	recorded
+	stack string
+}
+
+func (s stacked) CreationStack(context.Context, string, string) (string, error) { return s.stack, nil }
+
+// An object Mamela made for another declaration is not this declaration's to change, even when it
+// declares a resource of the same name: the same name in two declarations is a mistake, and a
+// plan that changed it with an ordinary approval would change what the other declaration owns
+// (B4 of the 0.3.2 audit; removal already looks at the stack).
+func TestAnotherDeclarationsObjectIsNotChanged(t *testing.T) {
+	api := kvapi.New()
+	api.Put(kvapi.Item{Name: "web", Value: "old", Owner: "mamela", Version: 1})
+	srv := httptest.NewServer(api)
+	defer srv.Close()
+	cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+	rt, err := Start(t.Context(), []store.Program{program(t, wasm(t, "../../../examples/kv/cmd/kv-provider"))}, cfg, wasmtime(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	observe := func(madeFor, planning string) state.Provided {
+		t.Helper()
+		rec := stacked{recorded: recorded{"kv-example/KVItem web": {{"item": "web"}}}, stack: madeFor}
+		rt.SetCreations(rec)
+		rt.SetStack(planning)
+		got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got["KVItem web"]
+	}
+
+	if p := observe("blog", "shop"); p.Kept == nil || p.Kept.Code != "MAM-PLAN-0307" ||
+		!strings.Contains(p.Kept.Message, "blog") || !strings.Contains(p.Kept.Message, "shop") || p.Kept.Hint == "" {
+		t.Errorf("an object made for another declaration: %+v", p.Kept)
+	}
+	// Its own, and what was made before stacks were recorded: ordinary, as before.
+	for _, c := range []struct{ madeFor, planning string }{{"shop", "shop"}, {"", "shop"}, {"", ""}} {
+		if p := observe(c.madeFor, c.planning); p.Kept != nil || !p.Observed.Owned || len(p.Changes) != 1 {
+			t.Errorf("made for %q, planned for %q: %+v", c.madeFor, c.planning, p)
+		}
+	}
+	// A declaration that has no name is not the one that made an object of a named one.
+	if p := observe("blog", ""); p.Kept == nil {
+		t.Errorf("planned by a declaration without a name: %+v", p)
+	}
+}

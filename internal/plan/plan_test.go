@@ -581,10 +581,16 @@ func TestK3sUpgradeOrderAndHealth(t *testing.T) {
 // k3sCluster is a server (srv) and agents of one release, on machines with a static server address.
 func k3sCluster(t *testing.T, sha string, agents ...string) *graph.Graph {
 	t.Helper()
-	res := vm("srv", `{"mode":"static","address":"192.0.2.40/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`) + `,` +
-		`{"kind":"NodeK3s","name":"srv/k3s","spec":{"node":"srv","role":"server","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+	return k3sClusterOf(t, sha, "v1.37.2+k3s1", "srv", agents...)
+}
+
+// k3sClusterOf is a server and agents of one release (version, with the binary's sha256).
+func k3sClusterOf(t *testing.T, sha, version, server string, agents ...string) *graph.Graph {
+	t.Helper()
+	res := vm(server, `{"mode":"static","address":"192.0.2.40/24","gateway":"192.0.2.1","dns":["192.0.2.1"]}`) + `,` +
+		`{"kind":"NodeK3s","name":"` + server + `/k3s","spec":{"node":"` + server + `","role":"server","sha256":"` + sha + `","version":"` + version + `"}}`
 	for _, a := range agents {
-		res += `,` + vm(a, `{"mode":"dhcp"}`) + `,{"kind":"NodeK3s","name":"` + a + `/k3s","spec":{"node":"` + a + `","role":"agent","server":"srv","sha256":"` + sha + `","version":"v1.37.2+k3s1"}}`
+		res += `,` + vm(a, `{"mode":"dhcp"}`) + `,{"kind":"NodeK3s","name":"` + a + `/k3s","spec":{"node":"` + a + `","role":"agent","server":"` + server + `","sha256":"` + sha + `","version":"` + version + `"}}`
 	}
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + res + `]}`))
 	if err != nil {
@@ -808,8 +814,10 @@ func TestK3sNodeRemoval(t *testing.T) {
 	if c := srv(s, policy.Default); c.Status != StatusInSync {
 		t.Errorf("a node of a kept machine was planned for removal: %+v", c)
 	}
-	// 3. A Not Ready node with no machine: a left-over, removed. With its machine existing: kept.
+	// 3. A Not Ready node with no machine, where a mamelet once enrolled: a left-over, removed. With
+	// its machine existing: kept.
 	s = world(nodes(state.K3sNode{Name: "ghost", Ready: false}))
+	s.AgentRegistrations = map[string]string{"ghost": "serial-1"}
 	if c := srv(s, policy.Default); c.Status != StatusChange || !slices.Contains(c.Diffs, Diff{"remove-node", "", "ghost"}) {
 		t.Errorf("a left-over node was not planned for removal: %+v", c)
 	}
@@ -834,6 +842,7 @@ func TestK3sNodeRemoval(t *testing.T) {
 	}
 	// 7. One node per plan, the first by name; the server must be running.
 	s = world(nodes(state.K3sNode{Name: "g2", Ready: false}, state.K3sNode{Name: "g1", Ready: false}))
+	s.AgentRegistrations = map[string]string{"g1": "serial-1", "g2": "serial-2"}
 	if c := srv(s, policy.Default); !slices.Contains(c.Diffs, Diff{"remove-node", "", "g1"}) || slices.Contains(c.Diffs, Diff{"remove-node", "", "g2"}) {
 		t.Errorf("one node at a time: %+v", c.Diffs)
 	}
@@ -922,5 +931,235 @@ func TestMameletUpdatePlan(t *testing.T) {
 	p = Build(g, world(oldSHA, oldSHA), pol)
 	if a, b = find(t, p, "NodeMamelet a/mamelet"), find(t, p, "NodeMamelet b/mamelet"); a.Verdict != policy.Denied || b.Status != StatusChange {
 		t.Fatalf("protected a: %+v / b: %+v", a, b)
+	}
+}
+
+// The plan is read to be approved, so what it shows must be what is applied (A9 of the 0.3.2
+// audit): a control character (a carriage return that overwrites the line, an escape that
+// rewrites the screen, a bidirectional override) in anything the plan quotes is shown as an
+// escape, and a line of a manifest cannot pass for a line of the plan.
+func TestRenderShowsControlCharactersAsEscapes(t *testing.T) {
+	const evil = "image: safe\r      image: evil\n= NodePackage web/nginx  [in sync]\n\x1b[2K\u202eevil\u200b\n"
+	c := Change{Kind: graph.KindNodeK3sManifest, Name: "web/manifest/m", Status: StatusChange,
+		Diffs:      []Diff{{"file", "", "/var/lib/rancher/k3s/server/manifests/mamela-m.yaml"}, {"content", "", evil}},
+		Operations: []Operation{{Op: policy.OpWriteK3sManifest, Decision: policy.Decision{Verdict: policy.ApprovalRequired, Code: "MAM-POL-0213", Message: "approve \x1b[31m", Hint: "hint\r"}}},
+		Note:       &Note{Code: "MAM-PLAN-0001", Message: "note\x1b[2K", Hint: "\u202ehint"}}
+	p := &Plan{Changes: []Change{c, {Kind: "KVItem", Name: "a\x1b[2K", Provider: "kv\u202e", Status: StatusChange,
+		Diffs:      []Diff{{"value", "old\rx", "new\u200bx"}},
+		Operations: []Operation{{Op: "put", Decision: policy.Decision{Verdict: policy.ApprovalRequired}}},
+		ProviderChanges: []protocol.Change{{Op: "put", IDs: map[string]string{"item": "a\x1b"}, Precondition: "v\r",
+			Requests: []protocol.Approved{{Method: "PUT", Path: "/items/a\x1b[2K", Params: map[string][]string{"v": {"x\u202ey"}}}}}}}}}
+	var buf bytes.Buffer
+	Render(&buf, p)
+	out := buf.String()
+	for _, r := range out {
+		if r != '\n' && (r < ' ' || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == '\u202e' || r == '\u200b' || r == '\u2028') {
+			t.Fatalf("the plan has a raw control character %U:\n%q", r, out)
+		}
+	}
+	for _, want := range []string{`\r`, `\x1b`, `\u202e`, `\u200b`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan does not show %s as an escape:\n%s", want, out)
+		}
+	}
+	// A line of the manifest is shown as a line of the manifest, not as a line of the plan.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "= NodePackage") || strings.HasPrefix(line, "image:") || strings.HasPrefix(line, "~ ") && !strings.HasPrefix(line, "~ NodeK3sManifest") && !strings.HasPrefix(line, "~ KVItem") {
+			t.Errorf("a line of the manifest passes for the plan's:\n%s", out)
+		}
+	}
+	if !strings.Contains(out, "image: safe") || !strings.Contains(out, "image: evil") {
+		t.Errorf("the manifest is not shown in full:\n%s", out)
+	}
+}
+
+// The declared version is part of what converges (A10 of the 0.3.2 audit): the binary is the
+// declared one by its sha256, but if the Kubernetes node says it runs another release, the
+// declaration says something that is not true (a version changed and the sha256 forgotten, or a
+// version label that is not the binary's), and the plan must not say in sync.
+func TestK3sDeclaredVersionMustBeWhatRuns(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	world := func(g *graph.Graph, reported string) state.Snapshot {
+		s := k3sObserved(g, sha)
+		s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0,
+			Nodes: []state.K3sNode{{Name: "srv", Version: reported, Ready: true}, {Name: "a1", Version: reported, Ready: true}}}
+		s.K3s["a1/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0}
+		return s
+	}
+	status := func(g *graph.Graph, s state.Snapshot, id string) Change {
+		return find(t, Build(g, s, policy.Default), id)
+	}
+
+	// What runs is what is declared: in sync, however the kubelet writes its version.
+	g := k3sCluster(t, sha, "a1")
+	for _, reported := range []string{"v1.37.2+k3s1", "v1.37.2", ""} {
+		s := world(g, reported)
+		for _, id := range []string{"NodeK3s srv/k3s", "NodeK3s a1/k3s"} {
+			if c := status(g, s, id); c.Status != StatusInSync {
+				t.Errorf("%s reported as %q: %+v", id, reported, c)
+			}
+		}
+	}
+	// The declared version is not what runs, with the declared sha256: not in sync, and it says
+	// both versions, that the sha256 is the binary's, and what to do.
+	for _, c := range []struct{ declared, reported string }{
+		{"v1.99.0+k3s1", "v1.37.2+k3s1"}, // the version changed, the sha256 forgotten
+		{"v1.37.3+k3s1", "v1.37.2+k3s1"},
+		{"v1.37.2+k3s2", "v1.37.2+k3s1"}, // the k3s revision
+		{"v1.99.0+k3s1", "v1.37.2"},      // a kubelet that leaves the k3s revision out
+	} {
+		g := k3sClusterOf(t, sha, c.declared, "srv", "a1")
+		s := world(g, c.reported)
+		for _, id := range []string{"NodeK3s srv/k3s", "NodeK3s a1/k3s"} {
+			got := status(g, s, id)
+			if got.Status != StatusWaiting || got.Note == nil || got.Note.Code != "MAM-PLAN-0121" || len(got.Operations) != 0 ||
+				!strings.Contains(got.Note.Message, c.declared) || !strings.Contains(got.Note.Message, c.reported) || !strings.Contains(got.Note.Hint, "sha256") {
+				t.Errorf("declared %s, reported %s, %s: %+v", c.declared, c.reported, id, got)
+			}
+		}
+	}
+	// No judgement without evidence: k3s not running (the node's version is from before), the node
+	// not in the server's list (other names), a server that has not reported its nodes.
+	g = k3sClusterOf(t, sha, "v1.99.0+k3s1", "srv", "a1")
+	s := world(g, "v1.37.2+k3s1")
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, ObservedAt: t0, Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}}}
+	if c := status(g, s, "NodeK3s srv/k3s"); c.Status != StatusInSync {
+		t.Errorf("k3s not running: %+v", c)
+	}
+	s = world(g, "v1.37.2+k3s1")
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "ip-10-0-0-1", Version: "v1.37.2+k3s1", Ready: true}}}
+	if c := status(g, s, "NodeK3s srv/k3s"); c.Status != StatusInSync {
+		t.Errorf("a node of another name: %+v", c)
+	}
+	// A different sha256 is an upgrade, as it was.
+	s = world(g, "v1.37.2+k3s1")
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.2+k3s1", Ready: true}}}
+	if c := status(g, s, "NodeK3s srv/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.OpUpgradeK3s {
+		t.Errorf("another sha256: %+v", c)
+	}
+}
+
+// Machines of a cluster are restarted agents first, the server last, as the design says (B15 of
+// the 0.3.2 audit): it was in the order of the names, so a server called cp went before its agents.
+func TestMachinesOfAClusterAreRestartedAgentsFirst(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sClusterOf(t, sha, "v1.37.2+k3s1", "cp", "w1", "w2")
+	s := k3sObserved(g, sha)
+	s.K3s["cp/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "cp", Ready: true}, {Name: "w1", Ready: true}, {Name: "w2", Ready: true}}}
+	for _, n := range []string{"w1", "w2"} {
+		s.K3s[n+"/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0}
+	}
+	for _, n := range []string{"cp", "w1", "w2"} {
+		machineObserved(&s, g, n, true, true, true, 600, providedChange("TestVM "+n, "resize-vm", protocol.EffectRestart))
+	}
+	status := func(n string) Change { return find(t, Build(g, s, policy.Default), "TestVM "+n) }
+	if c := status("w1"); c.Status != StatusChange {
+		t.Fatalf("the first agent: %+v", c)
+	}
+	if c := status("w2"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0118" || !strings.Contains(c.Note.Message, "w1") {
+		t.Fatalf("the second agent: %+v", c)
+	}
+	if c := status("cp"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0118" || !strings.Contains(c.Note.Message, "w1") {
+		t.Fatalf("the server goes last, with the agents still to restart: %+v", c)
+	}
+	machineObserved(&s, g, "w1", true, true, true, 600)
+	if c := status("cp"); c.Status != StatusWaiting || !strings.Contains(c.Note.Message, "w2") {
+		t.Fatalf("the server waits for the last agent: %+v", c)
+	}
+	machineObserved(&s, g, "w2", true, true, true, 600)
+	if c := status("cp"); c.Status != StatusChange {
+		t.Fatalf("the server last: %+v", c)
+	}
+}
+
+// A Not Ready Kubernetes node that no machine of Mamela's is behind is not Mamela's to delete (B5
+// of the 0.3.2 audit): a node joined by hand, on a machine no provider observes, looks exactly
+// like a left-over of a deleted machine, except that no mamelet ever enrolled on it.
+func TestK3sNodeRemovalOnlyOfWhatMamelaMade(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	g := k3sCluster(t, sha, "a1")
+	s := k3sObserved(g, sha)
+	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: sha, Running: true, ObservedAt: t0,
+		Nodes: []state.K3sNode{{Name: "a1", Ready: true}, {Name: "srv", Ready: true}, {Name: "pi", Ready: false}}}
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); c.Status != StatusInSync || len(c.Operations) != 0 {
+		t.Fatalf("a node joined by hand was planned for removal: %+v", c)
+	}
+	// A mamelet enrolled under the name: Mamela made the machine, so it is a left-over.
+	s.AgentRegistrations = map[string]string{"pi": "serial-1"}
+	c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s")
+	if c.Status != StatusChange || !slices.Contains(c.Diffs, Diff{"remove-node", "", "pi"}) {
+		t.Fatalf("a left-over of a machine Mamela made: %+v", c)
+	}
+}
+
+// Warnings come with the plan of the resource they are about, and change neither its status nor
+// its operations: an agent newer than its server, k3s with no service, and a rollback of 7 minor
+// releases or more (A10, B14, B15).
+func TestK3sWarningsAreInThePlan(t *testing.T) {
+	const sha = "265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda"
+	const other = "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0"
+	codes := func(c Change) []string {
+		var out []string
+		for _, w := range c.Warnings {
+			out = append(out, w.Code)
+		}
+		return out
+	}
+	// A cluster with no k3s service declared: the warning, on each NodeK3s, and the plan is as before.
+	g := k3sCluster(t, sha, "a1")
+	s := k3sObserved(g, sha)
+	for _, id := range []string{"NodeK3s srv/k3s", "NodeK3s a1/k3s"} {
+		c := find(t, Build(g, s, policy.Default), id)
+		if got := codes(c); len(got) != 1 || got[0] != "MAM-GRAPH-0202" || c.Warnings[0].Message == "" || c.Warnings[0].Hint == "" {
+			t.Errorf("%s: warnings %+v", id, c.Warnings)
+		}
+		if c.Status != StatusInSync {
+			t.Errorf("%s: a warning changed the status: %+v", id, c)
+		}
+	}
+	// A resource that has no warning has none, and the plan's JSON has no "warnings" for it.
+	p := Build(desired(t), converged(), policy.Default)
+	if bytes.Contains(p.Canonical(), []byte("warnings")) {
+		t.Error("a plan with no warning has a warnings member")
+	}
+	// A rollback of 7 minor releases: the upgrade is planned, with the warning; of 6: without.
+	rollback := func(declared string) Change {
+		g := k3sClusterOf(t, sha, declared, "srv")
+		s := k3sObserved(g, sha)
+		s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: other, Running: true, ObservedAt: t0,
+			Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}}}
+		return find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s")
+	}
+	c := rollback("v1.30.0+k3s1")
+	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s || !slices.Contains(codes(c), "MAM-PLAN-0401") {
+		t.Fatalf("a rollback of 7 minors: %+v", c)
+	}
+	var w Note
+	for _, n := range c.Warnings {
+		if n.Code == "MAM-PLAN-0401" {
+			w = n
+		}
+	}
+	if !strings.Contains(w.Message, "v1.37.2") || !strings.Contains(w.Message, "v1.30.0") || w.Hint == "" {
+		t.Errorf("the warning does not say from what to what: %+v", w)
+	}
+	if c := rollback("v1.31.0+k3s1"); slices.Contains(codes(c), "MAM-PLAN-0401") {
+		t.Errorf("a rollback of 6 minors: %+v", c.Warnings)
+	}
+	if c := rollback("v1.38.0+k3s1"); slices.Contains(codes(c), "MAM-PLAN-0401") {
+		t.Errorf("an upgrade: %+v", c.Warnings)
+	}
+	// An agent declared newer than its server.
+	g = k3sClusterOf(t, sha, "v1.28.0+k3s1", "srv", "a1")
+	agent := strings.Replace(string(g.Canonical()), `"role":"agent","server":"srv","sha256":"`+sha+`","version":"v1.28.0+k3s1"`, `"role":"agent","server":"srv","sha256":"`+sha+`","version":"v1.99.0+k3s1"`, 1)
+	g, err := graph.Decode([]byte(agent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := codes(find(t, Build(g, k3sObserved(g, sha), policy.Default), "NodeK3s a1/k3s")); !slices.Contains(got, "MAM-GRAPH-0201") {
+		t.Errorf("an agent newer than its server: %v", got)
 	}
 }

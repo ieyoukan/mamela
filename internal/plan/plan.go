@@ -81,6 +81,11 @@ type Change struct {
 	// Verdict is the strictest decision among the operations; empty when there are none.
 	Verdict policy.Verdict `json:"verdict,omitempty"`
 	Note    *Note          `json:"note,omitempty"`
+	// Warnings are things a person should read before approving that neither stop nor change
+	// anything: the declaration is valid, but probably not what was meant (a k3s agent newer than
+	// its server, a k3s that nothing starts). They are part of the plan, so the plan that was read is
+	// the plan that is approved.
+	Warnings []Note `json:"warnings,omitempty"`
 	// Provider is set for a resource of a provider's kind.
 	Provider string `json:"provider,omitempty"`
 	// ProviderChanges are the provider's changes, one per operation, with exactly the requests
@@ -143,6 +148,11 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		ProvidersDigest: providers,
 		AsOf:            snap.AsOf.UTC(),
 	}}
+	// What is valid in the declaration but probably not meant goes with the plan of its resource.
+	warned := map[string][]Note{}
+	for _, w := range g.Warnings() {
+		warned[w.Resource] = append(warned[w.Resource], Note{Code: string(w.Code), Message: w.Message, Hint: w.Hint})
+	}
 	for _, r := range g.Sorted() {
 		switch r.Kind {
 		case graph.KindNodePackage:
@@ -150,7 +160,9 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		case graph.KindNodeService:
 			p.Changes = append(p.Changes, b.onNode(r.NodeService.Node, b.service(r)))
 		case graph.KindNodeK3s:
-			p.Changes = append(p.Changes, b.onNode(r.NodeK3s.Node, b.k3s(r)))
+			c := b.onNode(r.NodeK3s.Node, b.k3s(r))
+			c.Warnings = slices.Concat(warned[r.ID()], b.rollbackWarnings(r))
+			p.Changes = append(p.Changes, c)
 		case graph.KindNodeK3sManifest:
 			p.Changes = append(p.Changes, b.onNode(r.NodeK3sManifest.Node, b.k3sManifest(r)))
 		case graph.KindNodeMamelet:
@@ -247,6 +259,11 @@ func (b builder) provided(r graph.Resource) Change {
 	case b.stale(got.ObservedAt):
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
 		return c
+	case got.Kept != nil:
+		// Declared here, but made for another declaration (B4): Mamela changes nothing of it, and a
+		// person decides where it belongs. Waiting would never end by itself.
+		c.Status, c.Note = StatusBlocked, &Note{Code: got.Kept.Code, Message: got.Kept.Message, Hint: got.Kept.Hint}
+		return c
 	case got.Waiting != "":
 		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0113", Message: got.Waiting,
 			Hint: "apply the plan that makes it, then plan again (ADR 0007)"}
@@ -301,9 +318,9 @@ func (b builder) restartsMachine(got state.Provided) bool {
 }
 
 // machineRestartGate says what a restart of a machine that runs a k3s node waits for (nil: nothing,
-// or the machine runs none). The machines of a cluster are restarted one at a time (in the order of
-// their names, so the agents come before the server), and only while every Kubernetes node is
-// Ready: a plan that restarts them all at once would take the cluster down.
+// or the machine runs none). The machines of a cluster are restarted one at a time (the agents in
+// the order of their names, the server last), and only while every Kubernetes node is Ready: a
+// plan that restarts them all at once would take the cluster down.
 func (b builder) machineRestartGate(r graph.Resource) *Note {
 	var mine *graph.NodeK3sSpec
 	for _, o := range b.g.Sorted() {
@@ -320,7 +337,7 @@ func (b builder) machineRestartGate(r graph.Resource) *Note {
 	}
 	for _, o := range b.g.Sorted() {
 		k := o.NodeK3s
-		if k == nil || k.Node >= r.Name || (k.Node != server && k.Server != server) {
+		if k == nil || !restartsBefore(k, mine) || (k.Node != server && k.Server != server) {
 			continue
 		}
 		for _, m := range b.g.Sorted() {
@@ -346,6 +363,15 @@ func (b builder) machineRestartGate(r graph.Resource) *Note {
 			Hint: "a restart goes on only on a healthy cluster; find out why the node is not Ready"}
 	}
 	return nil
+}
+
+// restartsBefore is whether the machine of k3s node k is restarted before the machine of node
+// mine: the agents come first, in the order of their names, and the server is the last.
+func restartsBefore(k, mine *graph.NodeK3sSpec) bool {
+	if kServer, mineServer := k.Role == graph.K3sServer, mine.Role == graph.K3sServer; kServer != mineServer {
+		return mineServer
+	}
+	return k.Node < mine.Node
 }
 
 // SameProviderChanges reports whether every change of fresh is one of approved, exactly: the
@@ -389,10 +415,24 @@ func (b builder) nodeReady(node string) (bool, *Note) {
 	case !m.managed:
 		return false, &Note{Code: "MAM-PLAN-0102", Message: fmt.Sprintf("machine %s is not managed by Mamela (Foreign)", node),
 			Hint: "Mamela does not configure machines it did not create; a provider may offer to adopt one (mamela act)"}
+	case b.machineOfAnother(node) != nil:
+		k := b.machineOfAnother(node)
+		return false, &Note{Code: k.Code, Message: fmt.Sprintf("machine %s: %s", node, k.Message), Hint: k.Hint}
 	case m.stopped:
 		return false, &Note{Code: "MAM-PLAN-0111", Message: fmt.Sprintf("waits for machine %s to be started", node)}
 	}
 	return true, nil
+}
+
+// machineOfAnother says, for a machine Mamela made for another declaration (B4), why this one
+// does not configure it; nil for any other machine.
+func (b builder) machineOfAnother(node string) *state.Kept {
+	for _, id := range slices.Sorted(maps.Keys(b.snap.Provided)) {
+		if p := b.snap.Provided[id]; p.Name == node && p.Declared && p.Kept != nil && p.Observed.Node != nil {
+			return p.Kept
+		}
+	}
+	return nil
 }
 
 // machine is what plans need of a node: a provider's machine (ADR 0004).
@@ -592,6 +632,10 @@ func (b builder) k3s(r graph.Resource) Change {
 			Hint:    "fix it on the node, then plan again"}
 		return c
 	case got.Installed && got.SHA256 == want.SHA256 && !got.Stale:
+		if note := b.k3sVersionNote(r, got); note != nil {
+			c.Status, c.Note = StatusWaiting, note
+			return c
+		}
 		return b.retireNode(r, got, b.withOps(c))
 	}
 	// A k3s whose binary is in place is changed in place: an agent only after its server runs the
@@ -639,9 +683,11 @@ func (b builder) k3s(r graph.Resource) Change {
 
 // retireNode adds to the plan of a k3s server that is in sync the removal of a Kubernetes node
 // that no declaration of this cluster names any more: a node whose machine this plan deletes (it
-// is drained first, while its machine still runs), or a Not Ready node whose machine is gone (a
-// left-over). One node per plan; the server's own node, a node whose machine still exists, and a
-// cluster whose node names do not include the server's own are never touched. It is a deletion:
+// is drained first, while its machine still runs), or a Not Ready node whose machine is gone and on
+// which a mamelet once enrolled (a left-over of a machine Mamela made: a node joined by hand, on a
+// machine no provider observes, looks the same but for that). One node per plan; the server's own
+// node, a node whose machine still exists, and a cluster whose node names do not include the
+// server's own are never touched. It is a deletion:
 // the policy's removal = retain keeps it, and only the Control Plane's host approves it.
 func (b builder) retireNode(r graph.Resource, got state.K3s, c Change) Change {
 	want := r.NodeK3s
@@ -667,8 +713,8 @@ func (b builder) retireNode(r graph.Resource, got state.K3s, c Change) Change {
 			if !n.Ready {
 				why = "its machine is deleted by this plan and the node is not Ready (it cannot be drained); the node is deleted"
 			}
-		case !n.Ready && !b.machineExists(n.Name):
-			why = "the node is not Ready and no machine of that name exists any more (a left-over); the node is deleted"
+		case !n.Ready && !b.machineExists(n.Name) && b.snap.AgentRegistrations[n.Name] != "":
+			why = "the node is not Ready and no machine of that name exists any more, and a mamelet once enrolled there (a left-over of a machine Mamela made); the node is deleted"
 		default:
 			continue
 		}
@@ -783,6 +829,75 @@ func (b builder) k3sManifest(r graph.Resource) Change {
 	c.Diffs = []Diff{{"file", "", noderev.K3sManifestDir + "/" + noderev.K3sManifestFile(want.Name)},
 		{"sha256", got.SHA256, sum}, {"content", "", want.Content}}
 	return b.withOps(c, policy.Subject{Op: policy.OpWriteK3sManifest})
+}
+
+// rollbackWarnMinors is how many minor releases back a declaration may take a running k3s before
+// the plan warns: Kubernetes does not support a downgrade (what a newer release stored, an older
+// one may not read), and a release that far back is more likely a typo than a plan.
+const rollbackWarnMinors = 7
+
+// rollbackWarning says that a declared release is a rollback of rollbackWarnMinors minor releases
+// or more from the release that runs (nil when it is not, or when it is not known).
+func rollbackWarning(want *graph.NodeK3sSpec, running string) *Note {
+	d, okD := graph.ParseRelease(want.Version)
+	n, okN := graph.ParseRelease(running)
+	if !okD || !okN || (n.Major == d.Major && n.Minor-d.Minor < rollbackWarnMinors) || n.Major < d.Major {
+		return nil
+	}
+	return &Note{Code: "MAM-PLAN-0401",
+		Message: fmt.Sprintf("k3s on %s runs %s and the declaration takes it back to %s, a rollback of %s: Kubernetes does not support downgrades, and what the newer release stored the older may not read",
+			want.Node, running, want.Version, rollbackSize(n, d)),
+		Hint: "if this is a typo, fix the version and the sha256; to really go back, restore the cluster from a snapshot taken at that release (Mamela does not roll a cluster back)"}
+}
+
+// rollbackWarnings are the warnings of a k3s that runs, whose declared release is another binary
+// (an upgrade in place that takes it far back), whether the upgrade is planned or waits.
+func (b builder) rollbackWarnings(r graph.Resource) []Note {
+	got, ok := b.snap.K3s[r.Name]
+	if !ok || !got.Running || got.SHA256 == r.NodeK3s.SHA256 {
+		return nil
+	}
+	if w := rollbackWarning(r.NodeK3s, b.k3sRunning(r, got)); w != nil {
+		return []Note{*w}
+	}
+	return nil
+}
+
+func rollbackSize(n, d graph.Release) string {
+	if n.Major != d.Major {
+		return fmt.Sprintf("%d major releases", n.Major-d.Major)
+	}
+	return fmt.Sprintf("%d minor releases", n.Minor-d.Minor)
+}
+
+// k3sVersionNote says what a k3s waits for when its binary is the declared one (by its sha256) and
+// runs, and its Kubernetes node reports another release than the declared version (nil when they
+// agree or nothing is known). The binary is right by its sha256, so either the node has not
+// reported the release it restarted into yet (the next plan agrees), or the version and the
+// sha256 of the declaration are of different releases (a version changed, the sha256 forgotten).
+// The kubelet may report "v1.37.2" for "v1.37.2+k3s1": the k3s revision counts only when it is
+// reported.
+func (b builder) k3sVersionNote(r graph.Resource, got state.K3s) *Note {
+	want := r.NodeK3s
+	if !got.Running {
+		return nil // what the node last said is from before it stopped
+	}
+	if want.Role == graph.K3sAgent {
+		if srv, ok := b.snap.K3s[want.Server+"/k3s"]; !ok || b.stale(srv.ObservedAt) {
+			return nil // the server's view of the nodes is not current
+		}
+	}
+	reported := b.k3sRunning(r, got)
+	d, okD := graph.ParseRelease(want.Version)
+	n, okN := graph.ParseRelease(reported)
+	if !okD || !okN || d.Compare(n) == 0 {
+		return nil
+	}
+	return &Note{Code: "MAM-PLAN-0121",
+		Message: fmt.Sprintf("the declaration says k3s on %s is %s, and the binary on it is the declared one (sha256 %s), but its Kubernetes node reports %s",
+			want.Node, want.Version, want.SHA256[:12], reported),
+		Hint: "if the node has only just restarted, plan again in a minute; if it stays, the version and the sha256 do not belong together: " +
+			"put the sha256 of the binary of " + want.Version + " (the release's sha256sum-<arch>.txt) with it, or the version of the binary the sha256 is of"}
 }
 
 // k3sCurrent is whether a node's k3s is what its declaration says: the declared binary, running.

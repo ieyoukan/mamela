@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
 const (
@@ -40,11 +42,11 @@ type wireNodePackage struct {
 }
 
 type wireNodeK3s struct {
-	Node    *string `json:"node"`
-	Role    *string `json:"role"`
-	Server  *string `json:"server"`
-	Version *string `json:"version"`
-	SHA256  *string `json:"sha256"`
+	Node    *string        `json:"node"`
+	Role    *string        `json:"role"`
+	Server  jsontext.Value `json:"server"` // optional
+	Version *string        `json:"version"`
+	SHA256  *string        `json:"sha256"`
 }
 
 type wireNodeK3sManifest struct {
@@ -54,9 +56,9 @@ type wireNodeK3sManifest struct {
 }
 
 type wireNodeMamelet struct {
-	Node    *string `json:"node"`
-	Version *string `json:"version"`
-	SHA256  *string `json:"sha256"`
+	Node    *string        `json:"node"`
+	Version jsontext.Value `json:"version"` // optional
+	SHA256  *string        `json:"sha256"`
 }
 
 type wireNodeService struct {
@@ -102,6 +104,7 @@ func Decode(data []byte) (*Graph, error) {
 
 	var problems []Problem
 	g := &Graph{Resources: make([]Resource, 0, len(*w.Resources))}
+	first := map[string]int{} // resource ID -> the index in g.Resources of the first that has it
 	for i, wr := range *w.Resources {
 		if wr.Provider != nil && *w.Schema == Schema {
 			problems = append(problems, Problem{Code: CodeNeedsV2, Path: fmt.Sprintf("/resources/%d/provider", i),
@@ -111,9 +114,18 @@ func Decode(data []byte) (*Graph, error) {
 		}
 		r, ps := decodeResource(i, wr)
 		problems = append(problems, ps...)
-		if r != nil && !g.declares(*r) {
-			g.Resources = append(g.Resources, *r)
+		if r == nil {
+			continue
 		}
+		// A resource declared twice the same way is one resource (a provider's Pome declares, for
+		// each VM, the template it is cloned from). Declared twice differently, it stays twice, and
+		// Validate says so (MAM-GRAPH-0102).
+		if at, dup := first[r.ID()]; dup && g.sameAs(at, *r) {
+			continue
+		} else if !dup {
+			first[r.ID()] = len(g.Resources)
+		}
+		g.Resources = append(g.Resources, *r)
 	}
 	if err := newError(problems); err != nil {
 		return nil, err
@@ -158,10 +170,9 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 			Message: "only a resource of a provider has after", Hint: "a resource on a node waits for its node already"}}
 	}
 	if wr.Provider != nil {
-		spec, err := providedSpec(wr.Spec)
-		if err != nil {
-			return nil, []Problem{{Code: CodeWrongType, Path: where + " spec", Message: err.Error(),
-				Hint: "the spec of a provider's resource is a JSON object; numbers must be integers"}}
+		spec, serr := providedSpec(wr.Spec)
+		if serr != nil {
+			return nil, []Problem{{Code: serr.code, Path: where + " spec" + serr.at, Message: serr.msg, Hint: serr.hint}}
 		}
 		if _, builtin := kindOrder[r.Kind]; builtin {
 			return nil, []Problem{{Code: CodeUnknownKind, Path: at + "/kind",
@@ -217,10 +228,16 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		need(s.Role != nil, "role")
 		need(s.Version != nil, "version")
 		need(s.SHA256 != nil, "sha256")
+		server, ps := optionalString(s.Server, where, "server")
+		problems = append(problems, ps...)
+		if server != nil && *server == "" {
+			problems = append(problems, Problem{Code: CodeInvalidValue, Path: where + " spec.server",
+				Message: "the server is an empty string", Hint: "leave the member out (a k3s server has no server), or name the node of the server (an agent)"})
+		}
 		if len(problems) == 0 {
 			r.NodeK3s = &NodeK3sSpec{Node: *s.Node, Role: K3sRole(*s.Role), Version: *s.Version, SHA256: *s.SHA256}
-			if s.Server != nil {
-				r.NodeK3s.Server = *s.Server
+			if server != nil {
+				r.NodeK3s.Server = *server
 			}
 		}
 	case KindNodeK3sManifest:
@@ -241,10 +258,12 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		}
 		need(s.Node != nil, "node")
 		need(s.SHA256 != nil, "sha256")
+		version, ps := optionalString(s.Version, where, "version")
+		problems = append(problems, ps...)
 		if len(problems) == 0 {
 			r.NodeMamelet = &NodeMameletSpec{Node: *s.Node, SHA256: *s.SHA256}
-			if s.Version != nil {
-				r.NodeMamelet.Version = *s.Version
+			if version != nil {
+				r.NodeMamelet.Version = *version
 			}
 		}
 	default:
@@ -264,9 +283,22 @@ const maxExactInt = 1<<53 - 1
 // maxSpecDepth bounds the nesting of a provider's spec.
 const maxSpecDepth = 32
 
+// specError is why a provider's spec is refused: the code, what and where, and what to do about it.
+type specError struct {
+	code Code
+	at   string // the member, as a JSON pointer prefixed with a space; "" for the spec itself
+	msg  string
+	hint string
+}
+
+func wrongType(msg, hint string) *specError {
+	return &specError{code: CodeWrongType, msg: msg, hint: hint}
+}
+
 // providedSpec checks a provider's spec (a JSON object of strings, integers, booleans, arrays and
-// objects, no null, no duplicate member) and returns its canonical form.
-func providedSpec(v jsontext.Value) ([]byte, error) {
+// objects, no null, no duplicate member, no text that does not show as itself) and returns its
+// canonical form.
+func providedSpec(v jsontext.Value) ([]byte, *specError) {
 	dec := jsontext.NewDecoder(strings.NewReader(string(v)))
 	depth := 0
 	for first := true; ; first = false {
@@ -275,36 +307,70 @@ func providedSpec(v jsontext.Value) ([]byte, error) {
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, wrongType(err.Error(), "the spec of a provider's resource is one JSON object")
 		}
 		if first && tok.Kind() != '{' {
-			return nil, errors.New("the spec is not a JSON object")
+			return nil, wrongType("the spec is not a JSON object", "the spec of a provider's resource is a JSON object")
 		}
 		switch tok.Kind() {
 		case '{', '[':
 			if depth++; depth > maxSpecDepth {
-				return nil, fmt.Errorf("the spec is nested deeper than %d", maxSpecDepth)
+				return nil, wrongType(fmt.Sprintf("the spec is nested deeper than %d", maxSpecDepth),
+					fmt.Sprintf("flatten it: a spec is at most %d levels deep", maxSpecDepth))
 			}
 		case '}', ']':
 			depth--
 		case 'n':
-			return nil, errors.New("the spec has a null")
+			return nil, &specError{code: CodeWrongType, at: " " + string(dec.StackPointer()), msg: "the spec has a null",
+				hint: "leave the member out instead of writing null: a spec has no null"}
+		case '"':
+			if f, bad := safetext.Find(tok.String(), true); bad {
+				return nil, &specError{code: CodeUnsafeText, at: " " + string(dec.StackPointer()),
+					msg:  "the spec has a text with " + f.String(),
+					hint: unsafeTextHint}
+			}
 		case '0':
 			if strings.ContainsAny(tok.String(), ".eE") {
-				return nil, fmt.Errorf("the spec has a number %s that is not an integer", tok.String())
+				return nil, &specError{code: CodeWrongType, at: " " + string(dec.StackPointer()),
+					msg:  fmt.Sprintf("the spec has a number %s that is not an integer", tok.String()),
+					hint: "write whole numbers only; a decimal number goes in as a string"}
 			}
 			// The canonical form (RFC 8785) writes numbers as IEEE 754 doubles: an integer beyond
 			// 2^53 would reach the provider as another number. Refuse it rather than change it.
 			if n, err := strconv.ParseInt(tok.String(), 10, 64); err != nil || n > maxExactInt || n < -maxExactInt {
-				return nil, fmt.Errorf("the spec has an integer %s beyond ±%d, which JSON cannot carry exactly (write it as a string)", tok.String(), maxExactInt)
+				return nil, &specError{code: CodeWrongType, at: " " + string(dec.StackPointer()),
+					msg:  fmt.Sprintf("the spec has an integer %s beyond ±%d, which JSON cannot carry exactly (write it as a string)", tok.String(), maxExactInt),
+					hint: "write a number that large as a string"}
 			}
 		}
 	}
 	out := jsontext.Value(append([]byte(nil), v...))
 	if err := out.Canonicalize(); err != nil {
-		return nil, err
+		return nil, wrongType(err.Error(), "the spec of a provider's resource is one JSON object")
 	}
 	return out, nil
+}
+
+// unsafeTextHint is the advice for text that does not show as itself.
+const unsafeTextHint = "a text may have newlines and tabs, but no other control character (a carriage return, an escape), " +
+	"bidirectional control or zero-width character: they hide what a person reads in the plan. " +
+	"Leave it out, or write it as an escape where the format has one (\\u202e in a double-quoted YAML string)"
+
+// optionalString is an optional string member: nil when the member is absent. null is not another
+// way to write absent (the schema refuses null everywhere): leave the member out.
+func optionalString(v jsontext.Value, where, field string) (*string, []Problem) {
+	if v == nil {
+		return nil, nil
+	}
+	if string(v) == "null" {
+		return nil, []Problem{{Code: CodeWrongType, Path: where + " spec." + field,
+			Message: "a value has the wrong type: " + field + " is null", Hint: "leave the member out instead of writing null"}}
+	}
+	var s string
+	if err := json.Unmarshal(v, &s, strict); err != nil {
+		return nil, problemsOf(fromJSONError(err, where+" spec."+field))
+	}
+	return &s, nil
 }
 
 func problemsOf(err error) []Problem {
@@ -341,7 +407,7 @@ func fromJSONError(err error, prefix string) error {
 	case errors.As(err, &sem):
 		return single(CodeWrongType, joinPath(prefix, string(sem.JSONPointer)),
 			"a value has the wrong type: "+err.Error(),
-			"numbers must be integers written without a fraction or exponent")
+			"check the type of the member in docs/graph-schema.md (strings are strings, flags are true or false, numbers are integers written without a fraction or exponent)")
 	default:
 		return single(CodeInvalidJSON, prefix, err.Error(), "")
 	}
@@ -377,15 +443,8 @@ func trimFinalNewline(b []byte) []byte {
 	return b
 }
 
-// declares says whether the graph already has exactly this resource: a resource declared twice
-// the same way (a provider's Pome declaring, for each VM, the template it is cloned from) is one
-// resource. Declared twice differently, it is a problem (MAM-GRAPH-0102).
-func (g *Graph) declares(r Resource) bool {
-	for _, d := range g.Resources {
-		if d.ID() == r.ID() {
-			one, other := (&Graph{Resources: []Resource{d}}).Canonical(), (&Graph{Resources: []Resource{r}}).Canonical()
-			return bytes.Equal(one, other)
-		}
-	}
-	return false
+// sameAs says whether the resource at index i is exactly r (in canonical form).
+func (g *Graph) sameAs(i int, r Resource) bool {
+	one, other := (&Graph{Resources: []Resource{g.Resources[i]}}).Canonical(), (&Graph{Resources: []Resource{r}}).Canonical()
+	return bytes.Equal(one, other)
 }

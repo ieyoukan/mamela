@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
 // Code is a stable reason code shown to people. Codes are never reused for a different meaning.
@@ -32,6 +34,8 @@ const (
 	CodeInvalidValue      Code = "MAM-GRAPH-0106"
 	CodeDuplicateAddress  Code = "MAM-GRAPH-0107"
 	CodeCycle             Code = "MAM-GRAPH-0108"
+	CodeUnsafeText        Code = "MAM-GRAPH-0109" // text that does not show as itself (A9)
+	CodeConflict          Code = "MAM-GRAPH-0110" // two declarations of one thing that contradict each other
 )
 
 // Problem is one thing wrong with a graph, written for a person: what, where, why, and what to do.
@@ -42,14 +46,17 @@ type Problem struct {
 	Hint    string // what to do; may be empty
 }
 
+// String is the problem as people read it. Message, Path and Hint quote the declaration (a name,
+// a member, a value), so a control character in them is shown as an escape: what is quoted
+// cannot rewrite the line it is on or the ones around it.
 func (p Problem) String() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s: %s", p.Code, p.Message)
+	fmt.Fprintf(&b, "%s: %s", p.Code, safetext.Escape(p.Message))
 	if p.Path != "" {
-		fmt.Fprintf(&b, "\n  at %s", p.Path)
+		fmt.Fprintf(&b, "\n  at %s", safetext.Escape(p.Path))
 	}
 	if p.Hint != "" {
-		fmt.Fprintf(&b, "\n  hint: %s", p.Hint)
+		fmt.Fprintf(&b, "\n  hint: %s", safetext.Escape(p.Hint))
 	}
 	return b.String()
 }

@@ -7,11 +7,13 @@
 package graph
 
 import (
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"net/netip"
 	"strings"
 
+	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -89,6 +91,24 @@ type ProvidedSpec struct {
 
 // ID is the identity of a resource within a graph.
 func (r Resource) ID() string { return string(r.Kind) + " " + r.Name }
+
+// Node is the machine a resource of a built-in kind lives on ("" for a provider's resource, which
+// is not on a machine).
+func (r Resource) Node() string {
+	switch {
+	case r.NodePackage != nil:
+		return r.NodePackage.Node
+	case r.NodeService != nil:
+		return r.NodeService.Node
+	case r.NodeK3s != nil:
+		return r.NodeK3s.Node
+	case r.NodeK3sManifest != nil:
+		return r.NodeK3sManifest.Node
+	case r.NodeMamelet != nil:
+		return r.NodeMamelet.Node
+	}
+	return ""
+}
 
 // NetworkMode is how a machine gets its IPv4 address. A declaration always says which: there is no
 // default.
@@ -193,7 +213,7 @@ type NodeMameletSpec struct {
 }
 
 // MaxK3sManifest bounds a manifest's content.
-const MaxK3sManifest = 64 << 10
+const MaxK3sManifest = names.MaxManifest
 
 // K3sRole is what a node is in its k3s cluster.
 type K3sRole string
@@ -211,24 +231,44 @@ type NodeServiceSpec struct {
 	Running bool
 }
 
-// Network is the network a provider's machine declares (spec.network), if it declares one.
+// Network is the network a provider's machine declares (spec.network), if it declares one and it
+// is well formed (CheckedNetwork says what is wrong with one that is not).
 func (r Resource) Network() (Network, bool) {
+	n, ok, err := r.CheckedNetwork()
+	return n, ok && err == nil
+}
+
+// wireNetwork is spec.network as the Mamela Pome's Network writes it: exactly these members, of
+// these types.
+type wireNetwork struct {
+	Mode    string   `json:"mode"`
+	Address string   `json:"address"`
+	Gateway string   `json:"gateway"`
+	DNS     []string `json:"dns"`
+}
+
+// CheckedNetwork is the network a provider's resource declares: ok is whether it has a
+// spec.network at all, and err says why that is not a network (a string, a list, a member of
+// another type, a member that is none of mode, address, gateway and dns). The members' values are
+// checked by Validate.
+func (r Resource) CheckedNetwork() (n Network, ok bool, err error) {
 	if r.Provided == nil {
-		return Network{}, false
+		return Network{}, false, nil
 	}
 	var spec struct {
-		Network *struct {
-			Mode    string   `json:"mode"`
-			Address string   `json:"address"`
-			Gateway string   `json:"gateway"`
-			DNS     []string `json:"dns"`
-		} `json:"network"`
+		Network jsontext.Value `json:"network"`
 	}
-	if json.Unmarshal(r.Provided.Spec, &spec) != nil || spec.Network == nil {
-		return Network{}, false
+	if err := json.Unmarshal(r.Provided.Spec, &spec); err != nil {
+		return Network{}, false, err
 	}
-	n := spec.Network
-	return Network{Mode: NetworkMode(n.Mode), Address: n.Address, Gateway: n.Gateway, DNS: n.DNS}, true
+	if spec.Network == nil {
+		return Network{}, false, nil
+	}
+	var w wireNetwork
+	if err := json.Unmarshal(spec.Network, &w, strict); err != nil {
+		return Network{}, true, err
+	}
+	return Network{Mode: NetworkMode(w.Mode), Address: w.Address, Gateway: w.Gateway, DNS: w.DNS}, true, nil
 }
 
 // StaticIP is the declared static address of machine name, or "" when it uses DHCP or is not

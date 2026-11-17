@@ -1,6 +1,8 @@
 package graph
 
 import (
+	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -8,24 +10,20 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ieyoukan/mamela/internal/names"
+	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
+// The shapes of node names, package and service names, manifest names, k3s releases and sha256s
+// are in internal/names, shared with the revision the Control Plane signs from the declaration:
+// what the graph accepts is signed (A11 of the 0.3.2 audit).
 var (
-	// A node name is a DNS label: it becomes a hostname.
-	nodeNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	// Debian package names (Debian Policy 5.6.1).
-	packageNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
-	// systemd unit name without the ".service" suffix; no path separators or whitespace.
-	serviceNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,254}$`)
+	mameletVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
 	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
-	// A k3s release ("v1.33.5+k3s1") and a sha256 in hex.
-	k3sManifestNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	K3sVersionRe      = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
-	sha256Re          = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	mameletVersionRe  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	providedKindRe    = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
-	providerNameRe    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	providedNameRe    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
+	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
+	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 )
 
 // Validate checks the meaning of a decoded graph: names, ranges, references and duplicates.
@@ -41,7 +39,7 @@ func Validate(g *Graph) error {
 	}
 
 	seen := map[string]bool{}
-	nodes := map[string]int{} // name -> how many resources could be the node of that name
+	nodes := map[string]bool{} // the names of the provider's resources: a node is one of them (checkNodeRef)
 	k3sServers := map[string]bool{}
 	addresses := map[string]string{} // static address -> machine
 	for _, r := range g.Resources {
@@ -53,7 +51,7 @@ func Validate(g *Graph) error {
 		// A node is a resource of a provider whose kind is a node kind (the provider says which;
 		// checked once providers run, ADR 0004).
 		if r.Provided != nil {
-			nodes[r.Name]++
+			nodes[r.Name] = true
 		}
 		if r.NodeK3s != nil && r.NodeK3s.Role == K3sServer {
 			k3sServers[r.NodeK3s.Node] = true
@@ -76,7 +74,12 @@ func Validate(g *Graph) error {
 			}
 			// A machine's network (spec.network, the Mamela Pome's Network): well formed, and each
 			// static address declared once.
-			if n, ok := r.Network(); ok {
+			n, hasNetwork, err := r.CheckedNetwork()
+			if err != nil {
+				// Not skipped: a network of the wrong shape must not pass as no network at all.
+				add(r, CodeInvalidValue, "spec.network", "spec.network is not a network: "+networkShape(err), networkHint)
+			}
+			if hasNetwork && err == nil {
 				for _, p := range checkNetwork(n) {
 					add(r, CodeInvalidValue, "spec.network", p, networkHint)
 				}
@@ -95,7 +98,7 @@ func Validate(g *Graph) error {
 		case KindNodePackage:
 			s := r.NodePackage
 			checkNodeRef(add, r, s.Node, nodes)
-			if !packageNameRe.MatchString(s.Package) {
+			if !names.Package(s.Package) {
 				add(r, CodeInvalidValue, "spec.package", fmt.Sprintf("%q is not a valid Debian package name", s.Package),
 					"package names use lowercase letters, digits and '+', '-', '.'")
 			}
@@ -109,11 +112,11 @@ func Validate(g *Graph) error {
 		case KindNodeK3s:
 			s := r.NodeK3s
 			checkNodeRef(add, r, s.Node, nodes)
-			if !K3sVersionRe.MatchString(s.Version) {
+			if !names.K3sVersion(s.Version) {
 				add(r, CodeInvalidValue, "spec.version", fmt.Sprintf("%q is not a k3s release", s.Version),
 					"write the release tag, such as \"v1.33.5+k3s1\"")
 			}
-			if !sha256Re.MatchString(s.SHA256) {
+			if !names.SHA256(s.SHA256) {
 				add(r, CodeInvalidValue, "spec.sha256", "sha256 is not 64 lowercase hex digits",
 					"copy it from the release's sha256sum file for the node's architecture")
 			}
@@ -125,7 +128,7 @@ func Validate(g *Graph) error {
 				add(r, CodeInvalidValue, "spec.server", "a k3s server has no server", "")
 			case s.Role == K3sAgent && !k3sServers[s.Server]:
 				add(r, CodeDanglingNode, "spec.server", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Server),
-					"declare the server with Mamela.k3s_server on that node")
+					"declare the server with K3s.server on that node")
 			case s.Role == K3sAgent && s.Server == s.Node:
 				add(r, CodeInvalidValue, "spec.server", "a node cannot be an agent of itself", "")
 			case s.Role != K3sServer && s.Role != K3sAgent:
@@ -138,7 +141,7 @@ func Validate(g *Graph) error {
 				add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Node),
 					"k3s applies manifests on a server: declare the server with K3s.server on that node")
 			}
-			if !k3sManifestNameRe.MatchString(s.Name) {
+			if !names.Manifest(s.Name) {
 				add(r, CodeInvalidValue, "spec.name", fmt.Sprintf("%q is not a valid manifest name", s.Name),
 					"use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)")
 			}
@@ -150,6 +153,12 @@ func Validate(g *Graph) error {
 					"a manifest that needs more should install a Helm chart (a HelmChart manifest) instead of holding it")
 			case !utf8.ValidString(s.Content) || strings.ContainsRune(s.Content, 0):
 				add(r, CodeInvalidValue, "spec.content", "the manifest is not text (UTF-8 without NUL)", "")
+			default:
+				// k3s applies the manifest with cluster-admin rights and the plan shows it in full: it
+				// must show as what it is.
+				if f, bad := safetext.Find(s.Content, true); bad {
+					add(r, CodeUnsafeText, "spec.content", "the manifest has "+f.String(), unsafeTextHint)
+				}
 			}
 			if want := s.Node + "/manifest/" + s.Name; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/manifest/name)", want), "")
@@ -157,7 +166,7 @@ func Validate(g *Graph) error {
 		case KindNodeMamelet:
 			s := r.NodeMamelet
 			checkNodeRef(add, r, s.Node, nodes)
-			if !sha256Re.MatchString(s.SHA256) {
+			if !names.SHA256(s.SHA256) {
 				add(r, CodeInvalidValue, "spec.sha256", fmt.Sprintf("%q is not a sha256 in lowercase hex", s.SHA256),
 					"the sha256 of the linux/amd64 mamelet binary: shasum -a 256 mamelet-linux-amd64")
 			}
@@ -171,7 +180,7 @@ func Validate(g *Graph) error {
 		case KindNodeService:
 			s := r.NodeService
 			checkNodeRef(add, r, s.Node, nodes)
-			if !serviceNameRe.MatchString(s.Service) {
+			if !names.Service(s.Service) {
 				add(r, CodeInvalidValue, "spec.service", fmt.Sprintf("%q is not a valid systemd service name", s.Service),
 					"write the unit name without \".service\", for example \"nginx\"")
 			}
@@ -195,17 +204,22 @@ func Validate(g *Graph) error {
 			}
 		}
 	}
-	for _, id := range cycles(provided) {
+	ways := cycles(provided)
+	for _, id := range slices.Sorted(maps.Keys(ways)) {
 		r := provided[id]
-		add(r, CodeCycle, "after", fmt.Sprintf("%s needs itself through after", id), "remove one of the dependencies of the cycle")
+		add(r, CodeCycle, "after", fmt.Sprintf("%s needs itself through after: %s", id, strings.Join(ways[id], " -> ")),
+			"remove one of the dependencies on that way")
 	}
+	checkUnits(g, add)
 	return newError(problems)
 }
 
-// cycles lists the resources that wait for themselves through after (sorted).
-func cycles(rs map[string]Resource) []string {
+// cycles finds the resources that wait for themselves through after, and for each the way round,
+// starting and ending at it: ["Thing a", "Thing b", "Thing a"]. A resource on several cycles has
+// the first one found (the search goes in the order of the names, so it is always the same).
+func cycles(rs map[string]Resource) map[string][]string {
 	state := map[string]int{} // 0 new, 1 on the path, 2 done
-	inCycle := map[string]bool{}
+	ways := map[string][]string{}
 	var path []string
 	var visit func(id string)
 	visit = func(id string) {
@@ -218,11 +232,14 @@ func cycles(rs map[string]Resource) []string {
 					visit(a)
 				}
 			case 1:
-				for i := len(path) - 1; i >= 0; i-- {
-					inCycle[path[i]] = true
-					if path[i] == a {
-						break
+				i := slices.Index(path, a)
+				ring := path[i:] // a ... id, and id needs a
+				for k, member := range ring {
+					if _, done := ways[member]; done {
+						continue
 					}
+					way := append(slices.Clone(ring[k:]), ring[:k]...)
+					ways[member] = append(way, member)
 				}
 			}
 		}
@@ -234,25 +251,78 @@ func cycles(rs map[string]Resource) []string {
 			visit(id)
 		}
 	}
-	return slices.Sorted(maps.Keys(inCycle))
+	return ways
+}
+
+// checkUnits refuses two declarations of one thing that contradict each other: the same systemd
+// unit of a node declared twice, once as nginx and once as nginx.service, one running and one not
+// (the revision would carry both, and the unit would be started and stopped in turn); and the
+// k3s service declared not running on a node that is declared to run k3s.
+func checkUnits(g *Graph, add addFunc) {
+	k3sNodes := map[string]bool{}
+	for _, r := range g.Resources {
+		if r.NodeK3s != nil {
+			k3sNodes[r.NodeK3s.Node] = true
+		}
+	}
+	first := map[string]Resource{} // node and unit -> the first declaration of it
+	for _, r := range g.Resources {
+		s := r.NodeService
+		if s == nil {
+			continue
+		}
+		unit := strings.TrimSuffix(s.Service, ".service")
+		if other, ok := first[s.Node+"\x00"+unit]; !ok {
+			first[s.Node+"\x00"+unit] = r
+		} else if o := other.NodeService; o.Enabled != s.Enabled || o.Running != s.Running {
+			add(r, CodeConflict, "spec", fmt.Sprintf("%s declares the unit %s as enabled=%t running=%t, but %s declares the same unit as enabled=%t running=%t",
+				r.ID(), unit, s.Enabled, s.Running, other.ID(), o.Enabled, o.Running),
+				"declare a unit once (nginx and nginx.service are the same unit), or declare it the same way each time")
+		}
+		if unit == "k3s" && !s.Running && k3sNodes[s.Node] {
+			add(r, CodeConflict, "spec.running", fmt.Sprintf("%s says k3s does not run on %s, but %s/k3s declares that it runs k3s there", r.ID(), s.Node, s.Node),
+				"declare the service running (k3s is only installed by NodeK3s; starting it is this service's job), or take NodeK3s out")
+		}
+	}
 }
 
 type addFunc func(r Resource, code Code, field, message, hint string)
 
 // ValidNodeName reports whether a machine's name can be its hostname (a DNS label): checked for a
 // provider's node kinds once the providers say which kinds are machines.
-func ValidNodeName(name string) bool { return nodeNameRe.MatchString(name) }
+func ValidNodeName(name string) bool { return names.Node(name) }
 
-func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]int) {
-	switch nodes[node] {
-	case 0:
+// checkNodeRef checks that a node resource names a resource of a provider. Which of the resources
+// of that name is a machine (a node kind) is for the providers' manifests to say, not the graph:
+// a machine "web" may have a disk "web" of another kind. Once the providers run, CheckGraph
+// (internal/provider/external) refuses a name that is two machines (MAM-GRAPH-0103) and a node
+// that is no machine.
+func checkNodeRef(add addFunc, r Resource, node string, nodes map[string]bool) {
+	if !nodes[node] {
 		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q is not declared in this graph (as a provider's machine)", node),
 			"declare the machine in the same graph, or fix the node name")
-	case 1:
-	default:
-		add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("node %q names more than one resource; a node's name must be unique", node),
-			"rename one of them")
 	}
+}
+
+// networkShape says in a few words how a spec.network differs from what the Mamela Pome's Network
+// writes (the JSON library's message names Go types, which mean nothing to a person).
+func networkShape(err error) string {
+	var sem *json.SemanticError
+	switch {
+	case errors.Is(err, json.ErrUnknownName):
+		return "it has a member other than mode, address, gateway and dns (" + lastLine(err.Error()) + ")"
+	case errors.As(err, &sem):
+		return "mode, address and gateway are strings and dns is a list of strings"
+	}
+	return "it is one object of mode, address, gateway and dns"
+}
+
+// lastLine is the part of a JSON library message that names the member.
+func lastLine(s string) string {
+	if _, after, ok := strings.Cut(s, ": "); ok {
+		return after
+	}
+	return s
 }
 
 const networkHint = "declare Dhcp, or Static(address: \"192.0.2.10/24\", gateway: \"192.0.2.1\", dns: [\"192.0.2.1\"])"

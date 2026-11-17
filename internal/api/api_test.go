@@ -206,3 +206,87 @@ func TestListen(t *testing.T) {
 	}
 	l2.Close()
 }
+
+// serveHTTP is serve with a Server the test shaped, served as mamela api serves it (HTTPServer).
+func serveHTTP(t *testing.T, s *Server) (*Client, string) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "mapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "api.sock")
+	s.Backend = &fakeBackend{approved: map[string]string{}}
+	s.WorkDir = filepath.Join(dir, "trees")
+	l, err := Listen(socket, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := s.HTTPServer(nil)
+	go hs.Serve(l)
+	t.Cleanup(func() { hs.Close() })
+	return NewClient(socket), socket
+}
+
+// Whoever can open the socket can send a request and stop. Plans, approvals and applies take turns,
+// so a request that has not arrived must hold nothing: the others go on (B9).
+func TestAStalledRequestDoesNotHoldUpTheOthers(t *testing.T) {
+	c, _, socket := serve(t)
+	stalled, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	// A plan that promises a body of 1000 bytes and sends a few.
+	if _, err := stalled.Write([]byte("POST /v1/plan HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{\"tree\":\"")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond) // the handler is reading it by now
+	// An upload of a tree stops the same way.
+	stalledTree, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalledTree.Close()
+	stalledTree.Write([]byte("POST /v1/trees HTTP/1.1\r\nHost: x\r\nContent-Type: application/gzip\r\nContent-Length: 100000\r\n\r\nxx"))
+	time.Sleep(100 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := c.Approved(ctx, "sha256:"+strings.Repeat("c", 64)); err != nil {
+		t.Fatalf("a request that was never finished held up the next one: %v", err)
+	}
+	if err := c.Approve(ctx, "sha256:"+strings.Repeat("c", 64), "github:alice", time.Hour); err != nil {
+		t.Fatalf("approve behind it: %v", err)
+	}
+}
+
+// A request has a time to arrive in; one that does not is dropped (not held for ever), and one over
+// the size limit is refused before it is read in full.
+func TestRequestsHaveReadLimits(t *testing.T) {
+	c, socket := serveHTTP(t, &Server{Mamela: "test", ReadTimeout: 300 * time.Millisecond})
+	stalled, err := net.Dial("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	stalled.Write([]byte("POST /v1/approve HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{"))
+	stalled.SetReadDeadline(time.Now().Add(8 * time.Second))
+	start := time.Now()
+	buf := make([]byte, 4096)
+	n, _ := stalled.Read(buf) // the server answers 408 or closes
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("the server waited %v for a body that did not come (%q)", d, buf[:n])
+	}
+
+	big := bytes.Repeat([]byte("x"), maxRequest+1)
+	req, _ := http.NewRequest("POST", "http://mamela/v1/approve", bytes.NewReader(big))
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a request over the limit: %d", resp.StatusCode)
+	}
+}

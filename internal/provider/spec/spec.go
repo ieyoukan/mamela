@@ -140,24 +140,9 @@ type Resolver interface {
 }
 
 // NodeOf is the machine a built-in resource lives on: its node ("" for a resource that is not on
-// one, such as a provider's own). It is the one place that knows which kinds live on a node; what
-// asks where a resource lives asks this, so a kind that is added is added here and nowhere else (a
-// test over every kind, spectest.NodeResources, fails for one that is missing).
-func NodeOf(r graph.Resource) string {
-	switch {
-	case r.NodePackage != nil:
-		return r.NodePackage.Node
-	case r.NodeService != nil:
-		return r.NodeService.Node
-	case r.NodeK3s != nil:
-		return r.NodeK3s.Node
-	case r.NodeK3sManifest != nil:
-		return r.NodeK3sManifest.Node
-	case r.NodeMamelet != nil:
-		return r.NodeMamelet.Node
-	}
-	return ""
-}
+// one, such as a provider's own). It is graph.Resource.Node, the one place that knows which kinds
+// live on a node (a test over every kind, spectest.NodeResources, fails for one that is missing).
+func NodeOf(r graph.Resource) string { return r.Node() }
 
 // fields are the resource values that templates may use.
 func fields(r graph.Resource) map[string]string {

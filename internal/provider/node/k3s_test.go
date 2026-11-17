@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -154,6 +155,9 @@ func TestK3sThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone || downloads != 2 || e.os.restarts != 1 {
 		t.Fatalf("upgrade: %+v (downloads %d, restarts %d)", rep, downloads, e.os.restarts)
 	}
+	// The node reports the release it restarted into (the plan waits for that: the declared version
+	// is part of what converges).
+	e.os.kubectl = "app\tv1.37.3+k3s1\tTrue\n"
 	e.round()
 	if k := change(t, e.plan(), "NodeK3s app/k3s"); k.Status != plan.StatusInSync {
 		t.Fatalf("k3s after the upgrade: %+v", k)
@@ -257,12 +261,15 @@ func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
 	e.applyApproved(e.plan()) // install
 	e.round()
 	e.applyApproved(e.plan()) // enable and start
-	e.os.kubectl = "app\tv1.37.2+k3s1\tTrue\nghost\tv1.37.2+k3s1\tFalse\nkeep\tv1.37.2+k3s1\tTrue\n"
+	e.os.kubectl = "app\tv1.37.2+k3s1\tTrue\nghost\tv1.37.2+k3s1\tFalse\nkeep\tv1.37.2+k3s1\tTrue\nhand\tv1.37.2+k3s1\tFalse\n"
 	e.round()
 	const id = "NodeK3s app/k3s"
+	// "ghost" was a machine Mamela made: a mamelet enrolled there once, and its last report is still
+	// recorded. "hand" was joined by hand: no mamelet ever enrolled there.
+	enrolledOnce(t, e, "ghost", 7002)
 	if k := change(t, e.plan(), id); k.Status != plan.StatusChange {
-		// "keep" is Ready and "ghost" is Not Ready; both are undeclared and have no machine: only
-		// the Not Ready one is a left-over.
+		// "keep" is Ready and "ghost" and "hand" are Not Ready; all three are undeclared and have no
+		// machine: only the Not Ready one that Mamela made is a left-over.
 		t.Fatalf("no removal planned: %+v", k)
 	}
 	p := e.plan()
@@ -278,12 +285,28 @@ func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
 		t.Fatalf("apply: %+v", rep)
 	}
 	e.granted(noderev.ActionRemove)
-	if fmt.Sprint(e.os.kubectlCalls) != "[delete node ghost]" || !strings.Contains(e.os.kubectl, "keep\t") || strings.Contains(e.os.kubectl, "ghost") {
+	if fmt.Sprint(e.os.kubectlCalls) != "[delete node ghost]" || !strings.Contains(e.os.kubectl, "keep\t") || !strings.Contains(e.os.kubectl, "hand\t") || strings.Contains(e.os.kubectl, "ghost") {
 		t.Fatalf("kubectl: %v, nodes %q", e.os.kubectlCalls, e.os.kubectl)
 	}
 	e.round()
 	if k := change(t, e.plan(), id); k.Status != plan.StatusInSync || len(k.Operations) != 0 {
 		t.Fatalf("after the removal: %+v", k)
+	}
+}
+
+// enrolledOnce records that a mamelet enrolled on node (number vmid) and reported: what is left of
+// a machine Mamela made once the machine is gone.
+func enrolledOnce(t *testing.T, e *env, name string, vmid int) {
+	t.Helper()
+	token, err := e.st.IssueEnrollToken(e.ctx, name, vmid, "seed", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.Enroll(e.ctx, token, name, vmid, "serial-"+name); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.PutNodeReport(e.ctx, noderev.Report{Node: name, VMID: vmid}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -23,6 +23,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ieyoukan/mamela/internal/names"
 )
 
 // Schema identifies the revision format.
@@ -121,7 +123,7 @@ func ManifestSHA256(content string) string {
 }
 
 // MaxManifest bounds a manifest's content (bytes).
-const MaxManifest = 64 << 10
+const MaxManifest = names.MaxManifest
 
 // K3sReleases is where k3s releases are downloaded from: <K3sReleases>/<version>/<asset>.
 const K3sReleases = "https://github.com/k3s-io/k3s/releases/download"
@@ -203,14 +205,8 @@ const (
 )
 
 var (
-	nodePattern      = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	packagePattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{0,127}$`)
-	manifestPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	servicePattern   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9@._-]{0,127}$`)
 	operationPattern = regexp.MustCompile(`^op-[0-9a-f]{24}$`)
 	k3sServerURL     = regexp.MustCompile(`^https://(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}:6443$`)
-	k3sVersion       = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
-	hexSHA256        = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
@@ -222,13 +218,13 @@ func ValidControlPlane(s string) bool {
 }
 
 // ValidNode reports whether s can be a node name.
-func ValidNode(s string) bool { return nodePattern.MatchString(s) }
+func ValidNode(s string) bool { return names.Node(s) }
 
 // ValidPackage reports whether s can be a Debian package name (and is not an option).
-func ValidPackage(s string) bool { return packagePattern.MatchString(s) }
+func ValidPackage(s string) bool { return names.Package(s) }
 
 // ValidService reports whether s can be a systemd service name (and is not an option).
-func ValidService(s string) bool { return servicePattern.MatchString(s) }
+func ValidService(s string) bool { return names.Service(s) }
 
 // Check validates the content of a revision (not its signature or validity period).
 func (r *Revision) Check() error {
@@ -299,7 +295,7 @@ func (r *Revision) Check() error {
 		}
 	}
 	if k := r.K3s; k != nil {
-		if !k3sVersion.MatchString(k.Version) || !hexSHA256.MatchString(k.SHA256) {
+		if !names.K3sVersion(k.Version) || !names.SHA256(k.SHA256) {
 			add("k3s %q / sha256 %q are not valid", k.Version, k.SHA256)
 		}
 		switch {
@@ -310,7 +306,7 @@ func (r *Revision) Check() error {
 		case k.Role != K3sServer && k.Role != K3sAgent:
 			add("k3s: role %q", k.Role)
 		}
-		if !hexSHA256.MatchString(k.Token) {
+		if !names.SHA256(k.Token) {
 			add("k3s: the token is not 64 hex digits")
 		}
 		if in := k.Install; in != nil && (!operationPattern.MatchString(in.Operation) || in.Attempt < 1 || in.Action != ActionInstall) {
@@ -322,18 +318,18 @@ func (r *Revision) Check() error {
 		switch {
 		case k.Role != K3sServer:
 			add("k3s: only a server removes Kubernetes nodes")
-		case !nodePattern.MatchString(rm.Node):
+		case !ValidNode(rm.Node):
 			add("k3s: %q is not a node name that can be removed", rm.Node)
 		case !operationPattern.MatchString(rm.Operation) || rm.Attempt < 1 || rm.Action != ActionRemove:
 			add("k3s: remove grant %+v is not valid", rm.Once)
 		}
 	}
-	if u := r.Mamelet; u != nil && (!hexSHA256.MatchString(u.SHA256) || !operationPattern.MatchString(u.Operation) || u.Attempt < 1 || u.Action != ActionUpdate) {
+	if u := r.Mamelet; u != nil && (!names.SHA256(u.SHA256) || !operationPattern.MatchString(u.Operation) || u.Attempt < 1 || u.Action != ActionUpdate) {
 		add("mamelet: update grant %+v is not valid", *u)
 	}
 	for _, m := range r.Manifests {
 		switch {
-		case !manifestPattern.MatchString(m.Name):
+		case !names.Manifest(m.Name):
 			add("manifest %q is not a valid manifest name", m.Name)
 		case seen["m/"+m.Name]:
 			add("manifest %s appears twice", m.Name)
