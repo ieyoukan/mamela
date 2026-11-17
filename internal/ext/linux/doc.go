@@ -24,6 +24,10 @@
 //	file_plan.go       NodeFile: plan, the start gate of the services it restarts, files kept
 //	file_node.go       NodeFile: the node's revision (publish, prune, protect, grant)
 //	file_mamelet.go    NodeFile: what mamelet observes and does
+//	artifact*.go       NodeArtifact, in the same layers (artifact_wire.go: its members of Part and
+//	                   Observed); artifact_mamelet.go keeps mamelet's record of what it installed
+//	download.go        downloads over https pinned by sha256, and a member of a .tar.gz: no type of
+//	                   the extension, so that another (k3s) can use them
 //
 // # Reserved for the kinds that follow
 //
@@ -35,11 +39,15 @@
 //	kind          order  operations (linux.<verb>-<object>)  plan notes           graph warnings   policy
 //	NodeUser      6      linux.create-user, ...               MAM-PLAN-0145..0149  MAM-GRAPH-0206..  MAM-POL-0221..0222
 //	NodeAptRepo   7      linux.add-apt-repo, ...              MAM-PLAN-0150..0154  ..0219           MAM-POL-0223..0224
-//	NodeArtifact  8      linux.install-artifact, ...          MAM-PLAN-0155..0159                   MAM-POL-0225..0226
+//	NodeArtifact  8      linux.install-artifact, ...          MAM-PLAN-0155..0159  MAM-GRAPH-0215..  MAM-POL-0225..0226
 //	NodeFile      9      linux.write-file                     MAM-PLAN-0140..0144  MAM-GRAPH-0203..  MAM-POL-0220
 //
 // The plan's observation problems of linux are MAM-PLAN-0210..0219 (NodeFile 0210, 0211), its
 // retained notes MAM-PLAN-0310..0319 (NodeFile 0310), its graph warnings MAM-GRAPH-0203..0219
 // (NodeFile 0203, 0204). A kind's resource is named "<node>/<kind's word><what>", like
 // "<node>/file/etc/nginx/nginx.conf".
+//
+// NodeArtifact ("<node>/artifact/usr/local/bin/node_exporter") takes MAM-PLAN-0155..0159, 0216 and
+// 0217 (observation), 0313 (retained), MAM-GRAPH-0215 (0216..0219 kept for it), MAM-POL-0225 (0226
+// kept for it).
 package linux

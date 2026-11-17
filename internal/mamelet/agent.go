@@ -143,6 +143,9 @@ type Agent struct {
 // Round fetches the revision, observes, makes the allowed changes and reports. The returned
 // report is the one sent (or that would have been sent, if the Control Plane is unreachable).
 func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
+	if a.System.StateDir == "" {
+		a.System.StateDir = a.Config.StateDir
+	}
 	st, err := a.State.Load()
 	if err != nil {
 		return noderev.Report{}, err

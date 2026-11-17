@@ -1,0 +1,11 @@
+Plan sha256:0ba4eaa04d64
+  revision  sha256:7bada6c9a547
+  observed  2026-11-17T12:01:00Z (snapshot sha256:e9bada9dfd0a)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/node_exporter  [in sync]
+= TestVM web  [in sync]  via test
+= NodeArtifact web/artifact/usr/local/bin/node_exporter  [in sync]
+
+Summary: 3 in sync.
+Nothing has been changed: a plan only describes.

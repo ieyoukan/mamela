@@ -1,0 +1,13 @@
+Plan sha256:3740d1b37223
+  revision  sha256:7bada6c9a547
+  observed  2026-11-17T12:01:00Z (snapshot sha256:5464a802be1a)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/node_exporter  [in sync]
+= TestVM web  [in sync]  via test
+! NodeArtifact web/artifact/usr/local/bin/node_exporter  [blocked]
+    MAM-PLAN-0216 mamelet does not install /usr/local/bin/node_exporter on web: /usr/local/bin/node_exporter is a symbolic link
+      hint: Mamela never follows a symbolic link: declare the real path, or replace what is there by hand
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

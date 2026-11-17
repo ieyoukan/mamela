@@ -1,0 +1,11 @@
+Plan sha256:20eae1cb02ad
+  revision  sha256:fe891f5db1bf
+  observed  2026-11-17T12:01:00Z (snapshot sha256:1fd7d84c43da)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+. NodeArtifact web/artifact/usr/local/bin/node_exporter  [waiting]
+    MAM-PLAN-0158 waits for user node-exp to be made on web (NodeUser web/user/node-exp) before /usr/local/bin/node_exporter is installed
+
+Summary: 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.
