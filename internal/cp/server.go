@@ -374,6 +374,22 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		ttl = 24 * time.Hour
 	}
 	rev.IssuedAt, rev.ExpiresAt = now.UTC(), now.Add(ttl).UTC()
+	if len(rev.Ext) > 0 {
+		// An extension's part goes only to a mamelet whose latest report says it takes the extension
+		// (noderev's ext.go). Publish keeps it so; this holds also between a mamelet that went back to
+		// an older release (its update failed) and the next plan: that mamelet would refuse the whole
+		// revision for a member it does not know.
+		nr, reported, err := s.Store.NodeReportOf(r.Context(), a.Node)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "could not read the node's report")
+			return
+		}
+		for name := range rev.Ext {
+			if !reported || nr.Report.Extensions[name] < 1 {
+				delete(rev.Ext, name)
+			}
+		}
+	}
 	// The validity period is renewed on every fetch, so it cannot end a grant: each grant has its own
 	// deadline (set when it was issued), and one past it is not handed out.
 	signed, err := noderev.Sign(s.PKI.RevisionKey, rev.ForMamelet(now))
