@@ -7,10 +7,15 @@ package mamelet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -30,12 +35,16 @@ const (
 	progAptGet    = "/usr/bin/apt-get"
 	progSystemctl = "/usr/bin/systemctl"
 	progMameletNx = noderev.MameletNextPath // a staged update, only to run it with -version (update.go)
-	progK3s       = "/usr/local/bin/k3s"    // kubectl on the server: list nodes (K3sNodes); cordon, drain, delete one (RemoveK3sNode)
 )
 
-// Programs are the only programs mamelet runs (ExecRunner refuses any other), sorted.
+// Programs are the only programs mamelet runs (ExecRunner refuses any other), sorted: the core's
+// and the compiled-in extensions' (k3s runs /usr/local/bin/k3s, for kubectl).
 func Programs() []string {
-	return slices.Sorted(slices.Values([]string{progDpkgQuery, progAptGet, progSystemctl, progK3s, progMameletNx}))
+	ps := []string{progDpkgQuery, progAptGet, progSystemctl, progMameletNx}
+	for _, e := range extensions {
+		ps = append(ps, e.Programs...)
+	}
+	return slices.Compact(slices.Sorted(slices.Values(ps)))
 }
 
 // ExecRunner runs programs directly (no shell), with a minimal environment.
@@ -75,6 +84,12 @@ type System struct {
 	selfSHA  string
 	// Addresses overrides how the node's IPv4 addresses are read (tests).
 	Addresses func() []string
+}
+
+// Run runs one of the programs mamelet runs (Programs), with args and env, and returns its output;
+// an exit code other than 0 is an error that says the last lines it wrote.
+func (s *System) Run(ctx context.Context, program string, args []string, env ...string) (string, error) {
+	return s.run(ctx, program, args, env...)
 }
 
 func (s *System) run(ctx context.Context, program string, args []string, env ...string) (string, error) {
@@ -303,4 +318,45 @@ func (s *System) Stop(ctx context.Context, name string) error {
 	}
 	_, err := s.run(ctx, progSystemctl, []string{"stop", "--", name})
 	return err
+}
+
+// Path is where p (an absolute path on the node) is under Root.
+func (s *System) Path(p string) string { return filepath.Join(s.Root, p) }
+
+// WriteFile replaces the file at path with data, atomically, with mode.
+func WriteFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".mamelet-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// FileSHA256 is the sha256 (hex) of the file at p.
+func FileSHA256(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }

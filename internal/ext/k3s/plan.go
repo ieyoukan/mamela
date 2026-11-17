@@ -1,4 +1,4 @@
-package plan
+package k3s
 
 import (
 	"fmt"
@@ -7,41 +7,44 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/noderev"
+	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/state"
 )
 
 func init() {
-	Register(Extension{
+	plan.Register(plan.Extension{
 		Name: "k3s",
-		Planners: map[graph.Kind]Planner{
-			graph.KindNodeK3s: {
-				Plan: func(k *Kit, r graph.Resource) Change {
+		Planners: map[graph.Kind]plan.Planner{
+			KindK3s: {
+				Plan: func(k *plan.Kit, r graph.Resource) plan.Change {
 					p := k3sPlanner{k}
 					c := p.k3s(r)
 					c.Warnings = p.rollbackWarnings(r)
 					return c
 				},
-				Reported: func(k *Kit, r graph.Resource) bool { _, ok := k.Snapshot().K3s[r.Name]; return ok },
+				Reported: func(k *plan.Kit, r graph.Resource) bool { _, ok := k.Snapshot().K3s[r.Name]; return ok },
 				Deleted:  deletedNodes,
 			},
-			graph.KindNodeK3sManifest: {
-				Plan:     func(k *Kit, r graph.Resource) Change { return k3sPlanner{k}.k3sManifest(r) },
-				Reported: func(k *Kit, r graph.Resource) bool { _, ok := k.Snapshot().K3sManifests[r.Name]; return ok },
+			KindManifest: {
+				Plan:     func(k *plan.Kit, r graph.Resource) plan.Change { return k3sPlanner{k}.k3sManifest(r) },
+				Reported: func(k *plan.Kit, r graph.Resource) bool { _, ok := k.Snapshot().K3sManifests[r.Name]; return ok },
 			},
 		},
-		RestartGate: func(k *Kit, machine graph.Resource) *Note { return k3sPlanner{k}.machineRestartGate(machine) },
-		StartGate:   func(k *Kit, node, service string) *Note { return k3sPlanner{k}.serviceStartGate(node, service) },
+		RestartGate: func(k *plan.Kit, machine graph.Resource) *plan.Note { return k3sPlanner{k}.machineRestartGate(machine) },
+		StartGate: func(k *plan.Kit, node, service string) *plan.Note {
+			return k3sPlanner{k}.serviceStartGate(node, service)
+		},
 		Codes: []string{"MAM-PLAN-0108", "MAM-PLAN-0109", "MAM-PLAN-0112", "MAM-PLAN-0115", "MAM-PLAN-0116", "MAM-PLAN-0117",
 			"MAM-PLAN-0118", "MAM-PLAN-0121", "MAM-PLAN-0204", "MAM-PLAN-0401"},
 	})
 }
 
 // k3sPlanner plans k3s through the core's kit.
-type k3sPlanner struct{ *Kit }
+type k3sPlanner struct{ *plan.Kit }
 
 // deletedNodes names the Kubernetes nodes a change of a k3s server deletes.
-func deletedNodes(c Change) []string {
+func deletedNodes(c plan.Change) []string {
 	var out []string
 	for _, d := range c.Diffs {
 		if d.Field == "remove-node" {
@@ -55,31 +58,31 @@ func deletedNodes(c Change) []string {
 // or the machine runs none). The machines of a cluster are restarted one at a time (the agents in
 // the order of their names, the server last), and only while every Kubernetes node is Ready: a
 // plan that restarts them all at once would take the cluster down.
-func (b k3sPlanner) machineRestartGate(r graph.Resource) *Note {
-	var mine *graph.NodeK3sSpec
+func (b k3sPlanner) machineRestartGate(r graph.Resource) *plan.Note {
+	var mine *Spec
 	for _, o := range b.Resources() {
-		if graph.K3sOf(o) != nil && graph.K3sOf(o).Node == r.Name {
-			mine = graph.K3sOf(o)
+		if SpecOf(o) != nil && SpecOf(o).Node == r.Name {
+			mine = SpecOf(o)
 		}
 	}
 	if mine == nil || !b.Snapshot().K3s[mine.Node+"/k3s"].Running {
 		return nil
 	}
 	server := mine.Server
-	if mine.Role == graph.K3sServer {
+	if mine.Role == RoleServer {
 		server = mine.Node
 	}
 	for _, o := range b.Resources() {
-		k := graph.K3sOf(o)
+		k := SpecOf(o)
 		if k == nil || !restartsBefore(k, mine) || (k.Node != server && k.Server != server) {
 			continue
 		}
 		if b.MachineRestarts(k.Node) {
-			return &Note{Code: "MAM-PLAN-0118", Message: fmt.Sprintf("waits for machine %s to be restarted before %s (the machines of a cluster are restarted one at a time)", k.Node, r.Name),
+			return &plan.Note{Code: "MAM-PLAN-0118", Message: fmt.Sprintf("waits for machine %s to be restarted before %s (the machines of a cluster are restarted one at a time)", k.Node, r.Name),
 				Hint: "apply the plan that restarts it, then plan again"}
 		}
 	}
-	nodes := b.declaredNodes(b.Snapshot().K3s[server+"/k3s"].Nodes, &graph.NodeK3sSpec{Node: server, Role: graph.K3sServer})
+	nodes := b.declaredNodes(b.Snapshot().K3s[server+"/k3s"].Nodes, &Spec{Node: server, Role: RoleServer})
 	var notReady []string
 	for _, n := range nodes {
 		if !n.Ready {
@@ -88,10 +91,10 @@ func (b k3sPlanner) machineRestartGate(r graph.Resource) *Note {
 	}
 	switch {
 	case len(nodes) == 0:
-		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before machine %s is restarted", r.Name),
+		return &plan.Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before machine %s is restarted", r.Name),
 			Hint: "the server reports them while it runs; if it never does, look at k3s on the server"}
 	case len(notReady) > 0:
-		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before machine %s is restarted (not Ready: %s)", r.Name, strings.Join(notReady, ", ")),
+		return &plan.Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before machine %s is restarted (not Ready: %s)", r.Name, strings.Join(notReady, ", ")),
 			Hint: "a restart goes on only on a healthy cluster; find out why the node is not Ready"}
 	}
 	return nil
@@ -99,38 +102,38 @@ func (b k3sPlanner) machineRestartGate(r graph.Resource) *Note {
 
 // restartsBefore is whether the machine of k3s node k is restarted before the machine of node
 // mine: the agents come first, in the order of their names, and the server is the last.
-func restartsBefore(k, mine *graph.NodeK3sSpec) bool {
-	if kServer, mineServer := k.Role == graph.K3sServer, mine.Role == graph.K3sServer; kServer != mineServer {
+func restartsBefore(k, mine *Spec) bool {
+	if kServer, mineServer := k.Role == RoleServer, mine.Role == RoleServer; kServer != mineServer {
 		return mineServer
 	}
 	return k.Node < mine.Node
 }
 
 // k3s plans a k3s server on a node from mamelet's report of it.
-func (b k3sPlanner) k3s(r graph.Resource) Change {
-	want := graph.K3sOf(r)
-	c := NewChange(r)
+func (b k3sPlanner) k3s(r graph.Resource) plan.Change {
+	want := SpecOf(r)
+	c := plan.NewChange(r)
 	if ok, note := b.NodeReady(want.Node); !ok {
-		c.Status, c.Note = StatusWaiting, note
+		c.Status, c.Note = plan.StatusWaiting, note
 		return c
 	}
 	got, observed := b.Snapshot().K3s[r.Name]
 	switch {
 	case !observed:
-		c.Status, c.Note = b.AwaitAgent(want.Node, &Note{Code: "MAM-PLAN-0108",
+		c.Status, c.Note = b.AwaitAgent(want.Node, &plan.Note{Code: "MAM-PLAN-0108",
 			Message: fmt.Sprintf("waits for the agent on %s to report k3s", want.Node)})
 		return c
 	case b.Stale(got.ObservedAt):
-		c.Status, c.Note = StatusBlocked, b.StaleNote(got.ObservedAt)
+		c.Status, c.Note = plan.StatusBlocked, b.StaleNote(got.ObservedAt)
 		return c
 	case got.Error != "":
-		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0204",
+		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: "MAM-PLAN-0204",
 			Message: fmt.Sprintf("the agent on %s cannot observe k3s: %s", want.Node, got.Error),
 			Hint:    "fix it on the node, then plan again"}
 		return c
 	case got.Installed && got.SHA256 == want.SHA256 && !got.Stale:
 		if note := b.k3sVersionNote(r, got); note != nil {
-			c.Status, c.Note = StatusWaiting, note
+			c.Status, c.Note = plan.StatusWaiting, note
 			return c
 		}
 		return b.retireNode(r, got, b.WithOps(c))
@@ -141,18 +144,18 @@ func (b k3sPlanner) k3s(r graph.Resource) Change {
 	upgrade := got.Running
 	if got.SHA256 != "" {
 		if note := b.upgradeGate(r, got); note != nil {
-			c.Status, c.Note = StatusWaiting, note
+			c.Status, c.Note = plan.StatusWaiting, note
 			return c
 		}
 	}
 	server := ""
-	if want.Role == graph.K3sAgent && b.StaticIP(want.Server) != "" {
+	if want.Role == RoleAgent && b.StaticIP(want.Server) != "" {
 		// The server's declared address: an agent never waits for, or follows, what is reported.
-		server = graph.K3sServerURL(b.StaticIP(want.Server))
-	} else if want.Role == graph.K3sAgent {
+		server = ServerURL(b.StaticIP(want.Server))
+	} else if want.Role == RoleAgent {
 		srv := b.Snapshot().K3s[want.Server+"/k3s"]
 		if len(srv.Addresses) == 0 {
-			c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0109",
+			c.Status, c.Note = plan.StatusWaiting, &plan.Note{Code: "MAM-PLAN-0109",
 				Message: fmt.Sprintf("waits for the k3s server %s to report its address", want.Server)}
 			return c
 		}
@@ -161,21 +164,21 @@ func (b k3sPlanner) k3s(r graph.Resource) Change {
 	// The diff says exactly what is approved: the release, the binary's sha256, where it comes
 	// from, how it runs and, for an agent, the server it joins. The join token is made by the
 	// Control Plane and given only to the cluster's nodes; it is never shown.
-	c.Diffs = []Diff{{"version", b.k3sRunning(r, got), want.Version}, {"sha256", got.SHA256, want.SHA256},
-		{"from", "", noderev.K3sReleases + "/" + noderev.K3sTag(want.Version) + "/k3s (k3s-arm64 on arm64)"},
-		{"role", "", string(want.Role)}}
+	c.Diffs = []plan.Diff{diff("version", b.k3sRunning(r, got), want.Version), diff("sha256", got.SHA256, want.SHA256),
+		diff("from", "", noderev.K3sReleases+"/"+noderev.K3sTag(want.Version)+"/k3s (k3s-arm64 on arm64)"),
+		diff("role", "", string(want.Role))}
 	if server != "" {
 		// Always shown, changed or not: the grant checks the server in the revision against this
 		// approved value, so it is what the approval says the agent joins.
-		c.Diffs = append(c.Diffs, Diff{"server", got.Server, server})
+		c.Diffs = append(c.Diffs, diff("server", got.Server, server))
 	}
-	c.Diffs = append(c.Diffs, Diff{"runs", "", "/usr/local/bin/k3s " + strings.Join(noderev.K3sArgs(string(want.Role), server), " ")},
-		Diff{"token", "", "the cluster's join token, made by the Control Plane, in " + noderev.K3sTokenFile + " (0600)"})
+	c.Diffs = append(c.Diffs, diff("runs", "", "/usr/local/bin/k3s "+strings.Join(noderev.K3sArgs(string(want.Role), server), " ")),
+		diff("token", "", "the cluster's join token, made by the Control Plane, in "+noderev.K3sTokenFile+" (0600)"))
 	if upgrade {
-		c.Diffs = append(c.Diffs, Diff{"restart", "", "k3s on " + want.Node + " restarts into this release; its Kubernetes node is not Ready for a while"})
-		return b.WithOps(c, policy.Subject{Op: policy.OpUpgradeK3s})
+		c.Diffs = append(c.Diffs, diff("restart", "", "k3s on "+want.Node+" restarts into this release; its Kubernetes node is not Ready for a while"))
+		return b.WithOps(c, policy.Subject{Op: OpUpgrade})
 	}
-	return b.WithOps(c, policy.Subject{Op: policy.OpInstallK3s})
+	return b.WithOps(c, policy.Subject{Op: OpInstall})
 }
 
 // retireNode adds to the plan of a k3s server that is in sync the removal of a Kubernetes node
@@ -186,15 +189,15 @@ func (b k3sPlanner) k3s(r graph.Resource) Change {
 // node, a node whose machine still exists, and a cluster whose node names do not include the
 // server's own are never touched. It is a deletion:
 // the policy's removal = retain keeps it, and only the Control Plane's host approves it.
-func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c Change) Change {
-	want := graph.K3sOf(r)
-	if want.Role != graph.K3sServer || !got.Running || !b.Policy().Deletes() ||
+func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c plan.Change) plan.Change {
+	want := SpecOf(r)
+	if want.Role != RoleServer || !got.Running || !b.Policy().Deletes() ||
 		!slices.ContainsFunc(got.Nodes, func(n state.K3sNode) bool { return n.Name == want.Node }) {
 		return c
 	}
 	declared := map[string]bool{}
 	for _, o := range b.Resources() {
-		if k := graph.K3sOf(o); k != nil && (k.Node == want.Node || k.Server == want.Node) {
+		if k := SpecOf(o); k != nil && (k.Node == want.Node || k.Server == want.Node) {
 			declared[k.Node] = true
 		}
 	}
@@ -216,11 +219,11 @@ func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c Change) Change
 			continue
 		}
 		// The approval names the node: the grant takes it from this diff, and no other.
-		c.Diffs = append(c.Diffs, Diff{"remove-node", "", n.Name}, Diff{"remove-node because", "", why})
-		d := b.Decide(policy.Subject{Op: policy.OpRemoveK3sNode})
-		c.Status = StatusChange
+		c.Diffs = append(c.Diffs, diff("remove-node", "", n.Name), diff("remove-node because", "", why))
+		d := b.Decide(policy.Subject{Op: OpRemoveNode})
+		c.Status = plan.StatusChange
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
-		c.Operations = append(c.Operations, Operation{Op: policy.OpRemoveK3sNode, Decision: d, Late: true, Deletes: true})
+		c.Operations = append(c.Operations, plan.Operation{Op: OpRemoveNode, Decision: d, Late: true, Deletes: true})
 		return c
 	}
 	return c
@@ -228,24 +231,24 @@ func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c Change) Change
 
 // k3sManifest plans a manifest file in a k3s server's auto-deploy directory. Its whole content is
 // in the diff: that is what is approved, and what k3s then applies with cluster-admin rights.
-func (b k3sPlanner) k3sManifest(r graph.Resource) Change {
-	want := graph.K3sManifestOf(r)
-	c := NewChange(r)
+func (b k3sPlanner) k3sManifest(r graph.Resource) plan.Change {
+	want := ManifestOf(r)
+	c := plan.NewChange(r)
 	if ok, note := b.NodeReady(want.Node); !ok {
-		c.Status, c.Note = StatusWaiting, note
+		c.Status, c.Note = plan.StatusWaiting, note
 		return c
 	}
 	got, observed := b.Snapshot().K3sManifests[r.Name]
 	switch {
 	case !observed:
-		c.Status, c.Note = b.AwaitAgent(want.Node, &Note{Code: "MAM-PLAN-0117",
+		c.Status, c.Note = b.AwaitAgent(want.Node, &plan.Note{Code: "MAM-PLAN-0117",
 			Message: fmt.Sprintf("waits for the agent on %s to report the manifest %s", want.Node, want.Name)})
 		return c
 	case b.Stale(got.ObservedAt):
-		c.Status, c.Note = StatusBlocked, b.StaleNote(got.ObservedAt)
+		c.Status, c.Note = plan.StatusBlocked, b.StaleNote(got.ObservedAt)
 		return c
 	case got.Error != "":
-		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0204",
+		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: "MAM-PLAN-0204",
 			Message: fmt.Sprintf("the agent on %s cannot observe the manifest %s: %s", want.Node, want.Name, got.Error),
 			Hint:    "fix it on the node, then plan again"}
 		return c
@@ -254,9 +257,9 @@ func (b k3sPlanner) k3sManifest(r graph.Resource) Change {
 	if got.SHA256 == sum {
 		return b.WithOps(c)
 	}
-	c.Diffs = []Diff{{"file", "", noderev.K3sManifestDir + "/" + noderev.K3sManifestFile(want.Name)},
-		{"sha256", got.SHA256, sum}, {"content", "", want.Content}}
-	return b.WithOps(c, policy.Subject{Op: policy.OpWriteK3sManifest})
+	c.Diffs = []plan.Diff{diff("file", "", noderev.K3sManifestDir+"/"+noderev.K3sManifestFile(want.Name)),
+		diff("sha256", got.SHA256, sum), diff("content", "", want.Content)}
+	return b.WithOps(c, policy.Subject{Op: OpWriteManifest})
 }
 
 // rollbackWarnMinors is how many minor releases back a declaration may take a running k3s before
@@ -266,13 +269,13 @@ const rollbackWarnMinors = 7
 
 // rollbackWarning says that a declared release is a rollback of rollbackWarnMinors minor releases
 // or more from the release that runs (nil when it is not, or when it is not known).
-func rollbackWarning(want *graph.NodeK3sSpec, running string) *Note {
-	d, okD := graph.ParseRelease(want.Version)
-	n, okN := graph.ParseRelease(running)
+func rollbackWarning(want *Spec, running string) *plan.Note {
+	d, okD := ParseRelease(want.Version)
+	n, okN := ParseRelease(running)
 	if !okD || !okN || (n.Major == d.Major && n.Minor-d.Minor < rollbackWarnMinors) || n.Major < d.Major {
 		return nil
 	}
-	return &Note{Code: "MAM-PLAN-0401",
+	return &plan.Note{Code: "MAM-PLAN-0401",
 		Message: fmt.Sprintf("k3s on %s runs %s and the declaration takes it back to %s, a rollback of %s: Kubernetes does not support downgrades, and what the newer release stored the older may not read",
 			want.Node, running, want.Version, rollbackSize(n, d)),
 		Hint: "if this is a typo, fix the version and the sha256; to really go back, restore the cluster from a snapshot taken at that release (Mamela does not roll a cluster back)"}
@@ -280,18 +283,18 @@ func rollbackWarning(want *graph.NodeK3sSpec, running string) *Note {
 
 // rollbackWarnings are the warnings of a k3s that runs, whose declared release is another binary
 // (an upgrade in place that takes it far back), whether the upgrade is planned or waits.
-func (b k3sPlanner) rollbackWarnings(r graph.Resource) []Note {
+func (b k3sPlanner) rollbackWarnings(r graph.Resource) []plan.Note {
 	got, ok := b.Snapshot().K3s[r.Name]
-	if !ok || !got.Running || got.SHA256 == graph.K3sOf(r).SHA256 {
+	if !ok || !got.Running || got.SHA256 == SpecOf(r).SHA256 {
 		return nil
 	}
-	if w := rollbackWarning(graph.K3sOf(r), b.k3sRunning(r, got)); w != nil {
-		return []Note{*w}
+	if w := rollbackWarning(SpecOf(r), b.k3sRunning(r, got)); w != nil {
+		return []plan.Note{*w}
 	}
 	return nil
 }
 
-func rollbackSize(n, d graph.Release) string {
+func rollbackSize(n, d Release) string {
 	if n.Major != d.Major {
 		return fmt.Sprintf("%d major releases", n.Major-d.Major)
 	}
@@ -305,23 +308,23 @@ func rollbackSize(n, d graph.Release) string {
 // sha256 of the declaration are of different releases (a version changed, the sha256 forgotten).
 // The kubelet may report "v1.37.2" for "v1.37.2+k3s1": the k3s revision counts only when it is
 // reported.
-func (b k3sPlanner) k3sVersionNote(r graph.Resource, got state.K3s) *Note {
-	want := graph.K3sOf(r)
+func (b k3sPlanner) k3sVersionNote(r graph.Resource, got state.K3s) *plan.Note {
+	want := SpecOf(r)
 	if !got.Running {
 		return nil // what the node last said is from before it stopped
 	}
-	if want.Role == graph.K3sAgent {
+	if want.Role == RoleAgent {
 		if srv, ok := b.Snapshot().K3s[want.Server+"/k3s"]; !ok || b.Stale(srv.ObservedAt) {
 			return nil // the server's view of the nodes is not current
 		}
 	}
 	reported := b.k3sRunning(r, got)
-	d, okD := graph.ParseRelease(want.Version)
-	n, okN := graph.ParseRelease(reported)
+	d, okD := ParseRelease(want.Version)
+	n, okN := ParseRelease(reported)
 	if !okD || !okN || d.Compare(n) == 0 {
 		return nil
 	}
-	return &Note{Code: "MAM-PLAN-0121",
+	return &plan.Note{Code: "MAM-PLAN-0121",
 		Message: fmt.Sprintf("the declaration says k3s on %s is %s, and the binary on it is the declared one (sha256 %s), but its Kubernetes node reports %s",
 			want.Node, want.Version, want.SHA256[:12], reported),
 		Hint: "if the node has only just restarted, plan again in a minute; if it stays, the version and the sha256 do not belong together: " +
@@ -329,7 +332,7 @@ func (b k3sPlanner) k3sVersionNote(r graph.Resource, got state.K3s) *Note {
 }
 
 // k3sCurrent is whether a node's k3s is what its declaration says: the declared binary, running.
-func k3sCurrent(got state.K3s, want *graph.NodeK3sSpec) bool {
+func k3sCurrent(got state.K3s, want *Spec) bool {
 	return got.Installed && got.SHA256 == want.SHA256 && !got.Stale
 }
 
@@ -337,11 +340,11 @@ func k3sCurrent(got state.K3s, want *graph.NodeK3sSpec) bool {
 // unknown).
 func (b k3sPlanner) k3sRunning(r graph.Resource, got state.K3s) string {
 	nodes := got.Nodes
-	if graph.K3sOf(r).Role == graph.K3sAgent {
-		nodes = b.Snapshot().K3s[graph.K3sOf(r).Server+"/k3s"].Nodes
+	if SpecOf(r).Role == RoleAgent {
+		nodes = b.Snapshot().K3s[SpecOf(r).Server+"/k3s"].Nodes
 	}
 	for _, n := range nodes {
-		if n.Name == graph.K3sOf(r).Node {
+		if n.Name == SpecOf(r).Node {
 			return n.Version
 		}
 	}
@@ -354,28 +357,28 @@ func (b k3sPlanner) k3sRunning(r graph.Resource, got state.K3s) string {
 // the agents one at a time (in the order of their names), and each step only while every
 // Kubernetes node is Ready, as the server sees it: a restart on top of an unhealthy cluster would
 // take more of it down.
-func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *Note {
-	want := graph.K3sOf(r)
+func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *plan.Note {
+	want := SpecOf(r)
 	nodes := got.Nodes
-	if want.Role == graph.K3sAgent {
+	if want.Role == RoleAgent {
 		srv, ok := b.Snapshot().K3s[want.Server+"/k3s"]
 		for _, other := range b.Resources() {
-			o := graph.K3sOf(other)
+			o := SpecOf(other)
 			if o == nil || o.Node != want.Server {
 				continue
 			}
 			if !ok || b.Stale(srv.ObservedAt) || !k3sCurrent(srv, o) {
-				return &Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s server %s to run its declared release before %s is upgraded (an agent never runs a newer release than its server)", want.Server, want.Node),
+				return &plan.Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s server %s to run its declared release before %s is upgraded (an agent never runs a newer release than its server)", want.Server, want.Node),
 					Hint: "the server's upgrade comes first in this or an earlier plan"}
 			}
 		}
 		for _, other := range b.Resources() {
-			o := graph.K3sOf(other)
-			if !got.Running || o == nil || o.Role != graph.K3sAgent || o.Server != want.Server || o.Node >= want.Node {
+			o := SpecOf(other)
+			if !got.Running || o == nil || o.Role != RoleAgent || o.Server != want.Server || o.Node >= want.Node {
 				continue
 			}
 			if og, seen := b.Snapshot().K3s[other.Name]; seen && og.Running && !k3sCurrent(og, o) {
-				return &Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s agent %s to be upgraded before %s (agents are upgraded one at a time)", o.Node, want.Node)}
+				return &plan.Note{Code: "MAM-PLAN-0116", Message: fmt.Sprintf("waits for the k3s agent %s to be upgraded before %s (agents are upgraded one at a time)", o.Node, want.Node)}
 			}
 		}
 		nodes = srv.Nodes
@@ -392,10 +395,10 @@ func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *Note {
 	}
 	switch {
 	case len(nodes) == 0:
-		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before k3s on %s is restarted", want.Node),
+		return &plan.Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for the k3s server to report its Kubernetes nodes before k3s on %s is restarted", want.Node),
 			Hint: "the server reports them while it runs; if it never does, look at k3s on the server"}
 	case len(notReady) > 0:
-		return &Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before k3s on %s is restarted (not Ready: %s)", want.Node, strings.Join(notReady, ", ")),
+		return &plan.Note{Code: "MAM-PLAN-0115", Message: fmt.Sprintf("waits for every Kubernetes node to be Ready before k3s on %s is restarted (not Ready: %s)", want.Node, strings.Join(notReady, ", ")),
 			Hint: "an upgrade goes on only on a healthy cluster; find out why the node is not Ready"}
 	}
 	return nil
@@ -406,14 +409,14 @@ func (b k3sPlanner) upgradeGate(r graph.Resource, got state.K3s) *Note {
 // left its node behind, or one joined by hand) is not Mamela's to wait for: it would stop every
 // upgrade for good. When no name matches at all (the Kubernetes node names are not the declared
 // ones), nothing is dropped: the gate stays as careful as it can be.
-func (b k3sPlanner) declaredNodes(nodes []state.K3sNode, want *graph.NodeK3sSpec) []state.K3sNode {
+func (b k3sPlanner) declaredNodes(nodes []state.K3sNode, want *Spec) []state.K3sNode {
 	server := want.Server
-	if want.Role == graph.K3sServer {
+	if want.Role == RoleServer {
 		server = want.Node
 	}
 	declared := map[string]bool{}
 	for _, r := range b.Resources() {
-		if o := graph.K3sOf(r); o != nil && (o.Node == server || o.Server == server) {
+		if o := SpecOf(r); o != nil && (o.Node == server || o.Server == server) {
 			declared[o.Node] = true
 		}
 	}
@@ -431,10 +434,10 @@ func (b k3sPlanner) declaredNodes(nodes []state.K3sNode, want *graph.NodeK3sSpec
 
 // serviceStartGate says what the start of a service waits for: a k3s agent starts only once its
 // server runs (its start waits for the server, Type=notify, and would hold its mamelet until then).
-func (b k3sPlanner) serviceStartGate(node, service string) *Note {
+func (b k3sPlanner) serviceStartGate(node, service string) *plan.Note {
 	if server := b.k3sServerOf(node, service); server != "" {
 		if srv, ok := b.Snapshot().Services[server+"/k3s"]; !ok || !srv.Running {
-			return &Note{Code: "MAM-PLAN-0112",
+			return &plan.Note{Code: "MAM-PLAN-0112",
 				Message: fmt.Sprintf("waits for the k3s server %s to run before starting the agent on %s", server, node)}
 		}
 	}
@@ -447,9 +450,11 @@ func (b k3sPlanner) k3sServerOf(node, service string) string {
 		return ""
 	}
 	for _, r := range b.Resources() {
-		if graph.K3sOf(r) != nil && graph.K3sOf(r).Node == node && graph.K3sOf(r).Role == graph.K3sAgent {
-			return graph.K3sOf(r).Server
+		if SpecOf(r) != nil && SpecOf(r).Node == node && SpecOf(r).Role == RoleAgent {
+			return SpecOf(r).Server
 		}
 	}
 	return ""
 }
+
+func diff(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }

@@ -17,6 +17,9 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
+
+	// The node extensions Mamela is built with (docs/design/node-extensions.md).
+	_ "github.com/ieyoukan/mamela/internal/ext/k3s"
 )
 
 // version is set at build time (-ldflags "-X main.version=...").

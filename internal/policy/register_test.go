@@ -11,7 +11,7 @@ func TestRegisterOpRefuses(t *testing.T) {
 		"no verdict":       func() { RegisterOp("x", "x-op", Decision{"", "MAM-POL-0902", "runs", ""}) },
 		"a core operation": func() { RegisterOp("x", OpStartService, ok) },
 		"a core code":      func() { RegisterOp("x", "x-op", Decision{ApprovalRequired, "MAM-POL-0204", "x", ""}) },
-		"another's op":     func() { RegisterOp("x", OpInstallK3s, ok) },
+		"another's op":     func() { RegisterOp("x", Op("install-k3s"), ok) },
 		"another's code":   func() { RegisterOp("x", "x-op", Decision{Denied, "MAM-POL-0210", "x", ""}) },
 		"no owner":         func() { RegisterOp("", "x-op", ok) },
 		"no code":          func() { RegisterOp("x", "x-op", Decision{ApprovalRequired, "", "x", ""}) },
@@ -28,7 +28,7 @@ func TestRegisterOpRefuses(t *testing.T) {
 	if d := Default.Decide(Subject{Op: "x-op"}); d.Code != "MAM-POL-0399" {
 		t.Errorf("a refused registration is known: %+v", d)
 	}
-	for _, op := range []Op{OpInstallK3s, OpRemoveK3sNode, OpUpdateMamelet} {
+	for _, op := range []Op{Op("install-k3s"), Op("remove-k3s-node"), OpUpdateMamelet} {
 		if !contains(Ops(), op) {
 			t.Errorf("Ops lacks %s", op)
 		}

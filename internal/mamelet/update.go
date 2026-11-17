@@ -58,7 +58,7 @@ func (s *System) SelfSHA256() (string, error) {
 	if p == "" {
 		p = "/proc/self/exe"
 	}
-	sum, err := fileSHA256(p)
+	sum, err := FileSHA256(p)
 	if err != nil {
 		return "", err
 	}
@@ -76,8 +76,8 @@ func (s *System) StageMamelet(ctx context.Context, data []byte, want string) err
 	case len(data) == 0 || len(data) > noderev.MaxMamelet:
 		return fmt.Errorf("the binary is %d bytes (at most %d)", len(data), noderev.MaxMamelet)
 	}
-	next := s.path(noderev.MameletNextPath)
-	if err := writeK3sFile(next, data, 0o755); err != nil {
+	next := s.Path(noderev.MameletNextPath)
+	if err := WriteFile(next, data, 0o755); err != nil {
 		return err
 	}
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -95,12 +95,12 @@ func (s *System) StageMamelet(ctx context.Context, data []byte, want string) err
 
 // SwapMamelet keeps the running binary as mamelet.prev and puts the staged one in its place.
 func (s *System) SwapMamelet() error {
-	cur, prev, next := s.path(noderev.MameletPath), s.path(noderev.MameletPrevPath), s.path(noderev.MameletNextPath)
+	cur, prev, next := s.Path(noderev.MameletPath), s.Path(noderev.MameletPrevPath), s.Path(noderev.MameletNextPath)
 	data, err := os.ReadFile(cur)
 	if err != nil {
 		return err
 	}
-	if err := writeK3sFile(prev, data, 0o755); err != nil {
+	if err := WriteFile(prev, data, 0o755); err != nil {
 		return err
 	}
 	return os.Rename(next, cur)
@@ -108,11 +108,11 @@ func (s *System) SwapMamelet() error {
 
 // RestoreMamelet puts mamelet.prev back in place.
 func (s *System) RestoreMamelet() error {
-	data, err := os.ReadFile(s.path(noderev.MameletPrevPath))
+	data, err := os.ReadFile(s.Path(noderev.MameletPrevPath))
 	if err != nil {
 		return fmt.Errorf("no previous mamelet to go back to: %w", err)
 	}
-	return writeK3sFile(s.path(noderev.MameletPath), data, 0o755)
+	return WriteFile(s.Path(noderev.MameletPath), data, 0o755)
 }
 
 // updateMamelet carries out an approved update: fetch, stage, swap. It reports how it went through

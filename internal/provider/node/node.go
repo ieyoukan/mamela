@@ -91,23 +91,10 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			}
 			snap.Mamelets[r.Node+"/mamelet"] = state.Mamelet{SHA256: r.MameletSHA256, Version: r.Version, ObservedAt: nr.Received}
 		}
-		for _, m := range r.Manifests {
-			if snap.K3sManifests == nil {
-				snap.K3sManifests = map[string]state.K3sManifest{}
+		for _, e := range extensions {
+			if e.Observe != nil {
+				e.Observe(r, nr.Received, &snap)
 			}
-			snap.K3sManifests[r.Node+"/manifest/"+m.Name] = state.K3sManifest{SHA256: m.SHA256, Error: m.Error, ObservedAt: nr.Received}
-		}
-		if k := r.K3s; k != nil {
-			if snap.K3s == nil {
-				snap.K3s = map[string]state.K3s{}
-			}
-			var nodes []state.K3sNode
-			for _, n := range k.Nodes {
-				nodes = append(nodes, state.K3sNode{Name: n.Name, Version: n.Version, Ready: n.Ready})
-			}
-			snap.K3s[r.Node+"/k3s"] = state.K3s{Installed: k.Installed, SHA256: k.SHA256, Error: k.Error, Server: k.Server,
-				Running: k.Running, Stale: k.Stale, Nodes: nodes,
-				Addresses: slices.Sorted(slices.Values(k.Addresses)), ObservedAt: nr.Received}
 		}
 	}
 	return snap, nil
@@ -153,25 +140,25 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 		name := machine.Name
 		var pkgs []noderev.Package
 		var svcs []noderev.Service
-		var k3s *noderev.K3s
-		var manifests []noderev.Manifest
 		for _, r := range g.Sorted() {
 			switch {
-			case graph.K3sManifestOf(r) != nil && graph.K3sManifestOf(r).Node == name:
-				manifests = append(manifests, noderev.Manifest{Name: graph.K3sManifestOf(r).Name, Content: graph.K3sManifestOf(r).Content})
 			case r.NodePackage != nil && r.NodePackage.Node == name:
 				pkgs = append(pkgs, noderev.Package{Name: r.NodePackage.Package})
 			case r.NodeService != nil && r.NodeService.Node == name:
 				svcs = append(svcs, noderev.Service{Name: r.NodeService.Service})
-			case graph.K3sOf(r) != nil && graph.K3sOf(r).Node == name:
-				kr, ok, err := k3sRevision(ctx, st, *graph.K3sOf(r), g.StaticIP(graph.K3sOf(r).Server))
-				if err != nil {
-					return err
-				}
-				if ok {
-					k3s = &kr
-				}
 			}
+		}
+		// What the extensions add to the node's revision, worked out before it is written.
+		var adds []func(r *noderev.Revision)
+		for _, e := range extensions {
+			if e.Publish == nil {
+				continue
+			}
+			add, err := e.Publish(ctx, st, g, name)
+			if err != nil {
+				return err
+			}
+			adds = append(adds, add)
 		}
 		if _, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
 			r := noderev.Revision{VMID: vmid}
@@ -182,12 +169,6 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				r = *prev
 				r.Packages = slices.Clone(prev.Packages)
 				r.Services = slices.Clone(prev.Services)
-				r.Manifests = slices.Clone(prev.Manifests)
-			}
-			for _, m := range manifests {
-				if findManifest(&r, m.Name) == nil {
-					r.Manifests = append(r.Manifests, m)
-				}
 			}
 			for _, p := range pkgs {
 				if findPackage(&r, p.Name) == nil {
@@ -199,14 +180,8 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 					r.Services = append(r.Services, s)
 				}
 			}
-			if r.K3s == nil {
-				r.K3s = k3s
-			}
-			if rm := r.K3s; rm != nil && rm.Remove != nil && declaresNode(g, name, rm.Remove.Node) {
-				// A node that is declared again is never removed by an old grant.
-				k := *rm
-				k.Remove = nil
-				r.K3s = &k
+			for _, add := range adds {
+				add(&r)
 			}
 			if pol.Protected(name) {
 				for i := range r.Packages {
@@ -215,15 +190,12 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 				for i := range r.Services {
 					r.Services[i].Repair, r.Services[i].Once = nil, nil
 				}
-				if r.K3s != nil {
-					k := *r.K3s
-					k.Install, k.Remove = nil, nil
-					r.K3s = &k
-				}
-				for i := range r.Manifests {
-					r.Manifests[i].Write = nil
-				}
 				r.Mamelet = nil
+				for _, e := range extensions {
+					if e.Protect != nil {
+						e.Protect(&r)
+					}
+				}
 			}
 			return r, nil
 		}); err != nil {
@@ -237,9 +209,9 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 var errNoRevision = errors.New("no revision")
 
 // Prune takes away, from the revision of each machine g declares, what g no longer has: the
-// package, service, manifest, k3s and mamelet items, with every permission they carry (a one-time
-// grant, a standing repair, a manifest's write). A permission is for something the declaration in
-// force wants. It returns the nodes whose revision changed.
+// package, service and mamelet items, and the node extensions' (manifest, k3s), with every
+// permission they carry (a one-time grant, a standing repair, a manifest's write). A permission is
+// for something the declaration in force wants. It returns the nodes whose revision changed.
 //
 // It is for the declaration of a plan that has been approved, when that plan is applied
 // (reconcile.Reconciler.Prune), and never for planning: a plan is made of declarations that nobody
@@ -270,12 +242,13 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 			r := *prev
 			r.Packages = slices.DeleteFunc(slices.Clone(prev.Packages), func(p noderev.Package) bool { return !declared.packages[p.Name] })
 			r.Services = slices.DeleteFunc(slices.Clone(prev.Services), func(s noderev.Service) bool { return !declared.services[s.Name] })
-			r.Manifests = slices.DeleteFunc(slices.Clone(prev.Manifests), func(m noderev.Manifest) bool { return !declared.manifests[m.Name] })
-			if !declared.k3s {
-				r.K3s = nil // with its join token and its grants
-			}
 			if !declared.mamelet {
 				r.Mamelet = nil
+			}
+			for _, e := range extensions {
+				if e.Prune != nil {
+					e.Prune(g, name, &r)
+				}
 			}
 			return r, nil
 		})
@@ -292,22 +265,18 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 
 // declared is what a declaration has on one node.
 type declared struct {
-	packages, services, manifests map[string]bool
-	k3s, mamelet                  bool
+	packages, services map[string]bool
+	mamelet            bool
 }
 
 func declaredOn(g *graph.Graph, node string) declared {
-	d := declared{packages: map[string]bool{}, services: map[string]bool{}, manifests: map[string]bool{}}
+	d := declared{packages: map[string]bool{}, services: map[string]bool{}}
 	for _, r := range g.Resources {
 		switch {
 		case r.NodePackage != nil && r.NodePackage.Node == node:
 			d.packages[r.NodePackage.Package] = true
 		case r.NodeService != nil && r.NodeService.Node == node:
 			d.services[r.NodeService.Service] = true
-		case graph.K3sManifestOf(r) != nil && graph.K3sManifestOf(r).Node == node:
-			d.manifests[graph.K3sManifestOf(r).Name] = true
-		case graph.K3sOf(r) != nil && graph.K3sOf(r).Node == node:
-			d.k3s = true
 		case r.NodeMamelet != nil && r.NodeMamelet.Node == node:
 			d.mamelet = true
 		}
@@ -366,44 +335,6 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			pk.Install = &noderev.Install{Operation: step.OperationID, Attempt: attempt, ChangeSet: digest, Expires: exp}
 			return nil
 		}
-	case (step.Op == policy.OpInstallK3s || step.Op == policy.OpUpgradeK3s) && graph.K3sOf(r) != nil:
-		kr, ok, err := k3sRevision(ctx, p.Store, *graph.K3sOf(r), inputs.Revision.StaticIP(graph.K3sOf(r).Server))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("k3s server address is not observed; plan again")
-		}
-		node, what = graph.K3sOf(r).Node, "install k3s "+graph.K3sOf(r).Version
-		if step.Op == policy.OpUpgradeK3s {
-			what = "upgrade to k3s " + graph.K3sOf(r).Version
-		}
-		grant = func(rev *noderev.Revision) error {
-			// An agent joins the server the approved plan named, or nothing happens.
-			if want := approvedDiff(step.Approved, "server"); kr.Server != want {
-				return fmt.Errorf("the revision of %s names server %q, the approved plan %q (plan again)", node, kr.Server, want)
-			}
-			k := kr
-			k.Install = &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionInstall, Expires: exp}
-			rev.K3s = &k
-			return nil
-		}
-	case step.Op == policy.OpRemoveK3sNode && graph.K3sOf(r) != nil && graph.K3sOf(r).Role == graph.K3sServer:
-		// The node to remove is the one the approved plan named, and no other.
-		target := approvedDiff(step.Approved, "remove-node")
-		if !noderev.ValidNode(target) {
-			return fmt.Errorf("the approved plan names no Kubernetes node to remove (plan again)")
-		}
-		node, what = graph.K3sOf(r).Node, "remove Kubernetes node "+target
-		grant = func(rev *noderev.Revision) error {
-			if rev.K3s == nil || rev.K3s.Role != noderev.K3sServer {
-				return fmt.Errorf("%s has no k3s server in its revision (plan again)", node)
-			}
-			k := *rev.K3s
-			k.Remove = &noderev.NodeRemoval{Node: target, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionRemove, Expires: exp}}
-			rev.K3s = &k
-			return nil
-		}
 	case step.Op == policy.OpUpdateMamelet && r.NodeMamelet != nil:
 		// Exactly the release the approved plan showed, which is the declared one, or nothing happens.
 		m := *r.NodeMamelet
@@ -413,22 +344,6 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		node, what = m.Node, "update mamelet to "+m.SHA256[:12]
 		grant = func(rev *noderev.Revision) error {
 			rev.Mamelet = &noderev.MameletUpdate{SHA256: m.SHA256, Once: noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionUpdate, Expires: exp}}
-			return nil
-		}
-	case step.Op == policy.OpWriteK3sManifest && graph.K3sManifestOf(r) != nil:
-		m := *graph.K3sManifestOf(r)
-		node, what = m.Node, "write k3s manifest "+m.Name
-		grant = func(rev *noderev.Revision) error {
-			// Exactly the content the approved plan showed, or nothing happens.
-			if want := approvedDiff(step.Approved, "sha256"); want != noderev.ManifestSHA256(m.Content) {
-				return fmt.Errorf("the manifest %s is not the one the approved plan showed (plan again)", m.Name)
-			}
-			w := &noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: noderev.ActionWrite, Expires: exp}
-			if cur := findManifest(rev, m.Name); cur != nil {
-				cur.Content, cur.Write = m.Content, w
-			} else {
-				rev.Manifests = append(rev.Manifests, noderev.Manifest{Name: m.Name, Content: m.Content, Write: w})
-			}
 			return nil
 		}
 	case (serviceActions[step.Op] != "" || configure) && r.NodeService != nil:
@@ -462,7 +377,24 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 			return nil
 		}
 	default:
-		return fmt.Errorf("mamelet does not carry out %s", step.Op)
+		gf, ok := grants[step.Op]
+		if !ok {
+			return fmt.Errorf("mamelet does not carry out %s", step.Op)
+		}
+		// An extension's operation: it says on which node, what, and what the grant puts in the
+		// revision; the core gives the grant its operation, attempt and deadline, and waits.
+		g, ok, err := gf(ctx, GrantRequest{Store: p.Store, Step: step, Declaration: inputs.Revision})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("mamelet does not carry out %s", step.Op)
+		}
+		once := func(action string) noderev.Once {
+			return noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: action, Expires: exp}
+		}
+		node, what = g.Node, g.What
+		grant = func(rev *noderev.Revision) error { return g.Put(rev, once) }
 	}
 
 	if !configure {
@@ -480,7 +412,6 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		r := *prev
 		r.Packages = slices.Clone(prev.Packages)
 		r.Services = slices.Clone(prev.Services)
-		r.Manifests = slices.Clone(prev.Manifests)
 		return r, grant(&r)
 	}); err != nil {
 		return fmt.Errorf("%s on %s: %w", what, node, err)

@@ -17,6 +17,9 @@ import (
 	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/graph"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
+
+	// The node extensions Mamela is built with (docs/design/node-extensions.md).
+	_ "github.com/ieyoukan/mamela/internal/ext/k3s"
 )
 
 const usage = `mamela - safe, declarative infrastructure (early development)

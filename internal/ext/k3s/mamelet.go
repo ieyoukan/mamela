@@ -1,4 +1,4 @@
-package mamelet
+package k3s
 
 import (
 	"context"
@@ -17,8 +17,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
 )
+
+// progK3s is the only program k3s adds to what mamelet runs: kubectl on the server, to list the
+// nodes (K3sNodes) and to cordon, drain and delete one (RemoveK3sNode).
+const progK3s = "/usr/local/bin/k3s"
+
+// progSystemctl is the core's systemctl: k3s reloads systemd after writing its unit, and reads when
+// its process started.
+const progSystemctl = "/usr/bin/systemctl"
+
+// system is mamelet's view of the node, with what k3s does on it.
+type system struct{ *mamelet.System }
 
 // Where k3s goes. Nothing about these comes from a revision: a revision names only the release
 // and the sha256 of its binary.
@@ -84,14 +96,12 @@ func K3sURL(base, version string) (string, error) {
 	return base + "/" + noderev.K3sTag(version) + "/" + asset, nil
 }
 
-func (s *System) path(p string) string { return filepath.Join(s.Root, p) }
-
 // K3s observes k3s against what the revision says: installed means a binary, the unit and the
 // token are exactly what mamelet writes for want. A unit that is neither that nor absent was
 // changed by hand, and is reported as an error.
-func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
+func (s system) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 	st := noderev.K3sState{Addresses: s.addresses()}
-	sum, err := fileSHA256(s.path(k3sBinary))
+	sum, err := mamelet.FileSHA256(s.Path(k3sBinary))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
@@ -101,7 +111,7 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 		st.SHA256 = sum
 	}
 	st.Running, st.Stale = s.k3sProcess(ctx)
-	unit, err := os.ReadFile(s.path(k3sUnit))
+	unit, err := os.ReadFile(s.Path(k3sUnit))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return st
@@ -113,7 +123,7 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 		return st
 	}
 	st.Server = unitServer(string(unit))
-	token, err := os.ReadFile(s.path(noderev.K3sTokenFile))
+	token, err := os.ReadFile(s.Path(noderev.K3sTokenFile))
 	st.Installed = st.SHA256 != "" && string(unit) == K3sUnit(want.Role, want.Server) && err == nil && string(token) == want.Token+"\n"
 	return st
 }
@@ -123,8 +133,8 @@ func (s *System) K3s(ctx context.Context, want noderev.K3s) noderev.K3sState {
 // start time is systemd's, in whole seconds, so the binary's time is cut to seconds too: a restart
 // right after the binary was written is not stale. Where the start time cannot be read, a running
 // process is taken as not stale: the other checks (the binary's sha256) still hold.
-func (s *System) k3sProcess(ctx context.Context) (running, stale bool) {
-	out, err := s.run(ctx, progSystemctl, []string{"show", "--timestamp=unix", "--property=ActiveState,ExecMainStartTimestamp", "--", "k3s"})
+func (s system) k3sProcess(ctx context.Context) (running, stale bool) {
+	out, err := s.Run(ctx, progSystemctl, []string{"show", "--timestamp=unix", "--property=ActiveState,ExecMainStartTimestamp", "--", "k3s"})
 	if err != nil {
 		return false, false
 	}
@@ -140,7 +150,7 @@ func (s *System) k3sProcess(ctx context.Context) (running, stale bool) {
 			}
 		}
 	}
-	fi, err := os.Stat(s.path(k3sBinary))
+	fi, err := os.Stat(s.Path(k3sBinary))
 	if !running || started.IsZero() || err != nil {
 		return running, false
 	}
@@ -152,10 +162,10 @@ const k3sNodesFormat = `jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status
 
 // K3sNodes reads the Kubernetes nodes a running k3s server sees, with its own kubeconfig (a fixed
 // read-only command). nil when they cannot be read: the plan then does not take the cluster as Ready.
-func (s *System) K3sNodes(ctx context.Context) []noderev.K3sNode {
+func (s system) K3sNodes(ctx context.Context) []noderev.K3sNode {
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	out, err := s.run(cctx, progK3s, []string{"kubectl", "get", "nodes", "--output=" + k3sNodesFormat}, "KUBECONFIG="+k3sKubeconfig)
+	out, err := s.Run(cctx, progK3s, []string{"kubectl", "get", "nodes", "--output=" + k3sNodesFormat}, "KUBECONFIG="+k3sKubeconfig)
 	if err != nil {
 		return nil
 	}
@@ -202,11 +212,11 @@ func isMameletUnit(unit string) bool {
 // because k3s itself adds some (flannel.1 and cni0 in 10.42.0.0/16) that sort before a LAN
 // address, and an agent pointed at one of those cannot join after a reboot. Addresses in k3s's
 // own ranges are left out even on that interface.
-func (s *System) addresses() []string {
+func (s system) addresses() []string {
 	if s.Addresses != nil {
 		return s.Addresses()
 	}
-	b, err := os.ReadFile(s.path("/proc/net/route"))
+	b, err := os.ReadFile(s.Path("/proc/net/route"))
 	if err != nil {
 		return nil
 	}
@@ -275,22 +285,22 @@ func DefaultRouteInterface(table string) (string, bool) {
 // place already has the approved sha256, and installed only if its sha256 is the approved one),
 // the join token and Mamela's unit for the role. It does not start or enable the service (that is
 // a NodeService); a k3s that runs is restarted, so that it runs what was installed (an upgrade).
-func (s *System) InstallK3s(ctx context.Context, k noderev.K3s) error {
-	if sum, err := fileSHA256(s.path(k3sBinary)); err != nil || sum != k.SHA256 {
+func (s system) InstallK3s(ctx context.Context, k noderev.K3s) error {
+	if sum, err := mamelet.FileSHA256(s.Path(k3sBinary)); err != nil || sum != k.SHA256 {
 		if err := s.downloadK3s(ctx, k.Version, k.SHA256); err != nil {
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path(noderev.K3sTokenFile)), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.Path(noderev.K3sTokenFile)), 0o700); err != nil {
 		return err
 	}
-	if err := writeK3sFile(s.path(noderev.K3sTokenFile), []byte(k.Token+"\n"), 0o600); err != nil {
+	if err := mamelet.WriteFile(s.Path(noderev.K3sTokenFile), []byte(k.Token+"\n"), 0o600); err != nil {
 		return err
 	}
-	if err := writeK3sFile(s.path(k3sUnit), []byte(K3sUnit(k.Role, k.Server)), 0o644); err != nil {
+	if err := mamelet.WriteFile(s.Path(k3sUnit), []byte(K3sUnit(k.Role, k.Server)), 0o644); err != nil {
 		return err
 	}
-	if _, err := s.run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
+	if _, err := s.Run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
 		return err
 	}
 	if running, _ := s.k3sProcess(ctx); running {
@@ -299,7 +309,7 @@ func (s *System) InstallK3s(ctx context.Context, k noderev.K3s) error {
 	return nil
 }
 
-func (s *System) downloadK3s(ctx context.Context, version, wantSHA256 string) error {
+func (s system) downloadK3s(ctx context.Context, version, wantSHA256 string) error {
 	base := s.K3sReleases
 	if base == "" {
 		base = noderev.K3sReleases
@@ -324,7 +334,7 @@ func (s *System) downloadK3s(ctx context.Context, version, wantSHA256 string) er
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download %s: status %d", u, resp.StatusCode)
 	}
-	dir := filepath.Dir(s.path(k3sBinary))
+	dir := filepath.Dir(s.Path(k3sBinary))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -353,49 +363,13 @@ func (s *System) downloadK3s(ctx context.Context, version, wantSHA256 string) er
 	if err := os.Chmod(tmp.Name(), 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), s.path(k3sBinary))
-}
-
-func writeK3sFile(path string, data []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".mamelet-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
-func fileSHA256(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return os.Rename(tmp.Name(), s.Path(k3sBinary))
 }
 
 // Manifest observes a manifest file: the sha256 of its content ("" when it is not there).
-func (s *System) Manifest(name string) noderev.ManifestState {
+func (s system) Manifest(name string) noderev.ManifestState {
 	st := noderev.ManifestState{Name: name}
-	sum, err := fileSHA256(s.path(manifestPath(name)))
+	sum, err := mamelet.FileSHA256(s.Path(manifestPath(name)))
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 	case err != nil:
@@ -412,8 +386,8 @@ func manifestPath(name string) string {
 
 // WriteManifest writes a manifest as the revision says, atomically, readable by root only (k3s
 // applies it with cluster-admin rights, and it may hold values).
-func (s *System) WriteManifest(m noderev.Manifest) error {
-	return writeK3sFile(s.path(manifestPath(m.Name)), []byte(m.Content), 0o600)
+func (s system) WriteManifest(m noderev.Manifest) error {
+	return mamelet.WriteFile(s.Path(manifestPath(m.Name)), []byte(m.Content), 0o600)
 }
 
 // How long a drain may take before mamelet gives up (the node is then left as it was).
@@ -425,7 +399,7 @@ const k3sDrainTimeout = 4 * time.Minute
 // Ready cannot be drained, so it is only deleted. A drain that does not finish leaves nothing
 // deleted and the node schedulable again. A node that is already gone is a success. The server's
 // own node is never removed. The returned text says what was done.
-func (s *System) RemoveK3sNode(ctx context.Context, name, self string) (string, error) {
+func (s system) RemoveK3sNode(ctx context.Context, name, self string) (string, error) {
 	if !noderev.ValidNode(name) {
 		return "", fmt.Errorf("%q is not a node name mamelet removes", name)
 	}
@@ -436,7 +410,7 @@ func (s *System) RemoveK3sNode(ctx context.Context, name, self string) (string, 
 	kubectl := func(timeout time.Duration, args ...string) (string, error) {
 		cctx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		return s.run(cctx, progK3s, append([]string{"kubectl"}, args...), env)
+		return s.Run(cctx, progK3s, append([]string{"kubectl"}, args...), env)
 	}
 	var node *noderev.K3sNode
 	nodes := s.K3sNodes(ctx)
@@ -468,4 +442,130 @@ func (s *System) RemoveK3sNode(ctx context.Context, name, self string) (string, 
 		return "", err
 	}
 	return done, nil
+}
+
+func init() {
+	mamelet.Register(mamelet.Extension{
+		Name:     "k3s",
+		Programs: []string{progK3s},
+		Observe:  observeNode,
+		Act:      act,
+		Results:  results,
+	})
+}
+
+// observeNode reports the manifests and the k3s the revision declares.
+func observeNode(ctx context.Context, sys *mamelet.System, rev *noderev.Revision, rep *noderev.Report) {
+	s := system{sys}
+	for _, m := range rev.Manifests {
+		rep.Manifests = append(rep.Manifests, s.Manifest(m.Name))
+	}
+	if rev.K3s != nil {
+		k := s.K3s(ctx, *rev.K3s)
+		if rev.K3s.Role == noderev.K3sServer && k.Running {
+			k.Nodes = s.K3sNodes(ctx)
+		}
+		rep.K3s = &k
+	}
+}
+
+// act carries out the grants: before mamelet's own update, the manifests' writes and k3s's
+// installation; after it, the removal of a Kubernetes node.
+func act(ctx context.Context, x *mamelet.Act, phase mamelet.Phase) bool {
+	s, rev, online := system{x.System}, x.Revision, x.Online
+	record := x.Record
+	changed := false
+	if phase == mamelet.AfterUpdate {
+		if k := rev.K3s; k != nil && k.Remove != nil && online && k.Role == noderev.K3sServer {
+			rm := k.Remove
+			if !x.Done(rm.Operation, rm.Attempt) {
+				// Only a server that runs removes nodes; a server that is not up yet waits for a round
+				// in which it is.
+				if running, _ := s.k3sProcess(ctx); running {
+					changed = true
+					if detail, err := s.RemoveK3sNode(ctx, rm.Node, x.Node); err != nil {
+						record(rm.Operation, rm.Attempt, noderev.OutcomeFailed, err.Error())
+					} else {
+						record(rm.Operation, rm.Attempt, noderev.OutcomeDone, detail)
+					}
+				}
+			}
+		}
+		return changed
+	}
+	for _, m := range rev.Manifests {
+		in := m.Write
+		if in == nil || !online {
+			continue
+		}
+		if x.Done(in.Operation, in.Attempt) {
+			continue
+		}
+		obs := s.Manifest(m.Name)
+		switch {
+		case obs.Error != "":
+			record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
+		case obs.SHA256 == noderev.ManifestSHA256(m.Content):
+			record(in.Operation, in.Attempt, noderev.OutcomeDone, "manifest "+m.Name+" is in place")
+		default:
+			changed = true
+			if err := s.WriteManifest(m); err != nil {
+				record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
+			} else {
+				record(in.Operation, in.Attempt, noderev.OutcomeDone, "wrote manifest "+m.Name)
+			}
+		}
+	}
+
+	if k := rev.K3s; k != nil && k.Install != nil && online {
+		in := k.Install
+		if !x.Done(in.Operation, in.Attempt) {
+			obs := s.K3s(ctx, *k)
+			switch {
+			case obs.Installed && obs.SHA256 == k.SHA256 && !obs.Stale:
+				record(in.Operation, in.Attempt, noderev.OutcomeDone, "k3s "+k.Version+" is installed")
+			case obs.Error != "":
+				record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
+			default:
+				changed = true
+				if err := s.InstallK3s(ctx, *k); err != nil {
+					record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
+				} else {
+					detail := "installed k3s " + k.Version
+					if obs.Running {
+						detail += " and restarted it"
+					}
+					record(in.Operation, in.Attempt, noderev.OutcomeDone, detail)
+				}
+			}
+		}
+	}
+	return changed
+}
+
+// results are the recorded outcomes of the grants: the manifests' before mamelet's update, k3s's
+// installation and node removal after it (the order of the report).
+func results(rev *noderev.Revision, phase mamelet.Phase, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result {
+	var out []noderev.Result
+	if phase == mamelet.BeforeUpdate {
+		for _, m := range rev.Manifests {
+			if m.Write != nil {
+				if r, ok := known(m.Write.Operation, m.Write.Attempt); ok {
+					out = append(out, r)
+				}
+			}
+		}
+		return out
+	}
+	if k := rev.K3s; k != nil && k.Install != nil {
+		if r, ok := known(k.Install.Operation, k.Install.Attempt); ok {
+			out = append(out, r)
+		}
+	}
+	if k := rev.K3s; k != nil && k.Remove != nil {
+		if r, ok := known(k.Remove.Operation, k.Remove.Attempt); ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }

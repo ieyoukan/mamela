@@ -12,7 +12,7 @@ func TestRegisterRefusesWhatIsTaken(t *testing.T) {
 	plan := Planner{Plan: func(*Kit, graph.Resource) Change { return Change{} }}
 	for name, e := range map[string]Extension{
 		"a core kind":         {Name: "x", Planners: map[graph.Kind]Planner{graph.KindNodePackage: plan}},
-		"a kind planned":      {Name: "x", Planners: map[graph.Kind]Planner{graph.KindNodeK3s: plan}},
+		"a kind planned":      {Name: "x", Planners: map[graph.Kind]Planner{graph.Kind("NodeK3s"): plan}},
 		"a core code":         {Name: "x", Codes: []string{"MAM-PLAN-0101"}},
 		"another's code":      {Name: "x", Codes: []string{"MAM-PLAN-0108"}},
 		"no name":             {Codes: []string{"MAM-PLAN-0999"}},

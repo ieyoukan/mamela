@@ -197,15 +197,10 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 			pkgs, svcs = a.observe(ctx, rev)
 		}
 		rep.Packages, rep.Services = pkgs, svcs
-		for _, m := range rev.Manifests {
-			rep.Manifests = append(rep.Manifests, a.System.Manifest(m.Name))
-		}
-		if rev.K3s != nil {
-			k := a.System.K3s(ctx, *rev.K3s)
-			if rev.K3s.Role == noderev.K3sServer && k.Running {
-				k.Nodes = a.System.K3sNodes(ctx)
+		for _, e := range extensions {
+			if e.Observe != nil {
+				e.Observe(ctx, a.System, rev, &rep)
 			}
-			rep.K3s = &k
 		}
 		rep.Results = append(rep.Results, a.knownResults(rev, st)...)
 	}
@@ -293,53 +288,8 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		}
 	}
 
-	for _, m := range rev.Manifests {
-		in := m.Write
-		if in == nil || !online {
-			continue
-		}
-		if _, done := st.Attempts[attemptKey(in.Operation, in.Attempt)]; done {
-			continue
-		}
-		obs := a.System.Manifest(m.Name)
-		switch {
-		case obs.Error != "":
-			record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
-		case obs.SHA256 == noderev.ManifestSHA256(m.Content):
-			record(in.Operation, in.Attempt, noderev.OutcomeDone, "manifest "+m.Name+" is in place")
-		default:
-			changed = true
-			if err := a.System.WriteManifest(m); err != nil {
-				record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
-			} else {
-				record(in.Operation, in.Attempt, noderev.OutcomeDone, "wrote manifest "+m.Name)
-			}
-		}
-	}
-
-	if k := rev.K3s; k != nil && k.Install != nil && online {
-		in := k.Install
-		if _, done := st.Attempts[attemptKey(in.Operation, in.Attempt)]; !done {
-			obs := a.System.K3s(ctx, *k)
-			switch {
-			case obs.Installed && obs.SHA256 == k.SHA256 && !obs.Stale:
-				record(in.Operation, in.Attempt, noderev.OutcomeDone, "k3s "+k.Version+" is installed")
-			case obs.Error != "":
-				record(in.Operation, in.Attempt, noderev.OutcomeRefused, obs.Error)
-			default:
-				changed = true
-				if err := a.System.InstallK3s(ctx, *k); err != nil {
-					record(in.Operation, in.Attempt, noderev.OutcomeFailed, err.Error())
-				} else {
-					detail := "installed k3s " + k.Version
-					if obs.Running {
-						detail += " and restarted it"
-					}
-					record(in.Operation, in.Attempt, noderev.OutcomeDone, detail)
-				}
-			}
-		}
-	}
+	x := &Act{System: a.System, Revision: rev, Node: a.Config.Node, Online: online, st: st, record: record}
+	changed = a.actExtensions(ctx, x, BeforeUpdate) || changed
 
 	if u := rev.Mamelet; u != nil && online {
 		if _, done := st.Attempts[attemptKey(u.Operation, u.Attempt)]; !done {
@@ -348,21 +298,7 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		}
 	}
 
-	if k := rev.K3s; k != nil && k.Remove != nil && online && k.Role == noderev.K3sServer {
-		rm := k.Remove
-		if _, done := st.Attempts[attemptKey(rm.Operation, rm.Attempt)]; !done {
-			// Only a server that runs removes nodes; a server that is not up yet waits for a round
-			// in which it is.
-			if running, _ := a.System.k3sProcess(ctx); running {
-				changed = true
-				if detail, err := a.System.RemoveK3sNode(ctx, rm.Node, a.Config.Node); err != nil {
-					record(rm.Operation, rm.Attempt, noderev.OutcomeFailed, err.Error())
-				} else {
-					record(rm.Operation, rm.Attempt, noderev.OutcomeDone, detail)
-				}
-			}
-		}
-	}
+	changed = a.actExtensions(ctx, x, AfterUpdate) || changed
 
 	for i, s := range rev.Services {
 		obs := svcs[i]
@@ -453,27 +389,12 @@ func (a *Agent) knownResults(rev *noderev.Revision, st State) []noderev.Result {
 			}
 		}
 	}
-	for _, m := range rev.Manifests {
-		if m.Write != nil {
-			if r, ok := st.Attempts[attemptKey(m.Write.Operation, m.Write.Attempt)]; ok {
-				out = append(out, r)
-			}
-		}
-	}
+	out = append(out, extResults(rev, st, BeforeUpdate)...)
 	if u := rev.Mamelet; u != nil {
 		if r, ok := st.Attempts[attemptKey(u.Operation, u.Attempt)]; ok {
 			out = append(out, r)
 		}
 	}
-	if k := rev.K3s; k != nil && k.Install != nil {
-		if r, ok := st.Attempts[attemptKey(k.Install.Operation, k.Install.Attempt)]; ok {
-			out = append(out, r)
-		}
-	}
-	if k := rev.K3s; k != nil && k.Remove != nil {
-		if r, ok := st.Attempts[attemptKey(k.Remove.Operation, k.Remove.Attempt)]; ok {
-			out = append(out, r)
-		}
-	}
+	out = append(out, extResults(rev, st, AfterUpdate)...)
 	return out
 }

@@ -33,6 +33,9 @@ type KindDef struct {
 	Fields func(spec any) map[string]string
 	// Describe is the resource in a few words, for a person (mamela eval).
 	Describe func(spec any) string
+	// New is an empty spec (a pointer to a struct with a Node member): tests that cover every kind
+	// fill it (spectest).
+	New func() any
 }
 
 // Extension is what a node extension adds to declarations.
@@ -84,8 +87,8 @@ func Register(e Extension) {
 			panic(fmt.Sprintf("graph: extension %s: kind %s is taken", e.Name, d.Kind))
 		case orders[d.Order] != "" || d.Order <= 0:
 			panic(fmt.Sprintf("graph: extension %s: kind %s: order %d is taken", e.Name, d.Kind, d.Order))
-		case d.Decode == nil || d.Validate == nil || d.Canonical == nil || d.Node == nil:
-			panic(fmt.Sprintf("graph: extension %s: kind %s needs Decode, Validate, Canonical and Node", e.Name, d.Kind))
+		case d.Decode == nil || d.Validate == nil || d.Canonical == nil || d.Node == nil || d.New == nil:
+			panic(fmt.Sprintf("graph: extension %s: kind %s needs Decode, Validate, Canonical, Node and New", e.Name, d.Kind))
 		}
 		orders[d.Order] = d.Kind
 	}
@@ -108,6 +111,13 @@ func Register(e Extension) {
 func KindOf(k Kind) (KindDef, bool) {
 	d, ok := extKinds[k]
 	return d, ok
+}
+
+// ExtKinds are the node extensions' kinds, in canonical order.
+func ExtKinds() []KindDef {
+	out := slices.Collect(maps.Values(extKinds))
+	slices.SortFunc(out, func(a, b KindDef) int { return a.Order - b.Order })
+	return out
 }
 
 // Order is a kind's place in the canonical order.

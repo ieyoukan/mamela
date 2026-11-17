@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ieyoukan/mamela/internal/names"
 )
 
 // machine is a provider's machine ("TestVM" of provider "test") with a network.
@@ -197,7 +199,7 @@ func TestNodeK3s(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k := K3sOf(g.Sorted()[0]); k == nil || k.SHA256 != sha {
+	if k := specOf(g.Sorted()[0]); k == nil || k["sha256"] != sha {
 		t.Fatalf("%+v", g)
 	}
 	for name, d := range map[string]string{
@@ -226,7 +228,7 @@ func TestNodeK3s(t *testing.T) {
 	cluster := func(rs ...string) string {
 		return `{"schema":"mamela-graph/v2","resources":[` + strings.Join(rs, ",") + `]}`
 	}
-	if g, err := Decode([]byte(cluster(vm("s"), vm("a"), k("s", "server", ""), k("a", "agent", "s")))); err != nil || K3sOf(g.Sorted()[0]).Server != "s" {
+	if g, err := Decode([]byte(cluster(vm("s"), vm("a"), k("s", "server", ""), k("a", "agent", "s")))); err != nil || specOf(g.Sorted()[0])["server"] != "s" {
 		t.Errorf("a server and an agent: %v", err)
 	}
 	for name, d := range map[string]string{
@@ -475,13 +477,13 @@ func TestNodeK3sManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var m *NodeK3sManifestSpec
+	var m map[string]string
 	for _, r := range g.Sorted() {
-		if K3sManifestOf(r) != nil {
-			m = K3sManifestOf(r)
+		if r.Kind == "NodeK3sManifest" {
+			m = specOf(r)
 		}
 	}
-	if m == nil || m.Node != "web" || m.Name != "argocd" || m.Content != "kind: Namespace\n" {
+	if m == nil || m["node"] != "web" || m["name"] != "argocd" || m["content"] != "kind: Namespace\n" {
 		t.Fatalf("manifest: %+v", m)
 	}
 	// The content is part of the declaration: another content is another digest.
@@ -494,7 +496,7 @@ func TestNodeK3sManifest(t *testing.T) {
 		"a path as the name":       doc("web", "../argocd", "x: 1"),
 		"an uppercase name":        doc("web", "ArgoCD", "x: 1"),
 		"an empty content":         doc("web", "argocd", "  \n"),
-		"too large":                doc("web", "argocd", strings.Repeat("a", MaxK3sManifest+1)),
+		"too large":                doc("web", "argocd", strings.Repeat("a", names.MaxManifest+1)),
 		"a NUL":                    doc("web", "argocd", "a\x00b"),
 	} {
 		if _, err := Decode([]byte(d)); err == nil {
@@ -904,31 +906,20 @@ func TestWarnings(t *testing.T) {
 	same(codes(g), "MAM-GRAPH-0202 NodeK3s cp/k3s", "MAM-GRAPH-0201 NodeK3s w1/k3s", "MAM-GRAPH-0202 NodeK3s w1/k3s")
 }
 
-func TestParseRelease(t *testing.T) {
-	for in, want := range map[string]Release{
-		"v1.37.2+k3s1": {Major: 1, Minor: 37, Patch: 2, K3s: 1, HasK3s: true},
-		"v1.37.2":      {Major: 1, Minor: 37, Patch: 2},
-	} {
-		if got, ok := ParseRelease(in); !ok || got != want || got.String() != in {
-			t.Errorf("ParseRelease(%q) = %+v %v", in, got, ok)
-		}
+// specOf is the canonical spec of a node extension's resource, member by member (nil for another
+// kind): the extension's own type is not the graph's to know.
+func specOf(r Resource) map[string]string {
+	d, ok := KindOf(r.Kind)
+	if !ok || r.Ext == nil {
+		return nil
 	}
-	for _, in := range []string{"", "latest", "1.37.2", "v1.37", "v1.37.2+k3s", "v1.37.2+rke2r1", "v1.37.2-rc1", " v1.37.2"} {
-		if _, ok := ParseRelease(in); ok {
-			t.Errorf("ParseRelease(%q) accepted", in)
-		}
+	b, err := json.Marshal(d.Canonical(r.Ext))
+	if err != nil {
+		panic(err)
 	}
-	rel := func(s string) Release { r, _ := ParseRelease(s); return r }
-	for _, c := range []struct {
-		a, b string
-		want int
-	}{
-		{"v1.37.2+k3s1", "v1.37.2+k3s1", 0}, {"v1.37.2+k3s1", "v1.37.2", 0}, {"v1.37.2", "v1.37.2+k3s5", 0},
-		{"v1.37.3", "v1.37.2+k3s9", 1}, {"v1.36.9+k3s1", "v1.37.0", -1}, {"v1.37.2+k3s2", "v1.37.2+k3s1", 1},
-		{"v1.99.0", "v1.28.0", 1}, {"v1.9.0", "v1.10.0", -1},
-	} {
-		if got := rel(c.a).Compare(rel(c.b)); got != c.want {
-			t.Errorf("%s compared with %s = %d, want %d", c.a, c.b, got, c.want)
-		}
+	var m map[string]string
+	if err := json.Unmarshal(b, &m); err != nil {
+		panic(err)
 	}
+	return m
 }
