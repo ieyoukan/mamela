@@ -62,8 +62,8 @@ func runServe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 			"  hint: if a database was lost, restore it from a backup (mamela restore --in <backup>) and start again; the nodes cannot connect until then (docs/recovery.md)", *db, dir)
 	}
 	srv := &cp.Server{Store: st, PKI: pki, Now: wallClock, RevisionTTL: 24 * time.Hour, Log: logger}
-	if bin, err := os.ReadFile(site.ControlPlane.MameletBinary); err == nil {
-		srv.MameletBinary = bin // for cloud machines' user-data seeds (ADR 0005)
+	if _, err := os.Stat(site.ControlPlane.MameletBinary); err == nil {
+		srv.MameletFile = site.ControlPlane.MameletBinary // for seeds (ADR 0005) and updates; read again when replaced
 	} else {
 		logger.Printf("no mamelet binary to serve to cloud machines (%v)", err)
 	}
