@@ -8,7 +8,7 @@ Early development — no production-ready implementation yet. Evaluation, planni
 
 ## Try the current implementation
 
-Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for). The examples use the Mamela Pome in this checkout (`[replace]` in their `Pome.toml`), so run them from the checkout (an example copied out alone fails with MAM-EVAL-0104); their `[dependencies]` name the version of that checkout, which `scripts/check.sh` enforces. The published versions are the `pome/mamela/v*` tags (v0.3.1 adds `Mamela.mamelet`). v0.2.0 has the older `Vm` API and is not a compatible substitute for these examples. How a Pome version is raised, tagged and taken into use, and which Mamela binary a version needs: [docs/releasing.md](docs/releasing.md).
+Requires Go 1.27 on macOS arm64 or Linux x86_64 (the platforms Emela publishes binaries for). The examples use the Mamela Pome in this checkout (`[replace]` in their `Pome.toml`), so run them from the checkout (an example copied out alone fails with MAM-EVAL-0104); their `[dependencies]` name the version of that checkout, which `scripts/check.sh` enforces. The published versions are the `pome/mamela/v*` tags (v0.3.1 adds `Mamela.mamelet`; v0.3.2 goes with the Mamela of the 2026-11-17 audit fixes). v0.2.0 has the older `Vm` API and is not a compatible substitute for these examples. How a Pome version is raised, tagged and taken into use, and which Mamela binary a version needs: [docs/releasing.md](docs/releasing.md).
 
 ```sh
 # From a Mamela checkout:
