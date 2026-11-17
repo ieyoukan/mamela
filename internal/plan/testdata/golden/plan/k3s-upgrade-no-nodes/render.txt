@@ -1,0 +1,26 @@
+Plan sha256:8f60f25c3b3d
+  revision  sha256:943a768dd4bc
+  observed  2026-11-08T12:00:00Z (snapshot sha256:aeac58943b92)
+  policy    sha256:b2ad900beffb
+
+. NodeK3s a1/k3s  [waiting]
+    warning MAM-GRAPH-0202 k3s is declared on a1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0116 waits for the k3s server srv to run its declared release before a1 is upgraded (an agent never runs a newer release than its server)
+      hint: the server's upgrade comes first in this or an earlier plan
+. NodeK3s a2/k3s  [waiting]
+    warning MAM-GRAPH-0202 k3s is declared on a2, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0116 waits for the k3s server srv to run its declared release before a2 is upgraded (an agent never runs a newer release than its server)
+      hint: the server's upgrade comes first in this or an earlier plan
+. NodeK3s srv/k3s  [waiting]
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0115 waits for the k3s server to report its Kubernetes nodes before k3s on srv is restarted
+      hint: the server reports them while it runs; if it never does, look at k3s on the server
+= TestVM a1  [in sync]  via test
+= TestVM a2  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 3 waiting, 3 in sync.
+Nothing has been changed: a plan only describes.

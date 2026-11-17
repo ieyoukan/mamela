@@ -1,0 +1,14 @@
+Plan sha256:62c1e4b67d75
+  revision  sha256:2dfa6ad59c15
+  observed  2026-11-08T12:00:00Z (snapshot sha256:75b7694c2b54)
+  policy    sha256:b2ad900beffb
+
+= NodePackage app-server/nginx  [in sync]
+~ NodeService app-server/nginx  [needs approval]
+      running: false -> true
+    start-service: needs approval (MAM-POL-0206 starting a service has side effects)
+      hint: add it to autoStartServices to repair this drift without approval
+= TestVM app-server  [in sync]  via test
+
+Summary: 1 needs approval, 2 in sync.
+Nothing has been changed: a plan only describes.

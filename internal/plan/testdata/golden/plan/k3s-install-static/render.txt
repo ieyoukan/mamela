@@ -1,0 +1,46 @@
+Plan sha256:f2edf821335b
+  revision  sha256:f398a91d3d44
+  observed  2026-11-08T12:00:00Z (snapshot sha256:7e74cfeacd80)
+  policy    sha256:b2ad900beffb
+
+. NodeService a1/k3s  [waiting]
+    MAM-PLAN-0106 waits for service k3s to exist on a1 (what provides it, a package or k3s, is not installed yet)
+. NodeService a2/k3s  [waiting]
+    MAM-PLAN-0106 waits for service k3s to exist on a2 (what provides it, a package or k3s, is not installed yet)
+. NodeService srv/k3s  [waiting]
+    MAM-PLAN-0106 waits for service k3s to exist on srv (what provides it, a package or k3s, is not installed yet)
++ NodeK3s a1/k3s  [needs approval]
+      version: v1.37.2+k3s1
+      sha256: 265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+      from: https://github.com/k3s-io/k3s/releases/download/v1.37.2%2Bk3s1/k3s (k3s-arm64 on arm64)
+      role: agent
+      server: https://192.0.2.40:6443
+      runs: /usr/local/bin/k3s agent --server=https://192.0.2.40:6443 --token-file=/etc/rancher/k3s/cluster-token
+      token: the cluster's join token, made by the Control Plane, in /etc/rancher/k3s/cluster-token (0600)
+    install-k3s: needs approval (MAM-POL-0210 installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root)
+      hint: check the version and sha256 against the k3s release page before approving
++ NodeK3s a2/k3s  [needs approval]
+      version: v1.37.2+k3s1
+      sha256: 265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+      from: https://github.com/k3s-io/k3s/releases/download/v1.37.2%2Bk3s1/k3s (k3s-arm64 on arm64)
+      role: agent
+      server: https://192.0.2.40:6443
+      runs: /usr/local/bin/k3s agent --server=https://192.0.2.40:6443 --token-file=/etc/rancher/k3s/cluster-token
+      token: the cluster's join token, made by the Control Plane, in /etc/rancher/k3s/cluster-token (0600)
+    install-k3s: needs approval (MAM-POL-0210 installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root)
+      hint: check the version and sha256 against the k3s release page before approving
++ NodeK3s srv/k3s  [needs approval]
+      version: v1.37.2+k3s1
+      sha256: 265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+      from: https://github.com/k3s-io/k3s/releases/download/v1.37.2%2Bk3s1/k3s (k3s-arm64 on arm64)
+      role: server
+      runs: /usr/local/bin/k3s server --token-file=/etc/rancher/k3s/cluster-token --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600
+      token: the cluster's join token, made by the Control Plane, in /etc/rancher/k3s/cluster-token (0600)
+    install-k3s: needs approval (MAM-POL-0210 installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root)
+      hint: check the version and sha256 against the k3s release page before approving
+= TestVM a1  [in sync]  via test
+= TestVM a2  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 3 need approval, 3 waiting, 3 in sync.
+Nothing has been changed: a plan only describes.

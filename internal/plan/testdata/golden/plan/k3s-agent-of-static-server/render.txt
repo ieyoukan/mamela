@@ -1,0 +1,25 @@
+Plan sha256:ea20e268da2e
+  revision  sha256:17616aaccd8b
+  observed  2026-11-08T12:00:00Z (snapshot sha256:995c9deaf213)
+  policy    sha256:b2ad900beffb
+
++ NodeK3s ag/k3s  [needs approval]
+      version: v1.37.2+k3s1
+      sha256: 265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+      from: https://github.com/k3s-io/k3s/releases/download/v1.37.2%2Bk3s1/k3s (k3s-arm64 on arm64)
+      role: agent
+      server: https://192.0.2.40:6443
+      runs: /usr/local/bin/k3s agent --server=https://192.0.2.40:6443 --token-file=/etc/rancher/k3s/cluster-token
+      token: the cluster's join token, made by the Control Plane, in /etc/rancher/k3s/cluster-token (0600)
+    install-k3s: needs approval (MAM-POL-0210 installs Kubernetes (k3s, a server or an agent) downloaded from GitHub, pinned by sha256, which runs as root)
+      hint: check the version and sha256 against the k3s release page before approving
+    warning MAM-GRAPH-0202 k3s is declared on ag, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s srv/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= TestVM ag  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 1 needs approval, 3 in sync.
+Nothing has been changed: a plan only describes.

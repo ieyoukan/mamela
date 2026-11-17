@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,13 +33,16 @@ const (
 	progK3s       = "/usr/local/bin/k3s"    // kubectl on the server: list nodes (K3sNodes); cordon, drain, delete one (RemoveK3sNode)
 )
 
+// Programs are the only programs mamelet runs (ExecRunner refuses any other), sorted.
+func Programs() []string {
+	return slices.Sorted(slices.Values([]string{progDpkgQuery, progAptGet, progSystemctl, progK3s, progMameletNx}))
+}
+
 // ExecRunner runs programs directly (no shell), with a minimal environment.
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
-	switch program {
-	case progDpkgQuery, progAptGet, progSystemctl, progK3s, progMameletNx:
-	default:
+	if !slices.Contains(Programs(), program) {
 		return nil, nil, -1, fmt.Errorf("mamelet does not run %s", program)
 	}
 	cmd := exec.CommandContext(ctx, program, args...)

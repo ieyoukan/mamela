@@ -1,0 +1,18 @@
+canonical:
+{"resources":[{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}},{"kind":"NodeService","name":"web/k3s","spec":{"enabled":true,"node":"web","running":true,"service":"k3s"}},{"kind":"NodeK3s","name":"db/k3s","spec":{"node":"db","role":"agent","server":"web","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},{"kind":"NodeK3sManifest","name":"web/manifest/app","spec":{"content":"kind: ConfigMap\n","name":"app","node":"web"}},{"kind":"KVItem","name":"a","provider":"kv","spec":{"value":"y"}},{"after":["KVItem a"],"kind":"KVItem","name":"b","provider":"kv","spec":{"value":"x"}},{"kind":"NodeMamelet","name":"db/mamelet","spec":{"node":"db","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"0.3.2"}},{"kind":"NodeMamelet","name":"web/mamelet","spec":{"node":"web","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":""}},{"kind":"TestVM","name":"db","provider":"test","spec":{"cpu":2,"network":{"mode":"dhcp"}}},{"kind":"TestVM","name":"web","provider":"test","spec":{"cpu":2,"network":{"mode":"dhcp"}}},{"kind":"ZoneRecord","name":"web.example","provider":"dns","spec":{"ttl":60}}],"schema":"mamela-graph/v2"}
+digest sha256:2a80078ef73215d452e5e75d8fe9ddc9b0ebeb9715aae3a24c2fafe010411d18
+warnings:
+MAM-GRAPH-0202 | NodeK3s db/k3s | k3s is declared on db, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync) | declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+nodes:
+NodePackage web/nginx -> "web" builtin=true
+NodeService web/k3s -> "web" builtin=true
+NodeK3s db/k3s -> "db" builtin=true
+NodeK3s web/k3s -> "web" builtin=true
+NodeK3sManifest web/manifest/app -> "web" builtin=true
+KVItem a -> "" builtin=false
+KVItem b -> "" builtin=false
+NodeMamelet db/mamelet -> "db" builtin=true
+NodeMamelet web/mamelet -> "web" builtin=true
+TestVM db -> "" builtin=false
+TestVM web -> "" builtin=false
+ZoneRecord web.example -> "" builtin=false

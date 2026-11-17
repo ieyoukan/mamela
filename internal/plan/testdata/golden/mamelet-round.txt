@@ -1,0 +1,40 @@
+== round 1
+commands:
+/usr/bin/dpkg-query -W -f=${db:Status-Status}	${Version}
+ curl
+DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -s -o Debug::NoLocking=1 -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install curl
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- k3s
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- nginx
+DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get -o DPkg::Lock::Timeout=300 -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install curl
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+/usr/bin/systemctl daemon-reload
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+/usr/bin/systemctl enable -- k3s
+/usr/bin/systemctl start -- k3s
+/usr/bin/systemctl start -- nginx
+/usr/bin/dpkg-query -W -f=${db:Status-Status}	${Version}
+ curl
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- k3s
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- nginx
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml /usr/local/bin/k3s kubectl get nodes --output=jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}
+report:
+{"node":"srv","vmid":7001,"serial":3,"version":"golden","packages":[{"name":"curl","installed":true,"version":"8.5.0-2ubuntu10.6"}],"services":[{"name":"k3s","exists":true,"enabled":true,"running":true},{"name":"nginx","exists":true,"enabled":false,"running":true}],"k3s":{"installed":true,"sha256":"a142036a8d58efa0188b1b23866c7c9e0414a8de934d069fe785c37fca80369f","addresses":["192.0.2.12","192.0.2.77"],"running":true,"stale":false,"nodes":[{"name":"old","version":"v1.37.1+k3s1","ready":false},{"name":"srv","version":"v1.37.2+k3s1","ready":true}]},"mameletSha256":"13e2aaba2c3bf982f1a1fac045e179708ddd5f0328f885e6e3c600816096cab6","manifests":[{"name":"app","sha256":"bb6c7fb1ce4b8ac8baa8f6344623dd4602cf3d6ce859f9ff859a5a43787c5987"},{"name":"kept"}],"results":[{"operation":"repair","attempt":0,"outcome":"done","detail":"started nginx (drift repair)"},{"operation":"op-dddddddddddddddddddddddd","attempt":1,"outcome":"done","detail":"installed curl"},{"operation":"op-abababababababababababab","attempt":1,"outcome":"done","detail":"enabled k3s"},{"operation":"op-acacacacacacacacacacacac","attempt":1,"outcome":"done","detail":"started k3s"},{"operation":"op-cccccccccccccccccccccccc","attempt":1,"outcome":"done","detail":"wrote manifest app"},{"operation":"op-efefefefefefefefefefefef","attempt":1,"outcome":"failed","detail":"the Control Plane served a binary with sha256 ad95faa05d9c0c9aafa5620578ee671ca5171ba2b7d97358d9e3ace56cf1c184, not the approved abababababababababababababababababababababababababababababababab"},{"operation":"op-aaaaaaaaaaaaaaaaaaaaaaaa","attempt":1,"outcome":"done","detail":"installed k3s v1.37.2+k3s1"}]}
+== round 2
+commands:
+/usr/bin/dpkg-query -W -f=${db:Status-Status}	${Version}
+ curl
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- k3s
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- nginx
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml /usr/local/bin/k3s kubectl get nodes --output=jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml /usr/local/bin/k3s kubectl delete node old
+/usr/bin/dpkg-query -W -f=${db:Status-Status}	${Version}
+ curl
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- k3s
+/usr/bin/systemctl show --property=LoadState,UnitFileState,ActiveState -- nginx
+/usr/bin/systemctl show --timestamp=unix --property=ActiveState,ExecMainStartTimestamp -- k3s
+KUBECONFIG=/etc/rancher/k3s/k3s.yaml /usr/local/bin/k3s kubectl get nodes --output=jsonpath={range .items[*]}{.metadata.name}{"\t"}{.status.nodeInfo.kubeletVersion}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}
+report:
+{"node":"srv","vmid":7001,"serial":3,"version":"golden","packages":[{"name":"curl","installed":true,"version":"8.5.0-2ubuntu10.6"}],"services":[{"name":"k3s","exists":true,"enabled":true,"running":true},{"name":"nginx","exists":true,"enabled":false,"running":true}],"k3s":{"installed":true,"sha256":"a142036a8d58efa0188b1b23866c7c9e0414a8de934d069fe785c37fca80369f","addresses":["192.0.2.12","192.0.2.77"],"running":true,"stale":false,"nodes":[{"name":"srv","version":"v1.37.2+k3s1","ready":true}]},"mameletSha256":"13e2aaba2c3bf982f1a1fac045e179708ddd5f0328f885e6e3c600816096cab6","manifests":[{"name":"app","sha256":"bb6c7fb1ce4b8ac8baa8f6344623dd4602cf3d6ce859f9ff859a5a43787c5987"},{"name":"kept"}],"results":[{"operation":"op-dddddddddddddddddddddddd","attempt":1,"outcome":"done","detail":"installed curl"},{"operation":"op-abababababababababababab","attempt":1,"outcome":"done","detail":"enabled k3s"},{"operation":"op-acacacacacacacacacacacac","attempt":1,"outcome":"done","detail":"started k3s"},{"operation":"op-cccccccccccccccccccccccc","attempt":1,"outcome":"done","detail":"wrote manifest app"},{"operation":"op-efefefefefefefefefefefef","attempt":1,"outcome":"failed","detail":"the Control Plane served a binary with sha256 ad95faa05d9c0c9aafa5620578ee671ca5171ba2b7d97358d9e3ace56cf1c184, not the approved abababababababababababababababababababababababababababababababab"},{"operation":"op-aaaaaaaaaaaaaaaaaaaaaaaa","attempt":1,"outcome":"done","detail":"installed k3s v1.37.2+k3s1"},{"operation":"op-bbbbbbbbbbbbbbbbbbbbbbbb","attempt":1,"outcome":"done","detail":"deleted Kubernetes node old (not Ready, so not drained)"}]}

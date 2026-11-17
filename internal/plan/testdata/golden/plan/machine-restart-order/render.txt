@@ -1,0 +1,27 @@
+Plan sha256:d8a32faf9fa1
+  revision  sha256:2de585c4d575
+  observed  2026-11-08T12:00:00Z (snapshot sha256:fb9c9f76b034)
+  policy    sha256:b2ad900beffb
+
+= NodeK3s cp/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on cp, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w1/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w2/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w2, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+. TestVM cp  [waiting]  via test
+    MAM-PLAN-0118 waits for machine w1 to be restarted before cp (the machines of a cluster are restarted one at a time)
+      hint: apply the plan that restarts it, then plan again
+~ TestVM w1  [needs approval]  via test
+      resize-vm: resize-vm
+    resize-vm: needs approval (MAM-POL-0209 a change through a provider (restart))
+      objects: 
+. TestVM w2  [waiting]  via test
+    MAM-PLAN-0118 waits for machine w1 to be restarted before w2 (the machines of a cluster are restarted one at a time)
+      hint: apply the plan that restarts it, then plan again
+
+Summary: 1 needs approval, 2 waiting, 3 in sync.
+Nothing has been changed: a plan only describes.
