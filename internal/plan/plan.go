@@ -258,6 +258,12 @@ func (b builder) provided(r graph.Resource) Change {
 	case b.stale(got.ObservedAt):
 		c.Status, c.Note = StatusBlocked, b.staleNote(got.ObservedAt)
 		return c
+	case got.Kept != nil && len(got.Changes) == 0:
+		// Declared here and made for another declaration, but as both want it (a shared template):
+		// nothing is to change, so it is in sync, with a note of whose it is.
+		c = b.withOps(c)
+		c.Note = &Note{Code: got.Kept.Code, Message: got.Kept.Message, Hint: got.Kept.Hint}
+		return c
 	case got.Kept != nil:
 		// Declared here, but made for another declaration (B4): Mamela changes nothing of it, and a
 		// person decides where it belongs. Waiting would never end by itself.
