@@ -76,9 +76,14 @@ type System struct {
 	AllowedOrigins []string
 	// Root prefixes the files mamelet writes (k3s); empty is "/". Tests use a directory.
 	Root string
-	// HTTP downloads k3s (nil: a client with a timeout); K3sReleases overrides where from (tests).
+	// HTTP downloads k3s and the linux extension's artifacts (nil: a client with a timeout);
+	// K3sReleases overrides where k3s comes from (tests).
 	HTTP        *http.Client
 	K3sReleases string
+	// StateDir is mamelet's own directory (Config.StateDir: Agent.Round sets it when it is empty), at
+	// Path(StateDir): an extension keeps the record of what it did there (the linux extension, of
+	// the artifacts it installed), and nothing else.
+	StateDir string
 	// SelfPath overrides the file mamelet hashes to tell which binary runs (tests); selfSHA caches it.
 	SelfPath string
 	selfSHA  string

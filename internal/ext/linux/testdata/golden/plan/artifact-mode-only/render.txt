@@ -1,0 +1,19 @@
+Plan sha256:a1c82a59bb22
+  revision  sha256:7bada6c9a547
+  observed  2026-11-17T12:01:00Z (snapshot sha256:70a493469fde)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/node_exporter  [in sync]
+= TestVM web  [in sync]  via test
+~ NodeArtifact web/artifact/usr/local/bin/node_exporter  [needs approval]
+      artifact: /usr/local/bin/node_exporter
+      url: https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+      sha256: 1212121212121212121212121212121212121212121212121212121212121212
+      extract: node_exporter-1.8.2.linux-amd64/node_exporter
+      mode: 0700 -> 0755
+      restart: node_exporter (each only if it runs: systemctl try-restart)
+    linux.install-artifact: needs approval (MAM-POL-0225 downloads a file over https and installs it on the node as root (or one member of it, a .tar.gz), only if its sha256 is the one of this plan, with the mode and owner of this plan, and restarts the services it names)
+      hint: check the URL and the sha256 against the publisher's release (its checksum file) before approving: what is installed runs, or is read, as this plan says
+
+Summary: 1 needs approval, 2 in sync.
+Nothing has been changed: a plan only describes.
