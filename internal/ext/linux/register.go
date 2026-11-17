@@ -61,7 +61,6 @@ type operation struct {
 
 func init() {
 	var defs []graph.KindDef
-	var codes []graph.Code
 	planners := map[graph.Kind]plan.Planner{}
 	grants := map[policy.Op]node.GrantFunc{}
 	var manifest []spec.Kind
@@ -74,9 +73,7 @@ func init() {
 			grants[o.op] = o.grant
 		}
 	}
-	codes = append(codes, warningCodes...)
-
-	graph.Register(graph.Extension{Name: Name, Kinds: defs, Check: checkGraph, Warnings: graphWarnings, WarningCodes: codes})
+	graph.Register(graph.Extension{Name: Name, Kinds: defs, Check: checkGraph, Warnings: graphWarnings, WarningCodes: warningCodes})
 
 	plan.Register(plan.Extension{
 		Name:     Name,

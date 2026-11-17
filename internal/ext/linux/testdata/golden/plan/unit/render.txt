@@ -1,6 +1,6 @@
-Plan sha256:31b07cd74e9e
+Plan sha256:ec2ea7d83e2a
   revision  sha256:74d0c08a3d97
-  observed  2026-11-17T12:01:00Z (snapshot sha256:f91ca4f66cb1)
+  observed  2026-11-17T12:01:00Z (snapshot sha256:091022202c60)
   policy    sha256:b2ad900beffb
 
 = NodeService web/app  [in sync]

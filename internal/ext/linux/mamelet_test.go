@@ -428,3 +428,23 @@ type failingCP struct{ *memCP }
 func (failingCP) Revision(context.Context) (noderev.Signed, error) {
 	return noderev.Signed{}, fmt.Errorf("unreachable")
 }
+
+// A file right under the root, and one in a directory three levels down that does not exist yet.
+func TestMameletWritesAtAnyDepth(t *testing.T) {
+	n := newNode(t)
+	n.offer(Part{Files: []File{grant("/top.conf", "top\n", opA, 1), grant("/srv/a/b/c.conf", "deep\n", opB, 1)}}, nil)
+	rep := n.round()
+	for _, op := range []string{opA, opB} {
+		if r := result(t, rep, op); r.Outcome != noderev.OutcomeDone {
+			t.Errorf("%s: %+v", op, r)
+		}
+	}
+	if n.read("/top.conf") != "top\n" || n.read("/srv/a/b/c.conf") != "deep\n" {
+		t.Error("not written")
+	}
+	for _, d := range []string{"srv", "srv/a", "srv/a/b"} {
+		if fi, err := os.Lstat(filepath.Join(n.root, d)); err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o755 {
+			t.Errorf("%s: %v %v", d, fi, err)
+		}
+	}
+}

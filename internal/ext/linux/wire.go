@@ -76,10 +76,10 @@ type Observed struct {
 type FileState struct {
 	Path string `json:"path"`
 	// Exists: something is at the path (a regular file, or what Unsafe says).
-	Exists bool   `json:"exists,omitempty"`
+	Exists bool   `json:"exists,omitzero"`
 	SHA256 string `json:"sha256,omitempty"` // of a regular file, unless it is Large
 	// Large: a regular file larger than any content Mamela writes (MaxContent); it is not hashed.
-	Large bool   `json:"large,omitempty"`
+	Large bool   `json:"large,omitzero"`
 	Mode  string `json:"mode,omitempty"`  // of a regular file: "0644" (with the setuid bits)
 	Owner string `json:"owner,omitempty"` // the user's name ("#1001" when the node has no name for the id)
 	Group string `json:"group,omitempty"`
