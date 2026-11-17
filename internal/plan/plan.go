@@ -112,10 +112,8 @@ func (c Change) Deleted() []string {
 		return []string{c.ID()}
 	}
 	var out []string
-	for _, d := range c.Diffs {
-		if d.Field == "remove-node" && c.Deletes() {
-			out = append(out, "Kubernetes node "+d.To)
-		}
+	if p, ok := planners[c.Kind]; ok && p.Deleted != nil && c.Deletes() {
+		out = p.Deleted(c)
 	}
 	if len(out) == 0 && c.Deletes() {
 		out = append(out, c.ID())
@@ -141,6 +139,7 @@ func Build(g *graph.Graph, snap state.Snapshot, pol policy.Policy) *Plan {
 // BuildFor computes the plan for the providers whose contracts have the given digest.
 func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers string) *Plan {
 	b := builder{snap: snap, pol: pol, g: g}
+	kit := newKit(b)
 	p := &Plan{Inputs: Inputs{
 		RevisionDigest:  g.Digest(),
 		SnapshotDigest:  snap.Digest(),
@@ -159,16 +158,16 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 			p.Changes = append(p.Changes, b.onNode(r.NodePackage.Node, b.pkg(r)))
 		case graph.KindNodeService:
 			p.Changes = append(p.Changes, b.onNode(r.NodeService.Node, b.service(r)))
-		case graph.KindNodeK3s:
-			c := b.onNode(r.NodeK3s.Node, b.k3s(r))
-			c.Warnings = slices.Concat(warned[r.ID()], b.rollbackWarnings(r))
-			p.Changes = append(p.Changes, c)
-		case graph.KindNodeK3sManifest:
-			p.Changes = append(p.Changes, b.onNode(r.NodeK3sManifest.Node, b.k3sManifest(r)))
 		case graph.KindNodeMamelet:
 			p.Changes = append(p.Changes, b.onNode(r.NodeMamelet.Node, b.mamelet(r)))
 		default:
-			if r.Provided != nil {
+			if pl, ok := planners[r.Kind]; ok {
+				// A kind of a node extension: its planner says what changes; the core still decides
+				// whether the node can be changed at all (onNode), and adds the declaration's warnings.
+				c := b.onNode(r.Node(), pl.Plan(kit, r))
+				c.Warnings = slices.Concat(warned[r.ID()], c.Warnings)
+				p.Changes = append(p.Changes, c)
+			} else if r.Provided != nil {
 				p.Changes = append(p.Changes, b.guard(r.Name, b.provided(r)))
 			}
 		}
@@ -242,7 +241,7 @@ func (p *Plan) Removals() int {
 
 // provided plans a resource of a provider from the provider's observation and diff.
 func (b builder) provided(r graph.Resource) Change {
-	c := newChange(r)
+	c := NewChange(r)
 	c.Provider = r.Provided.Provider
 	got, observed := b.snap.Provided[r.ID()]
 	switch {
@@ -302,7 +301,7 @@ func (b builder) provided(r graph.Resource) Change {
 	}
 	if got.Observed.Exists && b.restartsMachine(got) {
 		if note := b.machineRestartGate(r); note != nil {
-			w := newChange(r)
+			w := NewChange(r)
 			w.Provider, w.Status, w.Note = c.Provider, StatusWaiting, note
 			return w
 		}
@@ -404,12 +403,12 @@ func (b builder) nodeReported(node string) bool {
 			_, seen = b.snap.Packages[r.Name]
 		case r.NodeService != nil && r.NodeService.Node == node:
 			_, seen = b.snap.Services[r.Name]
-		case r.NodeK3s != nil && r.NodeK3s.Node == node:
-			_, seen = b.snap.K3s[r.Name]
-		case r.NodeK3sManifest != nil && r.NodeK3sManifest.Node == node:
-			_, seen = b.snap.K3sManifests[r.Name]
 		case r.NodeMamelet != nil && r.NodeMamelet.Node == node:
 			_, seen = b.snap.Mamelets[r.Name]
+		default:
+			if pl, ok := planners[r.Kind]; ok && pl.Reported != nil && r.Node() == node {
+				seen = pl.Reported(newKit(b), r)
+			}
 		}
 		if seen {
 			return true
@@ -446,7 +445,7 @@ func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
 
 func (b builder) pkg(r graph.Resource) Change {
 	want := r.NodePackage
-	c := newChange(r)
+	c := NewChange(r)
 	if ok, note := b.nodeReady(want.Node); !ok {
 		c.Status, c.Note = StatusWaiting, note
 		return c
@@ -496,7 +495,7 @@ func (b builder) pkg(r graph.Resource) Change {
 
 func (b builder) service(r graph.Resource) Change {
 	want := r.NodeService
-	c := newChange(r)
+	c := NewChange(r)
 	if ok, note := b.nodeReady(want.Node); !ok {
 		c.Status, c.Note = StatusWaiting, note
 		return c
@@ -526,14 +525,10 @@ func (b builder) service(r graph.Resource) Change {
 		subjects = append(subjects, policy.Subject{Op: op, Service: want.Service})
 	}
 	if got.Running != want.Running && want.Running {
-		// A k3s agent starts only once its server runs: its start waits for the server (Type=notify),
-		// and would hold its mamelet until then.
-		if server := b.k3sServerOf(want.Node, want.Service); server != "" {
-			if srv, ok := b.snap.Services[server+"/k3s"]; !ok || !srv.Running {
-				c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0112",
-					Message: fmt.Sprintf("waits for the k3s server %s to run before starting the agent on %s", server, want.Node)}
-				return c
-			}
+		// What a start waits for is the node extensions' to say (a k3s agent's waits for its server).
+		if note := b.serviceStartGate(want.Node, want.Service); note != nil {
+			c.Status, c.Note = StatusWaiting, note
+			return c
 		}
 	}
 	if got.Running != want.Running {
@@ -636,7 +631,8 @@ func (b builder) guard(node string, c Change) Change {
 	return c
 }
 
-func newChange(r graph.Resource) Change {
+// NewChange is the plan of a resource with nothing in it yet: no diff, no operation.
+func NewChange(r graph.Resource) Change {
 	return Change{Kind: r.Kind, Name: r.Name, Diffs: []Diff{}, Operations: []Operation{}}
 }
 

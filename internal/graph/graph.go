@@ -39,6 +39,12 @@ const (
 	KindNodeMamelet Kind = "NodeMamelet"
 )
 
+// CoreKind reports whether a kind is one of the core's own (packages, services, mamelet), not a node
+// extension's.
+func CoreKind(k Kind) bool {
+	return k == KindNodePackage || k == KindNodeService || k == KindNodeMamelet
+}
+
 // Builtin reports whether a kind is one of Mamela's own (not a provider's).
 func Builtin(k Kind) bool {
 	_, ok := kindOrder[k]

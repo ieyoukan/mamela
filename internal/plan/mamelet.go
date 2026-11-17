@@ -13,7 +13,7 @@ import (
 // run what is declared: an update that does not work stops at the first node it was tried on.
 func (b builder) mamelet(r graph.Resource) Change {
 	want := r.NodeMamelet
-	c := newChange(r)
+	c := NewChange(r)
 	if ok, note := b.nodeReady(want.Node); !ok {
 		c.Status, c.Note = StatusWaiting, note
 		return c
