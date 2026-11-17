@@ -39,6 +39,21 @@ type Snapshot struct {
 	Nodes map[string]Node `json:"nodes,omitempty"`
 	// AgentRegistrations binds node operations to the enrolled instance, even if a VMID is reused.
 	AgentRegistrations map[string]string `json:"agentRegistrations,omitempty"`
+	// NodeRefusals are the nodes whose mamelet did not accept the revision the Control Plane offers
+	// (by node name): whatever is approved, no permission reaches them. Only a node that refuses is
+	// in it, so a snapshot of a world where every node accepts is what it always was.
+	NodeRefusals map[string]NodeRefusal `json:"nodeRefusals,omitempty"`
+}
+
+// NodeRefusal is a mamelet saying that it refused the Control Plane's revision (its report's
+// Refused): an unknown member (an older mamelet), a serial lower than one it accepted, a clock that
+// differs, a signature that is not the Control Plane's.
+type NodeRefusal struct {
+	Serial    int64  `json:"serial"`              // the revision the Control Plane offers (its newest)
+	WorksFrom int64  `json:"worksFrom,omitempty"` // the revision the node still works from (0: none)
+	Reason    string `json:"reason"`              // mamelet's words, made printable
+	// ObservedAt is when the report arrived.
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // AddProvided records providers' observations, and from them the machines of node kinds.
@@ -242,6 +257,13 @@ func (s Snapshot) normalized() Snapshot {
 		for k, v := range s.Nodes {
 			v.ObservedAt = v.ObservedAt.UTC()
 			n.Nodes[k] = v
+		}
+	}
+	if len(s.NodeRefusals) > 0 {
+		n.NodeRefusals = map[string]NodeRefusal{}
+		for k, v := range s.NodeRefusals {
+			v.ObservedAt = v.ObservedAt.UTC()
+			n.NodeRefusals[k] = v
 		}
 	}
 	return n

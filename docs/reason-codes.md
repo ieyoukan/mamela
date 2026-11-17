@@ -130,6 +130,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0119 | ノードの mamelet が、どの版で動いているかを報告していない。更新の仕組みより前の mamelet は報告しない。一度だけ手で置き換える（[mamelet の更新](mamelet-update.md)） |
 | MAM-PLAN-0120 | mamelet の更新は 1 台ずつ、名前の順。前のノードが宣言した版で動くまで待つ。前のノードの更新が失敗したなら、それが先に直す |
 | MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
+| MAM-PLAN-0130 | ノードの mamelet が、Control Plane の revision を拒否している（Blocked）。理由は mamelet の報告のとおり。未知のメンバー（mamelet が Control Plane より古い。[mamelet の更新](mamelet-update.md)の限界）、serial の巻き戻し（Control Plane の DB を古い写しから戻した。最新の DB に戻す）、時計のずれ（ノードの時計を直す）、署名や宛先の不一致（ノードの設定）、revision の内容が不正（宣言の名前や値）。許可は revision で届くので、拒否されているあいだは、承認しても何も届かない。同じノードで同期している（in sync）ものは、そのまま。Control Plane のログにも、拒否の始まりと終わりが出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
 | MAM-PLAN-0201 | 観測が古いので判断しない（Blocked） |
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
@@ -277,5 +278,7 @@ CP と mamelet の mTLS の証明書、CP の CA と署名鍵。手順は [recov
 | MAM-NODE-0103 | 宣言が固定した mamelet の sha256 を、この Control Plane は配っていない（`controlplane.mamelet_binary` の sha256 が違う）。plan の警告で、digest には入らない | その binary を `controlplane.mamelet_binary` に置いて `mamela serve` を再起動するか、配っている版を宣言に書く |
 | MAM-NODE-0201 | CP が、ノードの `wait` の要求を断った。同じノードの待ちが 2 つあるところに、新しい要求が来て、古いほうを閉じた（409）。mamelet は通常の間隔に戻るだけ | 何もしない。繰り返すなら、同じ名前の mamelet が 2 つ動いていないか |
 | MAM-NODE-0202 | CP が、登録・更新・報告の要求を断った。本文が大きすぎる（413。登録と更新は 16 KiB、報告は 1 MiB）、または 10 秒以内に届かなかった（408） | mamelet 以外が送っていないか。ネットワークの遅延 |
+
+| MAM-NODE-0120 | 承認が切れたので、ノードに許可を出さなかった。apply が長く（イメージの取り込みなどで）、承認の期限を過ぎてからノードの操作に着いた | 承認し直して、もう一度 apply する |
 
 `mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。

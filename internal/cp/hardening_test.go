@@ -253,7 +253,15 @@ func TestExpiredClientCertificateIsExplainedInTheLog(t *testing.T) {
 	if _, err := c.Revision(e.ctx); err == nil || !strings.Contains(err.Error(), "expired certificate") {
 		t.Fatalf("the expired certificate was accepted or failed otherwise: %v", err)
 	}
-	out := logs.String()
+	// The server logs the failed handshake on its own goroutine, possibly after the client has
+	// already seen the alert: wait a little for the line.
+	var out string
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		out = logs.String()
+		if strings.Contains(out, "MAM-PKI-0102") || time.Now().After(deadline) {
+			break
+		}
+	}
 	if !strings.Contains(out, "MAM-PKI-0102") || !strings.Contains(out, "reenroll") {
 		t.Fatalf("the handshake failure is not explained:\n%s", out)
 	}

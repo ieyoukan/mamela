@@ -102,6 +102,7 @@ func TestK3sThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone || downloads != 1 {
 		t.Fatalf("install: %+v (downloads %d)", rep, downloads)
 	}
+	e.granted(noderev.ActionInstall)
 
 	p = e.plan()
 	if k := change(t, p, "NodeK3s app/k3s"); k.Status != plan.StatusInSync {
@@ -211,6 +212,7 @@ func TestK3sManifestThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil {
 		t.Fatalf("apply: %+v", rep)
 	}
+	e.granted(noderev.ActionWrite)
 	if b, _ := os.ReadFile(file); string(b) != "kind: Namespace\nmetadata:\n  name: argocd\n" {
 		t.Fatalf("the manifest on the server: %q", b)
 	}
@@ -282,6 +284,7 @@ func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone {
 		t.Fatalf("apply: %+v", rep)
 	}
+	e.granted(noderev.ActionRemove)
 	if fmt.Sprint(e.os.kubectlCalls) != "[delete node ghost]" || !strings.Contains(e.os.kubectl, "keep\t") || !strings.Contains(e.os.kubectl, "hand\t") || strings.Contains(e.os.kubectl, "ghost") {
 		t.Fatalf("kubectl: %v, nodes %q", e.os.kubectlCalls, e.os.kubectl)
 	}
@@ -375,6 +378,7 @@ func TestMameletUpdateThroughMamelet(t *testing.T) {
 	if rep := e.applyApproved(p); rep.Stopped != nil || rep.Steps[0].Outcome != reconcile.OutcomeDone {
 		t.Fatalf("apply: %+v", rep)
 	}
+	e.granted(noderev.ActionUpdate)
 	b, _ := os.ReadFile(filepath.Join(root, noderev.MameletPath))
 	prev, _ := os.ReadFile(filepath.Join(root, noderev.MameletPrevPath))
 	if string(b) != "new mamelet" || string(prev) != "old mamelet" {

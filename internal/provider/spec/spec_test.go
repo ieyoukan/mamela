@@ -6,6 +6,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/provider/spec/spectest"
 )
 
 func manifest() Manifest {
@@ -89,5 +90,30 @@ func TestAnalyzeResolvesEachResource(t *testing.T) {
 	}
 	if q := ps.OperationRequirements(g.Resources[2], policy.OpEnableService, nil); len(q) != 1 || q[0].Support != Unsupported {
 		t.Errorf("an operation the provider does not declare: %+v", q)
+	}
+}
+
+// NodeOf and the template fields know every kind that lives on a node. A kind that is added to the
+// graph and left out here fails this test (audit B17: NodeK3sManifest was left out of fields).
+func TestEveryNodeKindIsOnItsNode(t *testing.T) {
+	for _, r := range spectest.NodeResources(t) {
+		if got := NodeOf(r); got != spectest.Node {
+			t.Errorf("NodeOf(%s) = %q, want %q", r.Kind, got, spectest.Node)
+		}
+		if got := fields(r)["node"]; got != spectest.Node {
+			t.Errorf("a template over a %s gets node %q, want %q", r.Kind, got, spectest.Node)
+		}
+	}
+	if got := NodeOf(graph.Resource{Kind: "KVItem", Name: "web", Provided: &graph.ProvidedSpec{Provider: "kv"}}); got != "" {
+		t.Errorf("a provider's own resource is on node %q", got)
+	}
+}
+
+// What a template says of a manifest is the manifest's name.
+func TestFieldsOfAManifestNameTheManifest(t *testing.T) {
+	r := graph.Resource{Kind: graph.KindNodeK3sManifest, Name: "app/manifest/argocd",
+		NodeK3sManifest: &graph.NodeK3sManifestSpec{Node: "app", Name: "argocd", Content: "kind: Namespace\n"}}
+	if f := fields(r); f["node"] != "app" || f["name"] != "argocd" {
+		t.Fatalf("fields %v", f)
 	}
 }

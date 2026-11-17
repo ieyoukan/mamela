@@ -139,18 +139,29 @@ type Resolver interface {
 	ResolveTarget(provider string, t Target) (string, bool)
 }
 
+// NodeOf is the machine a built-in resource lives on: its node ("" for a resource that is not on
+// one, such as a provider's own). It is graph.Resource.Node, the one place that knows which kinds
+// live on a node (a test over every kind, spectest.NodeResources, fails for one that is missing).
+func NodeOf(r graph.Resource) string { return r.Node() }
+
 // fields are the resource values that templates may use.
 func fields(r graph.Resource) map[string]string {
 	f := map[string]string{"name": r.Name, "id": r.ID()}
+	if node := NodeOf(r); node != "" {
+		f["node"] = node
+	}
 	switch {
 	case r.NodePackage != nil:
-		f["node"], f["package"] = r.NodePackage.Node, r.NodePackage.Package
+		f["package"] = r.NodePackage.Package
 	case r.NodeService != nil:
-		f["node"], f["service"] = r.NodeService.Node, r.NodeService.Service
+		f["service"] = r.NodeService.Service
 	case r.NodeK3s != nil:
-		f["node"], f["version"], f["sha256"] = r.NodeK3s.Node, r.NodeK3s.Version, r.NodeK3s.SHA256
+		f["version"], f["sha256"] = r.NodeK3s.Version, r.NodeK3s.SHA256
+	case r.NodeK3sManifest != nil:
+		// The manifest's own name, not the resource's ("app/manifest/argocd").
+		f["name"] = r.NodeK3sManifest.Name
 	case r.NodeMamelet != nil:
-		f["node"], f["version"], f["sha256"] = r.NodeMamelet.Node, r.NodeMamelet.Version, r.NodeMamelet.SHA256
+		f["version"], f["sha256"] = r.NodeMamelet.Version, r.NodeMamelet.SHA256
 	case r.Provided != nil:
 		// A provider's templates name the spec's top-level strings and integers ("{pool}").
 		var spec map[string]jsontext.Value

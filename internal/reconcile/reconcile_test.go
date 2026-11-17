@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -525,5 +526,57 @@ func TestObservationAfterApplyingFails(t *testing.T) {
 	}
 	if outcomes(rep)[fake.OpCreate] != reconcile.OutcomeDone || rep.Remaining != nil || !strings.Contains(rep.RemainingErr, "unreachable") {
 		t.Fatalf("report: %+v", rep)
+	}
+}
+
+// Prune (what the plan's declaration no longer has, taken away from what providers may do) runs once,
+// for the declaration of an approved plan, after the plan's own checks and before any operation: a
+// plan nobody approved is a candidate and takes nothing away, and a plan made for other providers is
+// not applied at all. When it fails, nothing was changed.
+func TestPruneRunsOnlyForAnApprovedPlansDeclaration(t *testing.T) {
+	e := newEnv(t)
+	p := e.plan()
+	var calls []*graph.Graph
+	prune := func(_ context.Context, g *graph.Graph) ([]string, error) {
+		calls = append(calls, g)
+		return []string{"app-server"}, nil
+	}
+	run := func(mod func(*reconcile.Reconciler)) (*reconcile.Report, error) {
+		r := e.reconciler("worker-a")
+		r.Prune = prune
+		if mod != nil {
+			mod(r)
+		}
+		return r.Apply(e.ctx, p.Digest)
+	}
+
+	// Not approved: a candidate. It takes nothing away.
+	if _, err := run(nil); err != nil || len(calls) != 0 {
+		t.Fatalf("an unapproved plan pruned: %d calls, %v", len(calls), err)
+	}
+	// An approval of the plan, but the plan was made for other providers: refused before anything.
+	e.approve(p)
+	if rep, err := run(func(r *reconcile.Reconciler) { r.Providers = "sha256:other" }); err != nil || rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0007" || len(calls) != 0 {
+		t.Fatalf("a refused plan pruned: %d calls, %+v %v", len(calls), rep, err)
+	}
+	// Approved: once, for the plan's own declaration, and what it changed is in the event log.
+	if _, err := run(nil); err != nil || len(calls) != 1 || calls[0].Digest() != e.g.Digest() {
+		t.Fatalf("an approved plan: %d calls, %v", len(calls), err)
+	}
+	events, err := e.store.Events(e.ctx, p.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(events, func(ev store.Event) bool { return ev.Kind == "pruned" && strings.Contains(ev.Message, "app-server") }) {
+		t.Fatalf("what was pruned is not logged: %+v", events)
+	}
+	// A failure stops the apply before any operation.
+	e2 := newEnv(t)
+	p2 := e2.plan()
+	e2.approve(p2)
+	r := e2.reconciler("worker-a")
+	r.Prune = func(context.Context, *graph.Graph) ([]string, error) { return nil, errors.New("disk full") }
+	if rep, err := r.Apply(e2.ctx, p2.Digest); err == nil || !strings.Contains(err.Error(), "disk full") || rep != nil || e2.world.Calls(fake.OpCreate) != 0 {
+		t.Fatalf("a failing prune: %+v %v", rep, err)
 	}
 }

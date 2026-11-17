@@ -12,6 +12,8 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 
 先に新しい Control Plane（`mamela`、`mamela serve`）にしてから、mamelet を更新する（新しい mamelet の報告は、古い Control Plane が読めない）。0.3.2 の mamelet は、証明書を自分で更新する。古い Control Plane は更新の要求を知らない（404）が、mamelet は何もせずに動き続ける。更新できない古い mamelet は、登録から 1 年で切れる（30 日前から CP のログと plan が警告する。[recovery.md](recovery.md) の 6）。
 
+0.3.2 から、許可（承認した操作を mamelet に許す印）には期限がある。Control Plane を更新する時点で進行中だった apply の許可（期限を持たない）は配られなくなるので、その apply は結果不明で止まる。更新のあとにもう一度 apply する。revision の形は変わらない（期限は Control Plane の中だけにあり、署名する内容に入らない）ので、古い mamelet はそのまま revision を読める。
+
 ## 更新の中身（mamelet が一度だけ行う）
 
 1. Control Plane から binary を取る（mamelet がもともと信頼している CA の TLS）。承認した sha256 と違えば、何も変えずに失敗する。
@@ -32,7 +34,7 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 
 ## 限界
 
-- **更新の仕組みより前の mamelet は、一度だけ手で置き換える。** 古い mamelet は、`mamelet` の許可を含む revision を、知らない項目として断る。`/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet` する（検証環境では `/tmp/vm-update.sh` のような手順）。これ以降は、宣言で更新できる。
+- **更新の仕組みより前の mamelet は、一度だけ手で置き換える。** 古い mamelet は、`mamelet` の許可を含む revision を、知らない項目として断る。断られていることは、plan が MAM-PLAN-0130 で示す（そのノードの変更は Blocked で、理由が mamelet の言葉で出る）。Control Plane のログにも出る。`/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet` する（検証環境では `/tmp/vm-update.sh` のような手順）。これ以降は、宣言で更新できる。
 - **新しい mamelet が、起動の前に壊れるとき**（ELF が壊れているなど）は、`-version` で見つかる。起動はするが、すぐ落ちるときは、3 回の起動で戻る。起動して動き続けるが、何かを間違えて報告するときは、戻らない（plan が違いを見つけて、また更新を出す）。
 - **Control Plane のホスト**（保護されたノード）の mamelet は、plan では更新しない（ADR 0003）。手で置き換える。
 - **種類の違う Control Plane（古い）** は、`/v1/nodes/<node>/wait` を知らない。mamelet はその場合も動く（今までの間隔）。

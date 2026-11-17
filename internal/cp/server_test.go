@@ -6,10 +6,12 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -369,5 +371,131 @@ func TestMameletClientFetchesTheBinary(t *testing.T) {
 	}
 	if _, err := c.Mamelet(e.ctx, strings.Repeat("0", 64)); err == nil || !strings.Contains(err.Error(), "does not serve") {
 		t.Fatalf("a binary that is not served: %v", err)
+	}
+}
+
+// installingOS is noOS that counts what mamelet installs.
+type installingOS struct {
+	noOS
+	installs int
+}
+
+func (o *installingOS) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
+	if strings.HasSuffix(program, "apt-get") && !slices.Contains(args, "-s") {
+		o.installs++
+		return nil, nil, 0, nil
+	}
+	return o.noOS.Run(ctx, program, args, env)
+}
+
+// A one-time grant is handed out until its deadline and not after (audit A2). The revision's own
+// validity is renewed with every fetch, so it ends nothing: the Control Plane takes the grant out
+// of what it serves, under the same serial (a mamelet accepts a serial it already has), and what
+// it signs has no deadlines in it (a mamelet of an older release rejects members it does not know).
+func TestAGrantIsHandedOutOnlyUntilItsDeadline(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.enroll("web", 7001)
+	runner := &installingOS{}
+	c, err := mamelet.NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &mamelet.Agent{Config: cfg, CP: c, System: &mamelet.System{Runner: runner, AllowedOrigins: cfg.AllowedOrigins},
+		State: mamelet.FileState{Path: filepath.Join(cfg.StateDir, "state.json")}, Now: func() time.Time { return e.now }, Version: "test"}
+	publish := func(grant *noderev.Install) {
+		t.Helper()
+		if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+			return noderev.Revision{VMID: 7001, Packages: []noderev.Package{{Name: "curl", Install: grant}}}, nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish(nil)
+	rep, err := agent.Round(e.ctx)
+	if err != nil || rep.Packages[0].ChangeSet == nil {
+		t.Fatalf("first round: %+v %v", rep, err)
+	}
+	digest := rep.Packages[0].ChangeSet.Digest
+	grant := func(op string, deadline time.Time) *noderev.Install {
+		return &noderev.Install{Operation: op, Attempt: 1, ChangeSet: digest, Expires: deadline}
+	}
+
+	// Before the deadline it is handed out, and what is signed has no deadline in it.
+	publish(grant("op-000000000000000000000001", e.now.Add(10*time.Minute)))
+	signed, err := c.Revision(e.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(signed.Payload), `"expires"`) {
+		t.Fatalf("the signed revision has the grant's deadline: %s", signed.Payload)
+	}
+	if _, err := agent.Round(e.ctx); err != nil || runner.installs != 1 {
+		t.Fatalf("a live grant: %v, installs %d", err, runner.installs)
+	}
+
+	// A later grant, whose deadline passes before mamelet comes back (it was away): the revision is
+	// the same serial and is still accepted, without the grant, though the revision's own validity
+	// (an hour from each fetch) has not ended.
+	publish(grant("op-000000000000000000000002", e.now.Add(10*time.Minute)))
+	serial, _ := e.st.NodeRevisionSerial(e.ctx, "web")
+	e.now = e.now.Add(11 * time.Minute)
+	rep, err = agent.Round(e.ctx)
+	if err != nil || rep.Refused != "" || rep.Serial != serial || runner.installs != 1 {
+		t.Fatalf("a grant past its deadline: refused %q, serial %d (want %d), installs %d, %v", rep.Refused, rep.Serial, serial, runner.installs, err)
+	}
+	if signed, _ = c.Revision(e.ctx); strings.Contains(string(signed.Payload), "op-000000000000000000000002") {
+		t.Fatalf("an expired grant is handed out: %s", signed.Payload)
+	}
+
+	// A grant that an older Control Plane stored has no deadline: it is not handed out either.
+	publish(grant("op-000000000000000000000003", time.Time{}))
+	if _, err := agent.Round(e.ctx); err != nil || runner.installs != 1 {
+		t.Fatalf("a grant without a deadline: %v, installs %d", err, runner.installs)
+	}
+}
+
+// The Control Plane says in its log when a mamelet starts refusing its revision, and when it stops:
+// once each, not at every report (audit A6: nothing on the Control Plane looked at the reason).
+func TestTheLogSaysWhenAMameletStartsAndStopsRefusing(t *testing.T) {
+	e := newEnv(t)
+	var buf strings.Builder
+	e.srv.Config.Handler = (&Server{Store: e.st, PKI: e.pki, Now: func() time.Time { return e.now }, RevisionTTL: time.Hour,
+		Log: log.New(&buf, "", 0)}).Handler()
+	cfg := e.enroll("web", 7001)
+	agent := e.agent(cfg)
+	if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+		return noderev.Revision{VMID: 7001}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setLast := func(serial int64) {
+		t.Helper()
+		st, err := agent.State.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.LastSerial, st.Revision = serial, nil
+		if err := agent.State.Save(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	round := func() {
+		t.Helper()
+		if _, err := agent.Round(e.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	round()
+	setLast(99) // a database restored from an older copy: the Control Plane's serial is lower than the node's
+	round()
+	round()
+	if out := buf.String(); strings.Count(out, "MAM-PLAN-0130") != 1 || !strings.Contains(out, "web:") || !strings.Contains(out, "older than one already accepted") {
+		t.Fatalf("the log of two refusing rounds:\n%s", out)
+	}
+	setLast(0)
+	round()
+	round()
+	if out := buf.String(); strings.Count(out, "accepts the Control Plane's revision again") != 1 || strings.Count(out, "MAM-PLAN-0130") != 1 {
+		t.Fatalf("the log after it accepts again:\n%s", out)
 	}
 }
