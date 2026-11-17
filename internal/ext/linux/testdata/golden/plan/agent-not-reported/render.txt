@@ -1,0 +1,13 @@
+Plan sha256:90a77a9eef05
+  revision  sha256:ecfe57cf0664
+  observed  2026-11-17T12:01:00Z (snapshot sha256:64d6e27892d0)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+. NodeFile web/file/etc/app/app.conf  [waiting]
+    warning MAM-GRAPH-0204 /etc/app/app.conf restarts service app on web, which the declaration does not have there: it is restarted only if it exists and runs
+      hint: declare the service: Mamela.service(graph, node, "app", True, True), or check its name
+    MAM-PLAN-0140 waits for the agent on web to report /etc/app/app.conf
+
+Summary: 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.

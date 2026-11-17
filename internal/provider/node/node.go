@@ -96,6 +96,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 				e.Observe(r, nr.Received, &snap)
 			}
 		}
+		observeExt(r, nr.Received, &snap)
 	}
 	return snap, nil
 }
@@ -160,6 +161,10 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			}
 			adds = append(adds, add)
 		}
+		ok, err := taken(ctx, st, name)
+		if err != nil {
+			return fmt.Errorf("observe node %s: %w", name, err)
+		}
 		if _, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
 			r := noderev.Revision{VMID: vmid}
 			if prev != nil {
@@ -183,6 +188,9 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			for _, add := range adds {
 				add(&r)
 			}
+			// An extension's part goes only to a mamelet that takes it (noderev's ext.go): an older
+			// mamelet would refuse the whole revision.
+			onlyTaken(&r, ok)
 			if pol.Protected(name) {
 				for i := range r.Packages {
 					r.Packages[i].Install = nil
@@ -235,6 +243,10 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 		if before == nil {
 			continue
 		}
+		ok, err := taken(ctx, st, name)
+		if err != nil {
+			return changed, fmt.Errorf("prune node %s: %w", name, err)
+		}
 		after, err := st.PublishNodeRevision(ctx, name, func(prev *noderev.Revision) (noderev.Revision, error) {
 			if prev == nil {
 				return noderev.Revision{}, errNoRevision
@@ -250,6 +262,7 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 					e.Prune(g, name, &r)
 				}
 			}
+			onlyTaken(&r, ok)
 			return r, nil
 		})
 		switch {
@@ -395,6 +408,18 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		}
 		node, what = g.Node, g.What
 		grant = func(rev *noderev.Revision) error { return g.Put(rev, once) }
+		if ext := wireOps[step.Op]; ext != "" {
+			// The grant goes into the extension's part: a mamelet that does not take the part would never
+			// see it (the plan blocks such a change: MAM-PLAN-0122).
+			ok, err := taken(ctx, p.Store, node)
+			if err != nil {
+				return err
+			}
+			if !ok[ext] {
+				return fmt.Errorf("MAM-NODE-0104: %s on %s: the mamelet there does not take the %s extension (it is older than it); update mamelet first (docs/mamelet-update.md), then plan again",
+					what, node, ext)
+			}
+		}
 	}
 
 	if !configure {

@@ -6,5 +6,6 @@
 // The core does not depend on it: the core's packages know no k3s but through what an extension
 // registers, and a test (TestCoreDoesNotDependOnExtensions) keeps it so. The wire types (the
 // revision's K3s and Manifests, the report's K3sState, the snapshot's K3s) are still the core's
-// noderev and state types until the generic extension member of the wire (0.4).
+// noderev and state types: k3s has not moved to the generic part of the wire (Revision.Ext, which
+// the linux extension uses) yet, so that its revisions, reports and digests stay as they were.
 package k3s

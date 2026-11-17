@@ -129,3 +129,28 @@ fn mamelet_release_is_declared() {
   )
   assert Lib.to_json(g) == expected
 }
+
+@test
+fn a_file_with_the_defaults() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.file(app(), "/etc/motd", "hello\n")
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/motd\",\"spec\":{\"content\":\"hello\\n\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/motd\"}}",
+  )
+}
+
+@test
+fn a_file_with_its_mode_owner_and_restart() {
+  f = Lib.File(
+    mode: "0640",
+    owner: "www-data",
+    group: "www-data",
+    restart: ["nginx", "php-fpm"],
+    ..Lib.file_of("/etc/nginx/conf.d/app.conf", "server {}\n"),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.file_with(app(), f)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/nginx/conf.d/app.conf\",\"spec\":{\"content\":\"server {}\\n\",\"group\":\"www-data\",\"mode\":\"0640\",\"node\":\"app-server\",\"owner\":\"www-data\",\"path\":\"/etc/nginx/conf.d/app.conf\",\"restart\":[\"nginx\",\"php-fpm\"]}}",
+  )
+}

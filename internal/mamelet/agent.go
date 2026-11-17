@@ -148,7 +148,8 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 		return noderev.Report{}, err
 	}
 	rep := noderev.Report{Node: a.Config.Node, VMID: a.Config.VMID, Version: a.Version,
-		Packages: []noderev.PackageState{}, Services: []noderev.ServiceState{}, Results: []noderev.Result{}}
+		Packages: []noderev.PackageState{}, Services: []noderev.ServiceState{}, Results: []noderev.Result{},
+		Extensions: takes()}
 	if self, err := a.System.SelfSHA256(); err == nil {
 		rep.MameletSHA256 = self
 	}
@@ -192,6 +193,8 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 
 	if rev != nil {
 		rep.Serial = rev.Serial
+		// The extensions' parts this mamelet does not take are left out of this round (and reported).
+		rev = takeParts(rev, &rep)
 		pkgs, svcs := a.observe(ctx, rev)
 		if a.act(ctx, rev, online, pkgs, svcs, &st, &rep) {
 			pkgs, svcs = a.observe(ctx, rev)
@@ -288,7 +291,7 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 		}
 	}
 
-	x := &Act{System: a.System, Revision: rev, Node: a.Config.Node, Online: online, st: st, record: record}
+	x := &Act{System: a.System, Revision: rev, Node: a.Config.Node, StateDir: a.Config.StateDir, Online: online, st: st, record: record}
 	changed = a.actExtensions(ctx, x, BeforeUpdate) || changed
 
 	if u := rev.Mamelet; u != nil && online {

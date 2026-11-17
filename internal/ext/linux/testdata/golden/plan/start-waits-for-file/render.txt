@@ -1,0 +1,21 @@
+Plan sha256:992c1241c2e5
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:0d5ea1e0b292)
+  policy    sha256:b2ad900beffb
+
+. NodeService web/app  [waiting]
+    MAM-PLAN-0142 waits for /etc/app/app.conf to be written before app is started (the file restarts it)
+      hint: apply the plan that writes the file, then plan again
+= TestVM web  [in sync]  via test
+~ NodeFile web/file/etc/app/app.conf  [needs approval]
+      file: /etc/app/app.conf
+      sha256: f7407318bd2c4a3965c1450b7aceb87ed5336cc46c39a21d0a7124f0ec3797b3 -> 30848b21bdf01e803109076b48f50bfcf2f909f8b023e7dfb60955cb25e5b8ff
+      content:
+      + listen 8080
+      + workers 4
+      restart: app (each only if it runs: systemctl try-restart)
+    linux.write-file: needs approval (MAM-POL-0220 writes a file on the node as root, with exactly the content, mode and owner of this plan, and restarts the services it names)
+      hint: read the whole content in this plan: a file can change how the node runs (a unit, a cron job, a service's configuration)
+
+Summary: 1 needs approval, 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.

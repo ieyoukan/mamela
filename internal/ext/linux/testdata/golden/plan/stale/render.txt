@@ -1,0 +1,15 @@
+Plan sha256:ba98e5d19d6b
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:0e450a6a5793)
+  policy    sha256:b2ad900beffb
+
+! NodeService web/app  [blocked]
+    MAM-PLAN-0201 the last observation is from 2026-11-17T11:00:00Z, older than 10m0s
+      hint: observe again before planning; Mamela does not act on stale information
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/app/app.conf  [blocked]
+    MAM-PLAN-0201 the last observation is from 2026-11-17T11:00:00Z, older than 10m0s
+      hint: observe again before planning; Mamela does not act on stale information
+
+Summary: 2 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -12,15 +12,18 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
+	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/store"
 )
@@ -371,6 +374,22 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		ttl = 24 * time.Hour
 	}
 	rev.IssuedAt, rev.ExpiresAt = now.UTC(), now.Add(ttl).UTC()
+	if len(rev.Ext) > 0 {
+		// An extension's part goes only to a mamelet whose latest report says it takes the extension
+		// (noderev's ext.go). Publish keeps it so; this holds also between a mamelet that went back to
+		// an older release (its update failed) and the next plan: that mamelet would refuse the whole
+		// revision for a member it does not know.
+		nr, reported, err := s.Store.NodeReportOf(r.Context(), a.Node)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "could not read the node's report")
+			return
+		}
+		for name := range rev.Ext {
+			if !reported || nr.Report.Extensions[name] < 1 {
+				delete(rev.Ext, name)
+			}
+		}
+	}
 	// The validity period is renewed on every fetch, so it cannot end a grant: each grant has its own
 	// deadline (set when it was issued), and one past it is not handed out.
 	signed, err := noderev.Sign(s.PKI.RevisionKey, rev.ForMamelet(now))
@@ -594,6 +613,23 @@ func checkReport(rep noderev.Report, a store.Agent) error {
 	for _, sv := range rep.Services {
 		if !noderev.ValidService(sv.Name) {
 			return fmt.Errorf("invalid service name %q", sv.Name)
+		}
+	}
+	// The node extensions' members (noderev's ext.go): names of extensions, versions from 1, and
+	// observations that are JSON objects. What is in an observation is its extension's to read.
+	for _, name := range slices.Sorted(maps.Keys(rep.Extensions)) {
+		if !names.Extension(name) || rep.Extensions[name] < 1 {
+			return fmt.Errorf("extensions: %q %d is not an extension and a version", name, rep.Extensions[name])
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(rep.Ext)) {
+		if p := rep.Ext[name]; !names.Extension(name) || !p.IsValid() || p.Kind() != '{' {
+			return fmt.Errorf("ext %q is not an extension's observation (a JSON object)", name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(rep.ExtRefused)) {
+		if !names.Extension(name) {
+			return fmt.Errorf("extRefused %q is not an extension", name)
 		}
 	}
 	return nil

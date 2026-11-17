@@ -7,6 +7,7 @@ package state
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"time"
@@ -43,6 +44,25 @@ type Snapshot struct {
 	// (by node name): whatever is approved, no permission reaches them. Only a node that refuses is
 	// in it, so a snapshot of a world where every node accepts is what it always was.
 	NodeRefusals map[string]NodeRefusal `json:"nodeRefusals,omitempty"`
+	// Ext are what each node's mamelet reported of the node extensions that use the generic wire
+	// (noderev's ext.go), by node and then by extension name. A node is in it only when its mamelet
+	// takes such an extension (one older than the generic wire takes none), so a snapshot of nodes
+	// that do not is what it always was.
+	Ext map[string]map[string]ExtObservation `json:"ext,omitempty"`
+}
+
+// ExtObservation is what a node's mamelet reported of one node extension.
+type ExtObservation struct {
+	// Accepts is the version of the extension's part of a revision the mamelet reads
+	// (Report.Extensions).
+	Accepts int `json:"accepts"`
+	// Payload is what the extension observed, in its own JSON (Report.Ext), canonical (RFC 8785);
+	// absent when it reported nothing.
+	Payload jsontext.Value `json:"payload,omitzero"`
+	// Refused says why the mamelet did not take the extension's part of its revision
+	// (Report.ExtRefused), in its words made printable.
+	Refused    string    `json:"refused,omitempty"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 // NodeRefusal is a mamelet saying that it refused the Control Plane's revision (its report's
@@ -266,7 +286,36 @@ func (s Snapshot) normalized() Snapshot {
 			n.NodeRefusals[k] = v
 		}
 	}
+	if len(s.Ext) > 0 {
+		n.Ext = map[string]map[string]ExtObservation{}
+		for node, exts := range s.Ext {
+			n.Ext[node] = map[string]ExtObservation{}
+			for name, v := range exts {
+				v.ObservedAt = v.ObservedAt.UTC()
+				if len(v.Payload) > 0 {
+					// The same observation is the same bytes, whatever whitespace or member order it came in.
+					p := v.Payload.Clone()
+					if p.Canonicalize() == nil {
+						v.Payload = p
+					}
+				}
+				n.Ext[node][name] = v
+			}
+		}
+	}
 	return n
+}
+
+// checkExt says what is wrong with the extensions' observations of a decoded snapshot.
+func checkExt(ext map[string]map[string]ExtObservation) error {
+	for node, exts := range ext {
+		for name, v := range exts {
+			if len(v.Payload) > 0 && (!v.Payload.IsValid() || v.Payload.Kind() != '{') {
+				return fmt.Errorf("snapshot: ext %s of node %s: the payload is not a JSON object", name, node)
+			}
+		}
+	}
+	return nil
 }
 
 // Decode reads a snapshot strictly (unknown members, duplicates and trailing data are errors).
@@ -277,6 +326,9 @@ func Decode(data []byte) (Snapshot, error) {
 	}
 	if s.AsOf.IsZero() {
 		return Snapshot{}, fmt.Errorf("snapshot: asOf is required")
+	}
+	if err := checkExt(s.Ext); err != nil {
+		return Snapshot{}, err
 	}
 	return s.normalized(), nil
 }

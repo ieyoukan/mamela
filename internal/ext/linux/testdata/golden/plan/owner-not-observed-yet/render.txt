@@ -1,0 +1,11 @@
+Plan sha256:fcecc6241dbb
+  revision  sha256:05f5ed5f8b22
+  observed  2026-11-17T12:01:00Z (snapshot sha256:a4a9a95439d5)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+. NodeFile web/file/etc/app.conf  [waiting]
+    MAM-PLAN-0140 waits for the agent on web to report whether user app exists
+
+Summary: 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.

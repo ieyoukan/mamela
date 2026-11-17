@@ -1,0 +1,23 @@
+Plan sha256:ec2ea7d83e2a
+  revision  sha256:74d0c08a3d97
+  observed  2026-11-17T12:01:00Z (snapshot sha256:091022202c60)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
++ NodeFile web/file/etc/systemd/system/app.service  [needs approval]
+      file: /etc/systemd/system/app.service
+      sha256: 44d0e9dda1306ae2d2b3250bbba88f7fbc060ff8519c4c27abd8c888d6c6d28b
+      content:
+      + [Service]
+      + ExecStart=/usr/local/bin/app
+      mode: 0644
+      owner: root
+      group: root
+      daemon-reload: systemd reads its units again (the file is one of them)
+      restart: app (each only if it runs: systemctl try-restart)
+    linux.write-file: needs approval (MAM-POL-0220 writes a file on the node as root, with exactly the content, mode and owner of this plan, and restarts the services it names)
+      hint: read the whole content in this plan: a file can change how the node runs (a unit, a cron job, a service's configuration)
+
+Summary: 1 needs approval, 2 in sync.
+Nothing has been changed: a plan only describes.

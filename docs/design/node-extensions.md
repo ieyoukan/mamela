@@ -1,6 +1,6 @@
 # k3s を核から分ける（設計、2026-11-16）
 
-状態: 案 A を採り、段 0〜4（挙動を変えない部分）を実装した（0.3.2、2026-11-17）。段 5〜6 は 0.4。決めてほしいことは最後にある。
+状態: 案 A を採り、段 0〜4（挙動を変えない部分）を実装した（0.3.2、2026-11-17）。段 5 は、新しい拡張のための汎用の通信の形と能力の申告を入れた（0.4.0 の最初、linux 拡張。下の「段 5 の進み」）。k3s の載せ替えと段 6 はまだ。決めてほしいことは最後にある。
 
 ## 問題
 
@@ -75,7 +75,7 @@ mamelet 側
 | 2 | plan の継ぎ目: `plan.Kit` と kind ごとの `Planner`、マシン再起動とサービス起動の関門 | 済（0.3.2） |
 | 3 | graph の kind と policy の操作の登録制 | 済（0.3.2） |
 | 4 | k3s を `internal/ext/k3s` へ。node provider と mamelet にも登録の口 | 済（0.3.2） |
-| 5 | wire の汎用の `Ext`（revision、報告、観測）、未知のキーだけを `Refused`、CP の二重 decode と `accepts` | 0.4 |
+| 5 | wire の汎用の `Ext`（revision、報告、観測）、未知のキーだけを `Refused`、CP の二重 decode と `accepts` | 一部（0.4.0）: 新しい拡張の汎用の形と `accepts` は済み。k3s はまだ従来のメンバー |
 | 6 | `ext/k3s` を別リポジトリ（`mamela-k3s`）へ | 0.4 以降 |
 
 段 5 だけが digest と wire を変える。旧い mamelet は未知のメンバーを丸ごと断るので、CP を先に、mamelet をあとに（mamelet の更新の仕組みで）替え、旧い形も読める版を 1 つ挟む。
@@ -107,6 +107,18 @@ mamelet 側
 - `mamelet.System` の `HTTP`・`K3sReleases`・`Addresses`（k3s のダウンロード先とアドレスの読み方。設定の型で、テストと cmd が使う）。
 - 拡張の名前と版は、node provider の manifest（`ProvidersDigest`）にまだ入れていない。入れると全 plan の digest が変わるので、段 5 で入れる。
 
+### 段 5 の進み（0.4.0、linux 拡張とともに）
+
+新しい拡張（linux、ADR 0016）は、最初から汎用の形を使う。k3s は従来のメンバー（`Revision.K3s`・`Manifests`、`Report.K3s`・`Manifests`、`Snapshot.K3s`・`K3sManifests`）のままで、wire も digest も 1 バイトも変わらない（`internal/plan/testdata/golden` は同じ）。
+
+- **wire:** `Revision.Ext map[name]payload`（署名に入る）、`Report.Extensions map[name]version`（受け取る拡張と、読める部分の版）、`Report.Ext map[name]payload`（拡張の観測）、`Report.ExtRefused map[name]reason`（受け取らなかった部分）。payload は拡張の JSON で、核は中を見ない（`internal/noderev/ext.go`）。
+- **能力の申告（accepts）:** CP は、ノードの最新の報告が拡張を（その版以上で）挙げているときだけ、その部分を revision に入れる（`node.Publish`・`Prune` が、挙げていない拡張の部分を除く。`mamela serve` も、配るときに、最新の報告が挙げていない拡張の部分を除く。更新に失敗して旧い mamelet に戻ったノードが、次の plan を待たずに revision を読めるように）。0.9.x の mamelet は revision を未知のメンバーを拒んで読むが、`ext` を受け取らないので動き続ける。拡張の資源の変更は、受け取らないノードでは Blocked（MAM-PLAN-0122。動いている mamelet の版と、更新の仕方を言う）、承認しても grant は出さない（MAM-NODE-0104）。mamelet は、知らない拡張の部分や、拡張の `Check` が断った部分だけを除いて（`extRefused`）、残りを続ける。
+- **grant の期限:** 拡張は、自分の部分の grant の読み方を `noderev.RegisterPart` で登録する（`Grants`、`ForMamelet`）。`Revision.Grants()` は拡張の grant も返し、`ForMamelet` は期限の過ぎたものを除いて期限を消し、`Sign` は期限の残る部分、CP の知らない拡張の部分を署名しない。CP の知らない拡張の部分は、配りもしない。
+- **観測:** `state.Snapshot.Ext`（ノード → 拡張 → 受け取る版、観測（RFC 8785 の正規形）、断った理由、時刻）。digest に入る。拡張を受け取らないノードは載らないので、従来の snapshot は同じ digest のまま。`plan.Kit.Ext` が写しを、`Kit.ExtNotTaken` が Blocked の理由を返す。
+- **登録の口:** `node.Extension.Wire`、`mamelet.Extension.Wire` と `Check`、`mamelet.Act.StateDir`、`plan.Extension.PackageGate`（パッケージの導入が待つもの。NodeAptRepo のため）と `Undeclared`（宣言から外れて観測だけが残るものを retained で出す。操作は出せない）。
+- **順序:** CP を先に、mamelet をあとに更新する。新しい CP は旧い報告（`extensions` なし）も新しい報告も読む。旧い CP は新しい mamelet の報告を読めない（報告を未知のメンバーを拒んで読む）。mamelet の版は `internal/mamelet/release.go` の `Release`（0.10.0）と commit（`scripts/build-mamelet.sh` が `0.10.0+<commit>` にする）。
+- **残り:** k3s を `Ext` に載せ替える（wire と digest が変わるので、旧い形も読める CP を 1 つ挟む）、拡張の名前と版を node provider の manifest に入れる（全 plan の digest が変わる。linux の kind はすでに manifest に入っている）。
+
 ## 先にやること
 
 mamelet の更新の仕組み（[mamelet の更新](../mamelet-update.md)、入った）。段 5 は、revision と報告の形を変えるので、全ノードの mamelet を新しい形に一斉に替える必要があり、手で替えるのは、検証環境の 3 台を超えると続かない。
@@ -114,5 +126,5 @@ mamelet の更新の仕組み（[mamelet の更新](../mamelet-update.md)、入�
 ## 決めてほしいこと
 
 1. 拡張は、**コンパイル時に組み込む**（実行時のプラグインなし）でよいか。
-2. `NodePackage` と `NodeService`（apt、systemd）は、核に残すか、同じ仕組みの標準の拡張（`ext/os`）にするか。推奨は、まず核に残し、段 5 のあとで判断する（0.3.2 では核に残した）。
+2. `NodePackage` と `NodeService`（apt、systemd）は、核に残すか、同じ仕組みの標準の拡張（`ext/os`）にするか。推奨は、まず核に残し、段 5 のあとで判断する（0.3.2 では核に残した。0.4.0 の linux 拡張もこの 2 つを核に残し、`PackageGate` と `StartGate` で関わる。ADR 0016）。
 3. k3s を別リポジトリに出す時期（段 6）。

@@ -57,6 +57,11 @@ const (
 
 const maxResponse = 1 << 20
 
+// maxRevision bounds a signed revision as the Control Plane sends it. The files of the linux
+// extension ride in it with their approved content (at most 1 MiB of it per node, which JSON
+// escaping and the base64 of the signed payload make up to about 2.7 MiB): more than any other answer.
+const maxRevision = 8 << 20
+
 func (c Config) keyPath() string  { return filepath.Join(c.StateDir, "key.pem") }
 func (c Config) certPath() string { return filepath.Join(c.StateDir, "cert.pem") }
 
@@ -281,7 +286,7 @@ func (c *Client) Revision(ctx context.Context) (noderev.Signed, error) {
 	var errs []error
 	for _, server := range c.servers() {
 		var s noderev.Signed
-		err := do(ctx, c.http, http.MethodGet, c.nodeURL(server, "/revision"), nil, &s)
+		err := doLimit(ctx, c.http, http.MethodGet, c.nodeURL(server, "/revision"), nil, &s, maxRevision)
 		if err == nil {
 			c.active = server
 			return s, nil
@@ -376,6 +381,11 @@ type statusError struct {
 func (e *statusError) Error() string { return e.msg }
 
 func do(ctx context.Context, client *http.Client, method, u string, body []byte, out any) error {
+	return doLimit(ctx, client, method, u, body, out, maxResponse)
+}
+
+// doLimit is do for an answer of at most limit bytes.
+func doLimit(ctx context.Context, client *http.Client, method, u string, body []byte, out any, limit int64) error {
 	req, err := http.NewRequestWithContext(ctx, method, u, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -388,9 +398,12 @@ func do(ctx context.Context, client *http.Client, method, u string, body []byte,
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return err
+	}
+	if int64(len(data)) > limit {
+		return fmt.Errorf("%s %s: the answer is larger than %d bytes", method, u, limit)
 	}
 	if resp.StatusCode/100 != 2 {
 		return &statusError{resp.StatusCode, fmt.Sprintf("%s %s: %s: %s", method, u, resp.Status, bytes.TrimSpace(data))}

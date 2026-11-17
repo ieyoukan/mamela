@@ -1,0 +1,23 @@
+Plan sha256:2d09ac923245
+  revision  sha256:87be42addbbc
+  observed  2026-11-17T12:01:00Z (snapshot sha256:2c79e50d0340)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
++ NodeFile web/file/etc/app/key.pem  [needs approval]
+      file: /etc/app/key.pem
+      sha256: e40c417fb6c4092491b37ac0dcf76c6c035f5e48653bffb208c659bd9c8a2a5c
+      content:
+      + -----BEGIN PRIVATE KEY-----
+      + MIIE
+      + -----END PRIVATE KEY-----
+      mode: 0600
+      owner: root
+      group: root
+    linux.write-file: needs approval (MAM-POL-0220 writes a file on the node as root, with exactly the content, mode and owner of this plan, and restarts the services it names)
+      hint: read the whole content in this plan: a file can change how the node runs (a unit, a cron job, a service's configuration)
+    warning MAM-GRAPH-0203 the content of /etc/app/key.pem looks like a private key: it would be in clear text in the declaration, the plan (and a pull request's comment), the Control Plane's database and the node's revision
+      hint: keep secrets out of declarations: Mamela has no secret store yet; put the file on the node by other means, or reference a file that the service reads from elsewhere
+
+Summary: 1 needs approval, 1 in sync.
+Nothing has been changed: a plan only describes.

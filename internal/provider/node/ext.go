@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"fmt"
 	"slices"
 	"time"
@@ -25,6 +26,12 @@ import (
 // Extension is what a node extension adds to the node provider.
 type Extension struct {
 	Name string
+	// Wire is the version of the extension's part of a revision (Revision.Ext[Name]) that the Control
+	// Plane writes; 0 for an extension that has members of its own in the revision (k3s). A node gets
+	// the part only when its mamelet takes this version or a later one (Report.Extensions): the core
+	// takes the part out of the revision of any other node (capability negotiation, noderev's ext.go),
+	// and observes what the node's mamelet reports of it (state.Snapshot.Ext).
+	Wire int
 	// Kinds are the extension's kinds in the provider's manifest (what each operation needs).
 	Kinds []spec.Kind
 	// Observe adds what a node's report says of the extension's kinds to the snapshot (received:
@@ -91,6 +98,78 @@ func Register(e Extension) {
 	}
 	for op, g := range e.Grants {
 		grants[op] = g
+		if e.Wire > 0 {
+			wireOps[op] = e.Name
+		}
 	}
 	extensions = append(extensions, e)
+}
+
+// wireOps names the extension of each operation whose grant goes into an extension's part.
+var wireOps = map[policy.Op]string{}
+
+// taken are the extensions (of the generic wire) whose part of a revision the node's mamelet takes,
+// by its latest report: the extension's name, when the mamelet reads the version of the part the
+// Control Plane writes.
+func taken(ctx context.Context, st *store.Store, node string) (map[string]bool, error) {
+	nr, ok, err := st.NodeReportOf(ctx, node)
+	if err != nil || !ok {
+		return nil, err
+	}
+	out := map[string]bool{}
+	for _, e := range extensions {
+		if v, listed := nr.Report.Extensions[e.Name]; e.Wire > 0 && listed && v >= e.Wire {
+			out[e.Name] = true
+		}
+	}
+	return out, nil
+}
+
+// onlyTaken takes out of the revision every extension's part the node's mamelet does not take (it
+// would refuse the whole revision, or the part).
+func onlyTaken(r *noderev.Revision, ok map[string]bool) {
+	if len(r.Ext) == 0 {
+		return
+	}
+	ext := map[string]jsontext.Value{}
+	for name, part := range r.Ext {
+		if ok[name] {
+			ext[name] = part
+		}
+	}
+	r.Ext = ext
+	if len(ext) == 0 {
+		r.Ext = nil
+	}
+}
+
+// observeExt adds to the snapshot what a node's report says of the extensions of the generic wire
+// (received: when it arrived): only of the extensions this Control Plane has and the mamelet lists.
+func observeExt(r noderev.Report, received time.Time, snap *state.Snapshot) {
+	for _, e := range extensions {
+		v, listed := r.Extensions[e.Name]
+		if e.Wire == 0 || !listed {
+			continue
+		}
+		o := state.ExtObservation{Accepts: v, ObservedAt: received}
+		if why, refused := r.ExtRefused[e.Name]; refused {
+			o.Refused = printable(why, maxRefusal)
+			if o.Refused == "" {
+				o.Refused = "(no reason given)"
+			}
+		}
+		if p := r.Ext[e.Name]; len(p) > 0 {
+			c := p.Clone()
+			if c.Canonicalize() == nil && c.Kind() == '{' {
+				o.Payload = c
+			}
+		}
+		if snap.Ext == nil {
+			snap.Ext = map[string]map[string]state.ExtObservation{}
+		}
+		if snap.Ext[r.Node] == nil {
+			snap.Ext[r.Node] = map[string]state.ExtObservation{}
+		}
+		snap.Ext[r.Node][e.Name] = o
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -56,6 +57,10 @@ type Revision struct {
 	// ("https://host:port"), when the Control Plane moves (ADR 0003). The CA and the key that
 	// sign revisions stay the same, so the new address is trusted exactly as the old one was.
 	ControlPlane string `json:"controlPlane,omitempty"`
+	// Ext are the parts of the node extensions that use the generic wire (ext.go), by extension
+	// name: each the extension's own JSON, signed with the rest. The Control Plane puts a part in only
+	// for a mamelet that takes it (Report.Extensions), so an older mamelet never gets the member.
+	Ext map[string]jsontext.Value `json:"ext,omitempty"`
 }
 
 // MameletUpdate is an approved update of mamelet to the binary with SHA256.
@@ -327,6 +332,7 @@ func (r *Revision) Check() error {
 	if u := r.Mamelet; u != nil && (!names.SHA256(u.SHA256) || !operationPattern.MatchString(u.Operation) || u.Attempt < 1 || u.Action != ActionUpdate) {
 		add("mamelet: update grant %+v is not valid", *u)
 	}
+	checkExt(r.Ext, add)
 	for _, m := range r.Manifests {
 		switch {
 		case !names.Manifest(m.Name):
@@ -437,6 +443,9 @@ func (r Revision) ForMamelet(now time.Time) Revision {
 			r.Mamelet = &MameletUpdate{SHA256: u.SHA256, Once: *o}
 		}
 	}
+	// The extensions' parts, each as its extension hands out its grants (a part this Control Plane
+	// does not know is not handed out at all).
+	r.Ext = extForMamelet(r.Ext, now)
 	return r
 }
 
@@ -479,7 +488,8 @@ func (r Revision) Grants() []Grant {
 	if u := r.Mamelet; u != nil {
 		add(u.Once)
 	}
-	return out
+	// The grants in the extensions' parts (ext.go), as each extension finds them.
+	return append(out, extGrants(r.Ext)...)
 }
 
 // Signed is a revision with the Control Plane's Ed25519 signature over the exact payload bytes.
@@ -491,6 +501,9 @@ type Signed struct {
 // Sign encodes and signs a revision.
 func Sign(key ed25519.PrivateKey, r Revision) (Signed, error) {
 	if err := r.Check(); err != nil {
+		return Signed{}, err
+	}
+	if err := signableExt(r.Ext); err != nil {
 		return Signed{}, err
 	}
 	for _, g := range r.Grants() {
@@ -572,6 +585,15 @@ type Report struct {
 	Results   []Result        `json:"results"`
 	// Refused explains why the last revision received was not accepted, if it was not.
 	Refused string `json:"refused,omitempty"`
+	// Extensions are the node extensions whose part of a revision (Revision.Ext) this mamelet takes,
+	// with the version of the part it reads (ext.go). The Control Plane gives a node an extension's
+	// part only when its mamelet lists the extension. A mamelet older than the generic wire lists none.
+	Extensions map[string]int `json:"extensions,omitempty"`
+	// Ext are what the extensions observed, each in its own JSON, by extension name.
+	Ext map[string]jsontext.Value `json:"ext,omitempty"`
+	// ExtRefused are the parts of the revision this mamelet did not take, and why (an extension it
+	// does not know, or a part it cannot read): it went on with everything else.
+	ExtRefused map[string]string `json:"extRefused,omitempty"`
 }
 
 // PackageState is an observed package. ChangeSet is what installing it would do, when it is not
