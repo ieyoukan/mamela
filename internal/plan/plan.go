@@ -177,6 +177,7 @@ func BuildFor(g *graph.Graph, snap state.Snapshot, pol policy.Policy, providers 
 		declared[r.ID()] = true
 	}
 	p.Changes = append(p.Changes, b.undeclared(declared)...)
+	p.Changes = append(p.Changes, b.extUndeclared()...)
 	p.Digest = digest(p)
 	return p
 }
@@ -468,6 +469,11 @@ func (b builder) pkg(r graph.Resource) Change {
 	}
 	if got.Installed {
 		return b.withOps(c)
+	}
+	// What an installation waits for is the node extensions' to say (an APT source it comes from).
+	if note := b.packageGate(want.Node, want.Package); note != nil {
+		c.Status, c.Note = StatusWaiting, note
+		return c
 	}
 	if got.Error != "" {
 		c.Status, c.Note = StatusBlocked, &Note{Code: "MAM-PLAN-0202",

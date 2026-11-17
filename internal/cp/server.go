@@ -12,15 +12,18 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
+	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/store"
 )
@@ -594,6 +597,23 @@ func checkReport(rep noderev.Report, a store.Agent) error {
 	for _, sv := range rep.Services {
 		if !noderev.ValidService(sv.Name) {
 			return fmt.Errorf("invalid service name %q", sv.Name)
+		}
+	}
+	// The node extensions' members (noderev's ext.go): names of extensions, versions from 1, and
+	// observations that are JSON objects. What is in an observation is its extension's to read.
+	for _, name := range slices.Sorted(maps.Keys(rep.Extensions)) {
+		if !names.Extension(name) || rep.Extensions[name] < 1 {
+			return fmt.Errorf("extensions: %q %d is not an extension and a version", name, rep.Extensions[name])
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(rep.Ext)) {
+		if p := rep.Ext[name]; !names.Extension(name) || !p.IsValid() || p.Kind() != '{' {
+			return fmt.Errorf("ext %q is not an extension's observation (a JSON object)", name)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(rep.ExtRefused)) {
+		if !names.Extension(name) {
+			return fmt.Errorf("extRefused %q is not an extension", name)
 		}
 	}
 	return nil

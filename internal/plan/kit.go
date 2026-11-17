@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -32,6 +33,17 @@ func newKit(b builder) *Kit {
 	s.Packages, s.Services, s.Provided = maps.Clone(s.Packages), maps.Clone(s.Services), maps.Clone(s.Provided)
 	s.K3s, s.Mamelets, s.K3sManifests = maps.Clone(s.K3s), maps.Clone(s.Mamelets), maps.Clone(s.K3sManifests)
 	s.Nodes, s.AgentRegistrations, s.NodeRefusals = maps.Clone(s.Nodes), maps.Clone(s.AgentRegistrations), maps.Clone(s.NodeRefusals)
+	if s.Ext != nil {
+		ext := make(map[string]map[string]state.ExtObservation, len(s.Ext))
+		for node, exts := range s.Ext {
+			ext[node] = make(map[string]state.ExtObservation, len(exts))
+			for name, o := range exts {
+				o.Payload = o.Payload.Clone()
+				ext[node][name] = o
+			}
+		}
+		s.Ext = ext
+	}
 	return &Kit{b: b, snap: s}
 }
 
@@ -53,6 +65,67 @@ func (k *Kit) StaticIP(name string) string {
 
 // Snapshot is the observation the plan is made of (the planner's own copy).
 func (k *Kit) Snapshot() state.Snapshot { return k.snap }
+
+// Ext is what the mamelet of node reported of the node extension ext (stage 5 of
+// docs/design/node-extensions.md): the version of its part it takes, what it observed (the
+// extension's own JSON, a copy) and whether it refused the part. ok is false when it reported
+// nothing of the extension.
+func (k *Kit) Ext(node, ext string) (state.ExtObservation, bool) {
+	o, ok := k.snap.Ext[node][ext]
+	o.Payload = o.Payload.Clone()
+	return o, ok
+}
+
+// ExtNotTaken says why the mamelet of node cannot carry out anything of the node extension ext,
+// whose part of a revision is at version (nil when it can, or when the node's agent has not reported
+// at all: a resource then waits for it, AwaitAgent). It does not list the extension, or lists an
+// older version of its part (it is older than the extension: release is the mamelet release that
+// brought this version), or it refused the extension's part of its revision. The Control Plane
+// gives such a node no part of the extension (capability negotiation), so a change of a resource of
+// the extension there is Blocked with this note (MAM-PLAN-0122) instead of approved and never
+// carried out.
+func (k *Kit) ExtNotTaken(node, ext string, version int, release string) *Note {
+	o, listed := k.snap.Ext[node][ext]
+	if listed && o.Refused != "" {
+		return &Note{Code: "MAM-PLAN-0122",
+			Message: fmt.Sprintf("mamelet on node %s refused the part of the %s extension in its revision: %s", node, ext, o.Refused),
+			Hint:    "see the reason (mamelet logs it too: journalctl -u mamelet on the node); a mamelet refuses a part it cannot read, so a mamelet older than this Control Plane is updated first (docs/mamelet-update.md)"}
+	}
+	if listed && o.Accepts >= version {
+		return nil
+	}
+	m, known := k.snap.Mamelets[node+"/mamelet"]
+	if !known && !listed && !k.agentReported(node) {
+		return nil
+	}
+	running := "a release that does not say which"
+	if m.Version != "" {
+		running = m.Version
+	}
+	return &Note{Code: "MAM-PLAN-0122",
+		Message: fmt.Sprintf("mamelet on node %s runs %s, which does not carry out the %s extension (mamelet %s and later do): Mamela gives the node nothing of it",
+			node, running, ext, release),
+		Hint: fmt.Sprintf("update mamelet on %s first, to %s or later: put it at the site's controlplane.mamelet_binary, declare it with Mamela.mamelet and apply (docs/mamelet-update.md; a Control Plane is updated before its mamelets); then plan again",
+			node, release)}
+}
+
+// agentReported is whether the node's agent has reported anything at all.
+func (k *Kit) agentReported(node string) bool {
+	if _, ok := k.snap.Ext[node]; ok {
+		return true
+	}
+	for key := range k.snap.Packages {
+		if strings.HasPrefix(key, node+"/") {
+			return true
+		}
+	}
+	for key := range k.snap.Services {
+		if strings.HasPrefix(key, node+"/") {
+			return true
+		}
+	}
+	return false
+}
 
 // Policy is the policy the plan is made with.
 func (k *Kit) Policy() policy.Policy { return k.b.pol }
@@ -112,6 +185,8 @@ var (
 	planners     = map[graph.Kind]Planner{}
 	restartGates []func(k *Kit, machine graph.Resource) *Note
 	startGates   []func(k *Kit, node, service string) *Note
+	packageGates []func(k *Kit, node, pkg string) *Note
+	extUndecl    []func(k *Kit) []Change
 	// codeOwners: which extension each note code is ("core" for the core's own). Set before any
 	// init runs, so an extension's registration sees the core's codes.
 	codeOwners = func() map[string]string {
@@ -127,7 +202,7 @@ var (
 // changes meaning, and no extension may take one.
 var coreCodes = []string{"MAM-PLAN-0101", "MAM-PLAN-0102", "MAM-PLAN-0103", "MAM-PLAN-0104", "MAM-PLAN-0105", "MAM-PLAN-0106",
 	"MAM-PLAN-0107", "MAM-PLAN-0110", "MAM-PLAN-0111", "MAM-PLAN-0113", "MAM-PLAN-0114", "MAM-PLAN-0119", "MAM-PLAN-0120",
-	"MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
+	"MAM-PLAN-0122", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
 
 // Extension is what a node extension adds to planning.
 type Extension struct {
@@ -138,6 +213,13 @@ type Extension struct {
 	RestartGate func(k *Kit, machine graph.Resource) *Note
 	// StartGate says what the start of a service on a node waits for (nil: nothing).
 	StartGate func(k *Kit, node, service string) *Note
+	// PackageGate says what the installation of a package on a node waits for (nil: nothing), for
+	// example the APT source it comes from.
+	PackageGate func(k *Kit, node, pkg string) *Note
+	// Undeclared are the changes of what the extension observed on a node that no resource of the
+	// declaration has any more: each retained (StatusRetained, with a note that says why and what
+	// becomes of it), never an operation. They come after the declared resources and the providers'.
+	Undeclared func(k *Kit) []Change
 	// Codes are the codes of the extension's notes: each is the extension's alone.
 	Codes []string
 }
@@ -171,6 +253,12 @@ func Register(e Extension) {
 	if e.StartGate != nil {
 		startGates = append(startGates, e.StartGate)
 	}
+	if e.PackageGate != nil {
+		packageGates = append(packageGates, e.PackageGate)
+	}
+	if e.Undeclared != nil {
+		extUndecl = append(extUndecl, e.Undeclared)
+	}
 }
 
 // machineRestartGate says what a restart of the machine r waits for, by the extensions' gates.
@@ -191,4 +279,33 @@ func (b builder) serviceStartGate(node, service string) *Note {
 		}
 	}
 	return nil
+}
+
+// packageGate says what the installation of a package waits for, by the extensions' gates.
+func (b builder) packageGate(node, pkg string) *Note {
+	for _, gate := range packageGates {
+		if note := gate(newKit(b), node, pkg); note != nil {
+			return note
+		}
+	}
+	return nil
+}
+
+// extUndeclared are the extensions' changes of what no declaration has any more: kept as they are.
+// An extension cannot plan an operation this way (only a declared resource has one).
+func (b builder) extUndeclared() []Change {
+	var out []Change
+	for _, u := range extUndecl {
+		for _, c := range u(newKit(b)) {
+			if c.Status != StatusRetained || len(c.Operations) > 0 || c.Removes || c.Verdict != "" {
+				continue
+			}
+			if c.Diffs == nil {
+				c.Diffs = []Diff{}
+			}
+			c.Operations = []Operation{}
+			out = append(out, c)
+		}
+	}
+	return out
 }

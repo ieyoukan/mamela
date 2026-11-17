@@ -25,6 +25,8 @@ var (
 	k3sVersionRe = regexp.MustCompile(`^v1\.[0-9]{1,2}\.[0-9]{1,2}\+k3s[0-9]{1,2}$`)
 	// A sha256 in lowercase hex.
 	sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	// The name of a node extension ("k3s", "linux"): a key of a revision's and a report's ext.
+	extensionRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 )
 
 // MaxManifest bounds a k3s manifest's content, in bytes.
@@ -47,3 +49,6 @@ func K3sVersion(s string) bool { return k3sVersionRe.MatchString(s) }
 
 // SHA256 reports whether s is a sha256 in lowercase hex (64 digits).
 func SHA256(s string) bool { return sha256Re.MatchString(s) }
+
+// Extension reports whether s can be the name of a node extension (a key of a revision's ext).
+func Extension(s string) bool { return extensionRe.MatchString(s) }
