@@ -16,11 +16,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"slices"
-	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -33,6 +29,18 @@ import (
 // CodeStale is the reason code (MAM-REC-0002, docs/reason-codes.md) of a run that stopped because the
 // world was not what the plan assumed: nothing was changed for it, and the plan is made again.
 const CodeStale = "MAM-REC-0002"
+
+// Reason codes of runs that stopped before changing what was approved (docs/reason-codes.md).
+const (
+	// CodeUnobservable (MAM-REC-0008): the world could not be observed right before a deletion.
+	CodeUnobservable = "MAM-REC-0008"
+	// CodeApplyBusy (MAM-REC-0009): another apply holds this database.
+	CodeApplyBusy = "MAM-REC-0009"
+	// CodePolicyChanged (MAM-REC-0010): the plan was made under another policy than the one in force.
+	CodePolicyChanged = "MAM-REC-0010"
+	// CodeRevoked (MAM-REC-0011): the approval was revoked while the plan was being applied.
+	CodeRevoked = "MAM-REC-0011"
+)
 
 // ErrUnknownOutcome is returned by a Provider when it cannot tell whether an operation took
 // effect (a timeout, a lost connection). The reconciler then stops and re-observes next time.
@@ -109,6 +117,11 @@ type Reconciler struct {
 	// Providers is the digest of the contracts of the providers this run uses
 	// (spec.Providers.Digest). A plan made for other providers is not applied.
 	Providers string
+	// PolicyDigest is the digest of the policy in force now (policy.Policy.Digest). A plan made under
+	// another policy is not applied: its approval was a judgment under the old one (a policy that
+	// since retains what it deleted, a node it since protects). "" asks for no check; mamela always
+	// sets it.
+	PolicyDigest string
 }
 
 // OperationID is the idempotency key of one operation of one plan.
@@ -138,6 +151,34 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			Hint: "make the plan again (mamela plan) and review and approve the new one"}
 		return rep, nil
 	}
+	if r.PolicyDigest != "" && in.Policy.Digest() != r.PolicyDigest {
+		rep.Stopped = &Stop{Code: CodePolicyChanged,
+			Message: fmt.Sprintf("the plan was made under policy %s, but the policy in force is %s; its approval does not cover the current policy",
+				in.Policy.Digest(), r.PolicyDigest),
+			Hint: "make the plan again (mamela plan) and review and approve the new one; if this is not the policy file the plan was made with, name it with --policy"}
+		r.event(ctx, planDigest, "", "conflict", rep.Stopped.Message)
+		return rep, nil
+	}
+
+	// One apply at a time on this database. Everything below rests on a world observed once: a
+	// second apply (the CLI beside mamela api, or two plans approved at once) that observed it before
+	// the first one's changes would send the same create again. The operating system frees the lock
+	// when its holder dies, so a crashed apply keeps no one out.
+	lock, holder, err := r.Store.LockApply(r.Owner, planDigest)
+	if errors.Is(err, store.ErrApplyBusy) {
+		if holder == "" {
+			holder = "another program"
+		}
+		rep.Stopped = &Stop{Code: CodeApplyBusy,
+			Message: fmt.Sprintf("another apply is running on this database (%s); applies run one at a time, each on a world observed after the one before it", holder),
+			Hint:    "wait for it to finish, then run apply again"}
+		return rep, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
+
 	approval, err := r.Store.ValidApproval(ctx, planDigest)
 	if err != nil {
 		return nil, err
@@ -180,7 +221,33 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				r.addAll(rep, c, OutcomeNeedsApproval, "approve plan "+planDigest+" to run it")
 				continue
 			}
+			if c.Verdict == policy.ApprovalRequired {
+				// Revoking an approval stops what has not begun, even in a run that has.
+				revoked, err := r.Store.ApprovalRevoked(ctx, approval.ID)
+				if err != nil {
+					return nil, err
+				}
+				if revoked {
+					rep.Stopped = &Stop{Code: CodeRevoked,
+						Message: fmt.Sprintf("the approval of plan %s was revoked while it was being applied; %s and what follows did not run", planDigest, id),
+						Hint:    "if the plan is still wanted, approve it again (mamela approve); otherwise make a new plan"}
+					r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)
+					return rep, nil
+				}
+			}
 
+			if full.Removes {
+				// A deletion is decided on the world as it is right now. Everything before it (an image
+				// import takes hours) may have changed the object: that is not known from the observation
+				// this run began with.
+				if stop, err := r.beforeDeleting(ctx, planDigest, id, &fresh); err != nil {
+					return nil, err
+				} else if stop != nil {
+					rep.Stopped = stop
+					return rep, nil
+				}
+				now = plan.BuildFor(in.Revision, fresh, in.Policy, in.Providers)
+			}
 			current, found := findChange(now, id)
 			if gone(c, fresh) {
 				// A deleted object is no longer in the plan: the provider finishes what follows
@@ -218,6 +285,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 				rep.Stopped = &Stop{Code: CodeStale,
 					Message: fmt.Sprintf("%s is no longer as the plan assumed; nothing more was changed", id),
 					Hint:    "make a new plan from a fresh observation and review it"}
+				if full.Removes {
+					rep.Stopped.Message = fmt.Sprintf("%s is no longer as the plan assumed (it changed since the plan, or while this run was in progress); it was not deleted", id)
+				}
 				r.event(ctx, planDigest, id, "conflict", rep.Stopped.Message)
 				return rep, nil
 			}
@@ -310,6 +380,26 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 	return rep, nil
 }
 
+// beforeDeleting observes the world again, right before one deletion, and keeps the observation (in
+// fresh and in the store, like the first). It stops the run, with a reason, if the world cannot be
+// observed.
+func (r *Reconciler) beforeDeleting(ctx context.Context, planDigest, id string, fresh *state.Snapshot) (*Stop, error) {
+	snap, err := r.Provider.Observe(ctx)
+	if err != nil {
+		stop := &Stop{Code: CodeUnobservable,
+			Message: fmt.Sprintf("%s was not deleted: the world could not be observed again right before it (%v)", id, err),
+			Hint:    "run apply again when the provider answers: it observes first, and deletes only what it then finds as approved"}
+		r.event(ctx, planDigest, id, "conflict", stop.Message)
+		return stop, nil
+	}
+	if _, err := r.Store.PutSnapshot(ctx, snap); err != nil {
+		return nil, err
+	}
+	r.event(ctx, planDigest, id, "observed", "observed the world again before deleting "+id+" (snapshot "+snap.Digest()+")")
+	*fresh = snap
+	return nil, nil
+}
+
 // releaseIfWorkerGone frees an operation claimed by a worker that no longer exists, so that a
 // crashed apply does not keep the next one waiting for the claim's lease (hours: an apply can wait
 // for an image import). Its outcome is unknown, and the apply observes before it does anything.
@@ -323,21 +413,6 @@ func (r *Reconciler) releaseIfWorkerGone(ctx context.Context, planDigest, resour
 	}
 	r.event(ctx, planDigest, resource, "released", "the worker "+o.Owner+" is gone: its claim on "+opID+" was released")
 	return nil
-}
-
-// workerGone reports whether owner, a worker's name ("host/pid", as mamela writes it), is a process
-// of this host that no longer exists. Any other owner may be alive.
-func workerGone(owner string) bool {
-	i := strings.LastIndex(owner, "/")
-	if i < 0 {
-		return false
-	}
-	host, _ := os.Hostname()
-	pid, err := strconv.Atoi(owner[i+1:])
-	if owner[:i] != host || err != nil || pid <= 0 || pid == os.Getpid() {
-		return false
-	}
-	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
 }
 
 // opPhase is the phase an operation runs in: late ones after everything else but the deletions,

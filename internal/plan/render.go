@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/policy"
+	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
 var symbols = map[Status]string{
@@ -38,20 +39,16 @@ func Render(w io.Writer, p *Plan) {
 		}
 		via := ""
 		if c.Provider != "" {
-			via = "  via " + c.Provider
+			via = "  via " + esc(c.Provider)
 		}
-		fmt.Fprintf(w, "%s %s %s  [%s]%s\n", sym, c.Kind, c.Name, label(c), via)
+		fmt.Fprintf(w, "%s %s %s  [%s]%s\n", sym, esc(string(c.Kind)), esc(c.Name), label(c), via)
 		for _, d := range c.Diffs {
-			if d.From == "" {
-				fmt.Fprintf(w, "      %s: %s\n", d.Field, d.To)
-			} else {
-				fmt.Fprintf(w, "      %s: %s -> %s\n", d.Field, d.From, d.To)
-			}
+			renderDiff(w, d)
 		}
 		for _, op := range c.Operations {
-			fmt.Fprintf(w, "    %s: %s (%s %s)\n", op.Op, verdictText(op.Decision.Verdict), op.Decision.Code, op.Decision.Message)
+			fmt.Fprintf(w, "    %s: %s (%s %s)\n", esc(string(op.Op)), verdictText(op.Decision.Verdict), esc(string(op.Decision.Code)), esc(op.Decision.Message))
 			if op.Decision.Hint != "" {
-				fmt.Fprintf(w, "      hint: %s\n", op.Decision.Hint)
+				fmt.Fprintf(w, "      hint: %s\n", esc(op.Decision.Hint))
 			}
 			// What approving approves, exactly: the objects and every request with its parameters.
 			for _, pc := range c.ProviderChanges {
@@ -60,22 +57,63 @@ func Render(w io.Writer, p *Plan) {
 				}
 				fmt.Fprintf(w, "      objects: %s\n", formatMap(pc.IDs))
 				if pc.Precondition != "" {
-					fmt.Fprintf(w, "      based on version %s\n", pc.Precondition)
+					fmt.Fprintf(w, "      based on version %s\n", esc(pc.Precondition))
 				}
 				for _, r := range pc.Requests {
-					fmt.Fprintf(w, "      sends %s %s %s\n", r.Method, r.Path, formatParams(r.Params))
+					fmt.Fprintf(w, "      sends %s %s %s\n", esc(r.Method), esc(r.Path), formatParams(r.Params))
 				}
 			}
 		}
+		for _, n := range c.Warnings {
+			fmt.Fprintf(w, "    warning %s %s\n", esc(n.Code), esc(n.Message))
+			if n.Hint != "" {
+				fmt.Fprintf(w, "      hint: %s\n", esc(n.Hint))
+			}
+		}
 		if c.Note != nil {
-			fmt.Fprintf(w, "    %s %s\n", c.Note.Code, c.Note.Message)
+			fmt.Fprintf(w, "    %s %s\n", esc(c.Note.Code), esc(c.Note.Message))
 			if c.Note.Hint != "" {
-				fmt.Fprintf(w, "      hint: %s\n", c.Note.Hint)
+				fmt.Fprintf(w, "      hint: %s\n", esc(c.Note.Hint))
 			}
 		}
 	}
 	fmt.Fprintf(w, "\n%s\n", Summary(p))
 	fmt.Fprintln(w, "Nothing has been changed: a plan only describes.")
+}
+
+// esc shows what a plan quotes (a name, a value, a request, a provider's words) so that it cannot
+// change how the plan looks: a control character, a bidirectional override or a zero-width
+// character is written out (\x1b, \u202e), not sent to the terminal (A9 of the 0.3.2 audit).
+func esc(s string) string { return safetext.Escape(s) }
+
+// renderDiff writes one field that differs. A value of one line is "field: from -> to"; a text of
+// several lines (the content of a manifest, which is approved as it is shown) is written line by
+// line, each line after a marker of its own ("+" is what it will be, "-" what it is), so that no
+// line of it can pass for a line of the plan.
+func renderDiff(w io.Writer, d Diff) {
+	if !strings.Contains(d.From, "\n") && !strings.Contains(d.To, "\n") {
+		if d.From == "" {
+			fmt.Fprintf(w, "      %s: %s\n", esc(d.Field), esc(d.To))
+		} else {
+			fmt.Fprintf(w, "      %s: %s -> %s\n", esc(d.Field), esc(d.From), esc(d.To))
+		}
+		return
+	}
+	fmt.Fprintf(w, "      %s:\n", esc(d.Field))
+	if d.From != "" {
+		for _, l := range lines(d.From) {
+			fmt.Fprintf(w, "      - %s\n", l)
+		}
+	}
+	for _, l := range lines(d.To) {
+		fmt.Fprintf(w, "      + %s\n", l)
+	}
+}
+
+// lines are the escaped lines of a text; the newline that ends the last one does not start another
+// (the sha256 of the content, which the plan shows too, covers it).
+func lines(s string) []string {
+	return safetext.EscapeLines(strings.TrimSuffix(s, "\n"))
 }
 
 // Summary is a one-line count of the plan.
@@ -109,7 +147,7 @@ func label(c Change) string {
 	case StatusInSync:
 		return "in sync"
 	default:
-		return string(c.Status)
+		return esc(string(c.Status))
 	}
 }
 
@@ -122,7 +160,7 @@ func verdictText(v policy.Verdict) string {
 	case policy.Denied:
 		return "DENIED"
 	}
-	return string(v)
+	return esc(string(v))
 }
 
 func summaryLabel(k string, n int) string {
@@ -145,7 +183,7 @@ func summaryLabel(k string, n int) string {
 func formatMap(m map[string]string) string {
 	var out []string
 	for _, k := range slices.Sorted(maps.Keys(m)) {
-		out = append(out, k+"="+m[k])
+		out = append(out, esc(k)+"="+esc(m[k]))
 	}
 	return strings.Join(out, " ")
 }
@@ -156,7 +194,11 @@ func formatParams(ps map[string][]string) string {
 	}
 	var out []string
 	for _, k := range slices.Sorted(maps.Keys(ps)) {
-		out = append(out, k+"="+strings.Join(ps[k], ","))
+		vs := make([]string, len(ps[k]))
+		for i, v := range ps[k] {
+			vs[i] = esc(v)
+		}
+		out = append(out, esc(k)+"="+strings.Join(vs, ","))
 	}
 	return strings.Join(out, " ")
 }
