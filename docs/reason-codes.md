@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go` と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -142,8 +142,26 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-REC-0006 | 操作の一部が効いたあとで失敗した（部分的な成功） | 原因を直して apply する（観測してから、残りを続ける） |
 | MAM-API-0201 | `mamela api` が、物の削除を含む plan の承認を断った（GitHub の側から削除は承認できない）。HTTP 403 | Control Plane のホストで `mamela approve <digest>` を実行する |
 | MAM-REC-0007 | plan を作ったときとプロバイダーの契約が違う（マニフェスト、外部のプロバイダーのプログラム、API の接続先・資格情報・カタログ）。承認はその契約に対するもの。このとき apply は guard も呼ばない | 新しく plan して、レビューと承認をやり直す |
+| MAM-REC-0008 | 削除の直前に世界を観測し直せなかったので、何も消さずに止まった。それより前の操作の結果は残る | プロバイダーが答えるようになってから、もう一度 apply する（観測してから、承認どおりのものだけを消す） |
+| MAM-REC-0009 | この DB に対する別の apply が動いている（CLI の `mamela apply` と `mamela api` など）。apply は 1 つの DB につき 1 つずつ、前の apply のあとの世界を観測して行う。何も実行していない | 終わるのを待って、もう一度 apply する |
+| MAM-REC-0010 | plan を作ったときの policy が、いま有効な policy と違う（policy のファイルを変えた、保護するノードを足した、plan のときと違う `--policy` を付けた）。承認はそのときの policy の下での判断なので、何も実行していない | 新しく plan して、レビューと承認をやり直す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける |
+| MAM-REC-0011 | apply の最中に、承認が取り消された（`mamela revoke`）。まだ始めていない、承認が要る操作は実行していない。済んだ操作は戻らない | まだ要るなら承認し直す（`mamela approve`）。そうでなければ新しく plan する |
 | MAM-REC-0101 | 適用後の再観測でも宣言全体は未収束 | 次の観測を待って再計画する。次の変更にはその計画のポリシー判定・承認が必要 |
 | MAM-REC-0102 | 適用後の再観測に失敗した。実行した操作の結果は記録済みで、収束したかは分からない | 新しく plan して確かめる |
+
+## MAM-APR — 承認
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-APR-0001 | `mamela revoke` で取り消す承認がない（承認していない、期限が切れた、すでに取り消した）。何も変えていない | 何もしなくてよい。承認が要るなら `mamela approve` |
+| MAM-APR-0002 | その plan はすでに承認されている。承認の記録は書き換えない（承認者も期限もそのまま）ので、この要求は何も変えなかった。要求は event に残る。終了コードは 0 | 承認者や期限を変えたいなら、`mamela revoke` してから承認し直す |
+
+## MAM-DB — 状態の DB（SQLite）
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-DB-0001 | DB のスキーマが、この Mamela が知っているより新しい（新しい版の Mamela が上げた）。開かずに止まる | DB を上げた版か、それより新しい Mamela を使う。この版に戻すなら、すべての Mamela のプログラムを止め、DB（と `-wal`・`-shm`）を別の場所に置き、上げる前に自動で作られた `<db>.pre-migrate-<この版のスキーマ>` を DB の場所に戻す。退避のあとに書いた状態は戻らない |
+| MAM-DB-0002 | migration の前に DB の退避を作れなかったので、DB を変えずに止まった | DB のあるディレクトリを書き込めるようにする（退避は DB の隣に `<db>.pre-migrate-<旧版>` として作る。権限 0600）。空き容量も確かめる |
 
 ## MAM-PRV — 外部のプロバイダー
 

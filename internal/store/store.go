@@ -30,6 +30,7 @@ type Clock func() time.Time
 type Store struct {
 	db    *sql.DB
 	clock Clock
+	path  string
 }
 
 // ErrNotFound is returned when a record does not exist.
@@ -256,17 +257,53 @@ DROP TABLE IF EXISTS gitops_seen;`,
 	// 17: the declaration (stack, ADR 0013) each created object belongs to. Objects recorded before
 	// this have none ('') and are never deleted by removing them from a declaration.
 	`ALTER TABLE provider_creations ADD COLUMN stack TEXT NOT NULL DEFAULT '';`,
+	// 18: approvals are appended, never rewritten: a plan can have several over time (one that expired,
+	// one that was revoked, a new one), and approving a plan that is approved already changes nothing.
+	// A revocation is a row of its own. meta says which Mamela last migrated the database.
+	`
+CREATE TABLE approvals_new (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  plan_digest TEXT NOT NULL REFERENCES plans(digest),
+  approver    TEXT NOT NULL,
+  approved_ms INTEGER NOT NULL,
+  expires_ms  INTEGER NOT NULL
+);
+INSERT INTO approvals_new(plan_digest, approver, approved_ms, expires_ms)
+  SELECT plan_digest, approver, approved_ms, expires_ms FROM approvals ORDER BY approved_ms, plan_digest;
+DROP TABLE approvals;
+ALTER TABLE approvals_new RENAME TO approvals;
+CREATE INDEX approvals_by_plan ON approvals(plan_digest);
+CREATE TABLE approval_revocations (
+  approval_id INTEGER PRIMARY KEY REFERENCES approvals(id),
+  revoked_by  TEXT NOT NULL,
+  revoked_ms  INTEGER NOT NULL,
+  reason      TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`,
 }
 
 // Open opens (creating if needed) the database at path and applies migrations.
 func Open(ctx context.Context, path string, clock Clock) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)"
+	// Every transaction begins IMMEDIATE (it takes the write lock at once and waits for it up to
+	// busy_timeout): a transaction that reads and then writes would otherwise fail with "database is
+	// locked" at its first write, without waiting, if another program had committed in between. All
+	// of Mamela's transactions write. The WAL mode is set below, not here: switching to it does not
+	// wait for another program that is switching too.
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=synchronous(FULL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1) // a single writer; serializes access within the process
-	s := &Store{db: db, clock: clock}
+	s := &Store{db: db, clock: clock, path: path}
+	if err := s.enableWAL(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -285,34 +322,6 @@ func (s *Store) CopyTo(ctx context.Context, path string) error {
 	}
 	_, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, path)
 	return err
-}
-
-func (s *Store) migrate(ctx context.Context) error {
-	var version int
-	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return err
-	}
-	if version > len(migrations) {
-		return fmt.Errorf("store: database schema %d is newer than this Mamela (%d)", version, len(migrations))
-	}
-	for i := version; i < len(migrations); i++ {
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, migrations[i]); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("store: migration %d: %w", i+1, err)
-		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (s *Store) nowMs() int64 { return s.clock().UnixMilli() }
@@ -391,22 +400,33 @@ func (s *Store) Policy(ctx context.Context, digest string) (policy.Policy, error
 	return p, nil
 }
 
-// SavePlan stores the plan together with everything needed to recompute it.
+// SavePlan stores the plan together with everything needed to recompute it, in one transaction (so
+// that pruning old plans never takes an input from under a plan that is being saved).
 func (s *Store) SavePlan(ctx context.Context, g *graph.Graph, snap state.Snapshot, pol policy.Policy, p *plan.Plan) error {
-	if _, err := s.PutRevision(ctx, g); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	if _, err := s.PutSnapshot(ctx, snap); err != nil {
+	defer tx.Rollback()
+	now := s.nowMs()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO revisions(digest, canonical, created_ms) VALUES(?, ?, ?) ON CONFLICT(digest) DO NOTHING`, g.Digest(), g.Canonical(), now); err != nil {
 		return err
 	}
-	if _, err := s.PutPolicy(ctx, pol); err != nil {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO snapshots(digest, canonical, created_ms) VALUES(?, ?, ?) ON CONFLICT(digest) DO NOTHING`, snap.Digest(), snap.Canonical(), now); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms, made_by, providers_digest)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO policies(digest, canonical) VALUES(?, ?) ON CONFLICT(digest) DO NOTHING`, pol.Digest(), pol.Canonical()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO plans(digest, revision_digest, snapshot_digest, policy_digest, canonical, created_ms, made_by, providers_digest)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
-		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), s.nowMs(), version.Current(),
-		p.Inputs.ProvidersDigest)
-	return err
+		p.Digest, p.Inputs.RevisionDigest, p.Inputs.SnapshotDigest, p.Inputs.PolicyDigest, p.Canonical(), now, version.Current(),
+		p.Inputs.ProvidersDigest); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // PlanInputs are the stored inputs of a plan.
@@ -486,40 +506,126 @@ var ErrPlanMismatch = errors.New("stored plan does not match its recomputation")
 
 // Approval is a person's approval of one exact plan.
 type Approval struct {
+	ID         int64 // its record
 	PlanDigest string
 	Approver   string
 	ApprovedAt time.Time
 	ExpiresAt  time.Time
+	// Kept: the plan was approved already, so this request changed nothing and the approval is the
+	// earlier one (its approver, its expiry).
+	Kept bool
 }
 
-// Approve records an approval of the plan, valid for ttl. Approving again replaces it.
+// Approve records an approval of the plan, valid for ttl. Approvals are append-only: a plan that is
+// approved already keeps that approval (who approved it, and until when), and the request is
+// recorded as an event; an approval that expired or was revoked is not valid, so it is approved
+// anew, as a new record beside the old one.
 func (s *Store) Approve(ctx context.Context, planDigest, approver string, ttl time.Duration) (Approval, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Approval{}, err
+	}
+	defer tx.Rollback()
 	now := s.clock()
+	existing, _, err := s.validApproval(ctx, tx, planDigest)
+	if err != nil {
+		return Approval{}, err
+	}
+	if existing != nil {
+		existing.Kept = true
+		msg := fmt.Sprintf("a request by %s to approve this plan again changed nothing: it is approved by %s until %s",
+			approver, existing.Approver, existing.ExpiresAt.Format(time.RFC3339))
+		if _, err := tx.ExecContext(ctx, `INSERT INTO events(at_ms, plan_digest, kind, message) VALUES(?, ?, 'approval-kept', ?)`,
+			now.UnixMilli(), planDigest, msg); err != nil {
+			return Approval{}, err
+		}
+		return *existing, tx.Commit()
+	}
 	a := Approval{PlanDigest: planDigest, Approver: approver, ApprovedAt: now, ExpiresAt: now.Add(ttl)}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(plan_digest, approver, approved_ms, expires_ms) VALUES(?, ?, ?, ?)
-ON CONFLICT(plan_digest) DO UPDATE SET approver = excluded.approver, approved_ms = excluded.approved_ms, expires_ms = excluded.expires_ms`,
-		planDigest, approver, now.UnixMilli(), a.ExpiresAt.UnixMilli())
+	if _, err := tx.ExecContext(ctx, `INSERT INTO approvals(plan_digest, approver, approved_ms, expires_ms) VALUES(?, ?, ?, ?)`,
+		planDigest, approver, now.UnixMilli(), a.ExpiresAt.UnixMilli()); err != nil {
+		return Approval{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(at_ms, plan_digest, kind, message) VALUES(?, ?, 'approved', ?)`,
+		now.UnixMilli(), planDigest, fmt.Sprintf("approved by %s until %s", approver, a.ExpiresAt.Format(time.RFC3339))); err != nil {
+		return Approval{}, err
+	}
+	return a, tx.Commit()
+}
+
+// ErrNotApproved is returned when there is no approval to revoke.
+var ErrNotApproved = errors.New("the plan has no valid approval")
+
+// Revoke ends the approval of a plan before it expires, so that nothing of it runs any more. It is
+// recorded as an event of its own beside the approval, which stays. A plan can be approved anew
+// afterwards (a new record). It returns the approval it revoked, or ErrNotApproved.
+func (s *Store) Revoke(ctx context.Context, planDigest, by, reason string) (Approval, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Approval{}, err
+	}
+	defer tx.Rollback()
+	a, id, err := s.validApproval(ctx, tx, planDigest)
+	if err != nil {
+		return Approval{}, err
+	}
+	if a == nil {
+		return Approval{}, ErrNotApproved
+	}
+	now := s.nowMs()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO approval_revocations(approval_id, revoked_by, revoked_ms, reason) VALUES(?, ?, ?, ?)`,
+		id, by, now, reason); err != nil {
+		return Approval{}, err
+	}
+	msg := fmt.Sprintf("the approval by %s was revoked by %s", a.Approver, by)
+	if reason != "" {
+		msg += ": " + reason
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events(at_ms, plan_digest, kind, message) VALUES(?, ?, 'approval-revoked', ?)`, now, planDigest, msg); err != nil {
+		return Approval{}, err
+	}
+	return *a, tx.Commit()
+}
+
+// ValidApproval returns the approval of the plan if there is one that has not expired and was not
+// revoked.
+func (s *Store) ValidApproval(ctx context.Context, planDigest string) (*Approval, error) {
+	a, _, err := s.validApproval(ctx, s.db, planDigest)
 	return a, err
 }
 
-// ValidApproval returns the approval of the plan if it exists and has not expired.
-func (s *Store) ValidApproval(ctx context.Context, planDigest string) (*Approval, error) {
-	var a Approval
-	var approved, expires int64
-	err := s.db.QueryRowContext(ctx, `SELECT approver, approved_ms, expires_ms FROM approvals WHERE plan_digest = ?`, planDigest).
-		Scan(&a.Approver, &approved, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
+// ApprovalRevoked reports whether the approval (Approval.ID) was revoked since it was read: a run
+// that began on it does not go on to run what needs it.
+func (s *Store) ApprovalRevoked(ctx context.Context, approvalID int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM approval_revocations WHERE approval_id = ?`, approvalID).Scan(&n)
+	return n > 0, err
+}
+
+type queryRows interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+func (s *Store) validApproval(ctx context.Context, q queryRows, planDigest string) (*Approval, int64, error) {
+	rows, err := q.QueryContext(ctx, `SELECT a.id, a.approver, a.approved_ms, a.expires_ms FROM approvals a
+WHERE a.plan_digest = ? AND NOT EXISTS (SELECT 1 FROM approval_revocations r WHERE r.approval_id = a.id) ORDER BY a.id DESC`, planDigest)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	a.PlanDigest = planDigest
-	a.ApprovedAt, a.ExpiresAt = time.UnixMilli(approved).UTC(), time.UnixMilli(expires).UTC()
-	if !s.clock().Before(a.ExpiresAt) {
-		return nil, nil
+	defer rows.Close()
+	for rows.Next() {
+		var a Approval
+		var id, approved, expires int64
+		if err := rows.Scan(&id, &a.Approver, &approved, &expires); err != nil {
+			return nil, 0, err
+		}
+		a.ID, a.PlanDigest = id, planDigest
+		a.ApprovedAt, a.ExpiresAt = time.UnixMilli(approved).UTC(), time.UnixMilli(expires).UTC()
+		if s.clock().Before(a.ExpiresAt) {
+			return &a, id, nil
+		}
 	}
-	return &a, nil
+	return nil, 0, rows.Err()
 }
 
 // Stage is the state of an operation in the journal.
@@ -590,6 +696,19 @@ WHERE id = ? AND stage = 'Started' AND owner = ?`, string(stage), detail, s.nowM
 		return fmt.Errorf("store: operation %s is no longer claimed by %s", id, owner)
 	}
 	return nil
+}
+
+// ReleaseOwner makes every operation that owner claimed and has not finished claimable again, as one
+// whose outcome is unknown: its worker is stopping, mid-operation (a program that was told to stop
+// and did not finish in time). It returns how many.
+func (s *Store) ReleaseOwner(ctx context.Context, owner, why string) (int, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE operations SET stage = 'Unknown', detail = ?, lease_ms = 0, updated_ms = ?
+WHERE stage = 'Started' AND owner = ?`, "its worker "+owner+" stopped: "+why+"; the outcome is unknown", s.nowMs(), owner)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // Release makes an operation that owner claimed claimable again, as one whose outcome is unknown:

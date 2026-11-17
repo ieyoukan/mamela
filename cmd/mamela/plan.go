@@ -139,7 +139,13 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if err != nil {
 		return report(stderr, err)
 	}
-	fmt.Fprintf(stdout, "approved %s by %s until %s\n", res.Approval.PlanDigest, res.Approval.Approver, res.Approval.ExpiresAt.Format(time.RFC3339))
+	if res.Approval.Kept {
+		fmt.Fprintf(stdout, "MAM-APR-0002: %s is approved already, by %s until %s; this request by %s changed nothing (an approval is a record: it is not rewritten)\n"+
+			"  hint: to change who approved it or until when, revoke it (mamela revoke) and approve it again\n",
+			res.Approval.PlanDigest, res.Approval.Approver, res.Approval.ExpiresAt.Format(time.RFC3339), *by)
+	} else {
+		fmt.Fprintf(stdout, "approved %s by %s until %s\n", res.Approval.PlanDigest, res.Approval.Approver, res.Approval.ExpiresAt.Format(time.RFC3339))
+	}
 	if n := len(res.Removed); n > 0 {
 		fmt.Fprintf(stdout, "note: this plan DELETES %d object%s once applied: %s\n", n, plural(n), strings.Join(res.Removed, ", "))
 	}
