@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/api"
 )
@@ -23,10 +24,31 @@ func (u unreachable) Unwrap() error { return u.err }
 // approved is answered on the pull request; one that could not be handled because the API did
 // not answer is left for the next poll.
 func (e *Engine) comments(ctx context.Context, pr PR) error {
-	cs, err := e.GitHub.Comments(ctx, pr.Number)
+	// Unchanged since the comments were read after its last change: nothing new to read. The key
+	// holds the pull request's updated_at; GitHub's Date of the answer decides whether it was read
+	// after the change (a comment in the same second as the read would not move updated_at again).
+	readKey := ""
+	if !pr.UpdatedAt.IsZero() {
+		readKey = fmt.Sprintf("comments %s #%d %s", e.Config.Repo, pr.Number, pr.UpdatedAt.UTC().Format(time.RFC3339))
+		if read, err := e.Store.Seen(ctx, readKey); err != nil || read {
+			return err
+		}
+	}
+	cs, asOf, err := e.GitHub.Comments(ctx, pr.Number)
 	if err != nil {
 		return err
 	}
+	if err := e.handleOf(ctx, pr, cs); err != nil {
+		return err
+	}
+	if readKey != "" && asOf.After(pr.UpdatedAt) {
+		_, err = e.Store.See(ctx, readKey)
+	}
+	return err
+}
+
+// handleOf handles the approval comments among a pull request's comments.
+func (e *Engine) handleOf(ctx context.Context, pr PR, cs []Comment) error {
 	for _, c := range cs {
 		m := approveRe.FindStringSubmatch(strings.TrimSpace(c.Body))
 		if m == nil {
@@ -62,6 +84,8 @@ func (e *Engine) approve(ctx context.Context, pr PR, c Comment, digest string) e
 	switch {
 	case c.User.Type != "User" || !slices.Contains(e.Config.Approvers, c.User.Login):
 		return fmt.Errorf("@%s is not an approver of %s", strings.TrimPrefix(c.User.Login, "@"), e.Config.Repo)
+	case !e.sameAccount(c.User):
+		return e.accountError(c.User)
 	case c.User.Login == pr.User.Login && e.Config.SelfApproval != nil && !*e.Config.SelfApproval:
 		return fmt.Errorf("the author of the pull request cannot approve its plans here (self_approval = false)")
 	}

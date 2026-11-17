@@ -106,3 +106,16 @@ mamelacd は、今は同じリポジトリ・同じモジュール（`cmd/mamela
 - **古いマージは apply されない:** main の先頭の宣言だけが apply される。
 - **運用:** `mamela-api.service` と `mamelacd.service` の二つを有効にする（`mamela controlplane bundle` が入れる）。`mamela gitops` は無くなる。
 - **ADR 0011 との関係:** ADR 0011 の同期（先頭の定期的な plan、手動同期、自動同期、写しの公開）は mamelacd の仕事になる。資格情報なしの確認（`mamela check --view`）は mamela に残る。
+
+## 追記（0.3.2、2026-11-17）
+
+監査（[2026-11-17-iac-audit](../reviews/2026-11-17-iac-audit.md) の A7・A8・B7・B11）で見つかったことの修正。決定の骨格（§1〜§7）は変わらない。
+
+- **§4 の「plan できないとき」と評価の失敗を分ける:** API は、評価の失敗をすべて 422 で返す。宣言の誤りと、評価器が一時的に使えないこと（ツールチェーンの差し替え中、ビルドの時間切れ、ディスクが満杯）を、API が返す理由のコード・文言（`MAM-EVAL-0001`、`MAM-EVAL-0102`、`no space left on device`）で分ける。後者は head の状態 `eval-retry` にして、`retry` の間隔で評価し直す（`MAM-GIT-0201`）。宣言の誤りは、これまでどおり新しいコミットまで評価し直さないが、理由を commit status の description とログに出し、PR がなければコミットへのコメントにする（以前は PR 番号 0 へのコメントしかなかった）。API 側（`internal/api`）で状態コードを分ける案もあるが、API の版を変えずに mamelacd だけで直すために、文言で分けた。
+- **§4 の「apply の後」を、失敗に強くする:** apply の結果（`outcome`）を記録した直後に、head の状態も記録する。結果のコメントや、次の段の plan が失敗しても、次の poll が続きから進む。GitHub が受けなかった結果のコメントは、本文ごと `state.db` に残し、次の poll で投稿する（apply はやり直さない）。
+- **再試行の上限が poll をまたぐ:** 「同じ変更が戻ってくる」連続回数を、head のコミットごとに数える（stale の apply、または apply したのに同じ形の plan が出る apply。形は plan の本文とカウントの hash）。`retry_max + 1` に達したら、`sync = "push"` は自動で承認しない（head の状態 `stopped`、`MAM-GIT-0101`）。1 時間より間が空いた apply は、一続きとして数えない。ホストの承認と新しいコミットは、これまでどおり効く。
+- **§6 の「マージ元の PR の探索」:** 直近 30 件の closed の PR にない新しい先頭は、1 度だけ 100 件ずつ 5 ページまでさかのぼる（承認方式のとき）。open の PR は全件、PR のコメントは全件（ページング）を読む。PR のコメントは、PR の `updated_at` が変わったときだけ読む（poll あたり 33 リクエストから、承認方式で 3 に）。
+- **§6 の「承認の身元」:** login の文字列だけでなく、GitHub の数値 ID も照合する。設定は login のまま。初めて見たときに ID を固定して `state.db` に持ち、PR・コメント・コミットの作者の ID が違えば信頼しない（`MAM-GIT-0301`）。固定を動かすのは運用者で、`mamelacd repin`。Control Plane に渡す承認者の記録（`github:<login>`）、API、digest は変わらない。固定は初回の答えなので、最初から別の人が login を持っていた場合は防げない（運用者が最初に確かめる）。
+- **§3 の可観測性:** 各 poll の終わりに heartbeat（時刻、結果、所要時間、次の予定、failing の回数）を `state.db` に記録し、`mamelacd status` で表示する。何も変わらないときも 10 分に 1 行 `alive` を出し、同じ失敗の繰り返しは 1 行にまとめる。GitHub のトークンの 401 は、「失効した／権限がない。トークンのファイルを更新して SIGHUP」と hint を出す。SIGHUP でトークンを読み直す（再起動不要）。GitHub のレート制限（403・429、Retry-After、X-RateLimit-Reset）は尊重して、その時刻まで要求を送らない。
+- **互換:** `state.db` は migration 2 で、列と表を足す（既存の行は変わらない）。古い mamelacd は、新しい DB を「新しい版」として開かない（戻すには DB を作り直す）。API（`mamela-api/v1`）、plan の JSON、承認の digest、保存済みの行の意味は変えていない。
+

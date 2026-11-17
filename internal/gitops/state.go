@@ -52,11 +52,48 @@ CREATE TABLE heads (
   PRIMARY KEY (repo, dir)
 );
 `,
+	// 2 (0.3.2): what a poll has to remember between polls, and what `mamelacd status` shows.
+	// Only columns and tables are added: rows of 1 stay as they are (the new columns are empty).
+	`
+-- the shape of a plan (a hash of what it says), to tell the same change coming back (A7a)
+ALTER TABLE plans ADD COLUMN shape TEXT NOT NULL DEFAULT '';
+-- the result comment of an apply that could not be posted yet (the next poll posts it)
+ALTER TABLE plans ADD COLUMN report_pr INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE plans ADD COLUMN report_body TEXT NOT NULL DEFAULT '';
+-- the head's plans undo a drift (the world changed under a declaration that was in sync): B7
+ALTER TABLE heads ADD COLUMN drift INTEGER NOT NULL DEFAULT 0;
+-- the last poll, for status and the heartbeat (one row)
+CREATE TABLE heartbeat (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  pid           INTEGER NOT NULL,
+  version       TEXT NOT NULL,
+  started_ms    INTEGER NOT NULL,  -- when this mamelacd started
+  poll_start_ms INTEGER NOT NULL,  -- the last poll's start
+  poll_end_ms   INTEGER NOT NULL,  -- its end (0: it is running)
+  result        TEXT NOT NULL,     -- "ok", "error", "running"
+  detail        TEXT NOT NULL,     -- the error, in one line
+  duration_ms   INTEGER NOT NULL,
+  next_ms       INTEGER NOT NULL,  -- when the next poll is due
+  interval_ms   INTEGER NOT NULL,
+  polls         INTEGER NOT NULL,
+  failing       INTEGER NOT NULL,  -- polls that failed in a row
+  failing_since INTEGER NOT NULL
+);
+-- GitHub's numeric id of each author and approver (a login can be taken by somebody else after a
+-- rename; the id cannot): pinned at first sight (B11)
+CREATE TABLE principals (
+  login       TEXT PRIMARY KEY,
+  id          INTEGER NOT NULL,
+  pinned_ms   INTEGER NOT NULL,
+  conflict_id INTEGER NOT NULL DEFAULT 0,  -- another account that acted under the login
+  conflict_ms INTEGER NOT NULL DEFAULT 0
+);
+`,
 }
 
 // OpenStore opens (creating if needed) mamelacd's database.
 func OpenStore(ctx context.Context, path string, clock func() time.Time) (*Store, error) {
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(FULL)")
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +121,11 @@ func OpenStore(ctx context.Context, path string, clock func() time.Time) (*Store
 			}
 		}
 		if err != nil {
+			// Another mamelacd command (status, once) may have made this migration first: that is fine.
+			var now int
+			if db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&now) == nil && now > i {
+				continue
+			}
 			db.Close()
 			return nil, fmt.Errorf("mamelacd: migration %d: %w", i+1, err)
 		}
@@ -112,17 +154,21 @@ type Plan struct {
 	Blocked  int
 	Applied  bool
 	Outcome  string
+	// Shape is a hash of what the plan says (see planShape): the same change has the same shape.
+	Shape string
+	// AppliedMs is when it was applied (the store's clock, milliseconds; 0: not yet).
+	AppliedMs int64
 }
 
 // SavePlan records a plan. The same plan (digest) is recorded once.
 func (s *Store) SavePlan(ctx context.Context, p Plan) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, repo, pr, dir, sha, at_head, revision, changes, waiting, blocked, posted_ms)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
-		p.Digest, p.Repo, p.PR, p.Dir, p.SHA, boolInt(p.AtHead), p.Revision, p.Changes, p.Waiting, p.Blocked, s.nowMs())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO plans(digest, repo, pr, dir, sha, at_head, revision, changes, waiting, blocked, posted_ms, shape)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(digest) DO NOTHING`,
+		p.Digest, p.Repo, p.PR, p.Dir, p.SHA, boolInt(p.AtHead), p.Revision, p.Changes, p.Waiting, p.Blocked, s.nowMs(), p.Shape)
 	return err
 }
 
-const planColumns = `digest, repo, pr, dir, sha, at_head, revision, changes, waiting, blocked, applied_ms, outcome`
+const planColumns = `digest, repo, pr, dir, sha, at_head, revision, changes, waiting, blocked, applied_ms, outcome, shape`
 
 func (s *Store) plans(ctx context.Context, where string, args ...any) ([]Plan, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+planColumns+` FROM plans `+where, args...)
@@ -135,10 +181,10 @@ func (s *Store) plans(ctx context.Context, where string, args ...any) ([]Plan, e
 		var p Plan
 		var atHead int
 		var applied int64
-		if err := rows.Scan(&p.Digest, &p.Repo, &p.PR, &p.Dir, &p.SHA, &atHead, &p.Revision, &p.Changes, &p.Waiting, &p.Blocked, &applied, &p.Outcome); err != nil {
+		if err := rows.Scan(&p.Digest, &p.Repo, &p.PR, &p.Dir, &p.SHA, &atHead, &p.Revision, &p.Changes, &p.Waiting, &p.Blocked, &applied, &p.Outcome, &p.Shape); err != nil {
 			return nil, err
 		}
-		p.AtHead, p.Applied = atHead != 0, applied != 0
+		p.AtHead, p.Applied, p.AppliedMs = atHead != 0, applied != 0, applied
 		out = append(out, p)
 	}
 	return out, rows.Err()
@@ -179,6 +225,49 @@ func (s *Store) Applied(ctx context.Context, digest, outcome string) error {
 	return err
 }
 
+// AppliesOf returns the plans of a declaration at a commit that were applied (whatever came of it),
+// the newest first.
+func (s *Store) AppliesOf(ctx context.Context, repo, dir, sha string) ([]Plan, error) {
+	return s.plans(ctx, `WHERE repo = ? AND dir = ? AND sha = ? AND applied_ms > 0 ORDER BY applied_ms DESC, rowid DESC LIMIT 50`, repo, dir, sha)
+}
+
+// SaveReport keeps the comment on pull request pr that reports an apply, until it is posted.
+func (s *Store) SaveReport(ctx context.Context, digest string, pr int, body string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE plans SET report_pr = ?, report_body = ? WHERE digest = ?`, pr, body, digest)
+	return err
+}
+
+// ClearReport forgets a report that was posted.
+func (s *Store) ClearReport(ctx context.Context, digest string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE plans SET report_pr = 0, report_body = '' WHERE digest = ?`, digest)
+	return err
+}
+
+// Report is a comment that reports an apply and could not be posted yet.
+type Report struct {
+	Digest string
+	PR     int
+	Body   string
+}
+
+// PendingReports returns the reports to post, the oldest first.
+func (s *Store) PendingReports(ctx context.Context, repo string) ([]Report, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT digest, report_pr, report_body FROM plans WHERE repo = ? AND report_pr > 0 ORDER BY applied_ms, rowid`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Report
+	for rows.Next() {
+		var r Report
+		if err := rows.Scan(&r.Digest, &r.PR, &r.Body); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // See marks something handled (a comment, a head planned) and says whether it was new: only the
 // first caller gets true.
 func (s *Store) See(ctx context.Context, key string) (bool, error) {
@@ -207,6 +296,10 @@ type Head struct {
 	Revision string
 	State    string // HeadPending, HeadWaiting, ...
 	Digest   string // the last plan
+	// Drift: the plans of this head undo a drift (the declaration was in sync and the world changed
+	// under it), not the phases of a change a push approved: they are approved only with self_heal,
+	// or on the host.
+	Drift bool
 	// UpdatedMs is when the state was recorded (the store's clock, milliseconds).
 	UpdatedMs int64
 }
@@ -221,13 +314,21 @@ const (
 	HeadError     = "error"     // could not be evaluated: another commit is needed
 	HeadUnplanned = "unplanned" // evaluated, but could not be planned: planned again each poll
 	HeadUntrusted = "untrusted" // not merged from a trusted author's pull request: not planned
+	// HeadEvalRetry: the evaluator was unavailable for now (MAM-EVAL-0001, 0102, a full disk): the
+	// declaration is evaluated again after the retry interval (it is not the declaration's fault).
+	HeadEvalRetry = "eval-retry"
+	// HeadStopped: the same change came back (stale, or applied and still planned) too many times in
+	// a row: not applied again until another commit, or a person's approval on the host (MAM-GIT-0101).
+	HeadStopped = "stopped"
 )
 
 // Head returns the last state of a declaration at the head of the branch.
 func (s *Store) Head(ctx context.Context, repo, dir string) (Head, bool, error) {
 	h := Head{Dir: dir}
-	err := s.db.QueryRowContext(ctx, `SELECT sha, revision, state, digest, updated_ms FROM heads WHERE repo = ? AND dir = ?`, repo, dir).
-		Scan(&h.SHA, &h.Revision, &h.State, &h.Digest, &h.UpdatedMs)
+	var drift int
+	err := s.db.QueryRowContext(ctx, `SELECT sha, revision, state, digest, drift, updated_ms FROM heads WHERE repo = ? AND dir = ?`, repo, dir).
+		Scan(&h.SHA, &h.Revision, &h.State, &h.Digest, &drift, &h.UpdatedMs)
+	h.Drift = drift != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		return h, false, nil
 	}
@@ -236,9 +337,117 @@ func (s *Store) Head(ctx context.Context, repo, dir string) (Head, bool, error) 
 
 // SetHead records the state of a declaration at the head of the branch.
 func (s *Store) SetHead(ctx context.Context, repo string, h Head) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO heads(repo, dir, sha, revision, state, digest, updated_ms) VALUES(?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(repo, dir) DO UPDATE SET sha = excluded.sha, revision = excluded.revision, state = excluded.state, digest = excluded.digest, updated_ms = excluded.updated_ms`,
-		repo, h.Dir, h.SHA, h.Revision, h.State, h.Digest, s.nowMs())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO heads(repo, dir, sha, revision, state, digest, drift, updated_ms) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(repo, dir) DO UPDATE SET sha = excluded.sha, revision = excluded.revision, state = excluded.state, digest = excluded.digest, drift = excluded.drift, updated_ms = excluded.updated_ms`,
+		repo, h.Dir, h.SHA, h.Revision, h.State, h.Digest, boolInt(h.Drift), s.nowMs())
+	return err
+}
+
+// Heads returns the last state of every declaration of the repository, by directory.
+func (s *Store) Heads(ctx context.Context, repo string) ([]Head, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT dir, sha, revision, state, digest, drift, updated_ms FROM heads WHERE repo = ? ORDER BY dir`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Head
+	for rows.Next() {
+		var h Head
+		var drift int
+		if err := rows.Scan(&h.Dir, &h.SHA, &h.Revision, &h.State, &h.Digest, &drift, &h.UpdatedMs); err != nil {
+			return nil, err
+		}
+		h.Drift = drift != 0
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// Heartbeat is what the last poll left, for `mamelacd status` (and nothing else reads it).
+type Heartbeat struct {
+	PID          int
+	Version      string
+	StartedMs    int64
+	PollStartMs  int64
+	PollEndMs    int64  // 0: the poll is running
+	Result       string // "ok", "error", "running"
+	Detail       string // the error, in one line
+	DurationMs   int64
+	NextMs       int64 // when the next poll is due
+	IntervalMs   int64
+	Polls        int64
+	Failing      int64 // polls that failed in a row
+	FailingSince int64
+}
+
+// SetHeartbeat records the last poll.
+func (s *Store) SetHeartbeat(ctx context.Context, h Heartbeat) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO heartbeat(id, pid, version, started_ms, poll_start_ms, poll_end_ms, result, detail, duration_ms, next_ms, interval_ms, polls, failing, failing_since)
+VALUES(1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET pid = excluded.pid, version = excluded.version, started_ms = excluded.started_ms, poll_start_ms = excluded.poll_start_ms,
+  poll_end_ms = excluded.poll_end_ms, result = excluded.result, detail = excluded.detail, duration_ms = excluded.duration_ms, next_ms = excluded.next_ms,
+  interval_ms = excluded.interval_ms, polls = excluded.polls, failing = excluded.failing, failing_since = excluded.failing_since`,
+		h.PID, h.Version, h.StartedMs, h.PollStartMs, h.PollEndMs, h.Result, h.Detail, h.DurationMs, h.NextMs, h.IntervalMs, h.Polls, h.Failing, h.FailingSince)
+	return err
+}
+
+// LastHeartbeat returns the last poll's record (false: no poll has recorded one).
+func (s *Store) LastHeartbeat(ctx context.Context) (Heartbeat, bool, error) {
+	var h Heartbeat
+	err := s.db.QueryRowContext(ctx, `SELECT pid, version, started_ms, poll_start_ms, poll_end_ms, result, detail, duration_ms, next_ms, interval_ms, polls, failing, failing_since FROM heartbeat WHERE id = 1`).
+		Scan(&h.PID, &h.Version, &h.StartedMs, &h.PollStartMs, &h.PollEndMs, &h.Result, &h.Detail, &h.DurationMs, &h.NextMs, &h.IntervalMs, &h.Polls, &h.Failing, &h.FailingSince)
+	if errors.Is(err, sql.ErrNoRows) {
+		return h, false, nil
+	}
+	return h, err == nil, err
+}
+
+// Principal is a configured author or approver, with the GitHub account (numeric id) it was pinned to.
+type Principal struct {
+	Login      string
+	ID         int64
+	PinnedMs   int64
+	ConflictID int64 // another account that acted under the login (0: none)
+	ConflictMs int64
+}
+
+// Principals returns the pinned accounts.
+func (s *Store) Principals(ctx context.Context) ([]Principal, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT login, id, pinned_ms, conflict_id, conflict_ms FROM principals ORDER BY login`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Principal
+	for rows.Next() {
+		var p Principal
+		if err := rows.Scan(&p.Login, &p.ID, &p.PinnedMs, &p.ConflictID, &p.ConflictMs); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Pin records the account a login meant at first sight. The first pin stays.
+func (s *Store) Pin(ctx context.Context, login string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO principals(login, id, pinned_ms) VALUES(?, ?, ?) ON CONFLICT(login) DO NOTHING`, login, id, s.nowMs())
+	return err
+}
+
+// Unpin forgets the pin of a login (the next poll pins it again) and says whether there was one.
+func (s *Store) Unpin(ctx context.Context, login string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM principals WHERE login = ?`, login)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// NoteConflict records that another account (id) acted under a pinned login.
+func (s *Store) NoteConflict(ctx context.Context, login string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE principals SET conflict_id = ?, conflict_ms = ? WHERE login = ?`, id, s.nowMs(), login)
 	return err
 }
 

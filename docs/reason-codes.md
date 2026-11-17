@@ -206,6 +206,22 @@ site（`mamela.site.toml`、`mamela-site/v1`）の規則に合わない変更。
 
 以前の LAB-0304・LAB-0305 と同じ番号にしてある。
 
+## MAM-GIT — mamelacd（GitHub との同期、ADR 0012）
+
+mamelacd（`internal/gitops`）が、GitHub や自分の判断について出すコード。commit status・ログ・PR やコミットのコメント・`mamelacd status` に出る。
+
+| コード | 意味 | 対処 |
+|---|---|---|
+| MAM-GIT-0001 | GitHub がトークンを断った（401）。失効したか、このリポジトリへの権限がない | 新しいトークンを作り（Contents: read、Pull requests: read and write、Commit statuses: read and write）、`token_file` を書き換えて、`systemctl kill -s HUP mamelacd`（または再起動）。401 のときは、ファイルが変わっていれば自動で読み直す（docs/gitops.md） |
+| MAM-GIT-0002 | GitHub が、このトークンにその操作を許さない（403 で、レート制限ではない）。コミットへのコメントには Contents: write が要り、ないときは 1 度だけログに出して、コメントを付けない | トークンの権限とリポジトリを確かめる。コミットへのコメントは任意で、権限を足さなくてもよい（理由は status とログにある） |
+| MAM-GIT-0003 | GitHub のレート制限（403 または 429、Retry-After、X-RateLimit-Reset）。その時刻まで何も送らず、poll の間隔が延びる | 待つ。何も失われない。繰り返すなら、PR の数と `active_interval` を見直す |
+| MAM-GIT-0004 | GitHub が 5xx を返した | GitHub 側の問題。次の poll でやり直す |
+| MAM-GIT-0101 | 同じ変更が戻ってくる（apply が stale になり続ける、または apply したのに同じ plan がまた出る）回数が `retry_max + 1` に達したので、`sync = "push"` が自動では承認しない（head の状態 `stopped`） | 世界を変えているものか、変更が観測に出ない理由を調べる（`mamela plan`、Control Plane のホストの記録）。新しいコミットを push するか、ホストで `mamela approve <digest>`（次の poll で apply される） |
+| MAM-GIT-0201 | 評価器が一時的に使えない（ツールチェーンの差し替え中 MAM-EVAL-0001、ビルドの時間切れ MAM-EVAL-0102、ディスクが満杯）ので、宣言のせいにせず、`retry` の間隔で評価し直す（head の状態 `eval-retry`） | 評価器の側（ホストのツールチェーン、ディスク）を直す。直れば自動で進む |
+| MAM-GIT-0301 | 設定の login で動いたのが、固定した GitHub アカウント（数値 ID）と違う。改名で空いた login を別の人が取った、またはアカウントを作り直した。そのアカウントの PR・承認・push は信頼しない | 本人でなければ何もしなくてよい（信頼されていない）。本人のアカウントが変わったなら `mamelacd repin --config <toml> --login <login>` |
+| MAM-GIT-0302 | 設定の authors・approvers の login が GitHub にない。何についても信頼されない | 設定の login を直す |
+| MAM-GIT-0501 | `mamelacd status` が、最後の poll の終わりが `interval` の 3 倍より古い（レート制限の待ちを除く）ことを見つけた、または heartbeat がない。止まっている疑い | `systemctl status mamelacd`、`journalctl -u mamelacd -n 100`。API（`mamela api`）が答えているか確かめる |
+
 ## MAM-ACT — 明示操作（`mamela act`）
 
 プロバイダーの明示操作（削除、再起動、引き継ぎ。ADR 0006）。plan には入らず、人が名前を打ち直したときだけ行う。

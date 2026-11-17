@@ -70,3 +70,19 @@ func TestFailureSummary(t *testing.T) {
 		t.Errorf("the last line when none gives a reason: %q", got)
 	}
 }
+
+// An apply the Control Plane stops before doing anything (another apply holds the database,
+// MAM-REC-0009; the policy changed since the plan, MAM-REC-0010) is a failed apply: the status says
+// the code, and retry plans the head again (a new plan, under the policy now) after the interval.
+func TestApplyStoppedBeforeAnythingIsAFailure(t *testing.T) {
+	for _, text := range []string{
+		"stopped: MAM-REC-0009: another apply is running on this database: nothing was done\n  hint: wait, then apply again",
+		"stopped: MAM-REC-0010: the plan was made under another policy: nothing was done\n  hint: plan again",
+	} {
+		outcome, shown := applyOutcome(api.Applied{Text: text}, nil)
+		code := text[9:21]
+		if outcome != outcomeFailed || !strings.HasPrefix(failureSummary(shown, 80), code) {
+			t.Errorf("%s: %q %q", code, outcome, failureSummary(shown, 80))
+		}
+	}
+}

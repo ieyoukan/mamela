@@ -2,6 +2,8 @@ package gitops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -66,7 +68,7 @@ func (e *Engine) planAndPost(ctx context.Context, pr int, sha, dir string, atHea
 		return p, err
 	}
 	if err := e.Store.SavePlan(ctx, Plan{Digest: p.Digest, Repo: e.Config.Repo, PR: pr, Dir: dir, SHA: sha, AtHead: atHead,
-		Revision: p.Revision, Changes: p.Changes, Waiting: p.Waiting, Blocked: p.Blocked}); err != nil {
+		Revision: p.Revision, Changes: p.Changes, Waiting: p.Waiting, Blocked: p.Blocked, Shape: planShape(p)}); err != nil {
 		return p, err
 	}
 	// Re-observation can give a new plan while still waiting for the same thing: keep the new
@@ -85,26 +87,51 @@ func (e *Engine) planAndPost(ctx context.Context, pr int, sha, dir string, atHea
 	return p, e.GitHub.Comment(ctx, pr, e.planComment(p, dir, sha, atHead))
 }
 
-// planFailed reports a plan that did not come back. The API refusing it is about the declaration:
-// the commit's status says so, and the pull request is told once per commit (planning observes
-// the world, so it can fail for a while, and the head is planned again each poll). Any other error
-// is the API not answering: it is returned, to try again at the next poll.
+// planFailed reports a plan that did not come back. The API refusing it is about the declaration (or
+// about what planning observes, which can fail for a while): the commit's status says why, in a line,
+// and the pull request is told once per commit (planning observes the world, so it can fail for a
+// while, and the head is planned again each poll). A commit with no pull request (sync = "push") is
+// told on the commit, once, so the reason is somewhere an author reads. Any other error is the API
+// not answering: it is returned, to try again at the next poll.
 func (e *Engine) planFailed(ctx context.Context, pr int, sha, dir string, err error) error {
 	if !api.Refused(err) {
 		return err
 	}
-	e.GitHub.Status(ctx, sha, "failure", statusContext(dir), "could not be planned")
+	why := failureSummary(err.Error(), 90)
+	e.GitHub.Status(ctx, sha, "failure", statusContext(dir), "could not be planned: "+why)
 	fresh, serr := e.Store.See(ctx, fmt.Sprintf("plan error %s %s %s", e.Config.Repo, sha, dir))
 	if serr != nil {
 		return serr
 	}
-	if pr > 0 && fresh {
+	if fresh {
+		e.logf("mamelacd: %s at %s could not be planned: %s", dir, short(sha), why)
 		body := fmt.Sprintf("### Mamela: `%s` at %s could not be planned\n\n```text\n%s\n```\n", dir, short(sha), clip(err.Error()))
-		if err := e.GitHub.Comment(ctx, pr, body); err != nil {
+		if err := e.tell(ctx, pr, sha, body); err != nil {
 			return err
 		}
 	}
 	return errNotPlanned
+}
+
+// tell comments on pull request pr, or on the commit when there is none (pr = 0). A token that may
+// not comment on commits says so once; the reason is in the commit status and the log as well.
+func (e *Engine) tell(ctx context.Context, pr int, sha, body string) error {
+	if pr > 0 {
+		return e.GitHub.Comment(ctx, pr, body)
+	}
+	ok, err := e.GitHub.CommentOnCommit(ctx, sha, body)
+	if err == nil && !ok && !e.warnedCommitComments {
+		e.warnedCommitComments = true
+		e.logf("mamelacd: %s: GitHub does not let this token comment on commits (it needs Contents: write; that is optional). What would be said there is in the commit status and the log", CodePermission)
+	}
+	return err
+}
+
+// planShape is a hash of what a plan says to do (its text and counts, not its digest, which also
+// follows what was observed): the same change has the same shape, however many times it is planned.
+func planShape(p api.Planned) string {
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s\x00%d\x00%d\x00%d\x00%d\x00%s", p.Revision, p.Changes, p.Removals, p.Waiting, p.Blocked, p.Text))
+	return hex.EncodeToString(sum[:8])
 }
 
 // statusIsStale says whether the head's commit status is the failure of a plan that could not be
