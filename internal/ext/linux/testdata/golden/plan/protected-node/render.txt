@@ -1,0 +1,19 @@
+Plan sha256:a15dd41b6b4a
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:3d38cdaa334c)
+  policy    sha256:440a1b0ed6a6
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
+~ NodeFile web/file/etc/app/app.conf  [DENIED]
+      file: /etc/app/app.conf
+      sha256: f7407318bd2c4a3965c1450b7aceb87ed5336cc46c39a21d0a7124f0ec3797b3 -> 30848b21bdf01e803109076b48f50bfcf2f909f8b023e7dfb60955cb25e5b8ff
+      content:
+      + listen 8080
+      + workers 4
+      restart: app (each only if it runs: systemctl try-restart)
+    linux.write-file: DENIED (MAM-POL-0308 this machine is the Control Plane's own host; a Control Plane never changes the host it runs on (it could stop itself in the middle of an apply))
+      hint: change it from another Control Plane, or by hand while this one is stopped (ADR 0003)
+
+Summary: 1 denied, 2 in sync.
+Nothing has been changed: a plan only describes.

@@ -1,0 +1,1 @@
+{"resources":[{"kind":"TestVM","name":"web","provider":"test","spec":{"network":{"mode":"dhcp"}}},{"kind":"NodeFile","name":"web/file/etc/app/key.pem","spec":{"content":"-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n","group":"root","mode":"0600","node":"web","owner":"root","path":"/etc/app/key.pem"}}],"schema":"mamela-graph/v2"}

@@ -1,0 +1,220 @@
+package linux
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"strings"
+
+	"github.com/ieyoukan/mamela/internal/mamelet"
+)
+
+// mamelet's view of the node's file system for the linux kinds. It works under an os.Root (the
+// node's "/", or System.Root in tests), so that nothing it opens can lead out of it, and it never
+// follows a symbolic link of its own accord: every directory above a file is checked to be a
+// directory, not a link, before mamelet writes, and the file is replaced by a rename in that
+// directory, which never follows a link either.
+
+// openTree opens the node's file system as mamelet writes into it.
+func openTree(s *mamelet.System) (*os.Root, error) {
+	root := s.Root
+	if root == "" {
+		root = "/"
+	}
+	return os.OpenRoot(root)
+}
+
+// rel is an absolute path of the node as a name under the root ("." for "/").
+func rel(p string) string {
+	if p = strings.TrimPrefix(p, "/"); p == "" {
+		return "."
+	}
+	return p
+}
+
+// readAccounts reads the node's users and groups (none when the files cannot be read).
+func readAccounts(r *os.Root) accounts {
+	passwd, _ := r.ReadFile("etc/passwd")
+	group, _ := r.ReadFile("etc/group")
+	return parseAccounts(string(passwd), string(group))
+}
+
+// inspect observes what is at p (an absolute path CheckPath accepts) and the directories above it.
+func inspect(r *os.Root, p string, a accounts) FileState {
+	st := FileState{Path: p}
+	for i, d := range parents(p) {
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			st.Missing = parents(p)[i:]
+			return st
+		case err != nil:
+			st.Error = err.Error()
+			return st
+		case fi.Mode()&fs.ModeSymlink != 0:
+			st.Unsafe = d + " is a symbolic link"
+			return st
+		case !fi.IsDir():
+			st.Unsafe = d + " is not a directory"
+			return st
+		}
+	}
+	fi, err := r.Lstat(rel(p))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return st
+	case err != nil:
+		st.Error = err.Error()
+		return st
+	}
+	st.Exists = true
+	switch m := fi.Mode(); {
+	case m&fs.ModeSymlink != 0:
+		st.Unsafe = p + " is a symbolic link"
+		return st
+	case m.IsDir():
+		st.Unsafe = p + " is a directory"
+		return st
+	case !m.IsRegular():
+		st.Unsafe = p + " is not a regular file (a device, a socket or a pipe)"
+		return st
+	}
+	st.Mode = modeString(fi.Mode())
+	if uid, gid, ok := ownerOf(fi); ok {
+		st.Owner, st.Group = a.userName(uid), a.groupName(gid)
+	}
+	if fi.Size() > MaxContent {
+		st.Large = true
+		return st
+	}
+	sum, err := hashFile(r, p)
+	if err != nil {
+		st.Error = err.Error()
+		return st
+	}
+	st.SHA256 = sum
+	return st
+}
+
+// hashFile is the sha256 of the regular file at p (a pipe put there meanwhile does not block it).
+func hashFile(r *os.Root, p string) (string, error) {
+	f, err := r.OpenFile(rel(p), os.O_RDONLY|openNonBlock, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file", p)
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, MaxContent+1)); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// modeString is a file's mode as four octal digits, with the setuid, setgid and sticky bits.
+func modeString(m fs.FileMode) string {
+	v := uint32(m.Perm())
+	if m&fs.ModeSetuid != 0 {
+		v |= 0o4000
+	}
+	if m&fs.ModeSetgid != 0 {
+		v |= 0o2000
+	}
+	if m&fs.ModeSticky != 0 {
+		v |= 0o1000
+	}
+	return fmt.Sprintf("%04o", v)
+}
+
+// tempName is the temporary file a write of base goes through, in the same directory: the same for
+// every attempt, so that a write that was interrupted leaves one at most, and the next removes it.
+func tempName(base string) string {
+	sum := sha256.Sum256([]byte(base))
+	return ".mamelet-" + hex.EncodeToString(sum[:8]) + ".tmp"
+}
+
+// writeTo writes the file at p as w says: the missing directories above it (0755, owned by
+// dirUID:dirGID), then the content into a temporary file in its directory (synced, owned, with its
+// mode), renamed over p, and the directory synced. The caller checked the path, the directories
+// above it and what is at it (inspect) just before.
+func writeTo(r *os.Root, p string, w Write, missing []string, uid, gid, dirUID, dirGID int) error {
+	mode, err := ParseMode(w.Mode)
+	if err != nil {
+		return err
+	}
+	for _, d := range missing {
+		if err := r.Mkdir(rel(d), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case err != nil:
+			return err
+		case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
+			return fmt.Errorf("%s is not a directory (something was put there meanwhile)", d)
+		}
+		if err := r.Lchown(rel(d), dirUID, dirGID); err != nil {
+			return err
+		}
+		if err := r.Chmod(rel(d), 0o755); err != nil {
+			return err
+		}
+	}
+	dir, err := r.OpenRoot(rel(path.Dir(p)))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	base, tmp := path.Base(p), tempName(path.Base(p))
+	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
+	}
+	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	done := false
+	defer func() {
+		if !done {
+			f.Close()
+			dir.Remove(tmp)
+		}
+	}()
+	if _, err := f.WriteString(w.Content); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Chown(uid, gid); err != nil {
+		return err
+	}
+	if err := f.Chmod(fs.FileMode(mode)); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := dir.Rename(tmp, base); err != nil {
+		dir.Remove(tmp)
+		done = true
+		return err
+	}
+	done = true
+	if d, err := dir.Open("."); err == nil {
+		d.Sync()
+		d.Close()
+	}
+	return nil
+}

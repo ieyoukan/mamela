@@ -1,0 +1,13 @@
+Plan sha256:2e3f838e0e34
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:9f4f7abf899e)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/app/app.conf  [blocked]
+    MAM-PLAN-0122 mamelet on node web runs 0.9.2, which does not carry out the linux extension (mamelet 0.10.0 and later do): Mamela gives the node nothing of it
+      hint: update mamelet on web first, to 0.10.0 or later: put it at the site's controlplane.mamelet_binary, declare it with Mamela.mamelet and apply (docs/mamelet-update.md; a Control Plane is updated before its mamelets); then plan again
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json/jsontext"
 	"io"
 	"log"
 	"net/http"
@@ -193,12 +194,22 @@ func TestReportsAreChecked(t *testing.T) {
 		"forged change set": {Node: "web", VMID: 7001, Packages: []noderev.PackageState{{Name: "curl", ChangeSet: &forged}}},
 		"bad package name":  {Node: "web", VMID: 7001, Packages: []noderev.PackageState{{Name: "-x"}}},
 		"bad service name":  {Node: "web", VMID: 7001, Services: []noderev.ServiceState{{Name: "../x"}}},
+		"bad extension":     {Node: "web", VMID: 7001, Extensions: map[string]int{"../x": 1}},
+		"extension version": {Node: "web", VMID: 7001, Extensions: map[string]int{"linux": 0}},
+		"bad ext name":      {Node: "web", VMID: 7001, Ext: map[string]jsontext.Value{"Linux": jsontext.Value(`{}`)}},
+		"ext not an object": {Node: "web", VMID: 7001, Ext: map[string]jsontext.Value{"linux": jsontext.Value(`[1]`)}},
+		"bad refused name":  {Node: "web", VMID: 7001, ExtRefused: map[string]string{"a b": "x"}},
 	} {
 		if err := c.Report(e.ctx, rep); err == nil || !strings.Contains(err.Error(), "400") {
 			t.Errorf("%s: accepted (%v)", name, err)
 		}
 	}
 	if err := c.Report(e.ctx, noderev.Report{Node: "web", VMID: 7001, Packages: []noderev.PackageState{{Name: "curl", ChangeSet: &cs}}}); err != nil {
+		t.Fatal(err)
+	}
+	// A mamelet of the generic wire (it lists the extensions it takes) is read as well as an older one.
+	if err := c.Report(e.ctx, noderev.Report{Node: "web", VMID: 7001, Extensions: map[string]int{"linux": 1},
+		Ext: map[string]jsontext.Value{"linux": jsontext.Value(`{"files":[]}`)}, ExtRefused: map[string]string{"other": "unknown"}}); err != nil {
 		t.Fatal(err)
 	}
 }

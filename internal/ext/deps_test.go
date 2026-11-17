@@ -5,6 +5,7 @@ package ext_test
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -59,16 +60,27 @@ func TestCoreDoesNotDependOnExtensions(t *testing.T) {
 	}
 }
 
-// mamela and mamelet are built with k3s: a Control Plane that plans k3s and a mamelet that does not
-// carry it out (or the other way round) would not work together.
+// mamela and mamelet are built with every extension (k3s, linux): a Control Plane that plans an
+// extension's kinds and a mamelet that does not carry them out (or the other way round) would not
+// work together.
 func TestProgramsAreBuiltWithTheExtensions(t *testing.T) {
 	for pkg, ds := range deps(t, "./cmd/mamela", "./cmd/mamelet") {
-		found := false
-		for _, d := range ds {
-			found = found || d == module+"/internal/ext/k3s"
+		for _, ext := range []string{"k3s", "linux"} {
+			if !slices.Contains(ds, module+"/internal/ext/"+ext) {
+				t.Errorf("%s is built without internal/ext/%s", pkg, ext)
+			}
 		}
-		if !found {
-			t.Errorf("%s is built without internal/ext/k3s", pkg)
+	}
+}
+
+// One extension does not depend on another: each registers with the core alone, and can move out
+// of this repository by itself (docs/design/node-extensions.md, stage 6).
+func TestExtensionsDoNotDependOnEachOther(t *testing.T) {
+	for pkg, ds := range deps(t, "./internal/ext/k3s", "./internal/ext/linux") {
+		for _, d := range ds {
+			if strings.HasPrefix(d, module+"/internal/ext/") {
+				t.Errorf("%s depends on the extension %s", pkg, d)
+			}
 		}
 	}
 }

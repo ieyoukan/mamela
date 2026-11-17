@@ -121,6 +121,61 @@ pub fn mamelet(graph: Graph, node: Node, version: String, sha256: String) -> Gra
 ## machine that was never declared by a typo.
 pub type Node(name: String)
 
+## A file on a node (the linux extension's `NodeFile`): exactly `content` (text, at most 256 KiB) at
+## the absolute `path`, with `mode` (four octal digits, without the setuid, setgid and sticky bits,
+## not writable by everyone), `owner` and `group` (names that exist on the node), and the services of
+## `restart` on the node restarted, if they run, after it changes. `file_of` makes one with the
+## defaults, to change with `File(mode: "0640", ..Mamela.file_of(path, content))`.
+pub type File(
+  path: String,
+  content: String,
+  mode: String,
+  owner: String,
+  group: String,
+  restart: List[String],
+)
+
+## A file at `path` with `content`, mode "0644", owned by root, that restarts nothing.
+pub fn file_of(path: String, content: String) -> File {
+  File(path:, content:, mode: "0644", owner: "root", group: "root", restart: [])
+}
+
+## Declares that `node` has the file at `path` with exactly `content`, mode "0644", owned by root
+## (`file_with` declares another mode, owner, or services to restart). The plan shows the whole
+## content and asks for an approval; changing it is a new approval. A file that is no longer
+## declared stays on the node as it is. Mamela never writes through a symbolic link, and refuses
+## the paths that are not files to write (the kernel's, mamelet's, k3s's, users and sudoers, the
+## APT sources and keys named `mamela-*`, `.ssh/authorized_keys`). Keep secrets out: the content
+## is in clear text in the plan and the Control Plane's database.
+pub fn file(graph: Graph, node: Node, path: String, content: String) -> Graph {
+  file_with(graph, node, file_of(path, content))
+}
+
+## Declares the file `f` on `node`.
+pub fn file_with(graph: Graph, node: Node, f: File) -> Graph {
+  restart = if List.is_empty(f.restart) {
+    []
+  } else {
+    [("restart", Items(f.restart.map(Text)))]
+  }
+  on_node(
+    graph,
+    node,
+    "NodeFile",
+    "#{node.name}/file#{f.path}",
+    List.append(
+      [
+        ("path", Text(f.path)),
+        ("content", Text(f.content)),
+        ("mode", Text(f.mode)),
+        ("owner", Text(f.owner)),
+        ("group", Text(f.group)),
+      ],
+      restart,
+    ),
+  )
+}
+
 ## Declares that `name` is installed on `node`.
 pub fn package(graph: Graph, node: Node, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)

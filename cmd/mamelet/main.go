@@ -9,8 +9,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -20,10 +22,12 @@ import (
 
 	// The node extensions Mamela is built with (docs/design/node-extensions.md).
 	_ "github.com/ieyoukan/mamela/internal/ext/k3s"
+	_ "github.com/ieyoukan/mamela/internal/ext/linux"
 )
 
-// version is set at build time (-ldflags "-X main.version=...").
-var version = "dev"
+// version is set at build time (-ldflags "-X main.version=..."; scripts/build-mamelet.sh gives the
+// release and the commit, "0.10.0+849289e").
+var version = mamelet.Release + "+dev"
 
 func main() {
 	configPath := flag.String("config", "/etc/mamelet/config.json", "configuration written by cloud-init")
@@ -169,6 +173,9 @@ func logRound(rep noderev.Report, err error, lastErr *string) {
 	}
 	if rep.Refused != "" {
 		log.Printf("mamelet: refused the revision: %s", rep.Refused)
+	}
+	for _, name := range slices.Sorted(maps.Keys(rep.ExtRefused)) {
+		log.Printf("mamelet: refused the part of the %s extension of revision %d (went on with the rest): %s", name, rep.Serial, rep.ExtRefused[name])
 	}
 	msg := ""
 	if err != nil {

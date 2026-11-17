@@ -20,6 +20,7 @@ import (
 
 	// The node extensions Mamela is built with (docs/design/node-extensions.md).
 	_ "github.com/ieyoukan/mamela/internal/ext/k3s"
+	_ "github.com/ieyoukan/mamela/internal/ext/linux"
 )
 
 const usage = `mamela - safe, declarative infrastructure (early development)

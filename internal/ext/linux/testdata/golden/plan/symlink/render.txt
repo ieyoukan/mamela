@@ -1,0 +1,13 @@
+Plan sha256:32ad7546b42d
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:1a1c1d5c0417)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/app/app.conf  [blocked]
+    MAM-PLAN-0210 mamelet does not write /etc/app/app.conf on web: /etc/app/app.conf is a symbolic link
+      hint: Mamela never follows a symbolic link: declare the real path, or replace what is there by hand
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

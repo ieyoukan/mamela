@@ -1,0 +1,14 @@
+Plan sha256:beb317850af3
+  revision  sha256:ecfe57cf0664
+  observed  2026-11-17T12:01:00Z (snapshot sha256:4595657a3e21)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/app/app.conf  [blocked]
+    warning MAM-GRAPH-0204 /etc/app/app.conf restarts service app on web, which the declaration does not have there: it is restarted only if it exists and runs
+      hint: declare the service: Mamela.service(graph, node, "app", True, True), or check its name
+    MAM-PLAN-0110 machine web has been running for 1h0m0s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane
+      hint: look at its console; if it is stuck, restart it with its provider's explicit operation (mamela act, for example reboot-vm or reset-vm of Proxmox)
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

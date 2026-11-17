@@ -1,0 +1,12 @@
+Plan sha256:33a686845df9
+  revision  sha256:4f86ac1dd34c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:7a8f182b563e)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
+. NodeFile web/file/etc/app/app.conf  [waiting]
+    MAM-PLAN-0140 waits for the agent on web to report /etc/app/app.conf
+
+Summary: 1 waiting, 2 in sync.
+Nothing has been changed: a plan only describes.

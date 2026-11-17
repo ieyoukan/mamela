@@ -1,0 +1,13 @@
+Plan sha256:f4faa10d9754
+  revision  sha256:deb686468d6c
+  observed  2026-11-17T12:01:00Z (snapshot sha256:fec0f8436449)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/app  [in sync]
+= TestVM web  [in sync]  via test
+= NodeFile web/file/etc/app/app.conf  [retained]
+    MAM-PLAN-0310 not in this declaration: the file stays on the node as it is (Mamela does not delete files yet), and mamelet stops watching it once this plan is applied
+      hint: remove it by hand on the node if it should go
+
+Summary: 1 retained, 2 in sync.
+Nothing has been changed: a plan only describes.
