@@ -29,13 +29,13 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 - 最上位は `schema`（値は `"mamela-graph/v1"` か `"mamela-graph/v2"`）と `resources`（配列）の 2 つ。
 - 各リソースは `kind`・`name`・`spec` の 3 つ。プロバイダーのリソースは、それに `provider` が加わり、`after`（下の「依存」）も持てる。
 - 書かれていないメンバー、重複したメンバー、`null`、小数・指数表記の数値、不正な UTF-8、文書の後に続くデータは、すべて拒否する（末尾の改行 1 つだけは許す）。省略できるメンバー（k3s の `server`、mamelet の `version`）も、`null` は書けない（書かずに省略する）。
-- **見たとおりに表示されない文字は入れられない**（MAM-GRAPH-0109）。manifest の内容とプロバイダーの `spec` の文字列・メンバー名には、改行 `\n` とタブ `\t` 以外の制御文字（復帰 `\r`、ESC を含む）、bidi 制御、ゼロ幅文字などを書けない。plan は全文を読んで承認するもので、k3s は manifest を cluster-admin で適用するので、表示を偽装できる文字を通さない。それでも、plan とエラーは、引用する文字列の制御文字を `\x1b`・`\u202e` のように書き出して表示する（二重の防御）。
+- **見たとおりに表示されない文字は入れられない**（MAM-GRAPH-0109）。manifest とファイル（`NodeFile`）の内容とプロバイダーの `spec` の文字列・メンバー名には、改行 `\n` とタブ `\t` 以外の制御文字（復帰 `\r`、ESC を含む）、bidi 制御、ゼロ幅文字などを書けない。plan は全文を読んで承認するもので、k3s は manifest を cluster-admin で適用するので、表示を偽装できる文字を通さない。それでも、plan とエラーは、引用する文字列の制御文字を `\x1b`・`\u202e` のように書き出して表示する（二重の防御）。
 - 宣言として正しいが意図と違いそうなもの（MAM-GRAPH-02xx）は、拒否せず**警告**にして、plan のそのリソースの `warnings` に出す。plan の状態と操作は変えない。
 - 文書は 4 MiB まで、リソースは 10,000 件まで。
 
 ## kind
 
-組み込みの kind は `NodePackage`、`NodeService`、`NodeK3s` の 3 つで、どれもマシンの上のものである。
+組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`（linux、ADR 0016）で、どれもマシンの上のものである。
 
 **マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
@@ -159,6 +159,28 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 - **更新:** mamelet が binary を取り、sha256 を確かめ、`-version` で動くことを確かめてから、前の binary を `mamelet.prev` に残して置き換え、自分を再起動する。新しい mamelet が報告しなければ、前に戻る。ノードは 1 台ずつ、名前の順に更新する。手順と限界は [mamelet の更新](mamelet-update.md)。
 - **観測:** mamelet は、動いている binary の sha256 を報告する（`/proc/self/exe` のもの。置き換えた直後の、まだ再起動していないプロセスの版ではなく）。
 
+### NodeFile
+
+ノードの上の 1 つのファイル。宣言したとおりの内容・mode・所有者にする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.file(graph, node, path, content)`（mode 0644、root の所有、再起動なし）、または `Mamela.file_with(graph, node, Mamela.File(mode: "0640", owner: "www-data", restart: ["nginx"], ..Mamela.file_of(path, content)))`。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/file<path>`（`web/file/etc/nginx/nginx.conf`） |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.path` | string | 絶対 path。`filepath.Clean` したもの（`//`、`.`、`..`、末尾の `/` なし）、255 バイトまで。各部分は英数字と `. _ + @ = : , -` だけ。下の「書かない場所」は拒否する |
+| `spec.content` | string | テキスト（UTF-8、NUL なし、256 KiB まで）。改行とタブ以外の制御文字、bidi 制御、ゼロ幅文字は不可（MAM-GRAPH-0109）。空でもよい。1 つのノードのファイルの内容の合計は 1 MiB まで（承認した書き込みは revision に乗る） |
+| `spec.mode` | string | 省略できる（既定 `"0644"`）。8 進 4 桁。setuid・setgid・sticky と、誰でも書けるもの（`o+w`）は拒否 |
+| `spec.owner`、`spec.group` | string | 省略できる（既定 `"root"`）。ユーザー名・グループ名（`[a-z_][a-z0-9_-]`、32 字まで）。ノードにないと plan は Blocked（MAM-PLAN-0141） |
+| `spec.restart` | string の配列 | 省略できる。同じノードの systemd のサービス名。ファイルを書いたあと、動いていれば再起動する（`systemctl try-restart`）。宣言していないサービスは警告（MAM-GRAPH-0204） |
+
+- **書かない場所**（graph が拒否し、mamelet も書く前にもう一度断る。理由と代わりを示す）: `/proc`、`/sys`、`/dev`、`/run`（`/var/run`、`/var/lock`）、`/boot`、mamelet 自身（`/usr/local/sbin/mamelet*`、`/etc/mamelet`、`/var/lib/mamelet`、`mamelet.service`）、k3s のもの（`/etc/rancher/k3s`、`/var/lib/rancher/k3s`、`/usr/local/bin/k3s`、`k3s.service`）、ユーザーとグループ（`/etc/passwd`、`/etc/shadow`、`/etc/group`、`/etc/gshadow`、`/etc/subuid`、`/etc/subgid` とその `-` の控え。NodeUser で宣言する）、`/etc/sudoers` と `/etc/sudoers.d`、NodeAptRepo のもの（`/etc/apt/sources.list.d/mamela-*`、`/etc/apt/keyrings/mamela-*`）、`*/.ssh/authorized_keys`（NodeUser のもの）、`/var/lib/dpkg`。同じノードで同じ path を 2 度宣言するもの、ファイルの path がほかのファイルの上のディレクトリになるものは、MAM-GRAPH-0110。
+- **承認:** `linux.write-file`（MAM-POL-0220）。plan の diff に、新しい内容の全文（1 行ごとに `+`）と sha256、古いものは sha256 だけ（ノードはファイルの内容を Control Plane に送らない）、mode・owner・group の変化、作るディレクトリ（0755、root）、unit なら `daemon-reload`、再起動するサービスが出る。in sync は、sha256・mode・owner・group がすべて宣言と同じとき。
+- **書き込み:** mamelet が、承認のあと一度だけ、そのとおりに書く。path の規則、内容の sha256（承認したもの）、path とその上のディレクトリがシンボリックリンクでないことを確かめてから、同じディレクトリの一時ファイルに書き、fsync、chown、chmod、rename で置き換える。`/etc/systemd/system` などの unit なら `systemctl daemon-reload`、そのあと `restart` のサービスを `try-restart` する。
+- **リンクをたどらない:** path かその上がシンボリックリンク、path がディレクトリ・デバイスなら、plan は Blocked（MAM-PLAN-0210）。
+- **消さない:** 宣言から外したファイルは、ノードにそのまま残る。plan はそれを MAM-PLAN-0310（retained）で示し、apply のあと mamelet は観測しなくなる。消すのは手で（この版の制限）。
+- **秘密は書かない:** 内容は宣言、plan（PR のコメント）、Control Plane の DB、revision に平文で残る。秘密鍵やトークンに見える内容は警告する（MAM-GRAPH-0203）。秘密の扱いは後の版（監査 A4）。
+- **mamelet の版:** 0.10.0 より前の mamelet は linux を受け取らない。そのノードの `NodeFile` は Blocked（MAM-PLAN-0122）で、mamelet を先に更新する（[mamelet の更新](mamelet-update.md)）。
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。
@@ -199,7 +221,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → プロバイダーの kind を名前の順）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、6〜8 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 
