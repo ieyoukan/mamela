@@ -144,34 +144,16 @@ func tempName(base string) string {
 	return ".mamelet-" + hex.EncodeToString(sum[:8]) + ".tmp"
 }
 
-// writeTo writes the file at p as w says: the missing directories above it (0755, owned by
+// writeTo writes the file at p as w says: the directories above it that are missing (0755, owned by
 // dirUID:dirGID), then the content into a temporary file in its directory (synced, owned, with its
 // mode), renamed over p, and the directory synced. The caller checked the path, the directories
 // above it and what is at it (inspect) just before.
-func writeTo(r *os.Root, p string, w Write, missing []string, uid, gid, dirUID, dirGID int) error {
+func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error {
 	mode, err := ParseMode(w.Mode)
 	if err != nil {
 		return err
 	}
-	for _, d := range missing {
-		if err := r.Mkdir(rel(d), 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
-		}
-		fi, err := r.Lstat(rel(d))
-		switch {
-		case err != nil:
-			return err
-		case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
-			return fmt.Errorf("%s is not a directory (something was put there meanwhile)", d)
-		}
-		if err := r.Lchown(rel(d), dirUID, dirGID); err != nil {
-			return err
-		}
-		if err := r.Chmod(rel(d), 0o755); err != nil {
-			return err
-		}
-	}
-	dir, err := r.OpenRoot(rel(path.Dir(p)))
+	dir, err := walkDirs(r, p, dirUID, dirGID)
 	if err != nil {
 		return err
 	}
@@ -180,6 +162,7 @@ func writeTo(r *os.Root, p string, w Write, missing []string, uid, gid, dirUID, 
 	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
 	}
+	// O_EXCL: the temporary file is a new file, never something put there (a link included).
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -206,6 +189,7 @@ func writeTo(r *os.Root, p string, w Write, missing []string, uid, gid, dirUID, 
 	if err := f.Close(); err != nil {
 		return err
 	}
+	// A rename replaces what is at base (a link too) and never follows it.
 	if err := dir.Rename(tmp, base); err != nil {
 		dir.Remove(tmp)
 		done = true
@@ -217,4 +201,45 @@ func writeTo(r *os.Root, p string, w Write, missing []string, uid, gid, dirUID, 
 		d.Close()
 	}
 	return nil
+}
+
+// walkDirs opens the directory of p one component at a time from the root, and makes those that are
+// missing (0755, owned by dirUID:dirGID). Each must be a directory, not a link, when it is looked at;
+// and nothing opened under one can lead out of it (os.Root). So a link put in place of a directory
+// between the look and the open (by a user who owns the directory above it) can lead only somewhere
+// else in that same directory, never to another part of the system.
+func walkDirs(r *os.Root, p string, dirUID, dirGID int) (*os.Root, error) {
+	cur, err := r.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range parents(p) {
+		name := path.Base(d)
+		fi, err := cur.Lstat(name)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err = cur.Mkdir(name, 0o755); err == nil || errors.Is(err, fs.ErrExist) {
+				if err = cur.Lchown(name, dirUID, dirGID); err == nil {
+					err = cur.Chmod(name, 0o755)
+				}
+			}
+			if err == nil {
+				fi, err = cur.Lstat(name)
+			}
+		}
+		switch {
+		case err != nil:
+			cur.Close()
+			return nil, err
+		case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
+			cur.Close()
+			return nil, fmt.Errorf("%s is a symbolic link or not a directory", d)
+		}
+		next, err := cur.OpenRoot(name)
+		cur.Close()
+		if err != nil {
+			return nil, err
+		}
+		cur = next
+	}
+	return cur, nil
 }

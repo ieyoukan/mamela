@@ -117,7 +117,7 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 			dirGID = id
 		}
 		ran = true
-		if err := writeTo(r, p, w, got.Missing, uid, gid, dirUID, dirGID); err != nil {
+		if err := writeTo(r, p, w, uid, gid, dirUID, dirGID); err != nil {
 			return noderev.OutcomeFailed, "write " + p + ": " + err.Error(), ran
 		}
 		after := inspect(r, p, a)
