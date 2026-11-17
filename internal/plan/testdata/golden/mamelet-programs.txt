@@ -1,0 +1,5 @@
+/usr/bin/apt-get
+/usr/bin/dpkg-query
+/usr/bin/systemctl
+/usr/local/bin/k3s
+/usr/local/sbin/mamelet.next

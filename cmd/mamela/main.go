@@ -17,6 +17,9 @@ import (
 	"github.com/ieyoukan/mamela/internal/evaluate"
 	"github.com/ieyoukan/mamela/internal/graph"
 	sitedef "github.com/ieyoukan/mamela/internal/site"
+
+	// The node extensions Mamela is built with (docs/design/node-extensions.md).
+	_ "github.com/ieyoukan/mamela/internal/ext/k3s"
 )
 
 const usage = `mamela - safe, declarative infrastructure (early development)
@@ -198,15 +201,12 @@ func describe(r graph.Resource) string {
 		s := r.NodeService
 		return fmt.Sprintf("service %s %s, %s on %s", s.Service,
 			choose(s.Enabled, "enabled", "disabled"), choose(s.Running, "running", "stopped"), s.Node)
-	case graph.KindNodeK3s:
-		k := r.NodeK3s
-		return fmt.Sprintf("k3s %s (sha256 %s…) on %s", k.Version, k.SHA256[:12], k.Node)
-	case graph.KindNodeK3sManifest:
-		m := r.NodeK3sManifest
-		return fmt.Sprintf("k3s manifest %s (%d bytes) on %s", m.Name, len(m.Content), m.Node)
 	case graph.KindNodeMamelet:
 		m := r.NodeMamelet
 		return fmt.Sprintf("mamelet %s(sha256 %s…) on %s", choose(m.Version != "", m.Version+" ", ""), m.SHA256[:12], m.Node)
+	}
+	if d, ok := graph.KindOf(r.Kind); ok && r.Ext != nil && d.Describe != nil {
+		return d.Describe(r.Ext)
 	}
 	if p := r.Provided; p != nil {
 		return fmt.Sprintf("via provider %s: %s", p.Provider, p.Spec)

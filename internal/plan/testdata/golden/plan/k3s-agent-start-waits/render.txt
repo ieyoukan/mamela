@@ -1,0 +1,21 @@
+Plan sha256:54296167d9d8
+  revision  sha256:3da305acec42
+  observed  2026-11-08T12:00:00Z (snapshot sha256:69932a906d56)
+  policy    sha256:b2ad900beffb
+
+. NodeService ag/k3s  [waiting]
+      enabled: false -> true
+    MAM-PLAN-0112 waits for the k3s server srv to run before starting the agent on ag
+~ NodeService srv/k3s  [needs approval]
+      enabled: false -> true
+      running: false -> true
+    enable-service: needs approval (MAM-POL-0205 enabling a service changes what runs after a reboot)
+    start-service: needs approval (MAM-POL-0206 starting a service has side effects)
+      hint: add it to autoStartServices to repair this drift without approval
+= NodeK3s ag/k3s  [in sync]
+= NodeK3s srv/k3s  [in sync]
+= TestVM ag  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 1 needs approval, 1 waiting, 4 in sync.
+Nothing has been changed: a plan only describes.

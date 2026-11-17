@@ -135,7 +135,7 @@ func TestManifestsDeclareEveryPlannedOperation(t *testing.T) {
 	for kind, ops := range map[graph.Kind][]policy.Op{
 		graph.KindNodePackage: {policy.OpInstallPackage},
 		graph.KindNodeService: {policy.OpEnableService, policy.OpStartService, policy.OpDisableService, policy.OpStopService},
-		graph.KindNodeK3s:     {policy.OpInstallK3s},
+		graph.Kind("NodeK3s"): {policy.Op("install-k3s")},
 	} {
 		m, ok := ps.For(kind)
 		if !ok {

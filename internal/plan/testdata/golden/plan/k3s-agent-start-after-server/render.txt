@@ -1,0 +1,19 @@
+Plan sha256:c84fa4bf11d8
+  revision  sha256:3da305acec42
+  observed  2026-11-08T12:00:00Z (snapshot sha256:9de446a0ccd5)
+  policy    sha256:b2ad900beffb
+
+~ NodeService ag/k3s  [needs approval]
+      enabled: false -> true
+      running: false -> true
+    enable-service: needs approval (MAM-POL-0205 enabling a service changes what runs after a reboot)
+    start-service: needs approval (MAM-POL-0206 starting a service has side effects)
+      hint: add it to autoStartServices to repair this drift without approval
+= NodeService srv/k3s  [in sync]
+= NodeK3s ag/k3s  [in sync]
+= NodeK3s srv/k3s  [in sync]
+= TestVM ag  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 1 needs approval, 5 in sync.
+Nothing has been changed: a plan only describes.

@@ -1,0 +1,33 @@
+Plan sha256:87b044214ecf
+  revision  sha256:cfb779833be5
+  observed  2026-11-08T12:00:00Z (snapshot sha256:5d43c71d8d9b)
+  policy    sha256:b2ad900beffb
+
+= NodeService srv/k3s  [in sync]
+= NodeK3s srv/k3s  [in sync]
+= NodeK3sManifest srv/manifest/app  [in sync]
++ NodeK3sManifest srv/manifest/argocd  [needs approval]
+      file: /var/lib/rancher/k3s/server/manifests/mamela-argocd.yaml
+      sha256: 15d629a47b2db84330ff9f3960c763e9cd601c79ac303fbfc0a6a1e643cf9475
+      content:
+      + kind: Namespace
+      + metadata:
+      +   name: argocd
+    write-k3s-manifest: needs approval (MAM-POL-0213 puts a manifest in k3s's auto-deploy directory: k3s applies it with cluster-admin rights, and again whenever it changes)
+      hint: read the whole manifest in this plan; a HelmChart or a workload in it runs with the rights its YAML asks for
+! NodeK3sManifest srv/manifest/broken  [blocked]
+    MAM-PLAN-0204 the agent on srv cannot observe the manifest broken: permission denied
+      hint: fix it on the node, then plan again
+. NodeK3sManifest srv/manifest/new  [waiting]
+    MAM-PLAN-0117 waits for the agent on srv to report the manifest new
+~ NodeK3sManifest srv/manifest/other  [needs approval]
+      file: /var/lib/rancher/k3s/server/manifests/mamela-other.yaml
+      sha256: ae448ac86c4e8e4dec645729708ef41873ae79c6dff84eff73360989487f08e5 -> ef05408c11b5b821b7c751f0311980506fe32b89a932caab1d4c3e8200d69763
+      content:
+      + kind: Secret
+    write-k3s-manifest: needs approval (MAM-POL-0213 puts a manifest in k3s's auto-deploy directory: k3s applies it with cluster-admin rights, and again whenever it changes)
+      hint: read the whole manifest in this plan; a HelmChart or a workload in it runs with the rights its YAML asks for
+= TestVM srv  [in sync]  via test
+
+Summary: 2 need approval, 1 waiting, 1 blocked, 4 in sync.
+Nothing has been changed: a plan only describes.

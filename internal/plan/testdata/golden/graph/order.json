@@ -1,0 +1,15 @@
+{"schema":"mamela-graph/v2","resources":[
+{"kind":"NodeMamelet","name":"web/mamelet","spec":{"sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","node":"web"}},
+{"kind":"ZoneRecord","name":"web.example","provider":"dns","spec":{"ttl":60}},
+{"kind":"NodeK3sManifest","name":"web/manifest/app","spec":{"node":"web","name":"app","content":"kind: ConfigMap\n"}},
+{"kind":"KVItem","name":"b","provider":"kv","after":["KVItem a","KVItem a"],"spec":{"value":"x"}},
+{"kind":"NodeK3s","name":"db/k3s","spec":{"node":"db","role":"agent","server":"web","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeService","name":"web/k3s","spec":{"service":"k3s","node":"web","enabled":true,"running":true}},
+{"kind":"KVItem","name":"a","provider":"kv","spec":{"value":"y"}},
+{"kind":"NodeK3s","name":"web/k3s","spec":{"version":"v1.37.2+k3s1","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","role":"server","node":"web"}},
+{"kind":"NodePackage","name":"web/nginx","spec":{"node":"web","package":"nginx","state":"Present"}},
+{"kind":"TestVM","name":"web","provider":"test","spec":{"cpu":2,"network":{"mode":"dhcp"}}},
+{"kind":"TestVM","name":"db","provider":"test","spec":{"cpu":2,"network":{"mode":"dhcp"}}},
+{"kind":"NodeK3s","name":"web/k3s","spec":{"version":"v1.37.2+k3s1","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","role":"server","node":"web"}},
+{"kind":"NodeMamelet","name":"db/mamelet","spec":{"sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","node":"db","version":"0.3.2"}}
+]}

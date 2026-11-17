@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/ext/k3s"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
-	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/reconcile"
 )
 
@@ -88,7 +88,7 @@ func TestK3sThroughMamelet(t *testing.T) {
 
 	p := e.plan()
 	k := change(t, p, "NodeK3s app/k3s")
-	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || k.Operations[0].Op != policy.OpInstallK3s ||
+	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || k.Operations[0].Op != k3s.OpInstall ||
 		!strings.Contains(k.Diffs[2].To, "v1.37.2%2Bk3s1/k3s") || !strings.Contains(k.Diffs[4].To, "--disable=traefik") ||
 		strings.Contains(fmt.Sprint(k.Diffs), token(t, e)) {
 		t.Fatalf("k3s: %+v", k)
@@ -124,7 +124,7 @@ func TestK3sThroughMamelet(t *testing.T) {
 	}
 
 	// An agent of this server joins it at the address its mamelet reported, with the same token.
-	url, ok, err := node.K3sServerURL(e.ctx, e.st, "app")
+	url, ok, err := k3s.ReportedServerURL(e.ctx, e.st, "app")
 	if err != nil || !ok || url != "https://192.0.2.10:6443" {
 		t.Fatalf("server URL: %q %v %v", url, ok, err)
 	}
@@ -145,7 +145,7 @@ func TestK3sThroughMamelet(t *testing.T) {
 	e.round()
 	p = e.plan()
 	k = change(t, p, "NodeK3s app/k3s")
-	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || len(k.Operations) != 1 || k.Operations[0].Op != policy.OpUpgradeK3s ||
+	if k.Status != plan.StatusChange || k.Verdict != policy.ApprovalRequired || len(k.Operations) != 1 || k.Operations[0].Op != k3s.OpUpgrade ||
 		k.Diffs[0].From != "v1.37.2+k3s1" || k.Diffs[0].To != "v1.37.3+k3s1" {
 		t.Fatalf("upgrade: %+v", k)
 	}
@@ -203,7 +203,7 @@ func TestK3sManifestThroughMamelet(t *testing.T) {
 
 	p := e.plan()
 	m := change(t, p, id)
-	if m.Status != plan.StatusChange || m.Verdict != policy.ApprovalRequired || m.Operations[0].Op != policy.OpWriteK3sManifest {
+	if m.Status != plan.StatusChange || m.Verdict != policy.ApprovalRequired || m.Operations[0].Op != k3s.OpWriteManifest {
 		t.Fatalf("manifest: %+v", m)
 	}
 	if _, err := os.Stat(file); err == nil {
@@ -274,7 +274,7 @@ func TestK3sNodeRemovalThroughMamelet(t *testing.T) {
 	}
 	p := e.plan()
 	k := change(t, p, id)
-	if len(k.Operations) != 1 || k.Operations[0].Op != policy.OpRemoveK3sNode || !k.Deletes() || p.Removals() != 1 ||
+	if len(k.Operations) != 1 || k.Operations[0].Op != k3s.OpRemoveNode || !k.Deletes() || p.Removals() != 1 ||
 		len(k.Deleted()) != 1 || k.Deleted()[0] != "Kubernetes node ghost" || k.Verdict != policy.ApprovalRequired {
 		t.Fatalf("removal: %+v", k)
 	}

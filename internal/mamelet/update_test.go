@@ -2,6 +2,8 @@ package mamelet
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -245,3 +247,8 @@ func TestMameletUpdateRollsBack(t *testing.T) {
 }
 
 var _ = context.Background
+
+func sum(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}

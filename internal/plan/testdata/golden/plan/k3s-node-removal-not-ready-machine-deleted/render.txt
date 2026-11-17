@@ -1,0 +1,25 @@
+Plan sha256:33d81eabd96f
+  revision  sha256:efead274cfcb
+  observed  2026-11-08T12:00:00Z (snapshot sha256:0677ff1df919)
+  policy    sha256:b2ad900beffb
+
+= NodeK3s a1/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on a1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+- NodeK3s srv/k3s  [needs approval]
+      remove-node: a2
+      remove-node because: its machine is deleted by this plan and the node is not Ready (it cannot be drained); the node is deleted
+    remove-k3s-node: needs approval (MAM-POL-0214 deletes a Kubernetes node from the cluster (its pods are drained first when the node is Ready): the node is not declared any more)
+      hint: check the node's name in this plan; only the Control Plane's host can approve it (mamela approve), as with every deletion
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= TestVM a1  [in sync]  via test
+= TestVM srv  [in sync]  via test
+- TestVM a2  [needs approval]  via test
+      removed: Mamela made it for this declaration (), which no longer has it
+    delete-vm: needs approval (MAM-POL-0310 deletes an object Mamela made for this declaration, which no longer has it)
+      hint: review what is deleted, then approve the plan on the Control Plane's host (mamela approve): a pull request's comment cannot approve a deletion
+      objects: 
+
+Summary: 2 need approval, 3 in sync.
+Nothing has been changed: a plan only describes.

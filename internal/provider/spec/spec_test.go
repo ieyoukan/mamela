@@ -111,8 +111,13 @@ func TestEveryNodeKindIsOnItsNode(t *testing.T) {
 
 // What a template says of a manifest is the manifest's name.
 func TestFieldsOfAManifestNameTheManifest(t *testing.T) {
-	r := graph.Resource{Kind: graph.KindNodeK3sManifest, Name: "app/manifest/argocd",
-		NodeK3sManifest: &graph.NodeK3sManifestSpec{Node: "app", Name: "argocd", Content: "kind: Namespace\n"}}
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"TestVM","name":"app","provider":"test","spec":{}},` +
+		`{"kind":"NodeK3s","name":"app/k3s","spec":{"node":"app","role":"server","sha256":"` + strings.Repeat("ab", 32) + `","version":"v1.37.2+k3s1"}},` +
+		`{"kind":"NodeK3sManifest","name":"app/manifest/argocd","spec":{"node":"app","name":"argocd","content":"kind: Namespace\n"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := g.Sorted()[1]
 	if f := fields(r); f["node"] != "app" || f["name"] != "argocd" {
 		t.Fatalf("fields %v", f)
 	}

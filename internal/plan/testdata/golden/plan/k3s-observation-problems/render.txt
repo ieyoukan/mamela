@@ -1,0 +1,26 @@
+Plan sha256:1467ce1fc90a
+  revision  sha256:943a768dd4bc
+  observed  2026-11-08T12:00:00Z (snapshot sha256:cb70d89a1c88)
+  policy    sha256:b2ad900beffb
+
+! NodeK3s a1/k3s  [blocked]
+    warning MAM-GRAPH-0202 k3s is declared on a1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0201 the last observation is from 2026-11-08T11:00:00Z, older than 10m0s
+      hint: observe again before planning; Mamela does not act on stale information
+! NodeK3s a2/k3s  [blocked]
+    warning MAM-GRAPH-0202 k3s is declared on a2, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0110 machine a2 has been running for 40m0s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane
+      hint: look at its console; if it is stuck, restart it with its provider's explicit operation (mamela act, for example reboot-vm or reset-vm of Proxmox)
+! NodeK3s srv/k3s  [blocked]
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0204 the agent on srv cannot observe k3s: open /usr/local/bin/k3s: permission denied
+      hint: fix it on the node, then plan again
+= TestVM a1  [in sync]  via test
+= TestVM a2  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 3 blocked, 3 in sync.
+Nothing has been changed: a plan only describes.

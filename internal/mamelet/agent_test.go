@@ -80,7 +80,7 @@ func (f *fakeOS) Run(_ context.Context, program string, args []string, _ []strin
 			f.services[svc] = &fakeService{exists: true, enabled: true, running: true}
 		}
 		return nil, nil, 0, nil
-	case progK3s:
+	case "/usr/local/bin/k3s": // a node extension's (k3s's kubectl)
 		switch verb := args[1]; {
 		case verb == f.kubectlFails:
 			return nil, []byte("error: " + verb + " failed"), 1, nil
@@ -489,5 +489,26 @@ func TestOneTimeStopAndDisable(t *testing.T) {
 	e.round()
 	if !e.os.services["nginx.service"].running {
 		t.Fatal("repeated a one-time stop")
+	}
+}
+
+// blockingRunner never finishes a command until its context ends.
+type blockingRunner struct{}
+
+func (blockingRunner) Run(ctx context.Context, _ string, _ []string, _ []string) ([]byte, []byte, int, error) {
+	<-ctx.Done()
+	return nil, nil, -1, ctx.Err()
+}
+
+// A service that does not finish starting (a k3s agent waiting for its server) does not hold
+// mamelet: the start returns at the deadline and says so.
+func TestStartHasADeadline(t *testing.T) {
+	defer func(d time.Duration) { StartTimeout = d }(StartTimeout)
+	StartTimeout = 50 * time.Millisecond
+	s := &System{Runner: blockingRunner{}}
+	start := time.Now()
+	err := s.Start(context.Background(), "k3s")
+	if err == nil || !strings.Contains(err.Error(), "did not finish starting") || time.Since(start) > 5*time.Second {
+		t.Fatalf("start: %v after %s", err, time.Since(start))
 	}
 }

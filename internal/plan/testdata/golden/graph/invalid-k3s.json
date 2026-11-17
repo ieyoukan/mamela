@@ -1,0 +1,14 @@
+{"schema":"mamela-graph/v2","resources":[
+{"kind":"TestVM","name":"web","provider":"test","spec":{"cpu":2}},
+{"kind":"TestVM","name":"db","provider":"test","spec":{"cpu":2}},
+{"kind":"NodeK3s","name":"web/k3s","spec":{"node":"web","role":"server","server":"db","sha256":"ABC","version":"1.37"}},
+{"kind":"NodeK3s","name":"db/kube","spec":{"node":"db","role":"agent","server":"nowhere","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeK3s","name":"x/k3s","spec":{"node":"x","role":"boss","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeK3s","name":"self/k3s","spec":{"node":"web","role":"agent","server":"web","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeK3sManifest","name":"db/manifest/a","spec":{"node":"db","name":"A_B","content":"  \n"}},
+{"kind":"NodeK3sManifest","name":"web/manifest/evil","spec":{"node":"web","name":"evil","content":"image: a\r‮"}},
+{"kind":"NodeK3sManifest","name":"web/manifest/nul","spec":{"node":"web","name":"nul","content":"a\u0000b"}},
+{"kind":"NodeService","name":"web/k3s","spec":{"node":"web","service":"k3s","enabled":true,"running":false}},
+{"kind":"NodeService","name":"web/k3s.service","spec":{"node":"web","service":"k3s.service","enabled":true,"running":true}},
+{"kind":"NodeMamelet","name":"web/mamelet","spec":{"node":"web","sha256":"nope","version":"bad version"}}
+]}

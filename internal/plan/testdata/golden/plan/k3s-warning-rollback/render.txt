@@ -1,0 +1,23 @@
+Plan sha256:6d0af50c5904
+  revision  sha256:928c55355029
+  observed  2026-11-08T12:00:00Z (snapshot sha256:152e073d4279)
+  policy    sha256:b2ad900beffb
+
+~ NodeK3s srv/k3s  [needs approval]
+      version: v1.37.2+k3s1 -> v1.30.0+k3s1
+      sha256: 92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0 -> 265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda
+      from: https://github.com/k3s-io/k3s/releases/download/v1.30.0%2Bk3s1/k3s (k3s-arm64 on arm64)
+      role: server
+      runs: /usr/local/bin/k3s server --token-file=/etc/rancher/k3s/cluster-token --disable=traefik --disable=metrics-server --write-kubeconfig-mode=0600
+      token: the cluster's join token, made by the Control Plane, in /etc/rancher/k3s/cluster-token (0600)
+      restart: k3s on srv restarts into this release; its Kubernetes node is not Ready for a while
+    upgrade-k3s: needs approval (MAM-POL-0212 replaces the k3s binary (a release pinned by sha256) and restarts k3s on this node: a server's API is unavailable while it restarts, and an agent's node is not Ready)
+      hint: check the release against the k3s release page and that agents are not newer than the server; back up the server's data first
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    warning MAM-PLAN-0401 k3s on srv runs v1.37.2+k3s1 and the declaration takes it back to v1.30.0+k3s1, a rollback of 7 minor releases: Kubernetes does not support downgrades, and what the newer release stored the older may not read
+      hint: if this is a typo, fix the version and the sha256; to really go back, restore the cluster from a snapshot taken at that release (Mamela does not roll a cluster back)
+= TestVM srv  [in sync]  via test
+
+Summary: 1 needs approval, 1 in sync.
+Nothing has been changed: a plan only describes.

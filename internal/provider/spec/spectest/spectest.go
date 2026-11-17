@@ -33,15 +33,7 @@ func NodeResources(t testing.TB) []graph.Resource {
 			continue
 		}
 		spec := reflect.New(f.Type.Elem())
-		for j := range spec.Elem().NumField() {
-			if sf := spec.Elem().Field(j); sf.Kind() == reflect.String {
-				name := f.Type.Elem().Field(j).Name
-				sf.SetString(strings.ToLower(name) + "-" + strings.Repeat("0", 64))
-				if name == "Node" {
-					sf.SetString(Node)
-				}
-			}
-		}
+		fill(spec)
 		if n := spec.Elem().FieldByName("Node"); !n.IsValid() || n.String() != Node {
 			t.Errorf("graph.Resource.%s has no Node: is %s a kind that lives on a node?", f.Name, kind)
 			continue
@@ -50,8 +42,32 @@ func NodeResources(t testing.TB) []graph.Resource {
 		reflect.ValueOf(&r).Elem().Field(i).Set(spec)
 		out = append(out, r)
 	}
+	// The node extensions' kinds (compiled in: the test's binary imports them).
+	for _, d := range graph.ExtKinds() {
+		spec := reflect.ValueOf(d.New())
+		fill(spec)
+		if n := spec.Elem().FieldByName("Node"); !n.IsValid() || n.String() != Node {
+			t.Errorf("the spec of %s has no Node: is it a kind that lives on a node?", d.Kind)
+			continue
+		}
+		out = append(out, graph.Resource{Kind: d.Kind, Name: Node + "/" + strings.ToLower(string(d.Kind)), Ext: spec.Interface()})
+	}
 	if len(out) == 0 {
 		t.Fatal("found no node kinds in graph.Resource")
 	}
 	return out
+}
+
+// fill sets every string of the spec (a pointer to a struct) to a distinct, long enough value, and
+// its Node to Node.
+func fill(spec reflect.Value) {
+	for j := range spec.Elem().NumField() {
+		if sf := spec.Elem().Field(j); sf.Kind() == reflect.String {
+			name := spec.Elem().Type().Field(j).Name
+			sf.SetString(strings.ToLower(name) + "-" + strings.Repeat("0", 64))
+			if name == "Node" {
+				sf.SetString(Node)
+			}
+		}
+	}
 }

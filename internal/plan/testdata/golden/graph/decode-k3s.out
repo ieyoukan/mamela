@@ -1,0 +1,36 @@
+problems:
+MAM-GRAPH-0106 | /resources/0 (NodeK3s a/k3s) spec.server | the server is an empty string | leave the member out (a k3s server has no server), or name the node of the server (an agent)
+MAM-GRAPH-0007 | /resources/1 (NodeK3s b/k3s) spec.server | a value has the wrong type: server is null | leave the member out instead of writing null
+MAM-GRAPH-0004 | /resources/2 (NodeK3s c/k3s) spec.role | NodeK3s has no spec.role | 
+MAM-GRAPH-0004 | /resources/2 (NodeK3s c/k3s) spec.sha256 | NodeK3s has no spec.sha256 | 
+MAM-GRAPH-0004 | /resources/2 (NodeK3s c/k3s) spec.version | NodeK3s has no spec.version | 
+MAM-GRAPH-0004 | /resources/3 (NodeK3sManifest e/manifest/x) spec.content | NodeK3sManifest has no spec.content | 
+MAM-GRAPH-0004 | /resources/3 (NodeK3sManifest e/manifest/x) spec.name | NodeK3sManifest has no spec.name | 
+MAM-GRAPH-0005 | /resources/4/kind | NodeK3s is a built-in kind; a provider cannot declare it | 
+MAM-GRAPH-0005 | /resources/5/kind | the built-in kind VirtualMachine was removed: machines come from providers (ADR 0006) | declare the machine with its provider's Pome (for Proxmox, github.com/ieyoukan/mamela-proxmox/pome: Proxmox.vm) and use the Mamela Pome 0.3.0
+MAM-GRAPH-0005 | /resources/6/kind | kind "Unknown" is not known | known kinds are NodePackage, NodeService, NodeK3s, NodeK3sManifest and NodeMamelet; a provider's kind needs its "provider"
+text:
+MAM-GRAPH-0106: the server is an empty string
+  at /resources/0 (NodeK3s a/k3s) spec.server
+  hint: leave the member out (a k3s server has no server), or name the node of the server (an agent)
+MAM-GRAPH-0007: a value has the wrong type: server is null
+  at /resources/1 (NodeK3s b/k3s) spec.server
+  hint: leave the member out instead of writing null
+MAM-GRAPH-0004: NodeK3s has no spec.role
+  at /resources/2 (NodeK3s c/k3s) spec.role
+MAM-GRAPH-0004: NodeK3s has no spec.sha256
+  at /resources/2 (NodeK3s c/k3s) spec.sha256
+MAM-GRAPH-0004: NodeK3s has no spec.version
+  at /resources/2 (NodeK3s c/k3s) spec.version
+MAM-GRAPH-0004: NodeK3sManifest has no spec.content
+  at /resources/3 (NodeK3sManifest e/manifest/x) spec.content
+MAM-GRAPH-0004: NodeK3sManifest has no spec.name
+  at /resources/3 (NodeK3sManifest e/manifest/x) spec.name
+MAM-GRAPH-0005: NodeK3s is a built-in kind; a provider cannot declare it
+  at /resources/4/kind
+MAM-GRAPH-0005: the built-in kind VirtualMachine was removed: machines come from providers (ADR 0006)
+  at /resources/5/kind
+  hint: declare the machine with its provider's Pome (for Proxmox, github.com/ieyoukan/mamela-proxmox/pome: Proxmox.vm) and use the Mamela Pome 0.3.0
+MAM-GRAPH-0005: kind "Unknown" is not known
+  at /resources/6/kind
+  hint: known kinds are NodePackage, NodeService, NodeK3s, NodeK3sManifest and NodeMamelet; a provider's kind needs its "provider"

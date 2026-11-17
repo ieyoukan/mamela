@@ -41,20 +41,6 @@ type wireNodePackage struct {
 	State   *string `json:"state"`
 }
 
-type wireNodeK3s struct {
-	Node    *string        `json:"node"`
-	Role    *string        `json:"role"`
-	Server  jsontext.Value `json:"server"` // optional
-	Version *string        `json:"version"`
-	SHA256  *string        `json:"sha256"`
-}
-
-type wireNodeK3sManifest struct {
-	Node    *string `json:"node"`
-	Name    *string `json:"name"`
-	Content *string `json:"content"`
-}
-
 type wireNodeMamelet struct {
 	Node    *string        `json:"node"`
 	Version jsontext.Value `json:"version"` // optional
@@ -174,7 +160,7 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		if serr != nil {
 			return nil, []Problem{{Code: serr.code, Path: where + " spec" + serr.at, Message: serr.msg, Hint: serr.hint}}
 		}
-		if _, builtin := kindOrder[r.Kind]; builtin {
+		if Builtin(r.Kind) {
 			return nil, []Problem{{Code: CodeUnknownKind, Path: at + "/kind",
 				Message: fmt.Sprintf("%s is a built-in kind; a provider cannot declare it", r.Kind)}}
 		}
@@ -219,38 +205,6 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		if len(problems) == 0 {
 			r.NodeService = &NodeServiceSpec{Node: *s.Node, Service: *s.Service, Enabled: *s.Enabled, Running: *s.Running}
 		}
-	case KindNodeK3s:
-		var s wireNodeK3s
-		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
-			return nil, problemsOf(fromJSONError(err, where+" spec"))
-		}
-		need(s.Node != nil, "node")
-		need(s.Role != nil, "role")
-		need(s.Version != nil, "version")
-		need(s.SHA256 != nil, "sha256")
-		server, ps := optionalString(s.Server, where, "server")
-		problems = append(problems, ps...)
-		if server != nil && *server == "" {
-			problems = append(problems, Problem{Code: CodeInvalidValue, Path: where + " spec.server",
-				Message: "the server is an empty string", Hint: "leave the member out (a k3s server has no server), or name the node of the server (an agent)"})
-		}
-		if len(problems) == 0 {
-			r.NodeK3s = &NodeK3sSpec{Node: *s.Node, Role: K3sRole(*s.Role), Version: *s.Version, SHA256: *s.SHA256}
-			if server != nil {
-				r.NodeK3s.Server = *server
-			}
-		}
-	case KindNodeK3sManifest:
-		var s wireNodeK3sManifest
-		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
-			return nil, problemsOf(fromJSONError(err, where+" spec"))
-		}
-		need(s.Node != nil, "node")
-		need(s.Name != nil, "name")
-		need(s.Content != nil, "content")
-		if len(problems) == 0 {
-			r.NodeK3sManifest = &NodeK3sManifestSpec{Node: *s.Node, Name: *s.Name, Content: *s.Content}
-		}
 	case KindNodeMamelet:
 		var s wireNodeMamelet
 		if err := json.Unmarshal(wr.Spec, &s, strict); err != nil {
@@ -267,9 +221,18 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 			}
 		}
 	default:
+		if def, ok := extKinds[r.Kind]; ok {
+			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where}
+			spec := def.Decode(d)
+			if !d.OK() {
+				return nil, d.problems
+			}
+			r.Ext = spec
+			break
+		}
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
 			Message: fmt.Sprintf("kind %q is not known", r.Kind),
-			Hint:    "known kinds are NodePackage, NodeService, NodeK3s, NodeK3sManifest and NodeMamelet; a provider's kind needs its \"provider\""})
+			Hint:    "known kinds are " + knownKinds() + "; a provider's kind needs its \"provider\""})
 	}
 	if len(problems) > 0 {
 		return nil, problems

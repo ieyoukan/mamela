@@ -9,10 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/ieyoukan/mamela/internal/names"
-	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
 // The shapes of node names, package and service names, manifest names, k3s releases and sha256s
@@ -39,8 +37,7 @@ func Validate(g *Graph) error {
 	}
 
 	seen := map[string]bool{}
-	nodes := map[string]bool{} // the names of the provider's resources: a node is one of them (checkNodeRef)
-	k3sServers := map[string]bool{}
+	nodes := map[string]bool{}       // the names of the provider's resources: a node is one of them (checkNodeRef)
 	addresses := map[string]string{} // static address -> machine
 	for _, r := range g.Resources {
 		if seen[r.ID()] {
@@ -53,10 +50,8 @@ func Validate(g *Graph) error {
 		if r.Provided != nil {
 			nodes[r.Name] = true
 		}
-		if r.NodeK3s != nil && r.NodeK3s.Role == K3sServer {
-			k3sServers[r.NodeK3s.Node] = true
-		}
 	}
+	v := &Validator{g: g, nodes: nodes, add: add}
 
 	for _, r := range g.Resources {
 		if p := r.Provided; p != nil {
@@ -109,60 +104,6 @@ func Validate(g *Graph) error {
 			if want := s.Node + "/" + s.Package; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/package)", want), "")
 			}
-		case KindNodeK3s:
-			s := r.NodeK3s
-			checkNodeRef(add, r, s.Node, nodes)
-			if !names.K3sVersion(s.Version) {
-				add(r, CodeInvalidValue, "spec.version", fmt.Sprintf("%q is not a k3s release", s.Version),
-					"write the release tag, such as \"v1.33.5+k3s1\"")
-			}
-			if !names.SHA256(s.SHA256) {
-				add(r, CodeInvalidValue, "spec.sha256", "sha256 is not 64 lowercase hex digits",
-					"copy it from the release's sha256sum file for the node's architecture")
-			}
-			if want := s.Node + "/k3s"; r.Name != want {
-				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/k3s)", want), "")
-			}
-			switch {
-			case s.Role == K3sServer && s.Server != "":
-				add(r, CodeInvalidValue, "spec.server", "a k3s server has no server", "")
-			case s.Role == K3sAgent && !k3sServers[s.Server]:
-				add(r, CodeDanglingNode, "spec.server", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Server),
-					"declare the server with K3s.server on that node")
-			case s.Role == K3sAgent && s.Server == s.Node:
-				add(r, CodeInvalidValue, "spec.server", "a node cannot be an agent of itself", "")
-			case s.Role != K3sServer && s.Role != K3sAgent:
-				add(r, CodeInvalidValue, "spec.role", fmt.Sprintf("role %q is not server or agent", s.Role), "")
-			}
-		case KindNodeK3sManifest:
-			s := r.NodeK3sManifest
-			checkNodeRef(add, r, s.Node, nodes)
-			if !k3sServers[s.Node] {
-				add(r, CodeDanglingNode, "spec.node", fmt.Sprintf("%q is not a node declared as a k3s server in this graph", s.Node),
-					"k3s applies manifests on a server: declare the server with K3s.server on that node")
-			}
-			if !names.Manifest(s.Name) {
-				add(r, CodeInvalidValue, "spec.name", fmt.Sprintf("%q is not a valid manifest name", s.Name),
-					"use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)")
-			}
-			switch {
-			case s.Content == "" || strings.TrimSpace(s.Content) == "":
-				add(r, CodeInvalidValue, "spec.content", "the manifest is empty", "")
-			case len(s.Content) > MaxK3sManifest:
-				add(r, CodeInvalidValue, "spec.content", fmt.Sprintf("the manifest is %d bytes; at most %d", len(s.Content), MaxK3sManifest),
-					"a manifest that needs more should install a Helm chart (a HelmChart manifest) instead of holding it")
-			case !utf8.ValidString(s.Content) || strings.ContainsRune(s.Content, 0):
-				add(r, CodeInvalidValue, "spec.content", "the manifest is not text (UTF-8 without NUL)", "")
-			default:
-				// k3s applies the manifest with cluster-admin rights and the plan shows it in full: it
-				// must show as what it is.
-				if f, bad := safetext.Find(s.Content, true); bad {
-					add(r, CodeUnsafeText, "spec.content", "the manifest has "+f.String(), unsafeTextHint)
-				}
-			}
-			if want := s.Node + "/manifest/" + s.Name; r.Name != want {
-				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/manifest/name)", want), "")
-			}
 		case KindNodeMamelet:
 			s := r.NodeMamelet
 			checkNodeRef(add, r, s.Node, nodes)
@@ -186,6 +127,10 @@ func Validate(g *Graph) error {
 			}
 			if want := s.Node + "/" + s.Service; r.Name != want {
 				add(r, CodeNameMismatch, "name", fmt.Sprintf("the name should be %q (node/service)", want), "")
+			}
+		default:
+			if d, ok := extKinds[r.Kind]; ok {
+				d.Validate(v, r)
 			}
 		}
 	}
@@ -211,6 +156,11 @@ func Validate(g *Graph) error {
 			"remove one of the dependencies on that way")
 	}
 	checkUnits(g, add)
+	for _, e := range extensions {
+		if e.Check != nil {
+			e.Check(g, v)
+		}
+	}
 	return newError(problems)
 }
 
@@ -256,15 +206,9 @@ func cycles(rs map[string]Resource) map[string][]string {
 
 // checkUnits refuses two declarations of one thing that contradict each other: the same systemd
 // unit of a node declared twice, once as nginx and once as nginx.service, one running and one not
-// (the revision would carry both, and the unit would be started and stopped in turn); and the
-// k3s service declared not running on a node that is declared to run k3s.
+// (the revision would carry both, and the unit would be started and stopped in turn). What
+// contradicts a node extension's declaration (k3s's service) is the extension's Check.
 func checkUnits(g *Graph, add addFunc) {
-	k3sNodes := map[string]bool{}
-	for _, r := range g.Resources {
-		if r.NodeK3s != nil {
-			k3sNodes[r.NodeK3s.Node] = true
-		}
-	}
 	first := map[string]Resource{} // node and unit -> the first declaration of it
 	for _, r := range g.Resources {
 		s := r.NodeService
@@ -278,10 +222,6 @@ func checkUnits(g *Graph, add addFunc) {
 			add(r, CodeConflict, "spec", fmt.Sprintf("%s declares the unit %s as enabled=%t running=%t, but %s declares the same unit as enabled=%t running=%t",
 				r.ID(), unit, s.Enabled, s.Running, other.ID(), o.Enabled, o.Running),
 				"declare a unit once (nginx and nginx.service are the same unit), or declare it the same way each time")
-		}
-		if unit == "k3s" && !s.Running && k3sNodes[s.Node] {
-			add(r, CodeConflict, "spec.running", fmt.Sprintf("%s says k3s does not run on %s, but %s/k3s declares that it runs k3s there", r.ID(), s.Node, s.Node),
-				"declare the service running (k3s is only installed by NodeK3s; starting it is this service's job), or take NodeK3s out")
 		}
 	}
 }

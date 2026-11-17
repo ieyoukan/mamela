@@ -1,0 +1,70 @@
+problems:
+MAM-GRAPH-0104 | NodeK3s db/kube name | the name should be "db/k3s" (node/k3s) | 
+MAM-GRAPH-0103 | NodeK3s db/kube spec.server | "nowhere" is not a node declared as a k3s server in this graph | declare the server with K3s.server on that node
+MAM-GRAPH-0104 | NodeK3s self/k3s name | the name should be "web/k3s" (node/k3s) | 
+MAM-GRAPH-0106 | NodeK3s self/k3s spec.server | a node cannot be an agent of itself | 
+MAM-GRAPH-0106 | NodeK3s web/k3s spec.server | a k3s server has no server | 
+MAM-GRAPH-0106 | NodeK3s web/k3s spec.sha256 | sha256 is not 64 lowercase hex digits | copy it from the release's sha256sum file for the node's architecture
+MAM-GRAPH-0106 | NodeK3s web/k3s spec.version | "1.37" is not a k3s release | write the release tag, such as "v1.33.5+k3s1"
+MAM-GRAPH-0103 | NodeK3s x/k3s spec.node | node "x" is not declared in this graph (as a provider's machine) | declare the machine in the same graph, or fix the node name
+MAM-GRAPH-0106 | NodeK3s x/k3s spec.role | role "boss" is not server or agent | 
+MAM-GRAPH-0104 | NodeK3sManifest db/manifest/a name | the name should be "db/manifest/A_B" (node/manifest/name) | 
+MAM-GRAPH-0106 | NodeK3sManifest db/manifest/a spec.content | the manifest is empty | 
+MAM-GRAPH-0106 | NodeK3sManifest db/manifest/a spec.name | "A_B" is not a valid manifest name | use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)
+MAM-GRAPH-0103 | NodeK3sManifest db/manifest/a spec.node | "db" is not a node declared as a k3s server in this graph | k3s applies manifests on a server: declare the server with K3s.server on that node
+MAM-GRAPH-0109 | NodeK3sManifest web/manifest/evil spec.content | the manifest has U+000D (carriage return) at line 1, column 9 | a text may have newlines and tabs, but no other control character (a carriage return, an escape), bidirectional control or zero-width character: they hide what a person reads in the plan. Leave it out, or write it as an escape where the format has one (\u202e in a double-quoted YAML string)
+MAM-GRAPH-0106 | NodeK3sManifest web/manifest/nul spec.content | the manifest is not text (UTF-8 without NUL) | 
+MAM-GRAPH-0106 | NodeMamelet web/mamelet spec.sha256 | "nope" is not a sha256 in lowercase hex | the sha256 of the linux/amd64 mamelet binary: shasum -a 256 mamelet-linux-amd64
+MAM-GRAPH-0106 | NodeMamelet web/mamelet spec.version | "bad version" is not a valid version label | letters, digits and '.', '_', '+', '-', at most 64
+MAM-GRAPH-0110 | NodeService web/k3s spec.running | NodeService web/k3s says k3s does not run on web, but web/k3s declares that it runs k3s there | declare the service running (k3s is only installed by NodeK3s; starting it is this service's job), or take NodeK3s out
+MAM-GRAPH-0110 | NodeService web/k3s.service spec | NodeService web/k3s.service declares the unit k3s as enabled=true running=true, but NodeService web/k3s declares the same unit as enabled=true running=false | declare a unit once (nginx and nginx.service are the same unit), or declare it the same way each time
+text:
+MAM-GRAPH-0104: the name should be "db/k3s" (node/k3s)
+  at NodeK3s db/kube name
+MAM-GRAPH-0103: "nowhere" is not a node declared as a k3s server in this graph
+  at NodeK3s db/kube spec.server
+  hint: declare the server with K3s.server on that node
+MAM-GRAPH-0104: the name should be "web/k3s" (node/k3s)
+  at NodeK3s self/k3s name
+MAM-GRAPH-0106: a node cannot be an agent of itself
+  at NodeK3s self/k3s spec.server
+MAM-GRAPH-0106: a k3s server has no server
+  at NodeK3s web/k3s spec.server
+MAM-GRAPH-0106: sha256 is not 64 lowercase hex digits
+  at NodeK3s web/k3s spec.sha256
+  hint: copy it from the release's sha256sum file for the node's architecture
+MAM-GRAPH-0106: "1.37" is not a k3s release
+  at NodeK3s web/k3s spec.version
+  hint: write the release tag, such as "v1.33.5+k3s1"
+MAM-GRAPH-0103: node "x" is not declared in this graph (as a provider's machine)
+  at NodeK3s x/k3s spec.node
+  hint: declare the machine in the same graph, or fix the node name
+MAM-GRAPH-0106: role "boss" is not server or agent
+  at NodeK3s x/k3s spec.role
+MAM-GRAPH-0104: the name should be "db/manifest/A_B" (node/manifest/name)
+  at NodeK3sManifest db/manifest/a name
+MAM-GRAPH-0106: the manifest is empty
+  at NodeK3sManifest db/manifest/a spec.content
+MAM-GRAPH-0106: "A_B" is not a valid manifest name
+  at NodeK3sManifest db/manifest/a spec.name
+  hint: use lowercase letters, digits and '-' (the file is mamela-<name>.yaml)
+MAM-GRAPH-0103: "db" is not a node declared as a k3s server in this graph
+  at NodeK3sManifest db/manifest/a spec.node
+  hint: k3s applies manifests on a server: declare the server with K3s.server on that node
+MAM-GRAPH-0109: the manifest has U+000D (carriage return) at line 1, column 9
+  at NodeK3sManifest web/manifest/evil spec.content
+  hint: a text may have newlines and tabs, but no other control character (a carriage return, an escape), bidirectional control or zero-width character: they hide what a person reads in the plan. Leave it out, or write it as an escape where the format has one (\u202e in a double-quoted YAML string)
+MAM-GRAPH-0106: the manifest is not text (UTF-8 without NUL)
+  at NodeK3sManifest web/manifest/nul spec.content
+MAM-GRAPH-0106: "nope" is not a sha256 in lowercase hex
+  at NodeMamelet web/mamelet spec.sha256
+  hint: the sha256 of the linux/amd64 mamelet binary: shasum -a 256 mamelet-linux-amd64
+MAM-GRAPH-0106: "bad version" is not a valid version label
+  at NodeMamelet web/mamelet spec.version
+  hint: letters, digits and '.', '_', '+', '-', at most 64
+MAM-GRAPH-0110: NodeService web/k3s says k3s does not run on web, but web/k3s declares that it runs k3s there
+  at NodeService web/k3s spec.running
+  hint: declare the service running (k3s is only installed by NodeK3s; starting it is this service's job), or take NodeK3s out
+MAM-GRAPH-0110: NodeService web/k3s.service declares the unit k3s as enabled=true running=true, but NodeService web/k3s declares the same unit as enabled=true running=false
+  at NodeService web/k3s.service spec
+  hint: declare a unit once (nginx and nginx.service are the same unit), or declare it the same way each time

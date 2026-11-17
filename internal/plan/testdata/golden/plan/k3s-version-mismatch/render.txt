@@ -1,0 +1,20 @@
+Plan sha256:899d8519dea8
+  revision  sha256:7f0005ea429f
+  observed  2026-11-08T12:00:00Z (snapshot sha256:0f224468fb27)
+  policy    sha256:b2ad900beffb
+
+. NodeK3s a1/k3s  [waiting]
+    warning MAM-GRAPH-0202 k3s is declared on a1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0121 the declaration says k3s on a1 is v1.99.0+k3s1, and the binary on it is the declared one (sha256 265b3ee6a319), but its Kubernetes node reports v1.37.2
+      hint: if the node has only just restarted, plan again in a minute; if it stays, the version and the sha256 do not belong together: put the sha256 of the binary of v1.99.0+k3s1 (the release's sha256sum-<arch>.txt) with it, or the version of the binary the sha256 is of
+. NodeK3s srv/k3s  [waiting]
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+    MAM-PLAN-0121 the declaration says k3s on srv is v1.99.0+k3s1, and the binary on it is the declared one (sha256 265b3ee6a319), but its Kubernetes node reports v1.37.2+k3s1
+      hint: if the node has only just restarted, plan again in a minute; if it stays, the version and the sha256 do not belong together: put the sha256 of the binary of v1.99.0+k3s1 (the release's sha256sum-<arch>.txt) with it, or the version of the binary the sha256 is of
+= TestVM a1  [in sync]  via test
+= TestVM srv  [in sync]  via test
+
+Summary: 2 waiting, 2 in sync.
+Nothing has been changed: a plan only describes.

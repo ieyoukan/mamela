@@ -1,0 +1,26 @@
+Plan sha256:eef7446049aa
+  revision  sha256:2de585c4d575
+  observed  2026-11-08T12:00:00Z (snapshot sha256:4b061ad8a1af)
+  policy    sha256:b2ad900beffb
+
+= NodeK3s cp/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on cp, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w1/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w2/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w2, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+. TestVM cp  [waiting]  via test
+    MAM-PLAN-0118 waits for machine w1 to be restarted before cp (the machines of a cluster are restarted one at a time)
+      hint: apply the plan that restarts it, then plan again
+. TestVM w1  [waiting]  via test
+    MAM-PLAN-0115 waits for every Kubernetes node to be Ready before machine w1 is restarted (not Ready: w1)
+      hint: a restart goes on only on a healthy cluster; find out why the node is not Ready
+. TestVM w2  [waiting]  via test
+    MAM-PLAN-0118 waits for machine w1 to be restarted before w2 (the machines of a cluster are restarted one at a time)
+      hint: apply the plan that restarts it, then plan again
+
+Summary: 3 waiting, 3 in sync.
+Nothing has been changed: a plan only describes.

@@ -1,0 +1,23 @@
+Plan sha256:0c0181337b0f
+  revision  sha256:2de585c4d575
+  observed  2026-11-08T12:00:00Z (snapshot sha256:a04900280b05)
+  policy    sha256:b2ad900beffb
+
+= NodeK3s cp/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on cp, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w1/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s w2/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on w2, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+~ TestVM cp  [needs approval]  via test
+      resize-vm: resize-vm
+    resize-vm: needs approval (MAM-POL-0209 a change through a provider (restart))
+      objects: 
+= TestVM w1  [in sync]  via test
+= TestVM w2  [in sync]  via test
+
+Summary: 1 needs approval, 5 in sync.
+Nothing has been changed: a plan only describes.

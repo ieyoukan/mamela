@@ -504,7 +504,7 @@ func TestK3sStaleProcessIsAnUpgrade(t *testing.T) {
 	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, Stale: true, ObservedAt: t0,
 		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1", Ready: true}, {Name: "a2", Version: "v1.37.1+k3s1", Ready: true}}}
 	c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s")
-	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s || c.Verdict != policy.ApprovalRequired {
+	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.Op("upgrade-k3s") || c.Verdict != policy.ApprovalRequired {
 		t.Fatalf("stale server: %+v", c)
 	}
 	if !slices.ContainsFunc(c.Diffs, func(d Diff) bool { return d.Field == "version" && d.From == "v1.37.1+k3s1" && d.To == "v1.37.2+k3s1" }) ||
@@ -514,11 +514,11 @@ func TestK3sStaleProcessIsAnUpgrade(t *testing.T) {
 	// A binary of another sha256 with k3s running is an upgrade too; without k3s running it is an install.
 	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, Running: true, ObservedAt: t0,
 		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.1+k3s1", Ready: true}}}
-	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s {
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.Op("upgrade-k3s") {
 		t.Fatalf("running, other binary: %+v", c)
 	}
 	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: old, ObservedAt: t0}
-	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.OpInstallK3s {
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s"); len(c.Operations) != 1 || c.Operations[0].Op != policy.Op("install-k3s") {
 		t.Fatalf("not running, other binary: %+v", c)
 	}
 }
@@ -566,7 +566,7 @@ func TestK3sUpgradeOrderAndHealth(t *testing.T) {
 	if c := status("srv"); c.Status != StatusInSync {
 		t.Fatalf("upgraded server: %+v", c)
 	}
-	if c := status("a1"); c.Status != StatusChange || c.Operations[0].Op != policy.OpUpgradeK3s {
+	if c := status("a1"); c.Status != StatusChange || c.Operations[0].Op != policy.Op("upgrade-k3s") {
 		t.Fatalf("first agent: %+v", c)
 	}
 	if c := status("a2"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0116" || !strings.Contains(c.Note.Message, "a1") {
@@ -604,8 +604,8 @@ func k3sObserved(g *graph.Graph, sha string) state.Snapshot {
 	s := state.Empty(t0)
 	s.K3s = map[string]state.K3s{}
 	for _, r := range g.Sorted() {
-		if r.NodeK3s != nil {
-			machineObserved(&s, g, r.NodeK3s.Node, true, true, true, 600)
+		if r.Kind == "NodeK3s" {
+			machineObserved(&s, g, r.Node(), true, true, true, 600)
 			s.K3s[r.Name] = state.K3s{Installed: true, SHA256: sha, ObservedAt: t0}
 		}
 	}
@@ -634,7 +634,7 @@ func TestK3sManifestPlan(t *testing.T) {
 	}
 	s.K3sManifests = map[string]state.K3sManifest{"srv/manifest/argocd": {ObservedAt: t0}}
 	ch := find(t, Build(g, s, policy.Default), id)
-	if ch.Status != StatusChange || ch.Verdict != policy.ApprovalRequired || len(ch.Operations) != 1 || ch.Operations[0].Op != policy.OpWriteK3sManifest {
+	if ch.Status != StatusChange || ch.Verdict != policy.ApprovalRequired || len(ch.Operations) != 1 || ch.Operations[0].Op != policy.Op("write-k3s-manifest") {
 		t.Fatalf("absent: %+v", ch)
 	}
 	if !slices.ContainsFunc(ch.Diffs, func(d Diff) bool { return d.Field == "content" && d.To == content }) ||
@@ -672,7 +672,7 @@ func TestK3sStoppedAgentWaitsForTheServer(t *testing.T) {
 	// The server is upgraded; the agent's node is not Ready (it is stopped), and that does not matter.
 	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: now, Running: true, ObservedAt: t0,
 		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.1+k3s1"}}}
-	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.OpInstallK3s {
+	if c := find(t, Build(g, s, policy.Default), "NodeK3s a1/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.Op("install-k3s") {
 		t.Fatalf("a stopped agent after the server: %+v", c)
 	}
 	// A fresh install, no binary yet: nothing to wait for.
@@ -798,7 +798,7 @@ func TestK3sNodeRemoval(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 	op := c.Operations[0]
-	if op.Op != policy.OpRemoveK3sNode || !op.Late || !op.Deletes || op.Decision.Verdict != policy.ApprovalRequired {
+	if op.Op != policy.Op("remove-k3s-node") || !op.Late || !op.Deletes || op.Decision.Verdict != policy.ApprovalRequired {
 		t.Errorf("operation: %+v", op)
 	}
 	if !slices.Contains(c.Diffs, Diff{"remove-node", "", "a2"}) || !c.Deletes() || p.Removals() < 1 {
@@ -854,8 +854,8 @@ func TestK3sNodeRemoval(t *testing.T) {
 
 // A change whose only operation deletes a Kubernetes node is drawn as a deletion ("-").
 func TestRenderNodeRemovalIsADeletion(t *testing.T) {
-	c := Change{Kind: graph.KindNodeK3s, Name: "srv/k3s", Status: StatusChange, Diffs: []Diff{{"remove-node", "", "a2"}},
-		Operations: []Operation{{Op: policy.OpRemoveK3sNode, Late: true, Deletes: true}}}
+	c := Change{Kind: graph.Kind("NodeK3s"), Name: "srv/k3s", Status: StatusChange, Diffs: []Diff{{"remove-node", "", "a2"}},
+		Operations: []Operation{{Op: policy.Op("remove-k3s-node"), Late: true, Deletes: true}}}
 	var b bytes.Buffer
 	Render(&b, &Plan{Changes: []Change{c}})
 	if !strings.Contains(b.String(), "- NodeK3s srv/k3s") {
@@ -940,9 +940,9 @@ func TestMameletUpdatePlan(t *testing.T) {
 // escape, and a line of a manifest cannot pass for a line of the plan.
 func TestRenderShowsControlCharactersAsEscapes(t *testing.T) {
 	const evil = "image: safe\r      image: evil\n= NodePackage web/nginx  [in sync]\n\x1b[2K\u202eevil\u200b\n"
-	c := Change{Kind: graph.KindNodeK3sManifest, Name: "web/manifest/m", Status: StatusChange,
+	c := Change{Kind: graph.Kind("NodeK3sManifest"), Name: "web/manifest/m", Status: StatusChange,
 		Diffs:      []Diff{{"file", "", "/var/lib/rancher/k3s/server/manifests/mamela-m.yaml"}, {"content", "", evil}},
-		Operations: []Operation{{Op: policy.OpWriteK3sManifest, Decision: policy.Decision{Verdict: policy.ApprovalRequired, Code: "MAM-POL-0213", Message: "approve \x1b[31m", Hint: "hint\r"}}},
+		Operations: []Operation{{Op: policy.Op("write-k3s-manifest"), Decision: policy.Decision{Verdict: policy.ApprovalRequired, Code: "MAM-POL-0213", Message: "approve \x1b[31m", Hint: "hint\r"}}},
 		Note:       &Note{Code: "MAM-PLAN-0001", Message: "note\x1b[2K", Hint: "\u202ehint"}}
 	p := &Plan{Changes: []Change{c, {Kind: "KVItem", Name: "a\x1b[2K", Provider: "kv\u202e", Status: StatusChange,
 		Diffs:      []Diff{{"value", "old\rx", "new\u200bx"}},
@@ -1036,7 +1036,7 @@ func TestK3sDeclaredVersionMustBeWhatRuns(t *testing.T) {
 	s = world(g, "v1.37.2+k3s1")
 	s.K3s["srv/k3s"] = state.K3s{Installed: true, SHA256: "92b94582eb7b34a8cf532e6006842b9ed215a6783cf56a3dd6271fd35243b2c0", Running: true, ObservedAt: t0,
 		Nodes: []state.K3sNode{{Name: "srv", Version: "v1.37.2+k3s1", Ready: true}, {Name: "a1", Version: "v1.37.2+k3s1", Ready: true}}}
-	if c := status(g, s, "NodeK3s srv/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.OpUpgradeK3s {
+	if c := status(g, s, "NodeK3s srv/k3s"); c.Status != StatusChange || c.Operations[0].Op != policy.Op("upgrade-k3s") {
 		t.Errorf("another sha256: %+v", c)
 	}
 }
@@ -1134,7 +1134,7 @@ func TestK3sWarningsAreInThePlan(t *testing.T) {
 		return find(t, Build(g, s, policy.Default), "NodeK3s srv/k3s")
 	}
 	c := rollback("v1.30.0+k3s1")
-	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.OpUpgradeK3s || !slices.Contains(codes(c), "MAM-PLAN-0401") {
+	if c.Status != StatusChange || len(c.Operations) != 1 || c.Operations[0].Op != policy.Op("upgrade-k3s") || !slices.Contains(codes(c), "MAM-PLAN-0401") {
 		t.Fatalf("a rollback of 7 minors: %+v", c)
 	}
 	var w Note

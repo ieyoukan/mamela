@@ -1,0 +1,19 @@
+Plan sha256:70069cf40883
+  revision  sha256:efead274cfcb
+  observed  2026-11-08T12:00:00Z (snapshot sha256:497bb0649597)
+  policy    sha256:b2ad900beffb
+
+= NodeK3s a1/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on a1, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= NodeK3s srv/k3s  [in sync]
+    warning MAM-GRAPH-0202 k3s is declared on srv, but nothing declares its service: the binary is installed and k3s is not started or kept running (the plan says in sync)
+      hint: declare the service of k3s on the node: Mamela.service(graph, node, "k3s", enabled: true, running: true)
+= TestVM a1  [in sync]  via test
+= TestVM srv  [in sync]  via test
+= TestVM a2  [retained]  via test
+    MAM-PLAN-0301 not in this declaration; kept unchanged
+      hint: its provider's explicit delete operation removes it (mamela act)
+
+Summary: 1 retained, 4 in sync.
+Nothing has been changed: a plan only describes.

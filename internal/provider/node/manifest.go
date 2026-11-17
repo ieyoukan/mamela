@@ -17,12 +17,9 @@ const TargetNode = "node"
 
 // Capability names: what mamelet does with the grant, by program and action.
 const (
-	CapAptInstall  = "apt.install"
-	CapK3sInstall  = "k3s.install"
-	CapK3sManifest = "k3s.manifest"
-	CapK3sRemove   = "k3s.remove-node"
-	CapMameletUpd  = "mamelet.update"
-	capSystemd     = "systemd."
+	CapAptInstall = "apt.install"
+	CapMameletUpd = "mamelet.update"
+	capSystemd    = "systemd."
 )
 
 // Condition keys mamelet checks before it acts (facts it knows from the signed revision, its
@@ -35,7 +32,6 @@ const (
 	KeyAptRemove    = "mamela:apt.remove"    // packages the simulation would remove
 	KeyAptOrigin    = "mamela:apt.origin"    // origins of the packages it would install
 	KeyAutoStart    = "mamela:policy.autoStartServices"
-	KeyK3sSHA256    = "mamela:k3s.sha256"     // sha256 of the downloaded binary
 	KeyMameletSHA   = "mamela:mamelet.sha256" // sha256 of the mamelet binary fetched from the Control Plane
 	FactChangeSet   = "changeSet"             // plan fact: the approved change set digest
 	FactOrigins     = "allowedOrigins"        // plan fact: the policy's allowed APT origins (prefixes, "Ubuntu:*")
@@ -43,6 +39,10 @@ const (
 	FactOperationID = "operationId" // filled when the operation is granted
 	FactExpiresAt   = "expiresAt"   // filled when the revision is signed
 )
+
+// GrantConditions bind every one-time grant to its node, its operation and the revision's lifetime:
+// a node extension's needs start from them.
+func GrantConditions() []spec.Condition { return slices.Clone(grantConditions) }
 
 // grantConditions bind every one-time grant to its node, its operation and the revision's lifetime.
 var grantConditions = []spec.Condition{
@@ -64,34 +64,6 @@ func Manifest() spec.Manifest {
 				spec.Condition{Key: KeyAptOrigin, Test: spec.Like, Values: []string{"{" + FactOrigins + "}"}}),
 			Note:    "mamelet simulates the install again just before and installs only if it is exactly the approved change set",
 			Reasons: []string{"mamelet runs apt-get install once"},
-		}},
-	}}}
-	k3sNeed := spec.Need{
-		Capability: CapK3sInstall, Target: node, Object: "k3s {version}", Always: true,
-		Conditions: append(slices.Clone(grantConditions),
-			spec.Condition{Key: KeyK3sSHA256, Test: spec.Equals, Values: []string{"{sha256}"}}),
-		Note:    "mamelet downloads the release and installs it only if its sha256 is the declared one, with Mamela's fixed unit",
-		Reasons: []string{"mamelet writes /usr/local/bin/k3s and its systemd unit once"},
-	}
-	k3sUpgradeNeed := k3sNeed
-	k3sUpgradeNeed.Note = "the same grant as an installation, for a k3s that runs: mamelet then restarts it, so that the node runs the declared release"
-	k3sUpgradeNeed.Reasons = []string{"mamelet writes /usr/local/bin/k3s and its systemd unit once, and restarts k3s"}
-	k3s := spec.Kind{Kind: graph.KindNodeK3s, Operations: []spec.Operation{
-		{Op: policy.OpInstallK3s, Support: spec.Supported, Needs: []spec.Need{k3sNeed}},
-		{Op: policy.OpUpgradeK3s, Support: spec.Supported, Needs: []spec.Need{k3sUpgradeNeed}},
-		{Op: policy.OpRemoveK3sNode, Support: spec.Supported, Needs: []spec.Need{{
-			Capability: CapK3sRemove, Target: node, Object: "a Kubernetes node the declaration no longer names (the one the approved plan names)", Always: true,
-			Conditions: slices.Clone(grantConditions),
-			Note:       "mamelet on the server cordons and drains the node (when it is Ready), then deletes it with the server's own kubeconfig; it never removes the server's own node",
-			Reasons:    []string{"mamelet runs k3s kubectl cordon, drain and delete node once"},
-		}}},
-	}}
-	manifest := spec.Kind{Kind: graph.KindNodeK3sManifest, Operations: []spec.Operation{{
-		Op: policy.OpWriteK3sManifest, Support: spec.Supported, Needs: []spec.Need{{
-			Capability: CapK3sManifest, Target: node, Object: "{name}", Always: true,
-			Conditions: slices.Clone(grantConditions),
-			Note:       "mamelet writes exactly the content of the approved plan to /var/lib/rancher/k3s/server/manifests/mamela-<name>.yaml, which k3s applies with cluster-admin rights",
-			Reasons:    []string{"mamelet writes the manifest file once"},
 		}},
 	}}}
 	mameletKind := spec.Kind{Kind: graph.KindNodeMamelet, Operations: []spec.Operation{{
@@ -118,5 +90,11 @@ func Manifest() spec.Manifest {
 		}
 		svc.Operations = append(svc.Operations, spec.Operation{Op: op, Support: spec.Supported, Needs: []spec.Need{n}})
 	}
-	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: []spec.Kind{pkg, svc, k3s, manifest, mameletKind}}
+	kinds := []spec.Kind{pkg, svc, mameletKind}
+	for _, e := range extensions {
+		kinds = append(kinds, e.Kinds...)
+	}
+	// In the canonical order of the kinds: the manifest is part of every plan's ProvidersDigest.
+	slices.SortStableFunc(kinds, func(a, b spec.Kind) int { return graph.Order(a.Kind) - graph.Order(b.Kind) })
+	return spec.Manifest{Schema: spec.Schema, Provider: "mamelet", Version: Version, Kinds: kinds}
 }

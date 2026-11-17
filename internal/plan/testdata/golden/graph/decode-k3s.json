@@ -1,0 +1,9 @@
+{"schema":"mamela-graph/v2","resources":[
+{"kind":"NodeK3s","name":"a/k3s","spec":{"node":"a","role":"agent","server":"","sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeK3s","name":"b/k3s","spec":{"node":"b","role":"agent","server":null,"sha256":"265b3ee6a3198ef14033c63ef46cbb32370d83795199fb6d1b01f21575eddbda","version":"v1.37.2+k3s1"}},
+{"kind":"NodeK3s","name":"c/k3s","spec":{"node":"c"}},
+{"kind":"NodeK3sManifest","name":"e/manifest/x","spec":{"node":"e"}},
+{"kind":"NodeK3s","name":"g/k3s","provider":"evil","spec":{"node":"g"}},
+{"kind":"VirtualMachine","name":"h","spec":{}},
+{"kind":"Unknown","name":"i","spec":{}}
+]}
