@@ -115,9 +115,10 @@ mamelet 側
 - **能力の申告（accepts）:** CP は、ノードの最新の報告が拡張を（その版以上で）挙げているときだけ、その部分を revision に入れる（`node.Publish`・`Prune` が、挙げていない拡張の部分を除く。`mamela serve` も、配るときに、最新の報告が挙げていない拡張の部分を除く。更新に失敗して旧い mamelet に戻ったノードが、次の plan を待たずに revision を読めるように）。0.9.x の mamelet は revision を未知のメンバーを拒んで読むが、`ext` を受け取らないので動き続ける。拡張の資源の変更は、受け取らないノードでは Blocked（MAM-PLAN-0122。動いている mamelet の版と、更新の仕方を言う）、承認しても grant は出さない（MAM-NODE-0104）。mamelet は、知らない拡張の部分や、拡張の `Check` が断った部分だけを除いて（`extRefused`）、残りを続ける。
 - **grant の期限:** 拡張は、自分の部分の grant の読み方を `noderev.RegisterPart` で登録する（`Grants`、`ForMamelet`）。`Revision.Grants()` は拡張の grant も返し、`ForMamelet` は期限の過ぎたものを除いて期限を消し、`Sign` は期限の残る部分、CP の知らない拡張の部分を署名しない。CP の知らない拡張の部分は、配りもしない。
 - **観測:** `state.Snapshot.Ext`（ノード → 拡張 → 受け取る版、観測（RFC 8785 の正規形）、断った理由、時刻）。digest に入る。拡張を受け取らないノードは載らないので、従来の snapshot は同じ digest のまま。`plan.Kit.Ext` が写しを、`Kit.ExtNotTaken` が Blocked の理由を返す。
-- **登録の口:** `node.Extension.Wire`、`mamelet.Extension.Wire` と `Check`、`mamelet.Act.StateDir`、`plan.Extension.PackageGate`（パッケージの導入が待つもの。NodeAptRepo のため）と `Undeclared`（宣言から外れて観測だけが残るものを retained で出す。操作は出せない）。
+- **登録の口:** `node.Extension.Wire`、`mamelet.Extension.Wire` と `Check`、`mamelet.Act.StateDir`、`mamelet.System.StateDir`（観測するときにも拡張が自分の記録を読めるように。linux の `NodeArtifact` が置いたものの記録。`Agent.Round` が設定から入れる）、`plan.Extension.PackageGate`（パッケージの導入が待つもの。NodeAptRepo のため）と `Undeclared`（宣言から外れて観測だけが残るものを retained で出す。操作は出せない）。
 - **順序:** CP を先に、mamelet をあとに更新する。新しい CP は旧い報告（`extensions` なし）も新しい報告も読む。旧い CP は新しい mamelet の報告を読めない（報告を未知のメンバーを拒んで読む）。mamelet の版は `internal/mamelet/release.go` の `Release`（0.10.0）と commit（`scripts/build-mamelet.sh` が `0.10.0+<commit>` にする）。
-- **残り:** k3s を `Ext` に載せ替える（wire と digest が変わるので、旧い形も読める CP を 1 つ挟む）、拡張の名前と版を node provider の manifest に入れる（全 plan の digest が変わる。linux の kind はすでに manifest に入っている）。
+- **ダウンロード:** linux の `download.go`（`HTTPSClient`、`Fetch`、`ExtractMember`）は、拡張の型を使わない、sha256 で固定したダウンロードの部品である。https だけ（リダイレクトも）、大きさと時間の上限、`Accept-Encoding: identity`（ダウンロードしたバイト列そのものの sha256 を見る）、失敗したら一時ファイルを残さない、`.tar.gz` から 1 つの通常のファイルだけを取り出す。k3s のバイナリのダウンロード（`internal/ext/k3s/mamelet.go` の `downloadK3s`）は、あとでこれに載せ替えられる（いまは変えない。k3s の wire と golden を変えないため）。拡張が別のパッケージに分かれる段 6 では、どちらからも使える場所に移す。
+- **残り:** k3s を `Ext` に載せ替える（wire と digest が変わるので、旧い形も読める CP を 1 つ挟む）、k3s のダウンロードを linux の `Fetch` に載せ替える、拡張の名前と版を node provider の manifest に入れる（全 plan の digest が変わる。linux の kind はすでに manifest に入っている。kind を足すと、node provider の manifest の digest も変わる。linux の golden は、それを固定した値で作る）。
 
 ## 先にやること
 
