@@ -22,7 +22,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 | kind | すること | 版 |
 |---|---|---|
 | `NodeFile` | 宣言したとおりの内容・mode・所有者のファイル。変わったら、挙げたサービスを再起動する | 0.4.0（この ADR とともに） |
-| `NodeUser` | ユーザーとグループ、その SSH の鍵、許すこと | 0.4 の続き |
+| `NodeUser` | ユーザーと補助グループ、その SSH の鍵（許すこと、つまり sudo は後） | 0.4.0 |
 | `NodeAptRepo` | APT のソースと、その鍵 | 0.4 の続き |
 | `NodeArtifact` | sha256 で固定したダウンロード（リリースのバイナリ、アーカイブ） | 0.4 の続き |
 
@@ -32,8 +32,8 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 
 ### 2. 任意のシェルはない
 
-- mamelet が実行するのは、核の固定のプログラム（`dpkg-query`、`apt-get`、`systemctl`）と、拡張が登録した固定のプログラムだけ。linux は新しいプログラムを足さない（ファイルは Go のコードで書き、`systemctl daemon-reload` と `try-restart` を使う）。
-- 宣言がコマンドや引数を書くことはない。値は、名前・path・mode の狭い形で検査し、graph と mamelet の両方で同じ関数を使う（`CheckPath`、`ParseMode`、`ValidAccount`）。mamelet は、署名つきの revision が何と言っても、書く前にもう一度確かめる。
+- mamelet が実行するのは、核の固定のプログラム（`dpkg-query`、`apt-get`、`systemctl`）と、拡張が登録した固定のプログラムだけ。ファイルは Go のコードで書き、`systemctl daemon-reload` と `try-restart` を使う。linux が足すプログラムは、NodeUser の `/usr/sbin/useradd` と `/usr/sbin/usermod` だけで、引数は mamelet が検査した値から決まった形で組み、名前は `--` のあとに置く（`/etc/passwd` を Go で書き換えると、`/etc/shadow` やロックとの整合を自分で持つことになる）。`authorized_keys` は Go のコードで書く。
+- 宣言がコマンドや引数を書くことはない。値は、名前・path・mode の狭い形で検査し、graph と mamelet の両方で同じ関数を使う（`CheckPath`、`ParseMode`、`ValidAccount`、NodeUser の `CheckHome`、`ParseAuthorizedKey`）。mamelet は、署名つきの revision が何と言っても、書く前にもう一度確かめる。
 - `NodeFile` は、カーネルとブートのもの、mamelet 自身、k3s のもの、ユーザーと sudoers、ほかの部品のもの（`mamela-*` の APT ソースと鍵、`authorized_keys`）を書かない。シンボリックリンクはたどらない。
 - 部品の操作は、すべて承認が要る（拡張は `Auto` を返せない）。plan は、書く内容の全文と、変わる属性、作るディレクトリ、再起動するサービスを示す。
 
@@ -51,7 +51,7 @@ linux は、wire の汎用の形（段 5）を使う最初の拡張である。r
 
 ### 5. 宣言から外したものは残す（この版の制限）
 
-宣言から `NodeFile` を外しても、ファイルはノードに残る。plan は、それを retained（MAM-PLAN-0310）で示し、apply のあと mamelet は観測しなくなる。消すのは手で。ADR 0013 の削除（その宣言が作ったものだけ、ホストでの承認）は provider の資源のもので、ノードの中のものには、まだ広げない。誰が作ったファイルか（パッケージが置いた設定を上書きしたのか、新しく作ったのか）を記録してからでないと、消してよいかを決められないからである。
+宣言から `NodeFile` を外しても、ファイルはノードに残る。plan は、それを retained（MAM-PLAN-0310）で示し、apply のあと mamelet は観測しなくなる。消すのは手で。`NodeUser` も同じで、ユーザーはグループ・home・鍵とともに残る（MAM-PLAN-0311）。グループから外すこと、uid と home を変えることもしない（ユーザーのファイルの所有者が古いままになる）。ADR 0013 の削除（その宣言が作ったものだけ、ホストでの承認）は provider の資源のもので、ノードの中のものには、まだ広げない。誰が作ったファイルか（パッケージが置いた設定を上書きしたのか、新しく作ったのか）を記録してからでないと、消してよいかを決められないからである。
 
 ### 6. 秘密は範囲の外
 

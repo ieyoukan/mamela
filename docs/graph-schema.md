@@ -35,7 +35,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## kind
 
-組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`（linux、ADR 0016）で、どれもマシンの上のものである。
+組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`、`NodeUser`（linux、ADR 0016）で、どれもマシンの上のものである。
 
 **マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
@@ -181,6 +181,31 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 - **秘密は書かない:** 内容は宣言、plan（PR のコメント）、Control Plane の DB、revision に平文で残る。秘密鍵やトークンに見える内容は警告する（MAM-GRAPH-0203）。秘密の扱いは後の版（監査 A4）。
 - **mamelet の版:** 0.10.0 より前の mamelet は linux を受け取らない。そのノードの `NodeFile` は Blocked（MAM-PLAN-0122）で、mamelet を先に更新する（[mamelet の更新](mamelet-update.md)）。
 
+### NodeUser
+
+ノードの上の 1 人のユーザー。なければ作り、宣言したグループに入れ、SSH の公開鍵を宣言したとおりにする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.user(graph, node, name)`（ふつうのユーザー、補助グループなし、鍵は扱わない）、または `Mamela.user_with(graph, node, Mamela.User(groups: ["docker"], authorized_keys: Some([key]), ..Mamela.user_of(name)))`。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/user/<name>`（`web/user/deploy`） |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.name` | string | ユーザー名（`[a-z_][a-z0-9_-]`、32 字まで）。`root` は不可（Mamela は root を扱わない） |
+| `spec.system` | bool | 省略できる（既定 `false`）。`true` なら system ユーザーとして作る（`useradd --system`）。作るときにだけ使う。あるユーザーと違っても変えず、警告する（MAM-PLAN-0148。uid が 1000 未満かで判断する） |
+| `spec.uid` | 整数 | 省略できる（`useradd` が選ぶ）。1 以上（0 は root のもので不可）、2^31−1 まで。作るときにだけ使う。あるユーザーの uid と違えば Blocked（MAM-PLAN-0146。uid は変えない） |
+| `spec.shell` | string | 省略できる。絶対 path。宣言すれば、あるユーザーの shell も変える（`usermod --shell`）。省略すると、作るときだけ `/bin/bash`（system ユーザーは `/usr/sbin/nologin`）で、あるユーザーの shell は変えない。ノードに実行できるファイルとしてなければ、待つか Blocked（MAM-PLAN-0147） |
+| `spec.home` | string | 省略できる（ふつうのユーザーは `/home/<name>` を作る。system ユーザーは `useradd` の既定で、作らない。ただし `authorizedKeys` があれば作る）。絶対 path で、`/` の直下でないもの。`/etc`、`/usr`、`/root`、`/tmp`、`/var/tmp`、`/run`、`/boot` などシステムの場所の下は不可。作るときにだけ使う。あるユーザーの home と違えば Blocked（MAM-PLAN-0146。home は動かさない） |
+| `spec.groups` | string の配列 | 省略できる。補助グループ（グループ名の規則はユーザー名と同じ。重複は不可）。Mamela は足りないグループに入れ（`usermod --append --groups`）、**外さない**。宣言にないグループに入っていれば、plan が警告する（MAM-PLAN-0148）。メンバーが root になれるグループ（`sudo`、`docker` など）は警告（MAM-GRAPH-0206） |
+| `spec.authorizedKeys` | string の配列 | 省略できる（Mamela は `authorized_keys` に触れない）。あれば `~/.ssh/authorized_keys` は、この行だけを宣言の順に持つ。空の配列は不可（扱うのをやめるなら、メンバーを省く）。64 行まで。各行は `ssh-keygen` が書く公開鍵 `<type> <base64> [comment]`。type は `ssh-ed25519`、`sk-ssh-ed25519@openssh.com`、`ecdsa-sha2-nistp256`／`384`／`521`、`sk-ecdsa-sha2-nistp256@openssh.com`、`ssh-rsa`。base64 が復号でき、中の type が行の type と同じこと。空白は 1 つずつ。comment に制御文字は不可。行頭のオプション（`command=`、`from=`、`restrict` など）はこの版では不可。同じ鍵（fingerprint）の重複は不可 |
+
+- **同じノードで:** 同じユーザーを 2 度宣言すると MAM-GRAPH-0102。2 人のユーザーが同じ `uid`、同じ home を持つと MAM-GRAPH-0110。
+- **承認:** ないユーザーは `linux.create-user`（MAM-POL-0221）。plan の diff に、ユーザー名、`system`、uid、shell、home（作るか）、ユーザーの名前のグループ、補助グループ、`authorized_keys` の sha256 と、足す鍵（type、SHA256 の fingerprint、comment）が出る。あるユーザーは、宣言と違うときに `linux.change-user`（MAM-POL-0222）。diff に、補助グループの前とあと、shell、`authorized_keys` の sha256 の前とあと、足す鍵・外す鍵（fingerprint）、Mamela が鍵として読まない行、ファイル（0600、ユーザーのもの）と `~/.ssh`（0700、ユーザーのもの）の mode と所有者の変化が出る。鍵を外すときは、その鍵でのログインができなくなると警告する（MAM-PLAN-0149）。in sync は、宣言したグループにすべて入っていて、宣言した shell で、`authorized_keys` が宣言の内容（sha256）・0600・ユーザーのもので、`~/.ssh` が 0700・ユーザーのものであるとき。
+- **待つもの:** 宣言したグループや shell がノードになく、同じノードの `NodePackage` がまだ入っていなければ、待つ（MAM-PLAN-0147。`docker-ce` が `docker` グループを作るように）。入っていれば Blocked で、作るパッケージを宣言するよう示す。所有者がまだない `NodeFile` は、同じ宣言の `NodeUser` が作るユーザー（とその名前のグループ）なら、それを待つ（MAM-PLAN-0143）。一つの plan の操作は kind の順に走り、`NodeUser` は `NodeFile` より先である。
+- **実行:** mamelet が、承認のあと一度だけ、承認したとおりに行う。決まったプログラム（`/usr/sbin/useradd`、`/usr/sbin/usermod`）だけを、検査した値だけで、名前を `--` のあとに置いて実行する。作るときは `useradd [--system] [--create-home] [--uid N] --shell S [--home-dir H] --user-group -- name`、そのあと `usermod --append --groups g1,g2 -- name`。前の試みが `useradd` のあとで止まっていれば（ユーザーが承認どおりにある）、作らずに残りを続ける。承認したものと違うユーザーがすでにあれば断る。root（名前でも uid 0 でも）、宣言にないグループや鍵、ないグループや shell、ほかのユーザーの uid、ユーザーの名前のグループがすでにあるときも、何も変えずに断る。終わったら、もう一度観測して確かめる。
+- **鍵を書く:** home は `/etc/passwd` のものを、graph と同じ規則（`CheckHome`）でもう一度確かめる。home はユーザーのもので、ユーザーはそこに何でも置けるので、home と `~/.ssh` は 1 段ずつ開き、どれもシンボリックリンクでないことを確かめる（`~/.ssh` が `/etc` へのリンクなら断る）。`~/.ssh` がなければ 0700 で作り、ユーザーのものにする。`authorized_keys` は、同じディレクトリの一時ファイルに書き、fsync、chown、chmod 0600、rename で置き換える。mamelet は鍵の fingerprint だけを報告し、comment は送らない。リンクがあれば plan は Blocked（MAM-PLAN-0212）。
+- **消さない:** 宣言から外したユーザーは、グループ・home・鍵とともにノードに残る。plan はそれを MAM-PLAN-0311（retained）で示し、apply のあと mamelet は観測しなくなる。消すのは手で（`userdel`）。
+- **この版でしないこと:** パスワード、sudo の設定（`/etc/sudoers.d`）、グループを作ること（グループはパッケージが作るか手で作る）、グループから外すこと、uid・home を変えること、鍵のオプション。
+- **mamelet の版:** 0.10.0 より前の mamelet は linux を受け取らない。そのノードの `NodeUser` は Blocked（MAM-PLAN-0122）。
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。
@@ -221,7 +246,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、6〜8 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、7〜8 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 
