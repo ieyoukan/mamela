@@ -60,7 +60,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0107 | 同じ固定アドレスが複数のマシンに宣言されている（マシンの `spec.network.address`） |
 | MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに、そのリソースから一周する経路（`Thing a -> Thing b -> Thing a`）を示して報告する。経路の中の依存を 1 つ外す |
 | MAM-GRAPH-0109 | 文字列が、見たとおりのものとして表示されない文字を含む。C0・DEL・C1 の制御文字（k3s の manifest の内容と provider の `spec` の文字列は、改行 `\n` とタブ `\t` だけ許す。復帰 `\r`、ESC、ベルを含む）、bidi 制御（U+202A–202E、U+2066–2069、U+200E/F、U+061C）、ゼロ幅文字（U+200B–200D、U+2060、U+FEFF）、U+2028/2029、タグ文字、UTF-8 でないバイト。plan の表示を偽装できるので（k3s は manifest を cluster-admin で適用する）、何がどこ（行・列、`spec` では JSON pointer）にあるかを示して拒否する。manifest は LF の改行で書き、YAML に必要な文字はエスケープ（`"\u202e"`）で書く |
-| MAM-GRAPH-0110 | 同じものへの宣言が矛盾している。同じ node の同じ unit（`nginx` と `nginx.service` は同じ）を、`enabled`・`running` を変えて 2 回宣言した。k3s を宣言した（`NodeK3s`）node で、k3s の service を `running=false` にした。同じ node の 2 つの `NodeAptRepo` が、同じ URI と suite を持つ（apt は 1 つのソースに 2 つの鍵を認めない）。宣言を 1 つにするか、同じにする |
+| MAM-GRAPH-0110 | 同じものへの宣言が矛盾している。同じ node の同じ unit（`nginx` と `nginx.service` は同じ）を、`enabled`・`running` を変えて 2 回宣言した。k3s を宣言した（`NodeK3s`）node で、k3s の service を `running=false` にした。同じ node の 2 つの `NodeAptRepo` が、同じ URI と suite を持つ（apt は 1 つのソースに 2 つの鍵を認めない）。同じ node で、`NodeFile`・`NodeArtifact` の path が宣言した `NodeUser` の home の中にある（home はそのユーザーのもので、root が置いたものを置き換えられる）、home がほかのユーザーの home の中（外）にある、home がファイルの path かその下にある。宣言を 1 つにするか、同じにする（home の中のものは、`/etc/<app>` や `/srv/<app>` など home の外に置く） |
 
 ## MAM-GRAPH — 警告（拒否ではない）
 
@@ -148,12 +148,12 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0141 | `NodeFile` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする。同じ宣言の `NodeUser` が作るユーザー（とその名前のグループ）なら、MAM-PLAN-0143 の待ちになる |
 | MAM-PLAN-0142 | サービスの起動が、そのサービスを `restart` に挙げた `NodeFile` が書かれるのを待つ（設定を置いてから起動する） |
 | MAM-PLAN-0143 | `NodeFile` の owner または group を、同じ宣言の `NodeUser` が作る（ユーザーと、その名前のグループ）ので、それを待つ |
-| MAM-PLAN-0144 | 予約（linux 拡張。NodeFile） |
+| MAM-PLAN-0144 | 警告（`NodeFile`、`NodeArtifact`）。書くファイルの上のディレクトリを、root とファイルの所有者のほかのユーザーが変えられる（そのユーザーのディレクトリ、グループか誰でも書けるディレクトリ。mamelet が上のディレクトリの mode と所有者を報告する）。そのユーザーは、Mamela が置いたものを置き換えたり、先に別のものを置いたりできる。root だけが変えられるディレクトリの下（`/etc/<app>`、`/opt/<app>`）に置くか、手でディレクトリを root のものにする（`chown root:root`、`chmod go-w`）。plan の状態も操作も変えない |
 | MAM-PLAN-0145 | mamelet からのユーザー（`NodeUser`）の報告を待つ。宣言を変えた直後に、グループ・shell・uid・SSH の鍵の報告を待つときもこれ |
-| MAM-PLAN-0146 | ノードのユーザーが、Mamela が変えないところで宣言と違う、または作れない（Blocked）。uid が宣言と違う（Mamela は uid を変えない。ファイルは古い uid のまま残る）、home が宣言と違う（home を動かさない）、uid が 0（root は扱わない）、作るときに宣言した uid をほかのユーザーが持っている、ユーザーの名前のグループがすでにある（`useradd` はその名前のグループを作る）。宣言を合わせるか、`uid`・`home` を省く（作るときにだけ使う） |
+| MAM-PLAN-0146 | ノードのユーザーが、Mamela が変えないところで宣言と違う、または作れない（Blocked）。uid が宣言と違う（Mamela は uid を変えない。ファイルは古い uid のまま残る）、home が宣言と違う（home を動かさない）、uid が 0（root は扱わない）、作るときに宣言した uid をほかのユーザーが持っている、ユーザーの名前のグループがすでにある（`useradd` はその名前のグループを作る）、作るときの home（`/home/<name>` や宣言した `home`）にすでに何かある（ほかのユーザーのディレクトリなど。`useradd --create-home` はあるディレクトリをそのまま home にし、警告するだけで所有者を変えない。mamelet も作らずに断る）。宣言を合わせるか、`uid`・`home` を省く（作るときにだけ使う）。home がすでにあるときは、別の home を宣言するか、要らなければ手でそのディレクトリを消す・動かす |
 | MAM-PLAN-0147 | ユーザーの `groups` のグループ、または shell が、ノードにない。同じノードの `NodePackage` がまだ入っていなければ、それが作るかもしれないので待つ（Waiting。`docker-ce` が `docker` を作るように）。そうでなければ Blocked。作るパッケージを宣言するか、手で作るか、shell を変える |
 | MAM-PLAN-0148 | 警告。ノードのユーザーに、宣言にないものがある。宣言にない補助グループ（Mamela はグループから外さないので残る）、宣言の `system` と違うこと（uid が 1000 未満かで判断する。作るときにだけ使うので変えない）。plan の状態も操作も変えない |
-| MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
+| MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。mamelet は 1 つのファイルの鍵を 65 個まで（同じ鍵は 1 度）報告し、残りは数だけを報告する（plan は「N more keys」と示す）。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
 | MAM-PLAN-0150 | mamelet からの APT のソース（`NodeAptRepo`）の報告を待つ |
 | MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が in sync になる（ファイルが揃い、apt がそれを読む）のを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す |
 | MAM-PLAN-0152 | `NodeAptRepo` のファイルは揃っているが、apt がまだそのソースを読んでいない（`/var/lib/apt/lists` にリリースファイルがない）。apt-get update が失敗したか、まだ走っていない。承認した plan をもう一度 apply するか、この plan を承認すると、update をやり直す。失敗の理由は前の試みの結果にある |
@@ -171,14 +171,15 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0202 | mamelet がパッケージを観測・シミュレーションできない（Blocked。例: apt source にない） |
 | MAM-PLAN-0204 | mamelet が k3s を観測できない（Blocked。例: unit が手で変えられた） |
 | MAM-PLAN-0210 | mamelet は、その path にファイルを書かない（Blocked）。path がシンボリックリンク・ディレクトリ・デバイス、または上のディレクトリがリンクかディレクトリでない。Mamela はリンクをたどらない。本当の path を宣言するか、手で置き換える |
-| MAM-PLAN-0211 | mamelet がファイルを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
-| MAM-PLAN-0212 | mamelet は、そのユーザーの SSH の鍵を書かない（Blocked）。`~/.ssh` か `authorized_keys` か home がシンボリックリンク、または home がない。Mamela はリンクをたどらない。手でディレクトリに置き換える（home を作る）か、`authorizedKeys` を省く |
-| MAM-PLAN-0213 | mamelet がユーザーを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がユーザーや home を断ったときもこれ。home が `/etc` の下など） |
+| MAM-PLAN-0211 | mamelet がファイルを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ）。mamelet の linux の報告が 512 KiB を超えるときは、詳しいことを除いて、それぞれに理由だけを書くので、これになる |
+| MAM-PLAN-0212 | mamelet は、そのユーザーの SSH の鍵を書かない（Blocked）。`~/.ssh` か `authorized_keys` か home がシンボリックリンク、home がない、または home がそのユーザーのものでない・`~/.ssh` がそのユーザーか root のものでない（ほかのユーザーの home。mamelet はそこに書かず、chown もしない。手で home を分けるか、そのユーザーのものにする）。Mamela はリンクをたどらない。手でディレクトリに置き換える（home を作る）か、`authorizedKeys` を省く |
+| MAM-PLAN-0213 | mamelet がユーザーを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がユーザーや home を断ったときもこれ。home が `/etc` の下など）。mamelet の linux の報告が 512 KiB を超えるときは、詳しいことを除いて、それぞれに理由だけを書くので、これになる |
 | MAM-PLAN-0214 | mamelet は、`NodeAptRepo` のソースか鍵の path に書かない（Blocked）。path かその上のディレクトリがシンボリックリンク、または path がディレクトリ。`mamela-*` のソースと鍵は Mamela のもので、手で置き換える |
-| MAM-PLAN-0215 | mamelet が `NodeAptRepo` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がソースの値を断ったときもこれ） |
+| MAM-PLAN-0215 | mamelet が `NodeAptRepo` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がソースの値を断ったときもこれ）。ノードの APT のソースのファイル（`sources.list`、`sources.list.d` の `.list`・`.sources`）に mamelet が読めないもの（行き先のないリンク、通常のファイルでないもの、1 MiB を超えるもの）があるときもこれ。apt はそれを読むので、mamelet は同じ URI と suite を持つかを確かめられず、判断しない（fail closed）。読める通常のファイルにするか、消す |
 | MAM-PLAN-0216 | mamelet は、その path に `NodeArtifact` を置かない（Blocked）。path がシンボリックリンク・ディレクトリ・デバイス、または上のディレクトリがリンクかディレクトリでない。本当の path を宣言するか、手で置き換える |
-| MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
-| MAM-PLAN-0218〜0219 | 予約（linux 拡張の観測の問題） |
+| MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ）。mamelet の linux の報告が 512 KiB を超えるときは、詳しいことを除いて、それぞれに理由だけを書くので、これになる |
+| MAM-PLAN-0218 | `NodeFile`・`NodeArtifact` のファイルは宣言どおりだが、書いたあとの `daemon-reload` か `restart` のサービスの再起動が終わっていない（失敗した、または途中で mamelet が止まった）。mamelet は、書いたファイルのあとに残っていることを状態ディレクトリに記録し、ファイルが書いたときのままの間、報告する。plan は in sync とせず、もう一度承認を求める（承認すると、mamelet はファイルを書き直さず、残りを行う）。前の試みの結果に理由がある |
+| MAM-PLAN-0219 | 予約（linux 拡張の観測の問題） |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306 が詳しい） |
 | MAM-PLAN-0302 | 現在の宣言にないが、別の宣言（stack）が作った物なので保持する（ADR 0013）。作った宣言から消す |
