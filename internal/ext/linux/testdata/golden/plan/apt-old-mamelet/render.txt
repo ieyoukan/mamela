@@ -1,15 +1,15 @@
-Plan sha256:33b56150f236
+Plan sha256:5b919d29a09e
   revision  sha256:ca5b33fa4073
   observed  2026-11-17T12:01:00Z (snapshot sha256:b06149ec2c59)
   policy    sha256:b2ad900beffb
 
-. NodePackage web/docker-ce  [waiting]
-    MAM-PLAN-0151 waits for APT source docker on web to be in place and read by apt before docker-ce is installed: the package may come from it
-      hint: apply the plan that adds the source; the next plan installs the package, with what apt would change (mamelacd with sync = "push" applies it at its next poll; otherwise approve that plan too)
+! NodePackage web/docker-ce  [blocked]
+    MAM-PLAN-0202 the agent on web cannot observe docker-ce: simulate: /usr/bin/apt-get -s install docker-ce: exit 100: E: Unable to locate package docker-ce
+      hint: fix the cause on the node (for example apt sources), then plan again
 = TestVM web  [in sync]  via test
 ! NodeAptRepo web/apt-repo/docker  [blocked]
     MAM-PLAN-0122 mamelet on node web runs 0.9.2, which does not carry out the linux extension (mamelet 0.10.0 and later do): Mamela gives the node nothing of it
       hint: update mamelet on web first, to 0.10.0 or later: put it at the site's controlplane.mamelet_binary, declare it with Mamela.mamelet and apply (docs/mamelet-update.md; a Control Plane is updated before its mamelets); then plan again
 
-Summary: 1 waiting, 1 blocked, 1 in sync.
+Summary: 2 blocked, 1 in sync.
 Nothing has been changed: a plan only describes.

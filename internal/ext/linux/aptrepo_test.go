@@ -2,6 +2,7 @@ package linux
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -202,6 +203,25 @@ func TestAptRepoConflicts(t *testing.T) {
 		aptRes("db/apt-repo/docker", strings.Replace(dockerSpec(""), `"node":"web"`, `"node":"db"`, 1)) + `]}`))
 	if err != nil || len(g.Resources) != 4 {
 		t.Errorf("two nodes: %v", err)
+	}
+	// A file of the declaration that apt reads as a source and names the same URI and suite: mamelet
+	// would find it only once the file is written. Any other file, or another suite, is no conflict.
+	for name, c := range map[string]struct {
+		path, content string
+		conflict      bool
+	}{
+		"a .list":           {"/etc/apt/sources.list.d/docker.list", "deb [arch=amd64] https://download.docker.com/linux/ubuntu/ noble stable\n", true},
+		"a .sources":        {"/etc/apt/sources.list.d/docker.sources", "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\n", true},
+		"sources.list":      {"/etc/apt/sources.list", "# Docker\ndeb https://download.docker.com/linux/ubuntu noble stable\n", true},
+		"another suite":     {"/etc/apt/sources.list.d/docker.list", "deb https://download.docker.com/linux/ubuntu jammy stable\n", false},
+		"not apt's":         {"/etc/apt/docker.list.bak", "deb https://download.docker.com/linux/ubuntu noble stable\n", false},
+		"a commented entry": {"/etc/apt/sources.list.d/docker.list", "# deb https://download.docker.com/linux/ubuntu noble stable\n", false},
+	} {
+		file := fileRes("web/file"+c.path, fmt.Sprintf(`{"node":"web","path":%q,"content":%q}`, c.path, c.content))
+		_, err := decodeGraph(dockerRepo, file)
+		if got := err != nil && strings.Contains(err.Error(), "a source of NodeAptRepo web/apt-repo/docker on web too"); got != c.conflict {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }
 

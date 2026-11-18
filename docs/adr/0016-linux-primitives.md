@@ -28,7 +28,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 
 - 拡張は、k3s と同じにコンパイル時に組み込む（`internal/ext/linux`、`cmd/mamela` と `cmd/mamelet` の blank import）。実行時に読み込むプラグインはない。
 - `NodePackage` と `NodeService` は核に残す。linux は、パッケージの導入が待つもの（`PackageGate`、NodeAptRepo のため）と、サービスの起動が待つもの（`StartGate`、`restart` に挙げたファイル）で関わる。
-- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。理由コードと操作の名前の範囲も、kind ごとに予約した（`internal/ext/linux/doc.go`）。
+- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。理由コードの範囲も kind ごとに予約した（`internal/ext/linux/codes.go`。操作の名前は `doc.go`）。
 
 ### 2. 任意のシェルはない
 
@@ -41,17 +41,29 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 
 linux は、wire の汎用の形（段 5）を使う最初の拡張である。revision の `ext.linux`、報告の `ext.linux`。
 
-- mamelet は、受け取る拡張と、その部分の版を報告に書く（`extensions: {"linux": 1}`）。CP は、ノードの最新の報告が linux を挙げているときだけ、revision に `ext.linux` を入れる。0.9.x の mamelet（revision を、知らないメンバーを拒んで読む）は `ext` を受け取らず、そのまま動き続ける。
-- そのノードの linux の資源は、plan で Blocked になる（MAM-PLAN-0122）。メッセージは、動いている mamelet の版と、更新の仕方（`Mamela.mamelet`、[mamelet の更新](../mamelet-update.md)）を言う。承認しても、grant は出さない（MAM-NODE-0104）。
+- mamelet は、受け取る拡張と、その部分の版を報告に書く（`extensions: {"linux": 1}`）。CP は、ノードの最新の報告が linux をその版以上で挙げているときだけ、revision に `ext.linux` を入れる。判定は一つの関数（`noderev.Takes`）で、Publish、grant、`mamela serve` が配るときに同じものを使う。使う報告は、ノードのいまの登録（VMID と登録の時刻）のものだけ（`store.CurrentNodeReport`。登録し直した 0.9.x の mamelet が、前の mamelet の報告で `ext` を受け取らない）。0.9.x の mamelet（revision を、知らないメンバーを拒んで読む）は `ext` を受け取らず、そのまま動き続ける。
+- そのノードの linux の資源は、plan で Blocked になる（MAM-PLAN-0122）。メッセージは、動いている mamelet の版と、更新の仕方（`Mamela.mamelet`、[mamelet の更新](../mamelet-update.md)）を言う。承認しても、grant は出さない（MAM-NODE-0104）。ただし、同じ宣言がそのノードの mamelet を更新するとき（`NodeMamelet` が同じ plan で change、または 1 台ずつの順番待ち）は、Blocked でなく Waiting（MAM-PLAN-0123）にする。それが文書の手順（更新と資源を一度に宣言する）で、plan に Blocked があると mamelacd の `sync = "push"` は承認せず、更新そのものが走らないからである。
 - 二重の防御として、mamelet は、知らない拡張の部分と、拡張が読めない部分だけを断り（報告の `extRefused`）、残りの revision を続ける。
 
 ### 4. 更新は CP が先、mamelet があと
 
 新しい CP は、旧い報告（`extensions` なし）も新しい報告も読む。旧い CP は、新しい mamelet の報告を、知らないメンバーとして拒む。だから CP を先に更新し、そのあと mamelet を（mamelet の更新の仕組みで）更新する。linux を受け取る mamelet は 0.10.0 から（`internal/mamelet/release.go`）。
 
+**この更新は、そのままでは戻せない。** 0.10.0 の mamelet が一度報告するか、`ext` のある revision が DB に入ると、0.3.x の CP（DB の報告と revision を、知らないメンバーを拒んで読む）は、それを読めず、観測（Observe）が失敗し、すべての plan が止まる。だから CP を更新する**前に** `mamela backup` を取る。戻し方は [復旧](../recovery.md) の 8（更新前のバックアップを戻すか、最小の手で DB から読めないものを除く）。0.4.0 からの CP は、DB の報告と revision を、知らないメンバーを拒まずに読む（`internal/store/nodes.go`。届いた報告は今までどおり厳しく読む）ので、0.4.0 より後の版から 0.4.0 に戻すときは、これは起きない。
+
 ### 5. 宣言から外したものは残す（この版の制限）
 
-宣言から `NodeFile` を外しても、ファイルはノードに残る（`NodeArtifact` も同じ。MAM-PLAN-0313）。plan は、それを retained（MAM-PLAN-0310）で示し、apply のあと mamelet は観測しなくなる。消すのは手で。`NodeUser` も同じで、ユーザーはグループ・home・鍵とともに残る（MAM-PLAN-0311）。グループから外すこと、uid と home を変えることもしない（ユーザーのファイルの所有者が古いままになる）。ADR 0013 の削除（その宣言が作ったものだけ、ホストでの承認）は provider の資源のもので、ノードの中のものには、まだ広げない。誰が作ったファイルか（パッケージが置いた設定を上書きしたのか、新しく作ったのか）を記録してからでないと、消してよいかを決められないからである。
+宣言から `NodeFile` を外しても、ファイルはノードに残る（`NodeArtifact` も同じ。MAM-PLAN-0313）。plan は、それを retained（MAM-PLAN-0310）で示し、apply のあと mamelet は観測しなくなる。retained で示すのは、いま効いている宣言（最後に apply した plan の宣言、または承認した操作の宣言。revision の部分の `inForce`）が持つものだけで、ほかの宣言（PR）が plan しただけのものは示さない（Mamela が書いたかもしれないものだけが「残る」）。消すのは手で。`NodeUser` も同じで、ユーザーはグループ・home・鍵とともに残る（MAM-PLAN-0311）。グループから外すこと、uid と home を変えることもしない（ユーザーのファイルの所有者が古いままになる）。ADR 0013 の削除（その宣言が作ったものだけ、ホストでの承認）は provider の資源のもので、ノードの中のものには、まだ広げない。誰が作ったファイルか（パッケージが置いた設定を上書きしたのか、新しく作ったのか）を記録してからでないと、消してよいかを決められないからである。
+
+### 5a. 観測の対象は宣言の和、許可は承認した値だけ、書く前に比べる（2026-11-18）
+
+Control Plane は、承認していない宣言（PR、ブランチ）からも plan を作り、そのたびにノードの revision に観測の対象を足す（`node.Publish`）。mamelacd は PR と main を交互に plan する。
+
+- **観測の対象は和にする。** revision の各項目が mamelet に観測させるもの（所有者・グループの有無、ユーザーの shell・uid・作る home・グループ・鍵、APT のソースの URI と suite）は、plan したすべての宣言の和（重複なし、整列）。上の宣言で置き換えると、交互の plan のたびに revision が変わり（serial が上がり、`node_revisions` に写しが溜まる）、plan が互いの報告待ちで揺れた。和なら、両方が一度ずつ plan したあと、revision は変わらない。観測は、どの対象について計算したかを言う（所有者は名前ごとの有無、APT のソースは URI と suite の組ごとの `where`）。plan は自分の宣言の対象の観測だけを使い、なければ報告を待つ（ほかの宣言の URI で計算した `Unread` で in sync と言わない）。
+- **和は限られ、apply で戻る。** 1 つの一覧が 16 を超えるなら、plan した宣言のものだけにする。承認されていない宣言だけが足した項目（許可も `inForce` もない）が 1 種別 64 を超えるなら、その宣言にないものを除く。承認した plan の apply（`node.Prune`）は、対象をその宣言のものだけに戻す（ほかの宣言のものは、その次の plan で戻る）。
+- **許可は自分で完結する。** grant（書く・入れる・足す・ユーザーの変更）は、mamelet がすることに要る値をすべて持ち、mamelet は観測の対象と比べない。だから、ほかの宣言の plan が観測の対象を変えても、apply が配っている grant は消えず、そのまま行われる（以前は、ユーザーの観測の対象を置き換えると grant も消え、apply は 10 分後に結果不明で終わった）。
+- **書く前に比べる（compare and swap）。** grant は、承認した plan の観測が見た前の状態（ファイルの sha256 か、ないこと。ユーザーの有無・shell・`authorized_keys`。ソースと鍵の 3 つのファイル）を持つ。mamelet は、ノードがまだその状態か、すでに承認した後の状態のときだけ行い、そうでなければ理由を言って断る（「plan のあとで変わった」。次の plan が、いまの状態を示す）。承認したある状態への変更が、ほかの状態（人の手、別の apply）を上書きしない。
+- **apply は古い grant を取り下げる。** 承認した plan の apply（`node.Prune`）は、その宣言と値の違う grant（v2 を書く grant が残っているのに、宣言が v1 に戻った）を取り下げる。残る隙: 結果不明で終わった apply の grant は、期限（待ち時間＋`GrantGrace`、最大で約 25 分、承認の期限まで）まで有効で、そのあいだに宣言を戻しても、それが in sync の plan だけなら apply は走らず、取り下げられない。戻した宣言の plan を（変化がなくても）承認して apply すれば、そこで取り下がる（`mamela approve <digest>` と `mamela apply`）。mamelet が戻ったとき、ノードがまだ前の状態なら、compare and swap は通る（上書きするのは、承認した前の状態だけ）。
 
 ### 6. 秘密は範囲の外
 
@@ -72,7 +84,7 @@ mamelet は root で動き、観測する path はユーザーが変えられる
 - **一度だけの許可と中断:** SIGTERM で中断した試みは、失敗として記録しない（許可が有効な間、次の周に続ける。どの試みも、中断のあとにやり直せるように作ってある）。書いたあとの `daemon-reload` と再起動が終わらなければ、mamelet はそれを状態ディレクトリに記録して報告し、plan はもう一度承認を求める（MAM-PLAN-0218）。許可なしに再起動をやり直すことはしない。
 - **大きさ:** 1 つのノードの部品の数（ファイル 256、ユーザー 64、ソース 32、artifact 64）、報告する鍵の数（65）、linux の報告（512 KiB。超えれば、詳しいことを除いて理由だけを送る）に上限を置く。ノードの上のものが報告を Control Plane の上限（1 MiB）より大きくし、ノードが止まったように見えることがないように。artifact は、変わったとき（inode・大きさ・mtime・ctime）だけ計り直す。書く前とダウンロードの前に、ファイルシステムの空きを確かめる。
 
-ここで足した報告と revision のメンバー（`exposed`、`pending`、`newHome`、`notOwned`、`more`、ユーザーの `home`、`error`）は、linux の部分の版（`Version` 1）を上げずに足した。linux を受け取る mamelet 0.10.0 は、まだリリースしていない（タグがない）からである。リリースのあとに足すものは版を上げる。
+ここで足した報告と revision のメンバー（`exposed`、`pending`、`newHomes`、`notOwned`、`more`、ユーザーの `homes`、`error`）は、linux の部分の版（`Version` 1）を上げずに足した（作る home は 5a の観測の対象の和で、`homes` と、home ごとの `newHomes`。形は `internal/ext/linux/testdata/wire/v1.txt`）。linux を受け取る mamelet 0.10.0 は、まだリリースしていない（タグがない）からである。リリースのあとに足すものは版を上げる。
 
 ## 結果
 

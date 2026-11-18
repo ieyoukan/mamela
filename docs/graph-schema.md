@@ -192,11 +192,11 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 | `name` | string | `<node>/user/<name>`（`web/user/deploy`） |
 | `spec.node` | string | 同じ Graph のノード（provider のマシン） |
 | `spec.name` | string | ユーザー名（`[a-z_][a-z0-9_-]`、32 字まで）。`root` は不可（Mamela は root を扱わない） |
-| `spec.system` | bool | 省略できる（既定 `false`）。`true` なら system ユーザーとして作る（`useradd --system`）。作るときにだけ使う。あるユーザーと違っても変えず、警告する（MAM-PLAN-0148。uid が 1000 未満かで判断する） |
+| `spec.system` | bool | 省略できる（既定 `false`）。`true` なら system ユーザーとして作る（`useradd --system`）。作るときにだけ使う。あるユーザーと違っても変えず、警告する（MAM-PLAN-0148。uid が 1000 未満かで判断する。`uid` を宣言したユーザーには警告しない: system かどうかは宣言した uid が決め、毎回の plan で同じことを言うだけになるため） |
 | `spec.uid` | 整数 | 省略できる（`useradd` が選ぶ）。1 以上（0 は root のもので不可）、2^31−1 まで。作るときにだけ使う。あるユーザーの uid と違えば Blocked（MAM-PLAN-0146。uid は変えない） |
-| `spec.shell` | string | 省略できる。絶対 path。宣言すれば、あるユーザーの shell も変える（`usermod --shell`）。省略すると、作るときだけ `/bin/bash`（system ユーザーは `/usr/sbin/nologin`）で、あるユーザーの shell は変えない。ノードに実行できるファイルとしてなければ、待つか Blocked（MAM-PLAN-0147） |
-| `spec.home` | string | 省略できる（ふつうのユーザーは `/home/<name>` を作る。system ユーザーは `useradd` の既定で、作らない。ただし `authorizedKeys` があれば作る）。絶対 path で、`/` の直下でないもの。`/etc`、`/usr`、`/root`、`/tmp`、`/var/tmp`、`/run`、`/boot` などシステムの場所の下は不可。作るときにだけ使う。あるユーザーの home と違えば Blocked（MAM-PLAN-0146。home は動かさない） |
-| `spec.groups` | string の配列 | 省略できる。補助グループ（グループ名の規則はユーザー名と同じ。重複は不可）。Mamela は足りないグループに入れ（`usermod --append --groups`）、**外さない**。宣言にないグループに入っていれば、plan が警告する（MAM-PLAN-0148）。メンバーが root になれるグループ（`sudo`、`docker` など）は警告（MAM-GRAPH-0206） |
+| `spec.shell` | string | 省略できる。絶対 path（空の文字列は不可。省くのと区別できないため）。宣言すれば、あるユーザーの shell も変える（`usermod --shell`）。省略すると、作るときだけ `/bin/bash`（system ユーザーは `/usr/sbin/nologin`）で、あるユーザーの shell は変えない。ノードに実行できるファイルとしてなければ、待つか Blocked（MAM-PLAN-0147） |
+| `spec.home` | string | 省略できる（ふつうのユーザーは `/home/<name>` を作る。system ユーザーは `useradd` の既定で、作らない。ただし `authorizedKeys` があれば作る）。空の文字列は不可。絶対 path で、`/` の直下でないもの。`/etc`、`/usr`、`/root`、`/tmp`、`/var/tmp`、`/run`、`/boot` などシステムの場所の下は不可。作るときにだけ使う。あるユーザーの home と違えば Blocked（MAM-PLAN-0146。home は動かさない） |
+| `spec.groups` | string の配列 | 省略できる。補助グループ（グループ名の規則はユーザー名と同じ。重複は不可。ユーザー自身の名前のグループは不可: `useradd` がそれを主グループとして作り、その名前のグループがあると作らないので、ユーザーが作られなくなる）。Mamela は足りないグループに入れ（`usermod --append --groups`）、**外さない**。宣言にないグループに入っていれば、plan が警告する（MAM-PLAN-0148）。メンバーが root になれるグループ（`sudo`、`docker` など）は警告（MAM-GRAPH-0206） |
 | `spec.authorizedKeys` | string の配列 | 省略できる（Mamela は `authorized_keys` に触れない）。あれば `~/.ssh/authorized_keys` は、この行だけを宣言の順に持つ。空の配列は不可（扱うのをやめるなら、メンバーを省く）。64 行まで。各行は `ssh-keygen` が書く公開鍵 `<type> <base64> [comment]`。type は `ssh-ed25519`、`sk-ssh-ed25519@openssh.com`、`ecdsa-sha2-nistp256`／`384`／`521`、`sk-ecdsa-sha2-nistp256@openssh.com`、`ssh-rsa`。base64 が復号でき、中の type が行の type と同じこと。空白は 1 つずつ。comment に制御文字は不可。行頭のオプション（`command=`、`from=`、`restrict` など）はこの版では不可。同じ鍵（fingerprint）の重複は不可 |
 
 - **同じノードで:** 同じユーザーを 2 度宣言すると MAM-GRAPH-0102。2 人のユーザーが同じ `uid`、同じ home を持つ、home がほかのユーザーの home の中にある、`NodeFile`・`NodeArtifact` の path が home の中にあると MAM-GRAPH-0110。1 つのノードの `NodeUser` は 64 人まで。
@@ -226,7 +226,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 | `spec.keySha256` | string | 取得したままの鍵ファイルの sha256（小文字の 16 進 64 桁。取得したファイルを `sha256sum` したもの） |
 
 - **行を足せない:** 値は狭い形だけを通す。空白・改行・制御文字・`#`・`$`・`[` を含められないので、どの値も、ソースのファイルに行やオプション（別の `Signed-By`、`trusted=yes`）を足せない。それぞれの配列で同じ値を 2 度書けない。
-- **同じソースを 2 度宣言しない:** 同じノードの 2 つの NodeAptRepo が同じ URI（末尾の `/` は区別しない）と suite を持つと MAM-GRAPH-0110。apt は 1 つのソースに 2 つの鍵を認めず、すべてのソースを読まなくなるため。
+- **同じソースを 2 度宣言しない:** 同じノードの 2 つの NodeAptRepo が同じ URI（末尾の `/` は区別しない）と suite を持つと MAM-GRAPH-0110。apt は 1 つのソースに 2 つの鍵を認めず、すべてのソースを読まなくなるため。同じノードの `NodeFile` が、apt がソースとして読むファイル（`/etc/apt/sources.list`、`/etc/apt/sources.list.d/*.list`・`*.sources`）で、NodeAptRepo の URI と suite を書くときも MAM-GRAPH-0110（mamelet は、そのファイルを書いたあとで初めて見つけ、ソースを断る）。
 - **書くもの:** 鍵は `/etc/apt/keyrings/mamela-<name>.asc`（ASCII armor の鍵）か `/etc/apt/keyrings/mamela-<name>.gpg`（バイナリの鍵）、ソースは `/etc/apt/sources.list.d/mamela-<name>.sources`（deb822）。どちらも 0644、root の所有で、`/etc/apt/keyrings` がなければ 0755 で作る。`mamela-*` の名前は NodeAptRepo のもので、`NodeFile` は書けない。ファイルは Go の 1 つの関数（`AptSources`）が描き、Control Plane（plan の表示と、比べる sha256）と mamelet（書き込み）が同じものを使う:
 
   ```

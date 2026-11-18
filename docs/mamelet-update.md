@@ -12,7 +12,7 @@ mamelet（各マシンのエージェント）の版は、宣言で固定し（`
 
 先に新しい Control Plane（`mamela`、`mamela serve`）にしてから、mamelet を更新する（新しい mamelet の報告は、古い Control Plane が読めない）。0.3.2 の mamelet は、証明書を自分で更新する。古い Control Plane は更新の要求を知らない（404）が、mamelet は何もせずに動き続ける。更新できない古い mamelet は、登録から 1 年で切れる（30 日前から CP のログと plan が警告する。[recovery.md](recovery.md) の 6）。
 
-mamelet 0.10.0（Mamela 0.4.0）から、報告が受け取る拡張を挙げる（`extensions`。ADR 0016 の能力の申告）。これも Control Plane を先に更新する。新しい Control Plane は、0.9.x の mamelet の報告を読み、その revision に拡張の部分（`ext`）を入れない（0.9.x はそのまま動く）。そのノードに宣言した linux の資源（`NodeFile` など）は、plan で Blocked（MAM-PLAN-0122）になり、動いている mamelet の版を示す。宣言で 0.10.0 に更新すると、次の plan から扱われる。mamelet の版は `scripts/build-mamelet.sh` が `0.10.0+<commit>` の形にする（`internal/mamelet/release.go` の `Release`）。
+mamelet 0.10.0（Mamela 0.4.0）から、報告が受け取る拡張を挙げる（`extensions`。ADR 0016 の能力の申告）。これも Control Plane を先に更新する。新しい Control Plane は、0.9.x の mamelet の報告を読み、その revision に拡張の部分（`ext`）を入れない（0.9.x はそのまま動く）。そのノードに宣言した linux の資源（`NodeFile` など）は、plan で Blocked（MAM-PLAN-0122）になり、動いている mamelet の版を示す。宣言で 0.10.0 に更新すると、次の plan から扱われる。更新（`Mamela.mamelet`）と linux の資源を同じ宣言に書いたときは、資源は Blocked でなく、その更新を待つ（Waiting、MAM-PLAN-0123）。plan に Blocked がないので、mamelacd の `sync = "push"` も更新を承認して apply する。mamelet の版は `scripts/build-mamelet.sh` が `0.10.0+<commit>` の形にする（`internal/mamelet/release.go` の `Release`）。**Control Plane を 0.4.0 に更新する前に `mamela backup` を取る。** 0.10.0 の mamelet が一度報告すると、0.3.x の Control Plane は DB の報告と revision を読めない（戻し方は [復旧](recovery.md) の 8）。
 
 0.3.2 から、許可（承認した操作を mamelet に許す印）には期限がある。Control Plane を更新する時点で進行中だった apply の許可（期限を持たない）は配られなくなるので、その apply は結果不明で止まる。更新のあとにもう一度 apply する。revision の形は変わらない（期限は Control Plane の中だけにあり、署名する内容に入らない）ので、古い mamelet はそのまま revision を読める。
 

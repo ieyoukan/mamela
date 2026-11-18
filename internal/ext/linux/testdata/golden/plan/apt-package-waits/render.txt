@@ -1,6 +1,6 @@
-Plan sha256:f33228379c59
+Plan sha256:6b2d578a313e
   revision  sha256:ca5b33fa4073
-  observed  2026-11-17T12:01:00Z (snapshot sha256:29f4f68c63a3)
+  observed  2026-11-17T12:01:00Z (snapshot sha256:2143a683353c)
   policy    sha256:b2ad900beffb
 
 . NodePackage web/docker-ce  [waiting]

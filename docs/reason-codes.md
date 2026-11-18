@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/doc.go`）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/codes.go` の `reserved`。この文書の予約の行と同じであることを `codes_test.go` が確かめる）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -144,25 +144,26 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0119 | ノードの mamelet が、どの版で動いているかを報告していない。更新の仕組みより前の mamelet は報告しない。一度だけ手で置き換える（[mamelet の更新](mamelet-update.md)） |
 | MAM-PLAN-0120 | mamelet の更新は 1 台ずつ、名前の順。前のノードが宣言した版で動くまで待つ。前のノードの更新が失敗したなら、それが先に直す |
 | MAM-PLAN-0122 | ノードの mamelet が、その拡張（`linux` など、汎用の通信の形の拡張）を受け取らない（Blocked）。報告の `extensions` に拡張がない、または古い版だけ（mamelet が拡張より古い。`linux` は 0.10.0 から）か、revision の拡張の部分を断った（報告の `extRefused`。理由が出る）。Control Plane は、受け取らないノードの revision に拡張の部分を入れない（古い mamelet が revision 全体を断らないように）ので、承認しても何も起きない。先に mamelet を更新する（[mamelet の更新](mamelet-update.md)。Control Plane が先、mamelet があと） |
+| MAM-PLAN-0123 | ノードの mamelet が拡張（`linux` など）を受け取らないが、同じ plan がそのノードの mamelet を更新する（`NodeMamelet` が change か、前のノードの更新を待つ MAM-PLAN-0120）ので、拡張の資源はその更新を待つ（Waiting。[mamelet の更新](mamelet-update.md)の手順どおりに、更新と拡張の資源を一度に宣言したとき）。更新を apply すると、次の plan で拡張の資源が計画される。宣言した版のラベルが拡張の版より古い更新（`0.9.3` など）や、保護されたノードの更新（拒否される）は、拡張を持ってこないので MAM-PLAN-0122 の Blocked のまま |
 | MAM-PLAN-0140 | mamelet からのファイル（`NodeFile`）の報告を待つ。宣言を変えた直後に、所有者・グループがあるかの報告を待つときもこれ |
-| MAM-PLAN-0141 | `NodeFile` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする。同じ宣言の `NodeUser` が作るユーザー（とその名前のグループ）なら、MAM-PLAN-0143 の待ちになる |
+| MAM-PLAN-0141 | `NodeFile` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを宣言するか、`NodeUser` で宣言するか、ある owner（root など）にする。同じ宣言の `NodeUser` が作るユーザー（とその名前のグループ）や、同じノードにまだ入っていない `NodePackage` があるときは、MAM-PLAN-0143 の待ちになる |
 | MAM-PLAN-0142 | サービスの起動が、そのサービスを `restart` に挙げた `NodeFile` が書かれるのを待つ（設定を置いてから起動する） |
-| MAM-PLAN-0143 | `NodeFile` の owner または group を、同じ宣言の `NodeUser` が作る（ユーザーと、その名前のグループ）ので、それを待つ |
+| MAM-PLAN-0143 | `NodeFile` の owner または group を、同じ宣言の `NodeUser` が作る（ユーザーと、その名前のグループ）ので、それを待つ。または、同じノードに宣言した `NodePackage` がまだ入っておらず、それが作るかもしれない（`prometheus` パッケージが `prometheus` ユーザーを作るように。`NodeUser` のグループの MAM-PLAN-0147 と同じ）ので待つ。パッケージが入ってもないなら MAM-PLAN-0141 |
 | MAM-PLAN-0144 | 警告（`NodeFile`、`NodeArtifact`）。書くファイルの上のディレクトリを、root とファイルの所有者のほかのユーザーが変えられる（そのユーザーのディレクトリ、グループか誰でも書けるディレクトリ。mamelet が上のディレクトリの mode と所有者を報告する）。そのユーザーは、Mamela が置いたものを置き換えたり、先に別のものを置いたりできる。root だけが変えられるディレクトリの下（`/etc/<app>`、`/opt/<app>`）に置くか、手でディレクトリを root のものにする（`chown root:root`、`chmod go-w`）。plan の状態も操作も変えない |
 | MAM-PLAN-0145 | mamelet からのユーザー（`NodeUser`）の報告を待つ。宣言を変えた直後に、グループ・shell・uid・SSH の鍵の報告を待つときもこれ |
 | MAM-PLAN-0146 | ノードのユーザーが、Mamela が変えないところで宣言と違う、または作れない（Blocked）。uid が宣言と違う（Mamela は uid を変えない。ファイルは古い uid のまま残る）、home が宣言と違う（home を動かさない）、uid が 0（root は扱わない）、作るときに宣言した uid をほかのユーザーが持っている、ユーザーの名前のグループがすでにある（`useradd` はその名前のグループを作る）、作るときの home（`/home/<name>` や宣言した `home`）にすでに何かある（ほかのユーザーのディレクトリなど。`useradd --create-home` はあるディレクトリをそのまま home にし、警告するだけで所有者を変えない。mamelet も作らずに断る）。宣言を合わせるか、`uid`・`home` を省く（作るときにだけ使う）。home がすでにあるときは、別の home を宣言するか、要らなければ手でそのディレクトリを消す・動かす |
 | MAM-PLAN-0147 | ユーザーの `groups` のグループ、または shell が、ノードにない。同じノードの `NodePackage` がまだ入っていなければ、それが作るかもしれないので待つ（Waiting。`docker-ce` が `docker` を作るように）。そうでなければ Blocked。作るパッケージを宣言するか、手で作るか、shell を変える |
 | MAM-PLAN-0148 | 警告。ノードのユーザーに、宣言にないものがある。宣言にない補助グループ（Mamela はグループから外さないので残る）、宣言の `system` と違うこと（uid が 1000 未満かで判断する。作るときにだけ使うので変えない）。plan の状態も操作も変えない |
 | MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。mamelet は 1 つのファイルの鍵を 65 個まで（同じ鍵は 1 度）報告し、残りは数だけを報告する（plan は「N more keys」と示す）。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
-| MAM-PLAN-0150 | mamelet からの APT のソース（`NodeAptRepo`）の報告を待つ |
-| MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が in sync になる（ファイルが揃い、apt がそれを読む）のを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す |
+| MAM-PLAN-0150 | mamelet からの APT のソース（`NodeAptRepo`）の報告を待つ。宣言の URI と suite について、mamelet がまだ報告していないとき（宣言を変えた直後。ほかの宣言の URI の報告は使わない）もこれ |
+| MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が置かれ、apt がそれを読むのを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す。待たせるのは、ソースの plan がファイルを書く（apt-get update をやり直すだけではない change）か、ソースが待つ（報告、mamelet の更新）あいだだけ。Blocked のソース（衝突、リンク、読めない報告）や、ファイルは揃っているが apt が読めないソース（MAM-PLAN-0152。存在しない suite、証明書がまだない https のソース）は、パッケージを待たせない（自分の問題を示す。`ca-certificates` を入れれば読めるようになるソースが、その導入を止めない） |
 | MAM-PLAN-0152 | `NodeAptRepo` のファイルは揃っているが、apt がまだそのソースを読んでいない（`/var/lib/apt/lists` にリリースファイルがない）。apt-get update が失敗したか、まだ走っていない。承認した plan をもう一度 apply するか、この plan を承認すると、update をやり直す。失敗の理由は前の試みの結果にある |
 | MAM-PLAN-0153 | ノードのほかのソースのファイルが、`NodeAptRepo` と同じ URI と suite を持つ（Blocked）。apt は 1 つのソースに 2 つの鍵（`Signed-By`）を認めず、すべてのソースを読まなくなる。そのファイルを手で消すか、宣言しない |
 | MAM-PLAN-0154 | 予約（linux 拡張。NodeAptRepo） |
 | MAM-PLAN-0155 | mamelet からの `NodeArtifact` の報告を待つ。宣言を変えた直後に、所有者・グループがあるかの報告を待つときもこれ |
-| MAM-PLAN-0156 | `NodeArtifact` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする |
+| MAM-PLAN-0156 | `NodeArtifact` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを宣言するか、`NodeUser` で宣言するか、ある owner（root など）にする |
 | MAM-PLAN-0157 | サービスの起動が、そのサービスを `restart` に挙げた `NodeArtifact` が置かれるのを待つ（バイナリを置いてから起動する） |
-| MAM-PLAN-0158 | `NodeArtifact` の owner または group を、同じ宣言の別のリソース（NodeUser）が作るので、それを待つ |
+| MAM-PLAN-0158 | `NodeArtifact` の owner または group を、同じ宣言の別のリソース（NodeUser）が作るので、それを待つ。または、同じノードに宣言した `NodePackage` がまだ入っておらず、それが作るかもしれないので待つ（MAM-PLAN-0143 と同じ） |
 | MAM-PLAN-0159 | `NodeArtifact` の path にあるファイルは、Mamela が置いたものではない（ほかの方法で置いた、または置いたあとで変わった。mamelet の記録の sha256 と違う）。承認すると、ダウンロードしたもので置き換える。承認する前に、ノードに何があるかを確かめる（change の注記） |
 | MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
 | MAM-PLAN-0130 | ノードの mamelet が、Control Plane の revision を拒否している（Blocked）。理由は mamelet の報告のとおり。未知のメンバー（mamelet が Control Plane より古い。[mamelet の更新](mamelet-update.md)の限界）、serial の巻き戻し（Control Plane の DB を古い写しから戻した。最新の DB に戻す）、時計のずれ（ノードの時計を直す）、署名や宛先の不一致（ノードの設定）、revision の内容が不正（宣言の名前や値）。許可は revision で届くので、拒否されているあいだは、承認しても何も届かない。同じノードで同期している（in sync）ものは、そのまま。Control Plane のログにも、拒否の始まりと終わりが出る |
@@ -187,10 +188,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0304 | 現在の宣言にないが、プロバイダーにその種類を削除する操作（`removes`）がないので保持する |
 | MAM-PLAN-0305 | 現在の宣言にないが、policy の `removal = "retain"` なので保持する |
 | MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
-| MAM-PLAN-0310 | 宣言から外れた `NodeFile`。ファイルはノードにそのまま残る（Mamela はまだファイルを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で |
-| MAM-PLAN-0311 | 宣言から外れた `NodeUser`。ユーザーは、グループ・home・SSH の鍵とともにノードにそのまま残る（Mamela はユーザーを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（`userdel`） |
-| MAM-PLAN-0312 | 宣言から外れた `NodeAptRepo`。ソースと鍵はノードにそのまま残り、apt はそれを読み続ける（Mamela はまだソースを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（2 つのファイルを消して apt-get update） |
-| MAM-PLAN-0313 | 宣言から外れた `NodeArtifact`。ファイルはノードにそのまま残る（Mamela はまだ消さない）。plan を apply すると、mamelet はそれを観測しなくなる（記録は残る）。消すなら手で |
+| MAM-PLAN-0310 | 宣言から外れた `NodeFile`（いま効いている宣言、つまり最後に apply した plan の宣言が持ち、この宣言が持たない。ほかの宣言が plan しただけのものは示さない）。ファイルはノードにそのまま残る（Mamela はまだファイルを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で |
+| MAM-PLAN-0311 | 宣言から外れた `NodeUser`（MAM-PLAN-0310 と同じく、いま効いている宣言が持つもの）。ユーザーは、グループ・home・SSH の鍵とともにノードにそのまま残る（Mamela はユーザーを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（`userdel`） |
+| MAM-PLAN-0312 | 宣言から外れた `NodeAptRepo`（MAM-PLAN-0310 と同じく、いま効いている宣言が持つもの）。ソースと鍵はノードにそのまま残り、apt はそれを読み続ける（Mamela はまだソースを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（2 つのファイルを消して apt-get update） |
+| MAM-PLAN-0313 | 宣言から外れた `NodeArtifact`（MAM-PLAN-0310 と同じく、いま効いている宣言が持つもの）。ファイルはノードにそのまま残る（Mamela はまだ消さない）。plan を apply すると、mamelet はそれを観測しなくなる（記録は残る）。消すなら手で |
 | MAM-PLAN-0314〜0319 | 予約（linux 拡張の、宣言から外れたものの保持） |
 | MAM-PLAN-0307 | 現在の宣言にあるが、Mamela が別の宣言（stack）のために作った物なので、何も変えない（Blocked。その上のパッケージ・サービス・k3s は待つ）。同じ名前のリソースが 2 つの宣言にある。宣言を 1 か所にする（作った宣言から消すと、プロバイダーがその kind を削除できるなら、それは削除の plan になる）か、こちらの名前を変える |
 | MAM-PLAN-0401 | 警告。動いている k3s の版から 7 マイナー版以上戻す宣言（`v1.37.2` から `v1.30.0` など）。Kubernetes は版を戻すことを支えず、新しい版が保存したものを古い版が読めないことがある。打ち間違いなら version と sha256 を直す。本当に戻すなら、その版のときに取ったスナップショットから復旧する（Mamela はクラスタを巻き戻さない）。plan の状態も操作も変えない |

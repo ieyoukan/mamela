@@ -29,6 +29,9 @@ import (
 
 // Part is how the core reads the one-time grants in a node extension's part of a revision.
 type Part struct {
+	// Version is the version of the part this Control Plane writes: a mamelet takes the part when its
+	// report lists the extension at this version or a later one (Takes).
+	Version int
 	// Grants are the one-time grants in the part, with their deadlines. An error: the part cannot be
 	// read, and is not signed.
 	Grants func(part jsontext.Value) ([]Grant, error)
@@ -47,10 +50,40 @@ func RegisterPart(name string, p Part) {
 	if !names.Extension(name) {
 		panic(fmt.Sprintf("noderev: %q is not a name of an extension", name))
 	}
-	if _, taken := parts[name]; taken || p.Grants == nil || p.ForMamelet == nil {
-		panic(fmt.Sprintf("noderev: extension %s: a name of its own, Grants and ForMamelet are needed", name))
+	if _, taken := parts[name]; taken || p.Version < 1 || p.Grants == nil || p.ForMamelet == nil {
+		panic(fmt.Sprintf("noderev: extension %s: a name of its own, a version, Grants and ForMamelet are needed", name))
 	}
 	parts[name] = p
+}
+
+// PartVersion is the version of the part of extension name this Control Plane writes (0: it has
+// no part of that name).
+func PartVersion(name string) int { return parts[name].Version }
+
+// Takes reports whether the mamelet that sent r takes the part of extension name this Control Plane
+// writes: its report lists the extension at the part's version or a later one. It is the one test of
+// capability negotiation, for publishing a revision, granting into a part and handing a revision out
+// (r nil: no report, so nothing is taken). The report must be the node's current one (sent under its
+// current registration): an older one says what another mamelet took.
+func Takes(r *Report, name string) bool {
+	p, ok := parts[name]
+	return ok && r != nil && r.Extensions[name] >= p.Version
+}
+
+// KeepTaken takes out of the revision every extension's part the mamelet that sent r does not take
+// (Takes): such a mamelet would refuse the whole revision for a member it does not know, or the part.
+// The map is a new one: a revision copied from another shares its map.
+func (rev *Revision) KeepTaken(r *Report) {
+	var ext map[string]jsontext.Value
+	for name, part := range rev.Ext {
+		if Takes(r, name) {
+			if ext == nil {
+				ext = map[string]jsontext.Value{}
+			}
+			ext[name] = part
+		}
+	}
+	rev.Ext = ext
 }
 
 // HandOut is a one-time grant as mamelet gets it at now: nil when its deadline has passed or it has

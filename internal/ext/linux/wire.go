@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json/jsontext"
@@ -30,6 +31,13 @@ const Release = "0.10.0"
 
 // Part is the linux part of a node's revision (Revision.Ext["linux"]): what mamelet observes, and
 // the one-time grants of what it writes. The kinds that follow add members of their own.
+//
+// What an entry asks mamelet to observe (an owner's existence, a shell, the URIs of a source) are
+// observation targets, not permissions: a plan of any declaration (a pull request's too) adds its own
+// (Publish), so that the observation of each declaration is in the report whichever was planned last
+// and the revision does not change from one plan to the next; the apply of an approved plan sets them
+// to that declaration's (Prune), and a bound keeps them few (targets.go). A grant carries every value it
+// needs, so what the targets say never changes what mamelet does.
 type Part struct {
 	// Files are the files mamelet observes, by path (sorted), each with its approved write, if any.
 	Files []File `json:"files,omitempty"`
@@ -50,10 +58,14 @@ type Part struct {
 // File is a file mamelet observes, and writes once if Write grants it.
 type File struct {
 	Path string `json:"path"`
-	// Owner and Group are what mamelet reports the existence of (Observed.Users and Groups): those
-	// the declaration names. They allow nothing.
-	Owner string `json:"owner"`
-	Group string `json:"group"`
+	// Owners and Groups are the users and groups whose existence mamelet reports (Observed.Users and
+	// Groups): those the declarations name (sorted). They allow nothing.
+	Owners []string `json:"owners,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+	// InForce: the declaration in force has the file (the declaration of the plan applied last, or of
+	// an approved write). A plan of a declaration that does not have it shows it as kept (retained);
+	// what only another declaration planned is not shown at all. Mamelet does not read it.
+	InForce bool `json:"inForce,omitzero"`
 	// Write is an approved, one-time write of exactly this content, mode and owner.
 	Write *Write `json:"write,omitempty"`
 }
@@ -67,9 +79,57 @@ type Write struct {
 	Owner   string   `json:"owner"`
 	Group   string   `json:"group"`
 	Restart []string `json:"restart,omitempty"`
+	// Before is what was at the path when the approved plan was made: mamelet writes only while the
+	// file is still so, or once its content is already the approved one (compare and swap).
+	Before Before `json:"before"`
 	// Grant is the core's one-time permission: its operation and attempt (and its deadline, the
 	// Control Plane's bookkeeping, which is never sent).
 	Grant noderev.Once `json:"grant"`
+}
+
+// Before is what an approved change was planned against: what the observation the plan was made of
+// found at a path (nothing, a regular file of that sha256, or one too large to hash). Mamelet changes
+// the path only while it is still so, or once it is already as approved; otherwise it refuses, and the
+// next plan shows what is there now. A change that was approved for one state of the node never
+// overwrites another (a person's edit, another plan's apply).
+type Before struct {
+	Exists bool   `json:"exists,omitzero"`
+	SHA256 string `json:"sha256,omitempty"`
+	Large  bool   `json:"large,omitzero"`
+}
+
+// beforeOf is the before-state of what an observation found at a path.
+func beforeOf(f FileState) Before { return Before{Exists: f.Exists, SHA256: f.SHA256, Large: f.Large} }
+
+// Is reports whether the path is still as the plan saw it.
+func (b Before) Is(f FileState) bool {
+	return b.Exists == f.Exists && b.Large == f.Large && b.SHA256 == f.SHA256
+}
+
+// String is the before-state for a person ("absent", "sha256 0123456789ab", "a file too large to hash").
+func (b Before) String() string {
+	switch {
+	case !b.Exists:
+		return "absent"
+	case b.Large:
+		return "a file too large to hash"
+	case b.SHA256 == "":
+		return "not a regular file"
+	}
+	return "sha256 " + b.SHA256[:min(12, len(b.SHA256))]
+}
+
+// check says what is wrong with a before-state in a revision ("" nothing).
+func (b Before) check() string {
+	switch {
+	case !b.Exists && (b.SHA256 != "" || b.Large):
+		return "a path that does not exist has no content"
+	case b.Exists && b.Large && b.SHA256 != "":
+		return "a file too large to hash has no sha256"
+	case b.Exists && !b.Large && !names.SHA256(b.SHA256):
+		return fmt.Sprintf("%q is not a sha256", b.SHA256)
+	}
+	return ""
 }
 
 // ActionWrite is the action of a file's grant.
@@ -96,6 +156,21 @@ type Observed struct {
 	// Error says why the details were left out of the report (it would have been larger than
 	// MaxObserved): each entry then has only its path or name, and its own Error.
 	Error string `json:"error,omitempty"`
+
+	// InForce is the Control Plane's, never mamelet's: it is set from the node's revision when the
+	// Control Plane observes (annotate, targets.go), whatever a report says. It names what the
+	// declaration in force has (the entries of the part that are InForce), which a plan of a
+	// declaration that does not have them shows as kept.
+	InForce *InForce `json:"inForce,omitempty"`
+}
+
+// InForce names, by kind, what the declaration in force has on a node: files and artifacts by path,
+// users and APT sources by name (each sorted).
+type InForce struct {
+	Files     []string `json:"files,omitempty"`
+	Users     []string `json:"users,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
+	AptRepos  []string `json:"aptRepos,omitempty"`
 }
 
 // FileState is what is at a file's path.
@@ -229,7 +304,9 @@ func setPart(r *noderev.Revision, p Part) {
 	for k, v := range r.Ext {
 		ext[k] = v
 	}
-	if len(p.Files) == 0 && len(p.Users) == 0 && len(p.Artifacts) == 0 && len(p.AptRepos) == 0 {
+	// Empty is what encodes to an empty object: every member of Part is omitted when it is empty, so a
+	// kind's member counts without being named here (wire_test.go checks that each is).
+	if string(encode(p)) == "{}" {
 		delete(ext, Name)
 	} else {
 		slices.SortFunc(p.Files, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
@@ -319,8 +396,8 @@ func checkPart(raw jsontext.Value) error {
 			add("file %q appears twice", f.Path)
 		}
 		seen[f.Path] = true
-		if !ValidAccount(f.Owner) || !ValidAccount(f.Group) {
-			add("file %q: owner %q / group %q are not names of a user and a group", f.Path, f.Owner, f.Group)
+		if why := accountsProblem(f.Owners, f.Groups); why != "" {
+			add("file %q: %s", f.Path, why)
 		}
 		if w := f.Write; w != nil {
 			if err := checkWrite(*w); err != nil {
@@ -350,6 +427,9 @@ func checkWrite(w Write) error {
 	case !ValidAccount(w.Owner) || !ValidAccount(w.Group):
 		return fmt.Errorf("owner %q / group %q are not names of a user and a group", w.Owner, w.Group)
 	}
+	if why := w.Before.check(); why != "" {
+		return fmt.Errorf("what the write was planned against: %s", why)
+	}
 	if _, err := ParseMode(w.Mode); err != nil {
 		return err
 	}
@@ -362,4 +442,35 @@ func checkWrite(w Write) error {
 		}
 	}
 	return nil
+}
+
+// accountsProblem says what is wrong with the users and groups an entry asks about ("" nothing): each
+// a name, sorted, none twice, at most maxTargets.
+func accountsProblem(users, groups []string) string {
+	for _, l := range []struct {
+		what  string
+		names []string
+	}{{"owners", users}, {"groups", groups}} {
+		if why := targetsProblem(l.names, func(n string) bool { return ValidAccount(n) }); why != "" {
+			return l.what + ": " + why
+		}
+	}
+	return ""
+}
+
+// targetsProblem says what is wrong with a list of observation targets ("" nothing): each valid,
+// sorted, none twice, at most maxTargets.
+func targetsProblem[T cmp.Ordered](l []T, valid func(T) bool) string {
+	if len(l) > maxTargets {
+		return fmt.Sprintf("%d values; at most %d", len(l), maxTargets)
+	}
+	for i, v := range l {
+		if !valid(v) {
+			return fmt.Sprintf("%v is not valid", v)
+		}
+		if i > 0 && l[i-1] >= v {
+			return "not sorted, or a value twice"
+		}
+	}
+	return ""
 }

@@ -13,13 +13,34 @@ import (
 // AptRepo is an APT source mamelet observes (Part.AptRepos), and adds once if Add grants it.
 type AptRepo struct {
 	Name string `json:"name"`
-	// URIs and Suites are where apt reads the source from: mamelet reports which of them apt has no
-	// release file of yet (no apt-get update has read them), and which other source files of the node
-	// name them too. They allow nothing.
-	URIs   []string `json:"uris"`
-	Suites []string `json:"suites"`
+	// Where are where the declarations read the source from (its URIs and suites, each declaration's
+	// once: the observation targets of wire.go): of each, mamelet reports which apt has no release file
+	// of yet (no apt-get update has read them), and which other source files of the node name them too.
+	// They allow nothing.
+	Where []AptWhere `json:"where,omitempty"`
+	// InForce: the declaration in force has the source (File.InForce).
+	InForce bool `json:"inForce,omitzero"`
 	// Add is an approved, one-time addition (or change) of exactly this source and key.
 	Add *AptRepoAdd `json:"add,omitempty"`
+}
+
+// AptWhere are the URIs and suites of one declaration of a source.
+type AptWhere struct {
+	URIs   []string `json:"uris"`
+	Suites []string `json:"suites"`
+}
+
+// same reports whether two are the same URIs and suites.
+func (w AptWhere) same(o AptWhere) bool {
+	return slices.Equal(w.URIs, o.URIs) && slices.Equal(w.Suites, o.Suites)
+}
+
+// compareWhere orders the URIs and suites of a source's entry.
+func compareWhere(a, b AptWhere) int {
+	if c := slices.Compare(a.URIs, b.URIs); c != 0 {
+		return c
+	}
+	return slices.Compare(a.Suites, b.Suites)
 }
 
 // AptRepoAdd is an approved, one-time addition of an APT source: mamelet downloads the key from
@@ -35,8 +56,19 @@ type AptRepoAdd struct {
 	// SourcesSHA256 is the sha256 of the source's file the approved plan showed: mamelet renders the
 	// file from the members above, for an ASCII-armored and for a binary key, and refuses unless one of
 	// the two is it.
-	SourcesSHA256 string       `json:"sourcesSha256"`
-	Grant         noderev.Once `json:"grant"`
+	SourcesSHA256 string `json:"sourcesSha256"`
+	// Before is what the approved plan saw of the source's file and of its key's two files: mamelet
+	// writes them only while they are still so, or once the source and its key are already as approved
+	// (compare and swap).
+	Before AptRepoBefore `json:"before"`
+	Grant  noderev.Once  `json:"grant"`
+}
+
+// AptRepoBefore is what an approved addition of a source was planned against.
+type AptRepoBefore struct {
+	Sources    Before `json:"sources"`
+	KeyArmored Before `json:"keyAsc"`
+	KeyBinary  Before `json:"keyGpg"`
 }
 
 // ActionAddAptRepo is the action of a source's grant.
@@ -49,14 +81,33 @@ type AptRepoState struct {
 	Sources    FileState `json:"sources"`
 	KeyArmored FileState `json:"keyAsc"`
 	KeyBinary  FileState `json:"keyGpg"`
+	// Where are what mamelet found of each URIs and suites of the part's entry (AptRepo.Where): each
+	// says which it was computed for, so a plan uses only the one of its own declaration.
+	Where []AptWhereState `json:"where,omitempty"`
+	// Error says why it could not be observed (a name mamelet refuses included).
+	Error string `json:"error,omitempty"`
+}
+
+// AptWhereState is what mamelet found of one URIs and suites of a source.
+type AptWhereState struct {
+	AptWhere `json:",inline"`
 	// Unread are the URIs and suites ("<uri> <suite>") apt has no release file of in
 	// /var/lib/apt/lists: no apt-get update has read them (or it failed).
 	Unread []string `json:"unread,omitempty"`
-	// Conflicts are the other source files of the node that name one of its URIs and suites: apt
+	// Conflicts are the other source files of the node that name one of these URIs and suites: apt
 	// refuses one source with two keys, and then reads no source at all.
 	Conflicts []string `json:"conflicts,omitempty"`
-	// Error says why it could not be observed (a name mamelet refuses included).
-	Error string `json:"error,omitempty"`
+}
+
+// where is what mamelet found of the source for the URIs and suites w (nil: it has not looked at them
+// yet).
+func (s AptRepoState) where(w AptWhere) *AptWhereState {
+	for i := range s.Where {
+		if s.Where[i].same(w) {
+			return &s.Where[i]
+		}
+	}
+	return nil
 }
 
 // spec is the source the addition grants, as the graph declares it (no node).
@@ -114,8 +165,19 @@ func aptRepoPartProblems(p Part) []string {
 		}
 		seen[r.Name] = true
 		// What mamelet observes is checked as a declaration is.
-		for _, pr := range aptWhereProblems(r.Name, r.URIs, r.Suites) {
-			out = append(out, fmt.Sprintf("APT source %q: %s", r.Name, pr.message))
+		if len(r.Where) > maxTargets {
+			out = append(out, fmt.Sprintf("APT source %q: %d URIs and suites; at most %d", r.Name, len(r.Where), maxTargets))
+		}
+		for i, w := range r.Where {
+			if i > 0 && compareWhere(r.Where[i-1], w) >= 0 {
+				out = append(out, fmt.Sprintf("APT source %q: its URIs and suites are not sorted, or one is there twice", r.Name))
+			}
+			for _, pr := range aptWhereProblems(r.Name, w.URIs, w.Suites) {
+				out = append(out, fmt.Sprintf("APT source %q: %s", r.Name, pr.message))
+			}
+		}
+		if !ValidAptRepoName(r.Name) {
+			out = append(out, fmt.Sprintf("%q is not the name of an APT source", r.Name))
 		}
 		if a := r.Add; a != nil {
 			if err := checkAptRepoAdd(r.Name, *a); err != nil {
@@ -142,6 +204,14 @@ func checkAptRepoAdd(name string, a AptRepoAdd) error {
 	armored, binary := aptSourcesSHA256(a.spec(name))
 	if !names.SHA256(a.SourcesSHA256) || (a.SourcesSHA256 != armored && a.SourcesSHA256 != binary) {
 		return fmt.Errorf("the source's file is not the one approved (sha256 %s)", a.SourcesSHA256)
+	}
+	for _, b := range []struct {
+		what string
+		b    Before
+	}{{"the source's file", a.Before.Sources}, {"the key (.asc)", a.Before.KeyArmored}, {"the key (.gpg)", a.Before.KeyBinary}} {
+		if why := b.b.check(); why != "" {
+			return fmt.Errorf("what the plan saw of %s: %s", b.what, why)
+		}
 	}
 	return nil
 }

@@ -48,11 +48,11 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 	n, f := newUserNode(t)
 	addBob(t, n)
 	keys := KeysContent([]string{keyAlice})
-	entry := User{Name: "app", Shell: DefaultShell, UID: 5000, Home: "/home/bob", Keys: true}
+	entry := User{Name: "app", Shells: []string{DefaultShell}, UIDs: []int{5000}, Homes: []string{"/home/bob"}, Keys: true}
 	n.offer(Part{Users: []User{entry}}, nil)
 	st := userStateOf(t, observedOf(t, n.round()), "app")
-	if h := st.NewHome; h == nil || !h.Exists || h.What != "a directory" || h.Owner != "bob" || h.Path != "/home/bob" {
-		t.Fatalf("the home is reported as %+v", st.NewHome)
+	if h := st.newHome("/home/bob"); h == nil || !h.Exists || h.What != "a directory" || h.Owner != "bob" || h.Path != "/home/bob" {
+		t.Fatalf("the home is reported as %+v", st.NewHomes)
 	}
 	u := entry
 	u.Change = &UserChange{Create: &UserCreate{UID: 5000, Shell: DefaultShell, Home: "/home/bob", CreateHome: true},
@@ -78,7 +78,7 @@ func TestMameletRefusesAHomeUseraddTookAsItIs(t *testing.T) {
 	addBob(t, n)
 	write(t, filepath.Join(n.root, "home/svc/.ssh/authorized_keys"), keyBob+"\n")
 	keys := KeysContent([]string{keyAlice})
-	u := User{Name: "svc", Shell: DefaultSystemShell, UID: 990, Keys: true, Change: &UserChange{
+	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Keys: true, Change: &UserChange{
 		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, CreateHome: true},
 		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
 	n.offer(Part{Users: []User{u}}, nil)
@@ -104,8 +104,9 @@ func TestMameletDoesNotWriteKeysIntoAnotherUsersHome(t *testing.T) {
 	appendTo(t, n, "etc/passwd", "app:x:5000:5000::/home/bob:/bin/bash\n")
 	appendTo(t, n, "etc/group", "app:x:5000:\n")
 	keys := KeysContent([]string{keyAlice})
-	u := User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)},
-		Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
+	u := User{Name: "app", Shells: []string{DefaultShell}, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)},
+		Before: UserBefore{Exists: true, Shell: DefaultShell, Keys: &Before{Exists: true, SHA256: ContentSHA256(keyBob + "\n")}},
+		Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
 	before, _ := os.Stat(filepath.Join(n.root, "home/bob/.ssh"))
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
@@ -215,7 +216,7 @@ func TestMameletReportsDirectoriesOthersCanChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.Chmod(filepath.Join(n.root, "srv/shared"), 0o757)
-	n.offer(Part{Files: []File{{Path: "/srv/shared/app.conf", Owner: "root", Group: "root"}, {Path: "/etc/app.conf", Owner: "root", Group: "root"}}}, nil)
+	n.offer(Part{Files: []File{{Path: "/srv/shared/app.conf", Owners: []string{"root"}, Groups: []string{"root"}}, {Path: "/etc/app.conf", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
 	o := observedOf(t, n.round())
 	if ex := o.file("/srv/shared/app.conf").Exposed; len(ex) != 1 || ex[0].Dir != "/srv/shared" || ex[0].Mode != "0757" {
 		t.Errorf("exposed %+v", ex)
@@ -245,7 +246,7 @@ func TestMameletRemovesStaleTemporaryFiles(t *testing.T) {
 		write(t, filepath.Join(state, f), "partial")
 	}
 	write(t, filepath.Join(state, recordName), `{"artifacts":{}}`)
-	n.offer(Part{Files: []File{{Path: "/etc/app/app.conf", Owner: "root", Group: "root"}}}, nil)
+	n.offer(Part{Files: []File{{Path: "/etc/app/app.conf", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
 	n.round()
 	if n.exists("/etc/app/" + tempName("app.conf")) {
 		t.Error("the temporary file of the write is still there")
@@ -309,7 +310,7 @@ func TestExecutableFollowsAbsoluteLinks(t *testing.T) {
 	if executable(r, "/usr/bin/loop1") || executable(r, "/etc/passwd") {
 		t.Error("a loop or a file that does not run is taken as executable")
 	}
-	n.offer(Part{Users: []User{{Name: "app", Shell: "/usr/bin/ksh"}}}, nil)
+	n.offer(Part{Users: []User{{Name: "app", Shells: []string{"/usr/bin/ksh"}}}}, nil)
 	if st := userStateOf(t, observedOf(t, n.round()), "app"); !st.Shells["/usr/bin/ksh"] {
 		t.Errorf("observed %+v", st)
 	}
@@ -440,7 +441,7 @@ func TestReportStaysBoundedForAdversarialKeys(t *testing.T) {
 		appendTo(t, n, "etc/group", fmt.Sprintf("%s:x:%d:\n", u, os.Getgid()))
 		write(t, filepath.Join(n.root, "home", u, ".ssh/authorized_keys"), randomKeys(t, lines))
 	}
-	n.offer(Part{Users: []User{{Name: "app", Shell: DefaultShell, Keys: true}, {Name: "deploy", Shell: DefaultShell, Keys: true}}}, nil)
+	n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell}, Keys: true}, {Name: "deploy", Shells: []string{DefaultShell}, Keys: true}}}, nil)
 	rep := n.round()
 	if size := len(rep.Ext[Name]); size > 32<<10 {
 		t.Errorf("the linux part of the report is %d bytes", size)
@@ -521,7 +522,7 @@ func runtimeStamps() bool {
 func TestCheckPartBoundsTheCounts(t *testing.T) {
 	var p Part
 	for i := range MaxNodeFiles + 1 {
-		p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/app/%d.conf", i), Owner: "root", Group: "root"})
+		p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/app/%d.conf", i), Owners: []string{"root"}, Groups: []string{"root"}})
 	}
 	if err := checkPart(encode(p)); err == nil || !strings.Contains(err.Error(), "it names 257 files; mamelet observes at most 256") {
 		t.Errorf("%v", err)

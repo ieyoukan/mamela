@@ -135,7 +135,7 @@ func addGrant(k *keyServer, keyPath, key, op string, attempt int) AptRepo {
 	s := AptRepoSpec{Name: "docker", URIs: []string{"https://download.docker.com/linux/ubuntu"}, Suites: []string{"noble"},
 		Components: []string{"stable"}, KeyURL: k.URL + keyPath, KeySHA256: ContentSHA256(key)}
 	armored, _ := aptSourcesSHA256(s)
-	return AptRepo{Name: "docker", URIs: s.URIs, Suites: s.Suites, Add: &AptRepoAdd{URIs: s.URIs, Suites: s.Suites, Components: s.Components,
+	return AptRepo{Name: "docker", Where: []AptWhere{{URIs: s.URIs, Suites: s.Suites}}, Add: &AptRepoAdd{URIs: s.URIs, Suites: s.Suites, Components: s.Components,
 		KeyURL: s.KeyURL, KeySHA256: s.KeySHA256, SourcesSHA256: armored, Grant: noderev.Once{Operation: op, Attempt: attempt, Action: ActionAddAptRepo}}}
 }
 
@@ -177,7 +177,7 @@ func TestMameletAddsAnAptRepo(t *testing.T) {
 		t.Errorf("ran %q", apt.commands)
 	}
 	s := aptState(t, rep)
-	if !rootFile(s.Sources, ContentSHA256(want)) || !rootFile(s.KeyArmored, armoredSHA) || s.KeyBinary.Exists || len(s.Unread) != 0 || len(s.Conflicts) != 0 {
+	if !rootFile(s.Sources, ContentSHA256(want)) || !rootFile(s.KeyArmored, armoredSHA) || s.KeyBinary.Exists || len(s.Where[0].Unread) != 0 || len(s.Where[0].Conflicts) != 0 {
 		t.Errorf("observed %+v", s)
 	}
 	// Once: the next round downloads and runs nothing.
@@ -197,6 +197,7 @@ func TestMameletAddsAnAptRepoWithABinaryKey(t *testing.T) {
 	n, _, k := aptNode(t)
 	write(t, filepath.Join(n.root, "etc/apt/keyrings/mamela-docker.asc"), "an older key\n")
 	g := addGrant(k, "/binary", testKeyBinary, opA, 1)
+	g.Add.Before.KeyArmored = Before{Exists: true, SHA256: ContentSHA256("an older key\n")} // what the plan saw
 	n.offer(Part{AptRepos: []AptRepo{g}}, nil)
 	rep := n.round()
 	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone || !strings.Contains(r.Detail, "removed /etc/apt/keyrings/mamela-docker.asc") {
@@ -260,7 +261,7 @@ func TestMameletRetriesAFailedAptUpdate(t *testing.T) {
 		t.Fatalf("result %+v", r)
 	}
 	s := aptState(t, rep)
-	if !rootFile(s.KeyArmored, armoredSHA) || !s.Sources.Exists || !slices.Equal(s.Unread, []string{"https://download.docker.com/linux/ubuntu noble"}) {
+	if !rootFile(s.KeyArmored, armoredSHA) || !s.Sources.Exists || !slices.Equal(s.Where[0].Unread, []string{"https://download.docker.com/linux/ubuntu noble"}) {
 		t.Errorf("observed %+v", s)
 	}
 	// The same attempt is not made again.
@@ -278,7 +279,7 @@ func TestMameletRetriesAFailedAptUpdate(t *testing.T) {
 	if k.count("/armored") != 1 || len(apt.commands) != 1 {
 		t.Errorf("asked %d times, ran %q", k.count("/armored"), apt.commands)
 	}
-	if s := aptState(t, rep); len(s.Unread) != 0 {
+	if s := aptState(t, rep); len(s.Where[0].Unread) != 0 {
 		t.Errorf("observed %+v", s)
 	}
 }
@@ -349,7 +350,7 @@ func TestMameletRefusesUnsafeOrConflictingAptRepos(t *testing.T) {
 				t.Errorf("acted: %q", apt.commands)
 			}
 			s := aptState(t, rep)
-			if c.name == "docker.list names it" && !slices.Equal(s.Conflicts, []string{"/etc/apt/sources.list.d/docker.list"}) {
+			if c.name == "docker.list names it" && !slices.Equal(s.Where[0].Conflicts, []string{"/etc/apt/sources.list.d/docker.list"}) {
 				t.Errorf("observed %+v", s)
 			}
 		})
@@ -377,7 +378,7 @@ func TestCheckPartAptRepos(t *testing.T) {
 		"action":         func(r *AptRepo) { r.Add.Grant.Action = ActionWrite },
 		"attempt":        func(r *AptRepo) { r.Add.Grant.Attempt = 0 },
 		"name":           func(r *AptRepo) { r.Name = "../../etc/x" },
-		"observed URI":   func(r *AptRepo) { r.URIs = []string{"file:/x"} },
+		"observed URI":   func(r *AptRepo) { r.Where[0].URIs = []string{"file:/x"} },
 	} {
 		c := addGrant(k, "/armored", testKeyArmored, opA, 1)
 		f(&c)

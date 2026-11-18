@@ -81,30 +81,125 @@ func TestExtensionUndeclaredIsOnlyKept(t *testing.T) {
 func TestExtNotTaken(t *testing.T) {
 	s := converged()
 	k := newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
-	if n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); n == nil || n.Code != "MAM-PLAN-0122" || !strings.Contains(n.Message, "a release that does not say") {
-		t.Errorf("a mamelet that reports and lists nothing: %+v", n)
+	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || n.Code != "MAM-PLAN-0122" || !strings.Contains(n.Message, "a release that does not say") {
+		t.Errorf("a mamelet that reports and lists nothing: %s %+v", st, n)
 	}
-	if n := k.ExtNotTaken("silent", "linux", 1, "0.10.0"); n != nil {
+	if _, n := k.ExtNotTaken("silent", "linux", 1, "0.10.0"); n != nil {
 		t.Errorf("a node that never reported: %+v", n)
 	}
 	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {Version: "0.9.2", ObservedAt: t0}}
 	s.Ext = map[string]map[string]state.ExtObservation{"app-server": {"linux": {Accepts: 1, ObservedAt: t0}}}
 	k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
-	if n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); n != nil {
+	if _, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); n != nil {
 		t.Errorf("takes it: %+v", n)
 	}
-	if n := k.ExtNotTaken("app-server", "linux", 2, "0.11.0"); n == nil || !strings.Contains(n.Message, "runs 0.9.2") || !strings.Contains(n.Hint, "0.11.0") {
-		t.Errorf("an older version of the part: %+v", n)
+	if st, n := k.ExtNotTaken("app-server", "linux", 2, "0.11.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, "runs 0.9.2") || !strings.Contains(n.Hint, "0.11.0") {
+		t.Errorf("an older version of the part: %s %+v", st, n)
 	}
 	s.Ext["app-server"]["linux"] = state.ExtObservation{Accepts: 1, Refused: "cannot read it", ObservedAt: t0}
 	k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
-	if n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); n == nil || !strings.Contains(n.Message, "cannot read it") {
-		t.Errorf("refused: %+v", n)
+	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, "cannot read it") {
+		t.Errorf("refused: %s %+v", st, n)
 	}
 	// The kit's copy is the planner's own.
 	o, _ := k.Ext("app-server", "linux")
 	o.Refused = "changed"
 	if again, _ := k.Ext("app-server", "linux"); again.Refused != "cannot read it" {
 		t.Error("a planner changed the observation")
+	}
+}
+
+// A node whose mamelet is older than an extension, and whose declaration updates it in the same plan
+// (the way docs/mamelet-update.md gives): the extension's resources wait for the update instead of
+// being blocked, so that a plan pushed with mamelacd's sync = "push" (which approves no plan with a
+// blocked change) applies the update. An update to a release that does not bring the extension, or
+// none, is still blocked.
+func TestExtNotTakenWaitsForTheMameletUpdate(t *testing.T) {
+	const old, next = "1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"
+	decl := func(version, sha string) *graph.Graph {
+		v := ""
+		if version != "" {
+			v = `,"version":"` + version + `"`
+		}
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("app-server", `{"mode":"dhcp"}`) + `,` +
+			`{"kind":"NodeMamelet","name":"app-server/mamelet","spec":{"node":"app-server","sha256":"` + sha + `"` + v + `}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	s := state.Empty(t0)
+	machineObserved(&s, decl("", old), "app-server", true, true, true, 600)
+	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {SHA256: old, Version: "0.9.2", ObservedAt: t0}}
+	for _, tc := range []struct {
+		name, version, sha string
+		status             Status
+		code               string
+	}{
+		{"an update to the release of the extension", "0.10.0+849289e", next, StatusWaiting, "MAM-PLAN-0123"},
+		{"an update that does not say its release", "", next, StatusWaiting, "MAM-PLAN-0123"},
+		{"an update to a newer release", "v0.11.2", next, StatusWaiting, "MAM-PLAN-0123"},
+		{"an update to an older release", "0.9.3", next, StatusBlocked, "MAM-PLAN-0122"},
+		{"no update: the declared release runs", "0.9.2", old, StatusBlocked, "MAM-PLAN-0122"},
+	} {
+		k := newKit(builder{snap: s, pol: policy.Default, g: decl(tc.version, tc.sha)})
+		if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != tc.status || n == nil || n.Code != tc.code {
+			t.Errorf("%s: %s %+v", tc.name, st, n)
+		}
+	}
+	// The node is protected (the Control Plane's host): its update is denied, so it does not come.
+	protected := policy.Default
+	protected.ProtectedNodes = []string{"app-server"}
+	k := newKit(builder{snap: s, pol: protected, g: decl("0.10.0", next)})
+	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n.Code != "MAM-PLAN-0122" {
+		t.Errorf("protected: %s %+v", st, n)
+	}
+	// The node's update waits for another node's: it comes after it.
+	two := `{"schema":"mamela-graph/v2","resources":[` + vm("a-server", `{"mode":"dhcp"}`) + `,` + vm("app-server", `{"mode":"dhcp"}`) + `,` +
+		`{"kind":"NodeMamelet","name":"a-server/mamelet","spec":{"node":"a-server","sha256":"` + next + `"}},` +
+		`{"kind":"NodeMamelet","name":"app-server/mamelet","spec":{"node":"app-server","sha256":"` + next + `"}}]}`
+	g, err := graph.Decode([]byte(two))
+	if err != nil {
+		t.Fatal(err)
+	}
+	machineObserved(&s, g, "a-server", true, true, true, 600)
+	s.Mamelets["a-server/mamelet"] = state.Mamelet{SHA256: old, Version: "0.9.2", ObservedAt: t0}
+	k = newKit(builder{snap: s, pol: policy.Default, g: g})
+	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusWaiting || n.Code != "MAM-PLAN-0123" {
+		t.Errorf("after another node: %s %+v", st, n)
+	}
+}
+
+func TestReleaseOlder(t *testing.T) {
+	for _, tc := range []struct {
+		a, b  string
+		older bool
+	}{
+		{"0.9.2", "0.10.0", true}, {"0.10.0", "0.10.0", false}, {"0.10.0+849289e", "0.10.0", false}, {"v0.9.9", "0.10.0", true},
+		{"1.0.0", "0.10.0", false}, {"", "0.10.0", false}, {"latest", "0.10.0", false}, {"0.10", "0.10.0", false},
+	} {
+		if got := releaseOlder(tc.a, tc.b); got != tc.older {
+			t.Errorf("releaseOlder(%q, %q) = %v", tc.a, tc.b, got)
+		}
+	}
+}
+
+// A machine that has run for an hour, whose mamelet reports (which release it runs) but not yet the
+// package a new declaration added: it is not silent, and the package waits for its next report.
+func TestAMameletThatReportsIsNotSilent(t *testing.T) {
+	g := desired(t)
+	s := state.Empty(t0)
+	machineObserved(&s, g, "app-server", true, true, true, 3600)
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusBlocked || c.Note.Code != "MAM-PLAN-0110" {
+		t.Errorf("silent: %+v", c)
+	}
+	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {SHA256: strings.Repeat("ab", 32), Version: "0.10.0", ObservedAt: t0}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Errorf("reports: %+v", c)
+	}
+	s.Mamelets = nil
+	s.Ext = map[string]map[string]state.ExtObservation{"app-server": {"linux": {Accepts: 1, ObservedAt: t0}}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Errorf("reports an extension: %+v", c)
 	}
 }

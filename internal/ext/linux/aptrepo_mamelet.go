@@ -54,8 +54,17 @@ func observeAptRepos(_ context.Context, s *mamelet.System, p Part, o *Observed) 
 	others, unread := readAptSourceFiles(r)
 	for _, repo := range p.AptRepos {
 		st := AptRepoState{Name: repo.Name}
-		if ps := aptWhereProblems(repo.Name, repo.URIs, repo.Suites); len(ps) > 0 {
-			st.Error = "mamelet refuses the source: " + ps[0].message
+		var problem string
+		if !ValidAptRepoName(repo.Name) {
+			problem = quote(repo.Name) + " is not the name of an APT source"
+		}
+		for _, w := range repo.Where {
+			if ps := aptWhereProblems(repo.Name, w.URIs, w.Suites); len(ps) > 0 && problem == "" {
+				problem = ps[0].message
+			}
+		}
+		if problem != "" {
+			st.Error = "mamelet refuses the source: " + problem
 		} else if unread != "" {
 			st.Error = unread
 		} else {
@@ -65,8 +74,11 @@ func observeAptRepos(_ context.Context, s *mamelet.System, p Part, o *Observed) 
 			st.Sources = inspect(r, AptSourcesPath(repo.Name), a)
 			st.KeyArmored = inspect(r, AptKeyPath(repo.Name, true), a)
 			st.KeyBinary = inspect(r, AptKeyPath(repo.Name, false), a)
-			st.Conflicts = aptConflicts(others, AptSourcesPath(repo.Name), repo.URIs, repo.Suites)
-			st.Unread = aptUnread(r, repo.URIs, repo.Suites)
+			// Each declaration's URIs and suites by themselves, saying which they are.
+			for _, w := range repo.Where {
+				st.Where = append(st.Where, AptWhereState{AptWhere: w,
+					Conflicts: aptConflicts(others, AptSourcesPath(repo.Name), w.URIs, w.Suites), Unread: aptUnread(r, w.URIs, w.Suites)})
+			}
 		}
 		o.AptRepos = append(o.AptRepos, st)
 	}
@@ -138,6 +150,13 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 	if c := aptConflicts(entries, srcPath, a.URIs, a.Suites); len(c) > 0 {
 		return refused(fmt.Sprintf("%s names a URI and suite of this source too: apt refuses one source with two keys, and would then read no source at all; nothing was written",
 			strings.Join(c, ", ")))
+	}
+
+	// Compare and swap: each file is as the approved plan saw it, or as the addition makes it already
+	// (an attempt that was interrupted, or another apply; a key's file of the form the key is not in is
+	// removed).
+	if why := aptFilesChanged(a, name, src, asc, gpg); why != "" {
+		return refused(why + "; nothing was written (plan again)")
 	}
 
 	// The key, as approved: the one on the node, or downloaded. Nothing is written before it is here.
@@ -529,4 +548,25 @@ func aptConflicts(entries []aptEntry, own string, uris, suites []string) []strin
 		}
 	}
 	return out
+}
+
+// aptFilesChanged says which of a source's files is neither as the approved plan saw it nor as the
+// addition makes it ("" none).
+func aptFilesChanged(a AptRepoAdd, name string, src, asc, gpg FileState) string {
+	armored, binary := aptSourcesSHA256(a.spec(name))
+	is := func(f FileState, sums ...string) bool { return f.Exists && !f.Large && slices.Contains(sums, f.SHA256) }
+	for _, f := range []struct {
+		state    FileState
+		plan     Before
+		approved bool
+	}{
+		{src, a.Before.Sources, is(src, armored, binary)},
+		{asc, a.Before.KeyArmored, is(asc, a.KeySHA256) || !asc.Exists},
+		{gpg, a.Before.KeyBinary, is(gpg, a.KeySHA256) || !gpg.Exists},
+	} {
+		if !f.approved && !f.plan.Is(f.state) {
+			return fmt.Sprintf("%s changed since the plan (it was %s, it is %s)", f.state.Path, f.plan, beforeOf(f.state))
+		}
+	}
+	return ""
 }

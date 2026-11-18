@@ -47,7 +47,7 @@ func TestArtifactGrantsAsMameletGetsThem(t *testing.T) {
 	ended := install("/usr/local/bin/b", "https://example.com/b", sumB, "", opB, 1)
 	ended.Install.Grant.Expires = mt0.Add(-time.Minute)
 	setPart(&r, Part{Artifacts: []Artifact{ended, live}})
-	if !strings.Contains(string(r.Content()), `"ext":{"linux":{"artifacts":[{"path":"/usr/local/bin/a","owner":"root","group":"root","install":{"url":"https://example.com/a"`) {
+	if !strings.Contains(string(r.Content()), `"ext":{"linux":{"artifacts":[{"path":"/usr/local/bin/a","owners":["root"],"groups":["root"],"install":{"url":"https://example.com/a"`) {
 		t.Errorf("content %s", r.Content())
 	}
 	if g := r.Grants(); len(g) != 2 || g[0].Operation != opA || g[1].Operation != opB || g[0].Expires.IsZero() {

@@ -8,17 +8,13 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 )
 
-// The extension's graph warnings (MAM-GRAPH-0203..0219 are the linux extension's: doc.go).
+// The extension's graph warnings (the ranges of each kind are in codes.go).
 const (
 	// CodeSecret: a file's content looks like a secret (a private key, a token).
 	CodeSecret graph.Code = "MAM-GRAPH-0203"
 	// CodeRestartUndeclared: a file restarts a service that the declaration does not have on the node.
 	CodeRestartUndeclared graph.Code = "MAM-GRAPH-0204"
 )
-
-var warningCodes = []graph.Code{CodeSecret, CodeRestartUndeclared,
-	CodeArtifactRestartUndeclared, // NodeArtifact: artifact.go
-}
 
 // claim is a path a resource writes, and the resource.
 type claim struct {
@@ -31,7 +27,6 @@ type claim struct {
 // declared user's home; the approved writes of a node's files fit in its revision (MaxNodeContent);
 // and a node has no more of a kind than mamelet observes.
 func checkGraph(g *graph.Graph, v *graph.Validator) {
-
 	byNode := map[string][]claim{}
 	total := map[string]int{}
 	for _, r := range g.Sorted() {

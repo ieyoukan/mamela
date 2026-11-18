@@ -11,7 +11,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeFile (doc.go reserves the ranges).
+// The plan notes of NodeFile (codes.go reserves the ranges).
 const (
 	codeFileAwait         = "MAM-PLAN-0140" // waits for mamelet to report the file
 	codeFileNoAccount     = "MAM-PLAN-0141" // the owner or the group does not exist on the node
@@ -23,6 +23,9 @@ const (
 	codeFileKept          = "MAM-PLAN-0310" // not declared any more: kept on the node
 	codePending           = "MAM-PLAN-0218" // written, but its daemon-reload or a restart did not finish (NodeArtifact too)
 )
+
+// filePlanCodes are NodeFile's codes of plan notes, with the two it shares with NodeArtifact (0144, 0218).
+var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileExposed, codeFileUnsafe, codeFileUnobserved, codeFileKept, codePending}
 
 // accountMakers say which resource of a declaration makes a user (group false) or a group on a node:
 // a file owned by one waits for it instead of being blocked. NodeUser adds its own (user_plan.go).
@@ -73,8 +76,8 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 		c.Status, c.Note = plan.StatusWaiting, note
 		return c
 	}
-	if note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
-		c.Status, c.Note = plan.StatusBlocked, note
+	if status, note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
+		c.Status, c.Note = status, note
 		return c
 	}
 	e, reported := k.Ext(want.Node, Name)
@@ -229,34 +232,55 @@ type statusNote struct {
 	note   *plan.Note
 }
 
+// accountCodes are the codes of what a kind's resource owned by a user and a group waits for.
+type accountCodes struct {
+	await  string // mamelet has not said whether the user or group exists
+	coming string // something of the declaration makes it: a NodeUser, or a package not installed yet
+	none   string // nothing does: blocked
+}
+
 // accountNote says what a file whose owner or group is not on the node waits for (nil when both are
-// there): the declaration's resource that makes it, or a person (blocked).
+// there).
 func accountNote(k *plan.Kit, o Observed, want *FileSpec) *statusNote {
+	return accountWait(k, o, want.Node, want.Path, want.Owner, want.Group, "written", "the file",
+		accountCodes{codeFileAwait, codeFileAccountComing, codeFileNoAccount})
+}
+
+// accountWait says what a resource at path on node owned by owner and group waits for while one of
+// them is not on the node (nil when both are there): the declaration's resource that makes it
+// (accountMakers: a NodeUser), a package declared on the node that is not installed yet (it may make
+// it, as the package prometheus makes the user prometheus: the same as NodeUser's needs), or a person
+// (blocked). done is what happens to the resource ("written"), what what it is ("the file").
+func accountWait(k *plan.Kit, o Observed, node, path, owner, group, done, what string, codes accountCodes) *statusNote {
 	for _, a := range []struct {
 		name   string
 		group  bool
 		exists map[string]bool
 		what   string
-	}{{want.Owner, false, o.Users, "user"}, {want.Group, true, o.Groups, "group"}} {
+	}{{owner, false, o.Users, "user"}, {group, true, o.Groups, "group"}} {
 		exists, observedName := a.exists[a.name]
 		switch {
 		case !observedName:
 			// The revision named another owner when mamelet last looked (the declaration changed): it
 			// says once it has the new revision.
-			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeFileAwait,
-				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", want.Node, a.what, a.name)}}
+			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.await,
+				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", node, a.what, a.name)}}
 		case exists:
 			continue
 		}
 		for _, made := range accountMakers {
-			if id, ok := made(k.Resources(), want.Node, a.name, a.group); ok {
-				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeFileAccountComing,
-					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is written", a.what, a.name, want.Node, id, want.Path)}}
+			if id, ok := made(k.Resources(), node, a.name, a.group); ok {
+				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.coming,
+					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is %s", a.what, a.name, node, id, path, done)}}
 			}
 		}
-		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeFileNoAccount,
-			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, want.Node, want.Path),
-			Hint:    fmt.Sprintf("install the package that makes %s, declare it (NodeUser, when it comes), or own the file by an existing %s such as root", a.name, a.what)}}
+		if pkg := pendingPackage(k, node); pkg != "" {
+			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.coming,
+				Message: fmt.Sprintf("waits for %s %s on %s before %s is %s: package %s is not installed there yet, and a package may make it", a.what, a.name, node, path, done, pkg)}}
+		}
+		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codes.none,
+			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, node, path),
+			Hint:    fmt.Sprintf("declare the package that makes %s (NodePackage) or the %s itself (NodeUser), or own %s by an existing %s such as root", a.name, a.what, what, a.what)}}
 	}
 	return nil
 }
@@ -279,9 +303,10 @@ func fileStartGate(k *plan.Kit, node, service string) *plan.Note {
 	return nil
 }
 
-// undeclaredFiles are the files mamelet still observes on a machine of the declaration that no
-// NodeFile of it has any more: they stay on the node as they are (Mamela does not delete files yet),
-// and mamelet stops observing them when the plan is applied.
+// undeclaredFiles are the files the declaration in force has on a machine of this declaration (InForce:
+// Mamela may have written them) that this declaration does not have any more: they stay on the node as
+// they are (Mamela does not delete files yet), and mamelet stops observing them when the plan is
+// applied. A file only another declaration planned (a pull request's) is not this plan's business.
 func undeclaredFiles(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -300,7 +325,7 @@ func undeclaredFiles(k *plan.Kit) []plan.Change {
 		}
 		for _, f := range o.Files {
 			name := FileName(node, f.Path)
-			if declared[name] || !f.Exists || f.Error != "" {
+			if declared[name] || !f.Exists || f.Error != "" || !o.inForce(func(i *InForce) []string { return i.Files }, f.Path) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindFile, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

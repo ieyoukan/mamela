@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"encoding/json/jsontext"
 	"fmt"
 	"slices"
 	"time"
@@ -37,6 +36,11 @@ type Extension struct {
 	// Observe adds what a node's report says of the extension's kinds to the snapshot (received:
 	// when the report arrived).
 	Observe func(r noderev.Report, received time.Time, snap *state.Snapshot)
+	// Annotate (an extension of the generic wire) adds to what the snapshot has of the extension's
+	// observation of node (the report's) what the Control Plane's own record of the node says: its
+	// current revision (nil: none for the machine that reported). The plan reads both as one
+	// observation.
+	Annotate func(node string, rev *noderev.Revision, o *state.ExtObservation)
 	// Publish works out what a node's revision gets from the declaration g, and returns the change
 	// to make to it: it adds what is new and takes away nothing the declaration in force allows.
 	Publish func(ctx context.Context, st *store.Store, g *graph.Graph, node string) (func(r *noderev.Revision), error)
@@ -58,6 +62,9 @@ type GrantRequest struct {
 	Step  reconcile.Step
 	// Declaration is the declaration of the approved plan.
 	Declaration *graph.Graph
+	// Observed is the observation the approved plan was made from: what the approver saw of the node
+	// before it changes (a grant's precondition comes from it).
+	Observed state.Snapshot
 }
 
 // Approved is the value a field gets in the approved change ("" when it has no such diff): what the
@@ -96,6 +103,9 @@ func Register(e Extension) {
 			panic(fmt.Sprintf("node: extension %s: operation %s is taken", e.Name, op))
 		}
 	}
+	if e.Wire > 0 && noderev.PartVersion(e.Name) != e.Wire {
+		panic(fmt.Sprintf("node: extension %s: its part is registered with noderev at version %d, not %d", e.Name, noderev.PartVersion(e.Name), e.Wire))
+	}
 	for op, g := range e.Grants {
 		grants[op] = g
 		if e.Wire > 0 {
@@ -108,39 +118,14 @@ func Register(e Extension) {
 // wireOps names the extension of each operation whose grant goes into an extension's part.
 var wireOps = map[policy.Op]string{}
 
-// taken are the extensions (of the generic wire) whose part of a revision the node's mamelet takes,
-// by its latest report: the extension's name, when the mamelet reads the version of the part the
-// Control Plane writes.
-func taken(ctx context.Context, st *store.Store, node string) (map[string]bool, error) {
-	nr, ok, err := st.NodeReportOf(ctx, node)
+// taken is the node's current report (nil when it has none under its current registration): what its
+// mamelet takes is noderev.Takes of it.
+func taken(ctx context.Context, st *store.Store, node string) (*noderev.Report, error) {
+	nr, ok, err := st.CurrentNodeReport(ctx, node)
 	if err != nil || !ok {
 		return nil, err
 	}
-	out := map[string]bool{}
-	for _, e := range extensions {
-		if v, listed := nr.Report.Extensions[e.Name]; e.Wire > 0 && listed && v >= e.Wire {
-			out[e.Name] = true
-		}
-	}
-	return out, nil
-}
-
-// onlyTaken takes out of the revision every extension's part the node's mamelet does not take (it
-// would refuse the whole revision, or the part).
-func onlyTaken(r *noderev.Revision, ok map[string]bool) {
-	if len(r.Ext) == 0 {
-		return
-	}
-	ext := map[string]jsontext.Value{}
-	for name, part := range r.Ext {
-		if ok[name] {
-			ext[name] = part
-		}
-	}
-	r.Ext = ext
-	if len(ext) == 0 {
-		r.Ext = nil
-	}
+	return &nr.Report, nil
 }
 
 // observeExt adds to the snapshot what a node's report says of the extensions of the generic wire

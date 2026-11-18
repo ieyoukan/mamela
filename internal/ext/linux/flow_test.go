@@ -259,6 +259,51 @@ func TestAMameletOlderThanTheExtensionGetsNothingOfIt(t *testing.T) {
 	}
 }
 
+// The way to the extension on a node whose mamelet is older (docs/mamelet-update.md): the declaration
+// updates mamelet and declares a file in one go. The file waits for the update (it is not blocked), so
+// the plan has nothing blocked and mamelacd's sync = "push" approves it; once the new mamelet reports,
+// the file is planned.
+func TestAFileWaitsForTheMameletUpdateOfItsDeclaration(t *testing.T) {
+	const old, next = "1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"
+	update := `{"kind":"NodeMamelet","name":"web/mamelet","spec":{"node":"web","version":"0.10.0","sha256":"` + next + `"}}`
+	f := newFlow(t, update, flowFile)
+	f.publish()
+	if err := f.st.PutNodeReport(f.ctx, noderev.Report{Node: "web", VMID: 7001, Version: "0.9.2", MameletSHA256: old,
+		Packages: []noderev.PackageState{}, Services: []noderev.ServiceState{}, Results: []noderev.Result{}}); err != nil {
+		t.Fatal(err)
+	}
+	p, c := f.plan()
+	if c.Status != plan.StatusWaiting || c.Note.Code != "MAM-PLAN-0123" || !strings.Contains(c.Note.Message, "0.10.0") {
+		t.Fatalf("the file: %+v", c)
+	}
+	blocked := 0
+	for _, ch := range p.Changes {
+		if ch.Status == plan.StatusBlocked {
+			blocked++
+		}
+		if ch.Kind == graph.KindNodeMamelet && ch.Status != plan.StatusChange {
+			t.Errorf("the update: %+v", ch)
+		}
+	}
+	if blocked != 0 {
+		t.Errorf("%d blocked: %+v", blocked, p.Changes)
+	}
+	// Without the update in the declaration, nothing brings the extension: blocked.
+	f.declare(flowFile)
+	if _, c := f.plan(); c.Status != plan.StatusBlocked || c.Note.Code != "MAM-PLAN-0122" {
+		t.Errorf("without the update: %+v", c)
+	}
+	// The update is done (the new mamelet reports): the file is planned.
+	f.declare(update, flowFile)
+	f.node.a.Version = "0.10.0"
+	f.node.round() // it says it takes linux
+	f.publish()
+	f.node.round() // it observes the file
+	if _, c := f.plan(); c.Status != plan.StatusChange {
+		t.Errorf("after the update: %+v", c)
+	}
+}
+
 // A protected node (the Control Plane's host) gets no write of linux, even one granted before.
 func TestAProtectedNodeGetsNoWrite(t *testing.T) {
 	f := newFlow(t, flowFile)

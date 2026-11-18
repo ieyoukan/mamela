@@ -65,20 +65,26 @@ func observeUser(r *os.Root, a accounts, u User) UserState {
 		st.Error = "mamelet refuses the user: " + why
 		return st
 	}
-	if pathShape(u.Shell) == "" {
-		st.Shells = map[string]bool{u.Shell: executable(r, u.Shell)}
+	for _, sh := range u.Shells {
+		if pathShape(sh) == "" {
+			if st.Shells == nil {
+				st.Shells = map[string]bool{}
+			}
+			st.Shells[sh] = executable(r, sh)
+		}
 	}
 	e, ok := a.entries[u.Name]
 	if !ok {
-		if u.UID > 0 {
-			who := ""
-			if n, taken := a.userOf[u.UID]; taken {
-				who = n
+		for _, id := range u.UIDs {
+			if id > 0 {
+				if st.UIDs == nil {
+					st.UIDs = map[string]string{}
+				}
+				st.UIDs[strconv.Itoa(id)] = a.userOf[id]
 			}
-			st.UIDs = map[string]string{strconv.Itoa(u.UID): who}
 		}
-		if u.Home != "" {
-			st.NewHome = observeHome(r, a, u.Home)
+		for _, h := range u.Homes {
+			st.NewHomes = append(st.NewHomes, *observeHome(r, a, h))
 		}
 		return st
 	}
@@ -239,7 +245,7 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	if why := checkUserName(u.Name); why != "" {
 		return refused("mamelet does not change user " + u.Name + ": " + why)
 	}
-	if err := checkUserChange(u, c); err != nil {
+	if err := checkUserChange(c); err != nil {
 		return refused(err.Error())
 	}
 	r, err := openTree(x.System)
@@ -267,6 +273,9 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 		did = append(did, "user "+u.Name+" existed already as approved")
 	case shell != "" && !executable(r, shell):
 		return refused(fmt.Sprintf("shell %s is not an executable file on this node", shell))
+	case exists && c.Create == nil && c.Shell != "" && e.shell != c.Shell && e.shell != c.Before.Shell:
+		// Compare and swap: the shell is as the approved plan saw it, or already the approved one.
+		return refused(fmt.Sprintf("the shell of %s changed since the plan (it was %s, it is %s); nothing was changed (plan again)", u.Name, c.Before.Shell, e.shell))
 	}
 	for _, g := range c.Groups {
 		if _, ok := a.groups[g]; !ok {
@@ -335,6 +344,11 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			return refused("mamelet does not write the SSH keys of " + u.Name + ": " + st.Unsafe + " (mamelet never follows a symbolic link)")
 		case len(st.Missing) > 1 || len(st.Missing) == 1 && st.Missing[0] != e.home+"/.ssh":
 			return refused("the home " + e.home + " of " + u.Name + " does not exist")
+		case c.Before.Keys != nil && !(st.Exists && !st.Large && st.SHA256 == k.SHA256) && !c.Before.Keys.Is(st):
+			// Compare and swap: authorized_keys is as the approved plan saw it, or already the approved
+			// one (a user that was made by this change has none the plan saw).
+			return refused(fmt.Sprintf("%s/.ssh/authorized_keys changed since the plan (it was %s, it is %s); it was not written (plan again)",
+				e.home, c.Before.Keys, beforeOf(st)))
 		}
 		wrote, err := writeKeys(r, a, u.Name, e.home, k.Content, e.uid, e.gid)
 		ran = ran || wrote

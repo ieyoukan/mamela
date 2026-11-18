@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -34,7 +35,7 @@ func observeFiles(_ context.Context, s *mamelet.System, p Part, o *Observed) {
 			removeStaleTemp(r, f.Path)
 			o.Files = append(o.Files, inspect(r, f.Path, a))
 		}
-		owners, groups := []string{f.Owner}, []string{f.Group}
+		owners, groups := slices.Clone(f.Owners), slices.Clone(f.Groups)
 		if w := f.Write; w != nil {
 			owners, groups = append(owners, w.Owner), append(groups, w.Group)
 		}
@@ -110,6 +111,12 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 		return noderev.OutcomeFailed, "observe " + p + ": " + got.Error, false
 	case got.Unsafe != "":
 		return refused("mamelet does not write " + p + ": " + got.Unsafe + " (mamelet never follows a symbolic link)")
+	}
+	// Compare and swap: the file is as the approved plan saw it, or has the approved content already
+	// (an attempt that was interrupted, or another apply): a write approved for one content never
+	// overwrites another.
+	if !(got.Exists && !got.Large && got.SHA256 == w.SHA256) && !w.Before.Is(got) {
+		return refused(fmt.Sprintf("%s changed since the plan (it was %s, it is %s); nothing was written (plan again)", p, w.Before, beforeOf(got)))
 	}
 	var did []string
 	if !(got.Exists && !got.Large && got.SHA256 == w.SHA256 && got.Mode == w.Mode && got.Owner == w.Owner && got.Group == w.Group) {

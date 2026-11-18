@@ -10,7 +10,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeArtifact (doc.go reserves the ranges).
+// The plan notes of NodeArtifact (codes.go reserves the ranges).
 const (
 	codeArtifactAwait         = "MAM-PLAN-0155" // waits for mamelet to report the artifact
 	codeArtifactNoAccount     = "MAM-PLAN-0156" // the owner or the group does not exist on the node
@@ -22,7 +22,7 @@ const (
 	codeArtifactKept          = "MAM-PLAN-0313" // not declared any more: kept on the node
 )
 
-// artifactPlanCodes are NodeArtifact's codes of plan notes (planCodes).
+// artifactPlanCodes are NodeArtifact's codes of plan notes.
 var artifactPlanCodes = []string{codeArtifactAwait, codeArtifactNoAccount, codeArtifactStartGate, codeArtifactAccountComing,
 	codeArtifactReplaces, codeArtifactUnsafe, codeArtifactUnobserved, codeArtifactKept}
 
@@ -57,8 +57,8 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 		c.Status, c.Note = plan.StatusWaiting, note
 		return c
 	}
-	if note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
-		c.Status, c.Note = plan.StatusBlocked, note
+	if status, note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
+		c.Status, c.Note = status, note
 		return c
 	}
 	e, reported := k.Ext(want.Node, Name)
@@ -162,36 +162,10 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 }
 
 // artifactAccountNote says what an artifact whose owner or group is not on the node waits for (nil
-// when both are there): the declaration's resource that makes it (accountMakers), or a person
-// (blocked).
+// when both are there), as a file's (accountWait).
 func artifactAccountNote(k *plan.Kit, o Observed, want *ArtifactSpec) *statusNote {
-	for _, a := range []struct {
-		name   string
-		group  bool
-		exists map[string]bool
-		what   string
-	}{{want.Owner, false, o.Users, "user"}, {want.Group, true, o.Groups, "group"}} {
-		exists, observedName := a.exists[a.name]
-		switch {
-		case !observedName:
-			// The revision named another owner when mamelet last looked (the declaration changed): it
-			// says once it has the new revision.
-			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeArtifactAwait,
-				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", want.Node, a.what, a.name)}}
-		case exists:
-			continue
-		}
-		for _, made := range accountMakers {
-			if id, ok := made(k.Resources(), want.Node, a.name, a.group); ok {
-				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeArtifactAccountComing,
-					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is installed", a.what, a.name, want.Node, id, want.Path)}}
-			}
-		}
-		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeArtifactNoAccount,
-			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, want.Node, want.Path),
-			Hint:    fmt.Sprintf("install the package that makes %s, declare it (NodeUser, when it comes), or own the artifact by an existing %s such as root", a.name, a.what)}}
-	}
-	return nil
+	return accountWait(k, o, want.Node, want.Path, want.Owner, want.Group, "installed", "the artifact",
+		accountCodes{codeArtifactAwait, codeArtifactAccountComing, codeArtifactNoAccount})
 }
 
 // artifactStartGate: the start of a service that an artifact of its node restarts waits for that
@@ -212,9 +186,9 @@ func artifactStartGate(k *plan.Kit, node, service string) *plan.Note {
 	return nil
 }
 
-// undeclaredArtifacts are the artifacts mamelet still observes on a machine of the declaration that
-// no NodeArtifact of it has any more: they stay on the node as they are (Mamela does not delete
-// them, ADR 0016), and mamelet stops observing them when the plan is applied.
+// undeclaredArtifacts are the artifacts the declaration in force has on a machine of this declaration
+// (InForce) that this declaration does not have any more: they stay on the node as they are (Mamela
+// does not delete them, ADR 0016), and mamelet stops observing them when the plan is applied.
 func undeclaredArtifacts(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -233,7 +207,7 @@ func undeclaredArtifacts(k *plan.Kit) []plan.Change {
 		}
 		for _, a := range o.Artifacts {
 			name := ArtifactName(node, a.Path)
-			if declared[name] || !a.Exists || a.Error != "" {
+			if declared[name] || !a.Exists || a.Error != "" || !o.inForce(func(i *InForce) []string { return i.Artifacts }, a.Path) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindArtifact, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

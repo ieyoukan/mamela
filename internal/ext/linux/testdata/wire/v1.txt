@@ -1,0 +1,336 @@
+linux wire, Version 1 (mamelet 0.10.0)
+
+part: linux.Part {
+  "files" (omitempty) []linux.File {
+    "path" string
+    "owners" (omitempty) []string
+    "groups" (omitempty) []string
+    "inForce" (omitzero) bool
+    "write" (omitempty) *linux.Write {
+      "content" string
+      "sha256" string
+      "mode" string
+      "owner" string
+      "group" string
+      "restart" (omitempty) []string
+      "before" linux.Before {
+        "exists" (omitzero) bool
+        "sha256" (omitempty) string
+        "large" (omitzero) bool
+      }
+      "grant" noderev.Once {
+        "operation" string
+        "attempt" int
+        "action" string
+        "expires" (omitzero) time.Time
+      }
+    }
+  }
+  "users" (omitempty) []linux.User {
+    "name" string
+    "shells" (omitempty) []string
+    "groups" (omitempty) []string
+    "uids" (omitempty) []int
+    "homes" (omitempty) []string
+    "keys" (omitzero) bool
+    "inForce" (omitzero) bool
+    "change" (omitempty) *linux.UserChange {
+      "create" (omitempty) *linux.UserCreate {
+        "system" (omitzero) bool
+        "uid" (omitzero) int
+        "shell" string
+        "home" (omitempty) string
+        "createHome" (omitzero) bool
+      }
+      "groups" (omitempty) []string
+      "shell" (omitempty) string
+      "keys" (omitempty) *linux.KeysWrite {
+        "content" string
+        "sha256" string
+      }
+      "before" linux.UserBefore {
+        "exists" (omitzero) bool
+        "shell" (omitempty) string
+        "keys" (omitzero) *linux.Before {
+          "exists" (omitzero) bool
+          "sha256" (omitempty) string
+          "large" (omitzero) bool
+        }
+      }
+      "grant" noderev.Once {
+        "operation" string
+        "attempt" int
+        "action" string
+        "expires" (omitzero) time.Time
+      }
+    }
+  }
+  "artifacts" (omitempty) []linux.Artifact {
+    "path" string
+    "owners" (omitempty) []string
+    "groups" (omitempty) []string
+    "inForce" (omitzero) bool
+    "install" (omitempty) *linux.Install {
+      "url" string
+      "sha256" string
+      "extract" (omitempty) string
+      "mode" string
+      "owner" string
+      "group" string
+      "restart" (omitempty) []string
+      "before" linux.Before {
+        "exists" (omitzero) bool
+        "sha256" (omitempty) string
+        "large" (omitzero) bool
+      }
+      "grant" noderev.Once {
+        "operation" string
+        "attempt" int
+        "action" string
+        "expires" (omitzero) time.Time
+      }
+    }
+  }
+  "aptRepos" (omitempty) []linux.AptRepo {
+    "name" string
+    "where" (omitempty) []linux.AptWhere {
+      "uris" []string
+      "suites" []string
+    }
+    "inForce" (omitzero) bool
+    "add" (omitempty) *linux.AptRepoAdd {
+      "uris" []string
+      "suites" []string
+      "components" []string
+      "architectures" (omitempty) []string
+      "keyUrl" string
+      "keySha256" string
+      "sourcesSha256" string
+      "before" linux.AptRepoBefore {
+        "sources" linux.Before {
+          "exists" (omitzero) bool
+          "sha256" (omitempty) string
+          "large" (omitzero) bool
+        }
+        "keyAsc" linux.Before {
+          "exists" (omitzero) bool
+          "sha256" (omitempty) string
+          "large" (omitzero) bool
+        }
+        "keyGpg" linux.Before {
+          "exists" (omitzero) bool
+          "sha256" (omitempty) string
+          "large" (omitzero) bool
+        }
+      }
+      "grant" noderev.Once {
+        "operation" string
+        "attempt" int
+        "action" string
+        "expires" (omitzero) time.Time
+      }
+    }
+  }
+}
+
+report: linux.Observed {
+  "files" (omitempty) []linux.FileState {
+    "path" string
+    "exists" (omitzero) bool
+    "sha256" (omitempty) string
+    "large" (omitzero) bool
+    "mode" (omitempty) string
+    "owner" (omitempty) string
+    "group" (omitempty) string
+    "missing" (omitempty) []string
+    "unsafe" (omitempty) string
+    "exposed" (omitempty) []linux.DirOwner {
+      "dir" string
+      "mode" string
+      "owner" string
+      "group" string
+    }
+    "pending" (omitempty) *linux.Pending {
+      "sha256" string
+      "reload" (omitzero) bool
+      "restart" (omitempty) []string
+    }
+    "error" (omitempty) string
+  }
+  "users" (omitempty) map[string]bool
+  "groups" (omitempty) map[string]bool
+  "userStates" (omitempty) []linux.UserState {
+    "name" string
+    "exists" (omitzero) bool
+    "uid" (omitzero) int
+    "gid" (omitzero) int
+    "group" (omitempty) string
+    "home" (omitempty) string
+    "shell" (omitempty) string
+    "groups" (omitempty) []string
+    "shells" (omitempty) map[string]bool
+    "uids" (omitempty) map[string]string
+    "newHomes" (omitempty) []linux.HomeState {
+      "path" string
+      "exists" (omitzero) bool
+      "what" (omitempty) string
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "error" (omitempty) string
+    }
+    "keys" (omitempty) *linux.KeysState {
+      "file" linux.FileState {
+        "path" string
+        "exists" (omitzero) bool
+        "sha256" (omitempty) string
+        "large" (omitzero) bool
+        "mode" (omitempty) string
+        "owner" (omitempty) string
+        "group" (omitempty) string
+        "missing" (omitempty) []string
+        "unsafe" (omitempty) string
+        "exposed" (omitempty) []linux.DirOwner {
+          "dir" string
+          "mode" string
+          "owner" string
+          "group" string
+        }
+        "pending" (omitempty) *linux.Pending {
+          "sha256" string
+          "reload" (omitzero) bool
+          "restart" (omitempty) []string
+        }
+        "error" (omitempty) string
+      }
+      "dir" (omitempty) string
+      "notOwned" (omitempty) string
+      "found" (omitempty) []linux.FoundKey {
+        "type" string
+        "fingerprint" string
+        "options" (omitzero) bool
+      }
+      "more" (omitzero) int
+      "other" (omitzero) int
+    }
+    "error" (omitempty) string
+  }
+  "artifacts" (omitempty) []linux.ArtifactState {
+    "" (inline) linux.FileState {
+      "path" string
+      "exists" (omitzero) bool
+      "sha256" (omitempty) string
+      "large" (omitzero) bool
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "missing" (omitempty) []string
+      "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
+      "error" (omitempty) string
+    }
+    "from" (omitempty) *linux.Source {
+      "url" string
+      "sha256" string
+      "extract" (omitempty) string
+    }
+  }
+  "aptRepos" (omitempty) []linux.AptRepoState {
+    "name" string
+    "sources" linux.FileState {
+      "path" string
+      "exists" (omitzero) bool
+      "sha256" (omitempty) string
+      "large" (omitzero) bool
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "missing" (omitempty) []string
+      "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
+      "error" (omitempty) string
+    }
+    "keyAsc" linux.FileState {
+      "path" string
+      "exists" (omitzero) bool
+      "sha256" (omitempty) string
+      "large" (omitzero) bool
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "missing" (omitempty) []string
+      "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
+      "error" (omitempty) string
+    }
+    "keyGpg" linux.FileState {
+      "path" string
+      "exists" (omitzero) bool
+      "sha256" (omitempty) string
+      "large" (omitzero) bool
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "missing" (omitempty) []string
+      "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
+      "error" (omitempty) string
+    }
+    "where" (omitempty) []linux.AptWhereState {
+      "" (inline) linux.AptWhere {
+        "uris" []string
+        "suites" []string
+      }
+      "unread" (omitempty) []string
+      "conflicts" (omitempty) []string
+    }
+    "error" (omitempty) string
+  }
+  "error" (omitempty) string
+  "inForce" (omitempty) *linux.InForce {
+    "files" (omitempty) []string
+    "users" (omitempty) []string
+    "artifacts" (omitempty) []string
+    "aptRepos" (omitempty) []string
+  }
+}

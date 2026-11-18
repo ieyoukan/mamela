@@ -398,8 +398,16 @@ func (b builder) machine(node string) (machine, bool) {
 	return machine{managed: n.Managed, stopped: !n.Running, uptime: time.Duration(n.UptimeSeconds) * time.Second}, true
 }
 
-// nodeReported is whether the agent on node has reported anything of the declaration.
+// nodeReported is whether the agent on node has reported: anything of the declaration, which
+// mamelet it runs (every mamelet that reports says so), or what it observed of a node extension (it
+// reports that before it has observed the extension's resources a new declaration added).
 func (b builder) nodeReported(node string) bool {
+	if _, ok := b.snap.Mamelets[node+"/mamelet"]; ok {
+		return true
+	}
+	if len(b.snap.Ext[node]) > 0 {
+		return true
+	}
 	if b.g == nil {
 		return false
 	}

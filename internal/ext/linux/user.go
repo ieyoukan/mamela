@@ -180,6 +180,13 @@ func decodeUser(d *graph.SpecDecoder) any {
 	}
 	shell := d.OptionalString(s.Shell, "shell")
 	home := d.OptionalString(s.Home, "home")
+	// An empty string would mean what leaving the member out means, silently: it is refused.
+	if shell != nil && *shell == "" {
+		d.Invalid(graph.CodeInvalidValue, "shell", "the shell is empty", `leave the member out (useradd's default: /bin/bash, or /usr/sbin/nologin for a system user), or write the absolute path of a shell`)
+	}
+	if home != nil && *home == "" {
+		d.Invalid(graph.CodeInvalidValue, "home", "the home is empty", `leave the member out (/home/<name>, or useradd's default for a system user), or write an absolute path such as "/srv/app"`)
+	}
 	list := func(v jsontext.Value, field, hint string) []string {
 		if v == nil {
 			return nil
@@ -238,6 +245,11 @@ func validateUser(v *graph.Validator, r graph.Resource) {
 			v.Problem(r, graph.CodeInvalidValue, "spec.groups", fmt.Sprintf("%q is not a group's name", g), `a group's name, such as "docker" or "www-data"`)
 		case seen[g]:
 			v.Problem(r, graph.CodeInvalidValue, "spec.groups", fmt.Sprintf("group %s is named twice", g), "name each group once")
+		case g == s.Name:
+			// useradd makes the group of the user's name its primary group, and refuses to make the user
+			// while a group of that name exists: the plan could only wait for it, or block.
+			v.Problem(r, graph.CodeInvalidValue, "spec.groups", fmt.Sprintf("group %s is the user's own group: useradd makes it the user's primary group", g),
+				"leave it out of groups (the user is in it already)")
 		}
 		seen[g] = true
 	}

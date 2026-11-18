@@ -17,7 +17,7 @@ func wireRevision(exp time.Time) noderev.Revision {
 	live.Write.Grant.Expires = exp
 	ended := grant("/etc/b.conf", "b\n", opB, 2)
 	ended.Write.Grant.Expires = mt0.Add(-time.Minute)
-	setPart(&r, Part{Files: []File{ended, live, {Path: "/etc/c.conf", Owner: "root", Group: "root"}}})
+	setPart(&r, Part{Files: []File{ended, live, {Path: "/etc/c.conf", Owners: []string{"root"}, Groups: []string{"root"}}}})
 	return r
 }
 

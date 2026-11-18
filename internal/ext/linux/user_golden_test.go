@@ -40,7 +40,7 @@ func TestGoldenUserPlans(t *testing.T) {
 	}
 	bash := map[string]bool{DefaultShell: true}
 	// noHome: nothing is at the home app would be made with.
-	noHome := &HomeState{Path: "/home/app"}
+	noHome := []HomeState{{Path: "/home/app"}}
 	// existing is app as useradd made it (uid 1001, group app), in groups.
 	existing := func(groups ...string) UserState {
 		return UserState{Name: "app", Exists: true, UID: 1001, GID: 1001, Group: "app", Home: "/home/app", Shell: DefaultShell, Groups: groups, Shells: bash}
@@ -67,10 +67,10 @@ func TestGoldenUserPlans(t *testing.T) {
 		world     world
 		packages  map[string]bool // NodePackage web/<name>: installed
 	}{
-		{"user-create", []string{app}, observe(now, accountsOf("!app", "docker", "www-data"), UserState{Name: "app", Shells: bash, NewHome: noHome}), nil},
+		{"user-create", []string{app}, observe(now, accountsOf("!app", "docker", "www-data"), UserState{Name: "app", Shells: bash, NewHomes: noHome}), nil},
 		// The declared home is another user's directory: useradd would take it as it is.
 		{"user-create-home-taken", []string{userRes("web/user/app", `{"node":"web","name":"app","home":"/home/bob"}`)}, observe(now, accountsOf("!app"),
-			UserState{Name: "app", Shells: bash, NewHome: &HomeState{Path: "/home/bob", Exists: true, What: "a directory", Mode: "0750", Owner: "bob", Group: "bob"}}), nil},
+			UserState{Name: "app", Shells: bash, NewHomes: []HomeState{{Path: "/home/bob", Exists: true, What: "a directory", Mode: "0750", Owner: "bob", Group: "bob"}}}), nil},
 		// The user's home (from /etc/passwd) is another's: its keys are not written there.
 		{"user-keys-home-not-owned", []string{app}, observe(now, groupsOK, func() UserState {
 			u := existing("docker", "www-data")
@@ -142,13 +142,17 @@ func TestGoldenUserPlans(t *testing.T) {
 		{"user-awaiting-report", []string{app}, observe(now, accountsOf("app", "www-data"), existing("www-data")), nil},
 		{"user-file-waits-for-user", []string{plain, fileRes("web/file/etc/app.conf", `{"node":"web","path":"/etc/app.conf","content":"x\n","owner":"app","group":"app"}`)},
 			func() world {
-				w := observe(now, accountsOf("root", "!app"), UserState{Name: "app", Shells: bash, NewHome: noHome})
+				w := observe(now, accountsOf("root", "!app"), UserState{Name: "app", Shells: bash, NewHomes: noHome})
 				w.observed.Files = []FileState{{Path: "/etc/app.conf"}}
 				w.observed.Users["root"] = true
 				return w
 			}(), nil},
 		{"user-old-mamelet", []string{app}, func() world { w := now; w.mamelet, w.accepts = "0.9.2", 0; return w }(), nil},
-		{"user-kept", []string{}, observe(now, groupsOK, inSync(), UserState{Name: "gone"}), nil},
+		{"user-kept", []string{}, func() world {
+			w := observe(now, groupsOK, inSync(), UserState{Name: "gone"})
+			w.observed.InForce = &InForce{Users: []string{"app", "gone"}} // the declaration in force has them
+			return w
+		}(), nil},
 	} {
 		t.Run(s.name, func(t *testing.T) {
 			g, err := decodeGraph(s.resources...)

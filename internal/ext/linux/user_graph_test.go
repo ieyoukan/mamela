@@ -189,6 +189,12 @@ func TestUserRejections(t *testing.T) {
 		{"home dot dot", userRes("web/user/app", `{"node":"web","name":"app","home":"/home/../etc"}`), graph.CodeInvalidValue, "not a clean path"},
 		{"group name", userRes("web/user/app", `{"node":"web","name":"app","groups":["Docker"]}`), graph.CodeInvalidValue, "group's name"},
 		{"group twice", userRes("web/user/app", `{"node":"web","name":"app","groups":["docker","docker"]}`), graph.CodeInvalidValue, "twice"},
+		// useradd makes the user's own group, and refuses to make the user while one of its name exists:
+		// the user would never be made.
+		{"its own group", userRes("web/user/app", `{"node":"web","name":"app","groups":["docker","app"]}`), graph.CodeInvalidValue, "the user's own group"},
+		// An empty string would silently mean the member left out.
+		{"empty shell", userRes("web/user/app", `{"node":"web","name":"app","shell":""}`), graph.CodeInvalidValue, "the shell is empty"},
+		{"empty home", userRes("web/user/app", `{"node":"web","name":"app","home":""}`), graph.CodeInvalidValue, "the home is empty"},
 		{"groups null", userRes("web/user/app", `{"node":"web","name":"app","groups":null}`), graph.CodeWrongType, "groups"},
 		{"groups not a list", userRes("web/user/app", `{"node":"web","name":"app","groups":"docker"}`), graph.CodeWrongType, "groups"},
 		{"keys null", userRes("web/user/app", `{"node":"web","name":"app","authorizedKeys":null}`), graph.CodeWrongType, "authorizedKeys"},

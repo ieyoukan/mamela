@@ -204,6 +204,7 @@ func TestGoldenFilePlans(t *testing.T) {
 		{"agent-silent", []string{appFile}, world{}, pol},
 		{"kept", []string{appService}, with(now, func(w *world) {
 			w.observed = reported(present("/etc/app/app.conf", appConf), FileState{Path: "/etc/gone.conf"})
+			w.observed.InForce = &InForce{Files: []string{"/etc/app/app.conf", "/etc/gone.conf"}} // the declaration in force has them
 		}), pol},
 		{"start-waits-for-file", []string{appFile, appService}, with(now, func(w *world) {
 			w.observed = reported(present("/etc/app/app.conf", oldConf))
