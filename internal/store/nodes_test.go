@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,5 +98,38 @@ func TestNodeReports(t *testing.T) {
 	all, _ := s.NodeReports(ctx)
 	if len(all) != 1 {
 		t.Fatalf("%d reports", len(all))
+	}
+}
+
+// A Control Plane run again after a downgrade reads the revisions and reports a newer one stored (with
+// members it does not know): it keeps observing, and what it rewrites leaves them out.
+func TestStoredRevisionsAndReportsOfANewerVersionAreRead(t *testing.T) {
+	ctx := context.Background()
+	st, _, _ := open(t)
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO node_revisions(node, serial, content, created_ms) VALUES('web', 1, ?, 0)`,
+		`{"schema":"mamelet-revision/v1","node":"web","vmid":7001,"serial":1,"issuedAt":"0001-01-01T00:00:00Z","expiresAt":"0001-01-01T00:00:00Z","packages":[],"services":[],"fromTheFuture":{"x":1}}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO node_reports(node, received_ms, report) VALUES('web', 0, ?)`,
+		`{"node":"web","vmid":7001,"serial":1,"version":"9.9.9","packages":[],"services":[],"results":[],"fromTheFuture":true}`); err != nil {
+		t.Fatal(err)
+	}
+	r, err := st.NodeRevision(ctx, "web")
+	if err != nil || r == nil || r.VMID != 7001 {
+		t.Fatalf("revision %+v %v", r, err)
+	}
+	if reports, err := st.NodeReports(ctx); err != nil || len(reports) != 1 || reports[0].Report.Version != "9.9.9" {
+		t.Fatalf("reports %+v %v", reports, err)
+	}
+	if nr, ok, err := st.NodeReportOf(ctx, "web"); err != nil || !ok || nr.Report.VMID != 7001 {
+		t.Fatalf("report %+v %v", nr, err)
+	}
+	next, err := st.PublishNodeRevision(ctx, "web", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		r.Packages = append(r.Packages, noderev.Package{Name: "curl"})
+		return r, nil
+	})
+	if err != nil || next.Serial != 2 || strings.Contains(string(next.Content()), "fromTheFuture") {
+		t.Errorf("rewritten %d %s %v", next.Serial, next.Content(), err)
 	}
 }

@@ -158,3 +158,31 @@ DB が残っているので、作成の記録、承認、revision の serial は
 ## 7. 警告とコード
 
 [reason-codes.md](reason-codes.md) の `MAM-PKI`（証明書と鍵）、`MAM-BAK`（バックアップと復元、古い DB）、`MAM-NODE-0201`・`0202`（CP が mamelet に返す拒否）。
+
+## 8. 0.4.0（mamelet 0.10.0）から 0.3.x に戻す
+
+0.3.x の CP は、DB の報告と revision を、知らないメンバーを拒んで読む。0.10.0 の mamelet が一度報告するか（`extensions`・`ext`）、`ext` のある revision が DB に入ると（linux の資源を plan した）、0.3.x の `mamela serve`・`plan`・`apply` は観測で失敗する（`stored revision of <node>` か、報告の decode の誤り）。0.3.x の CP は、0.10.0 の mamelet の報告も、届いたときに断る。ADR 0016 の 4。
+
+**前に:** CP を 0.4.0 に更新する前に、バックアップを取る（2）。名前に版と日付を入れる（`before-0.4.0-2026-11-18.backup`）。
+
+**戻す（a. 更新前のバックアップを戻す。推奨）:**
+
+1. 各ノードの mamelet を 0.9.x に戻す（0.3.x の CP は 0.10.0 の報告を断る）。宣言（`Mamela.mamelet`）で 0.9.x の binary に更新するのは、0.4.0 の CP がまだ動いているうちに行う。CP がもう 0.3.x なら、ノードで `/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet`（[mamelet の更新](mamelet-update.md)の限界と同じ）。
+2. `mamela serve` を止め、更新前のバックアップを 0.3.x の `mamela` で戻す（3 の 3。置いてある DB は `--replace` で `.before-restore-<時刻>` に移る）。0.3.x で起動する。
+3. **失うもの:** バックアップのあとの報告、承認、apply の記録、登録（3 の 6）。apply の結果は、ノードとプロバイダーの実物にある（plan し直すと見える）。
+4. mamelet は、0.4.0 の CP から受け入れた serial を覚えているので、戻した DB の revision を断る（**MAM-BAK-0101**）。5 の手順で直す（より新しいバックアップはないので、ノードごとに `lastSerial` を 0 にする）。
+
+**戻す（b. 最小の手。更新前のバックアップがないとき）:** DB から、0.3.x が読めないもの（報告すべてと、revision の `ext`）を除く。報告は、mamelet が次の poll で送り直す（0.9.x に戻した mamelet で）。linux の grant と観測の対象は失う（linux の資源は 0.3.x では扱わない）。
+
+1. 上の 1 のとおり、mamelet を 0.9.x に戻す。
+2. `mamela serve`（と mamelacd）を止め、DB のバックアップを取る（2。0.4.0 の `mamela` で）。
+3. CP のホストで（`sqlite3` 3.38 以降。`CAST` は、revision が BLOB で入っているため）:
+   ~~~bash
+   sudo -u mamela-cp sqlite3 /var/lib/mamela/state.db \
+     "DELETE FROM node_reports;
+      UPDATE node_revisions SET content = json_remove(CAST(content AS TEXT), '$.ext')
+        WHERE json_type(CAST(content AS TEXT), '$.ext') IS NOT NULL;"
+   ~~~
+4. 0.3.x の `mamela` で起動し、`mamela plan <宣言>` が観測で失敗しないこと、各ノードが報告することを確かめる。
+
+serial は変わらないので、mamelet は revision を断らない。DB に入った plan（`plans` と `snapshots`）は 0.4.0 の形のままだが、0.3.x は古い plan を読み直さない限り困らない（作り直す）。

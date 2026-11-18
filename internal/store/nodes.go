@@ -151,6 +151,13 @@ func (s *Store) PublishNodeRevisionForAgent(ctx context.Context, node, serial st
 	return r, tx.Commit()
 }
 
+// Stored revisions and reports are read without refusing members this program does not know: they
+// were checked when they were made or received, and a newer Control Plane (or mamelet) may have written
+// members an older one, run again after a downgrade, does not know. That one then keeps observing and
+// planning; what it does not know is left out of what it rewrites (a grant it cannot read is never
+// handed out), as the parts of extensions it does not know are (noderev's ext.go). What mamelet sends
+// is still read strictly when it arrives (mamela serve).
+
 // NodeRevision returns the node's current revision (without a validity period).
 func (s *Store) NodeRevision(ctx context.Context, node string) (*noderev.Revision, error) {
 	return latestNodeRevision(ctx, s.db, node)
@@ -177,7 +184,7 @@ func latestNodeRevision(ctx context.Context, q queryer, node string) (*noderev.R
 		return nil, err
 	}
 	var r noderev.Revision
-	if err := json.Unmarshal(content, &r, json.RejectUnknownMembers(true)); err != nil {
+	if err := json.Unmarshal(content, &r); err != nil {
 		return nil, fmt.Errorf("stored revision of %s: %w", node, err)
 	}
 	return &r, nil
@@ -258,8 +265,8 @@ func (s *Store) NodeReports(ctx context.Context) ([]NodeReport, error) {
 			return nil, err
 		}
 		var nr NodeReport
-		if err := json.Unmarshal(data, &nr.Report, json.RejectUnknownMembers(true)); err != nil {
-			return nil, err
+		if err := json.Unmarshal(data, &nr.Report); err != nil {
+			return nil, fmt.Errorf("stored report of a node: %w", err)
 		}
 		nr.Received = time.UnixMilli(at).UTC()
 		out = append(out, nr)
@@ -279,8 +286,8 @@ func (s *Store) NodeReportOf(ctx context.Context, node string) (NodeReport, bool
 		return NodeReport{}, false, err
 	}
 	var nr NodeReport
-	if err := json.Unmarshal(data, &nr.Report, json.RejectUnknownMembers(true)); err != nil {
-		return NodeReport{}, false, err
+	if err := json.Unmarshal(data, &nr.Report); err != nil {
+		return NodeReport{}, false, fmt.Errorf("stored report of %s: %w", node, err)
 	}
 	nr.Received = time.UnixMilli(at).UTC()
 	return nr, true, nil
