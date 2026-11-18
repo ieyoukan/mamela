@@ -512,3 +512,37 @@ func TestStartHasADeadline(t *testing.T) {
 		t.Fatalf("start: %v after %s", err, time.Since(start))
 	}
 }
+
+// cancelInstall is the tiny Ubuntu whose apt-get install is cut short by mamelet stopping (SIGTERM
+// cancels the round's context): the command fails as a killed one does.
+type cancelInstall struct {
+	*fakeOS
+	cancel context.CancelFunc
+}
+
+func (c *cancelInstall) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
+	if c.cancel != nil && program == progAptGet && !slices.Contains(args, "-s") {
+		c.cancel()
+		c.cancel = nil
+		return nil, nil, -1, context.Canceled
+	}
+	return c.fakeOS.Run(ctx, program, args, env)
+}
+
+// An attempt cut short because mamelet is stopping did not fail: it is not recorded (it would have
+// needed a new approval), and the next round makes it, with the same grant.
+func TestAnAttemptCutShortIsNotRecorded(t *testing.T) {
+	e := newEnv(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	e.a.System.Runner = &cancelInstall{fakeOS: e.os, cancel: cancel}
+	cs := nginxChangeSet(t)
+	e.publish(1, []noderev.Package{{Name: "nginx", Install: &noderev.Install{Operation: op1, Attempt: 1, ChangeSet: cs.Digest}}}, nil)
+	rep, _ := e.a.Round(ctx)
+	if len(rep.Results) != 0 {
+		t.Fatalf("recorded %+v", rep.Results)
+	}
+	rep = e.round()
+	if len(rep.Results) != 1 || rep.Results[0].Outcome != noderev.OutcomeDone || !rep.Packages[0].Installed {
+		t.Fatalf("results %+v", rep.Results)
+	}
+}

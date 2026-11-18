@@ -16,13 +16,16 @@ import (
 // User is a user mamelet observes (NodeUser), and changes once if Change grants it. Besides the
 // name, it says what mamelet reports on: whether Shell is an executable file on the node (the shell
 // the user is declared with, or would be made with), which of Groups exist, which user has UID
-// already (one declared for its creation), and whether to read its authorized_keys (Keys). None of
-// them allows anything.
+// already (one declared for its creation), what is at the home it would be made with (Home), and
+// whether to read its authorized_keys (Keys). None of them allows anything.
 type User struct {
-	Name   string      `json:"name"`
-	Shell  string      `json:"shell"`
-	Groups []string    `json:"groups,omitempty"`
-	UID    int         `json:"uid,omitzero"`
+	Name   string   `json:"name"`
+	Shell  string   `json:"shell"`
+	Groups []string `json:"groups,omitempty"`
+	UID    int      `json:"uid,omitzero"`
+	// Home is the home useradd would make for the user, when it does not exist (mamelet reports
+	// whether something is there already: UserState.NewHome).
+	Home   string      `json:"home,omitempty"`
 	Keys   bool        `json:"keys,omitzero"`
 	Change *UserChange `json:"change,omitempty"`
 }
@@ -81,6 +84,8 @@ type UserState struct {
 	// and a group of the user's name, exist is in Observed.Groups.
 	Shells map[string]bool   `json:"shells,omitempty"`
 	UIDs   map[string]string `json:"uids,omitempty"`
+	// NewHome is what is at the part's home of a user that does not exist (nil: the part names none).
+	NewHome *HomeState `json:"newHome,omitempty"`
 	// Keys is its authorized_keys, when the part asks for it and the user exists.
 	Keys *KeysState `json:"keys,omitempty"`
 	// Error says why mamelet does not observe the user (a name it refuses).
@@ -94,10 +99,28 @@ type KeysState struct {
 	File FileState `json:"file"`
 	// Dir is ~/.ssh when it is a directory: "0700 app:app".
 	Dir string `json:"dir,omitempty"`
-	// Found are the keys in the file (fingerprints, not comments); Other counts its lines that are
-	// neither a key Mamela reads, a comment nor empty.
+	// NotOwned says why the home or ~/.ssh is not the user's to have its keys written into (another
+	// user's): mamelet never writes there, and the plan blocks (MAM-PLAN-0212).
+	NotOwned string `json:"notOwned,omitempty"`
+	// Found are the keys in the file (fingerprints, not comments), each once, at most MaxFoundKeys:
+	// More counts the other keys there are besides; Other counts its lines that are neither a key
+	// Mamela reads, a comment nor empty.
 	Found []FoundKey `json:"found,omitempty"`
+	More  int        `json:"more,omitzero"`
 	Other int        `json:"other,omitzero"`
+}
+
+// HomeState is what is at the home a user would be made with (UserState.NewHome).
+type HomeState struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists,omitzero"`
+	// Of what is there: what it is ("a directory", "a symbolic link", "a file"), its mode and owner.
+	What  string `json:"what,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	Group string `json:"group,omitempty"`
+	// Error says why it was not looked at (a home mamelet refuses: CheckHome).
+	Error string `json:"error,omitempty"`
 }
 
 func (p *Part) user(name string) *User {
@@ -177,6 +200,11 @@ func checkUsers(users []User) []string {
 		if u.UID < 0 || u.UID > MaxUID {
 			add("user %q: uid %d is out of range", u.Name, u.UID)
 		}
+		if u.Home != "" {
+			if e := CheckHome(u.Home); e != nil {
+				add("user %q: home: %s", u.Name, e.Message)
+			}
+		}
 		if c := u.Change; c != nil {
 			if err := checkUserChange(u, *c); err != nil {
 				add("user %q: %v", u.Name, err)
@@ -204,6 +232,8 @@ func checkUserChange(u User, c UserChange) error {
 			return fmt.Errorf("the uid %d it is made with is not the one the part names (%d)", k.UID, u.UID)
 		case k.Shell != u.Shell:
 			return fmt.Errorf("the shell %q it is made with is not the one the part names", k.Shell)
+		case k.CreateHome && k.Home != u.Home:
+			return fmt.Errorf("the home %q it is made with is not the one the part names (%q)", k.Home, u.Home)
 		}
 		if k.Home != "" {
 			if e := CheckHome(k.Home); e != nil {

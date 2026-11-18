@@ -1,0 +1,20 @@
+Plan sha256:71dad9897291
+  revision  sha256:e93dd9b7bf53
+  observed  2026-11-17T12:01:00Z (snapshot sha256:d12c7dcc3415)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+~ NodeUser web/user/app  [needs approval]
+      authorized_keys sha256: 6d0554a9ca79ccccbb5cabe56c276ff088a0affdfc582ba1b2b08601b9e643bd -> 0d66b9dc5f953e8b801bfbd9dea79b25bcb8ee7f9d68e9ca8a4db5c607ec4bf1
+      add key: ecdsa-sha2-nistp256 SHA256:VcWOyMmaA9ijf1osrgmDcsRk9kvDZebfo0Ym/X0FSD0 bob@desk
+      remove key: ssh-rsa SHA256:CwCuVUW8tEA5ctpNdxJ+chpQlqFWwp3j7gM3xJtOUL8
+      remove key: 70 more keys (the agent lists at most 65)
+    linux.change-user: needs approval (MAM-POL-0222 changes a user on the node: adds it to the groups, sets the shell and writes the SSH keys of this plan)
+      hint: read the keys this plan adds and takes out: logins with a key taken out stop working, and a group such as sudo or docker makes the user root
+    warning MAM-GRAPH-0206 user app is added to group docker on web: its members control the Docker daemon, which runs containers as root with the host's files, so the user can become root there
+      hint: declare the group only if the user is meant to administer the node; Mamela never removes a membership, so taking it out of the declaration later does not take it away
+    warning MAM-PLAN-0149 taken out of the authorized_keys of user app on web: 1 key (SHA256:CwCuVUW8tEA5ctpNdxJ+chpQlqFWwp3j7gM3xJtOUL8) and 70 more keys; logins with them stop working once this plan is applied
+      hint: make sure the keys that stay are the ones you log in with (or that you have another way in) before you approve
+
+Summary: 1 needs approval, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -170,6 +170,9 @@ func validateFile(v *graph.Validator, r graph.Resource) {
 				`write the unit name without ".service", for example "nginx"`)
 		case seen[unit]:
 			v.Problem(r, graph.CodeInvalidValue, "spec.restart", fmt.Sprintf("service %s is named twice", svc), "name each service once")
+		case CheckRestart(svc) != "":
+			v.Problem(r, graph.CodeInvalidValue, "spec.restart", CheckRestart(svc),
+				"take mamelet out of restart: mamelet is updated with NodeMamelet (Mamela.mamelet), and reads its configuration when it starts")
 		}
 		seen[unit] = true
 	}

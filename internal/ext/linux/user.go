@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -287,6 +288,17 @@ func validateUser(v *graph.Validator, r graph.Resource) {
 	if h, _ := s.CreateHome(); h != "" {
 		if others := slices.DeleteFunc(slices.Clone(t.homes[h]), func(id string) bool { return id == r.ID() }); len(others) > 0 {
 			v.Problem(r, graph.CodeConflict, "spec.home", fmt.Sprintf("home %s is also the home of %s on %s", h, strings.Join(others, ", "), s.Node), "give each user a home of its own")
+		}
+		// A home in another's (or around it): the user owning the outer one can replace the inner.
+		for _, o := range slices.Sorted(maps.Keys(t.homes)) {
+			if o != h && (Under(h, o) || Under(o, h)) {
+				inner, outer := h, o
+				if Under(o, h) {
+					inner, outer = o, h
+				}
+				v.Problem(r, graph.CodeConflict, "spec.home", fmt.Sprintf("home %s is in home %s on %s (%s): the user of the outer one can replace what is in the inner", inner, outer, s.Node, strings.Join(t.homes[o], ", ")),
+					"give each user a home of its own, side by side (such as /home/app and /home/worker)")
+			}
 		}
 	}
 }

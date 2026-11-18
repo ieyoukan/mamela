@@ -182,10 +182,12 @@ func init() {
 			for _, k := range kinds {
 				k.observe(ctx, s, p, &o)
 			}
+			observePending(s, &o)
+			cleanStateDir(s)
 			if rep.Ext == nil {
 				rep.Ext = map[string]jsontext.Value{}
 			}
-			rep.Ext[Name] = encode(o)
+			rep.Ext[Name] = encodeObserved(o)
 		},
 		Act: func(ctx context.Context, x *mamelet.Act, phase mamelet.Phase) bool {
 			// After the packages (a package may make the user that owns a file, or the directory), before
@@ -225,7 +227,7 @@ func init() {
 // planCodes are the codes of the extension's plan notes (doc.go reserves ranges for the kinds that
 // follow); a kind may also name its own in kind.codes (NodeUser).
 var planCodes = slices.Concat(
-	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept},
+	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileExposed, codeFileUnsafe, codeFileUnobserved, codeFileKept, codePending},
 	artifactPlanCodes, // NodeArtifact: artifact_plan.go
 	aptRepoPlanCodes,  // NodeAptRepo: aptrepo_plan.go
 )

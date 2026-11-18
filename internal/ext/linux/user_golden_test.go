@@ -39,6 +39,8 @@ func TestGoldenUserPlans(t *testing.T) {
 		return w
 	}
 	bash := map[string]bool{DefaultShell: true}
+	// noHome: nothing is at the home app would be made with.
+	noHome := &HomeState{Path: "/home/app"}
 	// existing is app as useradd made it (uid 1001, group app), in groups.
 	existing := func(groups ...string) UserState {
 		return UserState{Name: "app", Exists: true, UID: 1001, GID: 1001, Group: "app", Home: "/home/app", Shell: DefaultShell, Groups: groups, Shells: bash}
@@ -65,7 +67,25 @@ func TestGoldenUserPlans(t *testing.T) {
 		world     world
 		packages  map[string]bool // NodePackage web/<name>: installed
 	}{
-		{"user-create", []string{app}, observe(now, accountsOf("!app", "docker", "www-data"), UserState{Name: "app", Shells: bash}), nil},
+		{"user-create", []string{app}, observe(now, accountsOf("!app", "docker", "www-data"), UserState{Name: "app", Shells: bash, NewHome: noHome}), nil},
+		// The declared home is another user's directory: useradd would take it as it is.
+		{"user-create-home-taken", []string{userRes("web/user/app", `{"node":"web","name":"app","home":"/home/bob"}`)}, observe(now, accountsOf("!app"),
+			UserState{Name: "app", Shells: bash, NewHome: &HomeState{Path: "/home/bob", Exists: true, What: "a directory", Mode: "0750", Owner: "bob", Group: "bob"}}), nil},
+		// The user's home (from /etc/passwd) is another's: its keys are not written there.
+		{"user-keys-home-not-owned", []string{app}, observe(now, groupsOK, func() UserState {
+			u := existing("docker", "www-data")
+			u.Home = "/home/bob"
+			u.Keys = &KeysState{File: FileState{Path: "/home/bob/.ssh/authorized_keys", Exists: true, SHA256: ContentSHA256("x"), Mode: "0600", Owner: "bob", Group: "bob"},
+				Dir: "0700 bob:bob", NotOwned: "/home/bob is bob's (uid 1000), not app's", Found: []FoundKey{oldCI}}
+			return u
+		}()), nil},
+		// A file of more keys than the agent lists: the rest are counted, and taken out.
+		{"user-keys-more", []string{app}, observe(now, groupsOK, func() UserState {
+			u := existing("docker", "www-data")
+			u.Keys = keysAt("many\n", alice, oldCI)
+			u.Keys.More = 70
+			return u
+		}()), nil},
 		{"user-create-system", []string{userRes("web/user/svc", `{"node":"web","name":"svc","system":true,"uid":990,"groups":["adm"]}`)},
 			observe(now, accountsOf("!svc", "adm"), UserState{Name: "svc", Shells: map[string]bool{DefaultSystemShell: true}, UIDs: map[string]string{"990": ""}}), nil},
 		{"user-in-sync", []string{app}, observe(now, groupsOK, inSync()), nil},
@@ -122,7 +142,7 @@ func TestGoldenUserPlans(t *testing.T) {
 		{"user-awaiting-report", []string{app}, observe(now, accountsOf("app", "www-data"), existing("www-data")), nil},
 		{"user-file-waits-for-user", []string{plain, fileRes("web/file/etc/app.conf", `{"node":"web","path":"/etc/app.conf","content":"x\n","owner":"app","group":"app"}`)},
 			func() world {
-				w := observe(now, accountsOf("root", "!app"), UserState{Name: "app", Shells: bash})
+				w := observe(now, accountsOf("root", "!app"), UserState{Name: "app", Shells: bash, NewHome: noHome})
 				w.observed.Files = []FileState{{Path: "/etc/app.conf"}}
 				w.observed.Users["root"] = true
 				return w

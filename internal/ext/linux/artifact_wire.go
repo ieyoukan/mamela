@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -154,6 +155,9 @@ func checkInstall(in Install) error {
 	for _, s := range in.Restart {
 		if !names.Service(s) {
 			return fmt.Errorf("%q is not a service name", s)
+		}
+		if why := CheckRestart(s); why != "" {
+			return errors.New(why)
 		}
 	}
 	return nil

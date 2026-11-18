@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -97,6 +98,10 @@ func Fetch(ctx context.Context, client *http.Client, rawURL, want, dest string, 
 	case resp.ContentLength > max:
 		return refusal("download %s: it is %d bytes; mamelet downloads at most %d MiB", rawURL, resp.ContentLength, max>>20)
 	}
+	// Room for it (as much as the server says it is, or nothing when it does not say), and the margin.
+	if err := enoughFree(freeBytesAt(filepath.Dir(dest)), "mamelet's state directory", max64(resp.ContentLength, 0)); err != nil {
+		return fmt.Errorf("download %s: %w", rawURL, err)
+	}
 	f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
@@ -173,6 +178,9 @@ func ExtractMember(archive, name, dest string, max int64) (sum string, err error
 		case hdr.Size > max:
 			return "", refusal("%s in the archive is %d bytes; mamelet installs at most %d MiB", name, hdr.Size, max>>20)
 		}
+		if err := enoughFree(freeBytesAt(filepath.Dir(dest)), "mamelet's state directory", hdr.Size); err != nil {
+			return "", err
+		}
 		if f, err = os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
 			return "", err
 		}
@@ -244,4 +252,11 @@ func (b *boundedReader) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
 	b.left -= int64(n)
 	return n, err
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }

@@ -153,7 +153,7 @@ func appendTo(t *testing.T, n *mnode, p, line string) {
 // createApp is the approved creation of app with group docker and alice's key.
 func createApp(op string, attempt int) User {
 	content := KeysContent([]string{keyAlice})
-	return User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+	return User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Home: "/home/app", Keys: true, Change: &UserChange{
 		Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true},
 		Groups: []string{"docker"},
 		Keys:   &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
@@ -381,12 +381,12 @@ func TestMameletRefusesWhatIsNotTheUsers(t *testing.T) {
 			return User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: k, SHA256: ContentSHA256(k)}, Grant: once(ActionChangeUser)}}
 		}(), true, "options"},
 		{"a create with the wrong action", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Grant: once(ActionChangeUser)}}, true, "not valid"},
-		{"a create with a home in /etc", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/etc/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, true, "the system's"},
+		{"a create with a home in /etc", nil, User{Name: "app", Shell: DefaultShell, Home: "/etc/app", Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/etc/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, true, "the system's"},
 		{"a create with another shell", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: "/bin/sh"}, Grant: once(ActionCreateUser)}}, true, "not the one the part names"},
 		{"uid 0", func(n *mnode) { appendTo(t, n, "etc/passwd", "app:x:0:0::/home/app:/bin/bash\n") },
 			User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, false, "uid 0"},
 		{"exists otherwise", func(n *mnode) { addUser(t, n, "app:x:%d:%d::/home/app:/bin/sh") },
-			User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, false, "its shell is /bin/sh"},
+			User{Name: "app", Shell: DefaultShell, Home: "/home/app", Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, false, "its shell is /bin/sh"},
 		{"does not exist", nil, User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, false, "does not exist"},
 		{"no such group", nil, User{Name: "app", Shell: DefaultShell, Groups: []string{"wheel"}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Groups: []string{"wheel"}, Grant: once(ActionCreateUser)}}, false, "group wheel does not exist"},
 		{"no such shell", nil, User{Name: "app", Shell: "/usr/bin/zsh", Change: &UserChange{Create: &UserCreate{Shell: "/usr/bin/zsh"}, Grant: once(ActionCreateUser)}}, false, "not an executable file"},

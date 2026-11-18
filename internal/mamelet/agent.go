@@ -263,6 +263,12 @@ func (a *Agent) act(ctx context.Context, rev *noderev.Revision, online bool, pkg
 	svcs []noderev.ServiceState, st *State, rep *noderev.Report) bool {
 	changed := false
 	record := func(op string, attempt int, outcome, detail string) {
+		if outcome != noderev.OutcomeDone && ctx.Err() != nil {
+			// mamelet is stopping (SIGTERM): the attempt did not fail, it was cut short. It is not
+			// recorded, so it goes on in a later round, from what it finds done (every attempt is
+			// made so that it can be made again after an interruption), while its grant lasts.
+			return
+		}
 		r := noderev.Result{Operation: op, Attempt: attempt, Outcome: outcome, Detail: detail}
 		st.Attempts[attemptKey(op, attempt)] = r
 	}

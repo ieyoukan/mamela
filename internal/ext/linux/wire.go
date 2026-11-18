@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -91,6 +92,10 @@ type Observed struct {
 
 	// NodeAptRepo (aptrepo_wire.go): what mamelet found of each APT source of the part.
 	AptRepos []AptRepoState `json:"aptRepos,omitempty"`
+
+	// Error says why the details were left out of the report (it would have been larger than
+	// MaxObserved): each entry then has only its path or name, and its own Error.
+	Error string `json:"error,omitempty"`
 }
 
 // FileState is what is at a file's path.
@@ -110,8 +115,32 @@ type FileState struct {
 	// Unsafe says why mamelet does not write there: the path is a symbolic link, a directory or a
 	// device, or a directory above it is a link or not a directory. Mamela never follows a link.
 	Unsafe string `json:"unsafe,omitempty"`
+	// Exposed are the directories above the path that a user other than root can change (one it
+	// owns, or one its group or everyone may write): that user can replace what is at the path, so
+	// a file root puts there is in its hands (the plan warns: MAM-PLAN-0144).
+	Exposed []DirOwner `json:"exposed,omitempty"`
+	// Pending is what did not finish after mamelet last wrote the file (its daemon-reload, the
+	// restarts of its services): the file is as approved, but what runs may not use it yet. Reported
+	// while the file is still the one written (MAM-PLAN-0218).
+	Pending *Pending `json:"pending,omitempty"`
 	// Error says why it could not be observed (including a path mamelet refuses: CheckPath).
 	Error string `json:"error,omitempty"`
+}
+
+// DirOwner is a directory's mode and owner (FileState.Exposed).
+type DirOwner struct {
+	Dir   string `json:"dir"`
+	Mode  string `json:"mode"`
+	Owner string `json:"owner"`
+	Group string `json:"group"`
+}
+
+// Pending is what is left to do after a file was written (FileState.Pending): systemctl
+// daemon-reload, and the services to restart (try-restart), in the order the write names them.
+type Pending struct {
+	SHA256  string   `json:"sha256"` // of the file written
+	Reload  bool     `json:"reload,omitzero"`
+	Restart []string `json:"restart,omitempty"`
 }
 
 // MaxContent bounds a file's content, in bytes.
@@ -120,6 +149,20 @@ const MaxContent = 256 << 10
 // MaxNodeContent bounds the content of all the files declared on one node: the approved writes ride
 // in the node's revision (MAM-GRAPH-0106 beyond it).
 const MaxNodeContent = 1 << 20
+
+// The most of each kind one node has (the graph refuses more, and mamelet refuses a part with more):
+// they bound what mamelet observes and hashes each round, and its report.
+const (
+	MaxNodeFiles     = 256
+	MaxNodeUsers     = 64
+	MaxNodeAptRepos  = 32
+	MaxNodeArtifacts = 64
+)
+
+// MaxObserved bounds the linux part of a report, encoded (the Control Plane takes a report of at most
+// 1 MiB, the packages and services included): mamelet sends, past it, only what each entry is and
+// why its details were left out (Observed.Error), so that the node is not taken for dead.
+const MaxObserved = 512 << 10
 
 // ContentSHA256 is the sha256 (hex) of a file's content.
 func ContentSHA256(content string) string {
@@ -132,6 +175,35 @@ func encode(v any) jsontext.Value {
 	out, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		panic("linux: encoding failed: " + err.Error())
+	}
+	return out
+}
+
+// encodeObserved is the JSON of an observation, of at most MaxObserved bytes: past it, each entry
+// keeps only its path or name, with an Error that says why its details were left out (the plan then
+// blocks it as not observed, and says why), and the whole says so (Observed.Error).
+func encodeObserved(o Observed) jsontext.Value {
+	out := encode(o)
+	if len(out) <= MaxObserved {
+		return out
+	}
+	why := fmt.Sprintf("mamelet left the details out of its report: they would have been %d KiB, more than the %d KiB it sends of the linux part (a file of very many keys or lines?)",
+		len(out)>>10, MaxObserved>>10)
+	d := Observed{Users: o.Users, Groups: o.Groups, Error: why}
+	for _, f := range o.Files {
+		d.Files = append(d.Files, FileState{Path: f.Path, Error: why})
+	}
+	for _, u := range o.UserStates {
+		d.UserStates = append(d.UserStates, UserState{Name: u.Name, Error: why})
+	}
+	for _, a := range o.Artifacts {
+		d.Artifacts = append(d.Artifacts, ArtifactState{FileState: FileState{Path: a.Path, Error: why}})
+	}
+	for _, r := range o.AptRepos {
+		d.AptRepos = append(d.AptRepos, AptRepoState{Name: r.Name, Error: why})
+	}
+	if out = encode(d); len(out) > MaxObserved {
+		out = encode(Observed{Error: why})
 	}
 	return out
 }
@@ -233,6 +305,14 @@ func checkPart(raw jsontext.Value) error {
 	}
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	for _, n := range []struct {
+		what      string
+		got, most int
+	}{{"files", len(p.Files), MaxNodeFiles}, {"users", len(p.Users), MaxNodeUsers}, {"APT sources", len(p.AptRepos), MaxNodeAptRepos}, {"artifacts", len(p.Artifacts), MaxNodeArtifacts}} {
+		if n.got > n.most {
+			add("it names %d %s; mamelet observes at most %d on one node (declare fewer)", n.got, n.what, n.most)
+		}
+	}
 	seen := map[string]bool{}
 	for _, f := range p.Files {
 		if seen[f.Path] {
@@ -276,6 +356,9 @@ func checkWrite(w Write) error {
 	for _, s := range w.Restart {
 		if !names.Service(s) {
 			return fmt.Errorf("%q is not a service name", s)
+		}
+		if why := CheckRestart(s); why != "" {
+			return errors.New(why)
 		}
 	}
 	return nil

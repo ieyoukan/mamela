@@ -31,6 +31,7 @@ func observeFiles(_ context.Context, s *mamelet.System, p Part, o *Observed) {
 		if e := CheckPath(f.Path); e != nil {
 			o.Files = append(o.Files, FileState{Path: f.Path, Error: "mamelet refuses the path: " + e.Message})
 		} else {
+			removeStaleTemp(r, f.Path)
 			o.Files = append(o.Files, inspect(r, f.Path, a))
 		}
 		owners, groups := []string{f.Owner}, []string{f.Group}
@@ -60,6 +61,9 @@ func actFiles(ctx context.Context, x *mamelet.Act, p Part) bool {
 	changed := false
 	for _, f := range p.Files {
 		w := f.Write
+		if ctx.Err() != nil {
+			break // mamelet is stopping: what is left goes on in a later round
+		}
 		if w == nil || x.Done(w.Grant.Operation, w.Grant.Attempt) {
 			continue
 		}
@@ -133,20 +137,8 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 		// follows a write still follows.
 		did = append(did, p+" was already as approved")
 	}
-	ran = true
-	if IsUnitFile(p) {
-		if _, err := x.System.Run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
-			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; systemctl daemon-reload: " + err.Error(), ran
-		}
-		did = append(did, "reloaded systemd")
-	}
-	for _, svc := range w.Restart {
-		if err := tryRestart(ctx, x.System, svc); err != nil {
-			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; restart " + svc + ": " + err.Error(), ran
-		}
-		did = append(did, "restarted "+svc+" if it ran")
-	}
-	return noderev.OutcomeDone, strings.Join(did, "; "), ran
+	outcome, detail = followUp(ctx, x, p, w.SHA256, w.Restart, did)
+	return outcome, detail, true
 }
 
 // tryRestart restarts a service if it runs (and does nothing if it does not), without holding
