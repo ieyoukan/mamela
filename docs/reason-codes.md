@@ -144,6 +144,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0119 | ノードの mamelet が、どの版で動いているかを報告していない。更新の仕組みより前の mamelet は報告しない。一度だけ手で置き換える（[mamelet の更新](mamelet-update.md)） |
 | MAM-PLAN-0120 | mamelet の更新は 1 台ずつ、名前の順。前のノードが宣言した版で動くまで待つ。前のノードの更新が失敗したなら、それが先に直す |
 | MAM-PLAN-0122 | ノードの mamelet が、その拡張（`linux` など、汎用の通信の形の拡張）を受け取らない（Blocked）。報告の `extensions` に拡張がない、または古い版だけ（mamelet が拡張より古い。`linux` は 0.10.0 から）か、revision の拡張の部分を断った（報告の `extRefused`。理由が出る）。Control Plane は、受け取らないノードの revision に拡張の部分を入れない（古い mamelet が revision 全体を断らないように）ので、承認しても何も起きない。先に mamelet を更新する（[mamelet の更新](mamelet-update.md)。Control Plane が先、mamelet があと） |
+| MAM-PLAN-0123 | ノードの mamelet が拡張（`linux` など）を受け取らないが、同じ plan がそのノードの mamelet を更新する（`NodeMamelet` が change か、前のノードの更新を待つ MAM-PLAN-0120）ので、拡張の資源はその更新を待つ（Waiting。[mamelet の更新](mamelet-update.md)の手順どおりに、更新と拡張の資源を一度に宣言したとき）。更新を apply すると、次の plan で拡張の資源が計画される。宣言した版のラベルが拡張の版より古い更新（`0.9.3` など）や、保護されたノードの更新（拒否される）は、拡張を持ってこないので MAM-PLAN-0122 の Blocked のまま |
 | MAM-PLAN-0140 | mamelet からのファイル（`NodeFile`）の報告を待つ。宣言を変えた直後に、所有者・グループがあるかの報告を待つときもこれ |
 | MAM-PLAN-0141 | `NodeFile` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする。同じ宣言の `NodeUser` が作るユーザー（とその名前のグループ）なら、MAM-PLAN-0143 の待ちになる |
 | MAM-PLAN-0142 | サービスの起動が、そのサービスを `restart` に挙げた `NodeFile` が書かれるのを待つ（設定を置いてから起動する） |

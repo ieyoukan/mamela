@@ -42,7 +42,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 linux は、wire の汎用の形（段 5）を使う最初の拡張である。revision の `ext.linux`、報告の `ext.linux`。
 
 - mamelet は、受け取る拡張と、その部分の版を報告に書く（`extensions: {"linux": 1}`）。CP は、ノードの最新の報告が linux を挙げているときだけ、revision に `ext.linux` を入れる。0.9.x の mamelet（revision を、知らないメンバーを拒んで読む）は `ext` を受け取らず、そのまま動き続ける。
-- そのノードの linux の資源は、plan で Blocked になる（MAM-PLAN-0122）。メッセージは、動いている mamelet の版と、更新の仕方（`Mamela.mamelet`、[mamelet の更新](../mamelet-update.md)）を言う。承認しても、grant は出さない（MAM-NODE-0104）。
+- そのノードの linux の資源は、plan で Blocked になる（MAM-PLAN-0122）。メッセージは、動いている mamelet の版と、更新の仕方（`Mamela.mamelet`、[mamelet の更新](../mamelet-update.md)）を言う。承認しても、grant は出さない（MAM-NODE-0104）。ただし、同じ宣言がそのノードの mamelet を更新するとき（`NodeMamelet` が同じ plan で change、または 1 台ずつの順番待ち）は、Blocked でなく Waiting（MAM-PLAN-0123）にする。それが文書の手順（更新と資源を一度に宣言する）で、plan に Blocked があると mamelacd の `sync = "push"` は承認せず、更新そのものが走らないからである。
 - 二重の防御として、mamelet は、知らない拡張の部分と、拡張が読めない部分だけを断り（報告の `extRefused`）、残りの revision を続ける。
 
 ### 4. 更新は CP が先、mamelet があと

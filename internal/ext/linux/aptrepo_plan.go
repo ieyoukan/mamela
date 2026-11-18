@@ -63,8 +63,8 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 		c.Status, c.Note = plan.StatusWaiting, note
 		return c
 	}
-	if note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
-		c.Status, c.Note = plan.StatusBlocked, note
+	if status, note := k.ExtNotTaken(want.Node, Name, Version, Release); note != nil {
+		c.Status, c.Note = status, note
 		return c
 	}
 	e, reported := k.Ext(want.Node, Name)

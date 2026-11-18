@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,31 +83,102 @@ func (k *Kit) Ext(node, ext string) (state.ExtObservation, bool) {
 // older version of its part (it is older than the extension: release is the mamelet release that
 // brought this version), or it refused the extension's part of its revision. The Control Plane
 // gives such a node no part of the extension (capability negotiation), so a change of a resource of
-// the extension there is Blocked with this note (MAM-PLAN-0122) instead of approved and never
-// carried out.
-func (k *Kit) ExtNotTaken(node, ext string, version int, release string) *Note {
+// the extension there is not approved and then never carried out:
+//
+//   - Waiting (MAM-PLAN-0123) when the same plan updates the node's mamelet (its NodeMamelet is a
+//     change, or waits for the nodes before it): that is the way to the extension
+//     (docs/mamelet-update.md), and the plan after the update has the extension's part. An update
+//     to a release whose label says it is older than release does not bring it.
+//   - Blocked (MAM-PLAN-0122) otherwise, and always when the mamelet refused the part.
+func (k *Kit) ExtNotTaken(node, ext string, version int, release string) (Status, *Note) {
 	o, listed := k.snap.Ext[node][ext]
 	if listed && o.Refused != "" {
-		return &Note{Code: "MAM-PLAN-0122",
+		return StatusBlocked, &Note{Code: "MAM-PLAN-0122",
 			Message: fmt.Sprintf("mamelet on node %s refused the part of the %s extension in its revision: %s", node, ext, o.Refused),
 			Hint:    "see the reason (mamelet logs it too: journalctl -u mamelet on the node); a mamelet refuses a part it cannot read, so a mamelet older than this Control Plane is updated first (docs/mamelet-update.md)"}
 	}
 	if listed && o.Accepts >= version {
-		return nil
+		return "", nil
 	}
 	m, known := k.snap.Mamelets[node+"/mamelet"]
 	if !known && !listed && !k.agentReported(node) {
-		return nil
+		return "", nil
 	}
 	running := "a release that does not say which"
 	if m.Version != "" {
 		running = m.Version
 	}
-	return &Note{Code: "MAM-PLAN-0122",
+	if to, ok := k.mameletUpdate(node, release); ok {
+		return StatusWaiting, &Note{Code: "MAM-PLAN-0123",
+			Message: fmt.Sprintf("waits for mamelet on node %s to be updated to %s by this plan: it runs %s, which does not carry out the %s extension (mamelet %s and later do)",
+				node, to, running, ext, release),
+			Hint: "apply the plan that updates mamelet; the plan after it has what the extension does on " + node}
+	}
+	return StatusBlocked, &Note{Code: "MAM-PLAN-0122",
 		Message: fmt.Sprintf("mamelet on node %s runs %s, which does not carry out the %s extension (mamelet %s and later do): Mamela gives the node nothing of it",
 			node, running, ext, release),
 		Hint: fmt.Sprintf("update mamelet on %s first, to %s or later: put it at the site's controlplane.mamelet_binary, declare it with Mamela.mamelet and apply (docs/mamelet-update.md; a Control Plane is updated before its mamelets); then plan again",
 			node, release)}
+}
+
+// mameletUpdate says whether this plan updates the mamelet of node (its NodeMamelet is a change that
+// is not denied, or waits for the nodes before it to run their declared release), and to which
+// release (its label, or its sha256). A release whose label is older than atLeast is no update that
+// helps: ok is false.
+func (k *Kit) mameletUpdate(node, atLeast string) (to string, ok bool) {
+	for _, r := range k.Resources() {
+		m := r.NodeMamelet
+		if m == nil || m.Node != node || releaseOlder(m.Version, atLeast) {
+			continue
+		}
+		c := k.b.onNode(node, k.b.mamelet(r))
+		pending := c.Status == StatusChange && c.Verdict != policy.Denied ||
+			c.Status == StatusWaiting && c.Note != nil && c.Note.Code == "MAM-PLAN-0120"
+		if !pending {
+			continue
+		}
+		if m.Version != "" {
+			return m.Version, true
+		}
+		return "the release of sha256 " + m.SHA256[:min(12, len(m.SHA256))], true
+	}
+	return "", false
+}
+
+// releaseOlder is whether the release label a ("0.9.2", "v0.9.2+abc") is older than b ("0.10.0"). A
+// label that does not say (empty, or not major.minor.patch) is not older: it may be any release.
+func releaseOlder(a, b string) bool {
+	x, okA := releaseParts(a)
+	y, okB := releaseParts(b)
+	if !okA || !okB {
+		return false
+	}
+	for i := range x {
+		if x[i] != y[i] {
+			return x[i] < y[i]
+		}
+	}
+	return false
+}
+
+func releaseParts(s string) ([3]int, bool) {
+	var out [3]int
+	s = strings.TrimPrefix(s, "v")
+	if i := strings.IndexAny(s, "+-"); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 || p == "" {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // agentReported is whether the node's agent has reported anything at all.
@@ -202,7 +274,7 @@ var (
 // changes meaning, and no extension may take one.
 var coreCodes = []string{"MAM-PLAN-0101", "MAM-PLAN-0102", "MAM-PLAN-0103", "MAM-PLAN-0104", "MAM-PLAN-0105", "MAM-PLAN-0106",
 	"MAM-PLAN-0107", "MAM-PLAN-0110", "MAM-PLAN-0111", "MAM-PLAN-0113", "MAM-PLAN-0114", "MAM-PLAN-0119", "MAM-PLAN-0120",
-	"MAM-PLAN-0122", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
+	"MAM-PLAN-0122", "MAM-PLAN-0123", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
 
 // Extension is what a node extension adds to planning.
 type Extension struct {
