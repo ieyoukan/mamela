@@ -1,0 +1,19 @@
+Plan sha256:d8f38e3c7c9c
+  revision  sha256:c9b494003a01
+  observed  2026-11-17T12:01:00Z (snapshot sha256:754ec05fd310)
+  policy    sha256:051da4591384
+
+~ NodePackage web/docker-ce  [needs approval]
+      installed: false -> true
+      changeSet: sha256:0195eb239db40b4531750e6085cd1e902c83a038f134be91ad1ae4d155ce296f
+      apt: install containerd.io 1.7.27-1 (Docker CE:noble)
+      apt: install docker-ce 5:28.3.3-1~ubuntu.24.04~noble (Docker CE:noble)
+    install-package: needs approval (MAM-POL-0204 installing a package runs its maintainer scripts as root)
+      hint: approve after checking the package and its source
+= TestVM web  [in sync]  via test
+= NodeAptRepo web/apt-repo/docker  [retained]
+    MAM-PLAN-0312 not in this declaration: the APT source and its key stay on the node as they are (Mamela does not remove sources yet), and apt keeps installing from it; mamelet stops watching them once this plan is applied
+      hint: to remove it, delete /etc/apt/sources.list.d/mamela-docker.sources and /etc/apt/keyrings/mamela-docker.asc (or .gpg) by hand on the node, then run apt-get update
+
+Summary: 1 needs approval, 1 retained, 1 in sync.
+Nothing has been changed: a plan only describes.

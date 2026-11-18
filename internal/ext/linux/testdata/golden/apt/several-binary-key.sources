@@ -1,0 +1,7 @@
+# Mamela's APT source debian (NodeAptRepo): change the declaration, not this file.
+Types: deb
+URIs: https://a.example/debian http://b.example:8080/debian/
+Suites: bookworm bookworm-updates
+Components: main contrib
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/mamela-debian.gpg

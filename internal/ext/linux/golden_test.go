@@ -54,6 +54,18 @@ func golden(t *testing.T, name string, got []byte) {
 	}
 }
 
+// manifestWith is the node provider's manifest with, of the linux kinds, only those named: the golden
+// plans of a kind are made with the contract of the core and that kind (its digest is in every plan),
+// so that a kind added later does not change them, as the core's are made without the extension.
+func manifestWith(keep ...graph.Kind) spec.Manifest {
+	m := node.Manifest()
+	m.Kinds = slices.DeleteFunc(slices.Clone(m.Kinds), func(k spec.Kind) bool {
+		_, linux := kindOf(k.Kind)
+		return linux && !slices.Contains(keep, k.Kind)
+	})
+	return m
+}
+
 var gt0 = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 
 const (
@@ -208,7 +220,7 @@ func TestGoldenFilePlans(t *testing.T) {
 				t.Fatal(err)
 			}
 			snap := s.world.snapshot(g)
-			providers := spec.Providers{node.Manifest()}.Digest()
+			providers := spec.Providers{manifestWith(KindFile)}.Digest()
 			p := plan.BuildFor(g, snap, s.pol, providers)
 			dir := "plan/" + s.name + "/"
 			golden(t, dir+"graph.json", append(g.Canonical(), '\n'))

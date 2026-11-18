@@ -1,0 +1,12 @@
+Plan sha256:2b6fcf1709c9
+  revision  sha256:379f3d03e441
+  observed  2026-11-17T12:01:00Z (snapshot sha256:d36060cd9e78)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeAptRepo web/apt-repo/docker  [blocked]
+    MAM-PLAN-0214 mamelet does not write /etc/apt/sources.list.d/mamela-docker.sources on web: /etc/apt/sources.list.d/mamela-docker.sources is a symbolic link
+      hint: Mamela never follows a symbolic link: replace what is there by hand (the mamela-* sources and keys are Mamela's)
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

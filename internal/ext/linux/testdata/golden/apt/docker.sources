@@ -1,0 +1,6 @@
+# Mamela's APT source docker (NodeAptRepo): change the declaration, not this file.
+Types: deb
+URIs: https://download.docker.com/linux/ubuntu
+Suites: noble
+Components: stable
+Signed-By: /etc/apt/keyrings/mamela-docker.asc

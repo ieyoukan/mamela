@@ -1,0 +1,5 @@
+# Mamela's APT source flat (NodeAptRepo): change the declaration, not this file.
+Types: deb
+URIs: http://deb.example.org/repo
+Suites: ./
+Signed-By: /etc/apt/keyrings/mamela-flat.asc

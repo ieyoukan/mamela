@@ -62,6 +62,7 @@ func checkGraph(g *graph.Graph, v *graph.Validator) {
 				"put large content into a download pinned by its sha256 (NodeArtifact), or spread the files over fewer at a time")
 		}
 	}
+	checkAptRepos(g, v) // NodeAptRepo
 }
 
 // kindOf is the extension's kind of that name.

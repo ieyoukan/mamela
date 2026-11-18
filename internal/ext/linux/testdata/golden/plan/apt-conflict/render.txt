@@ -1,0 +1,12 @@
+Plan sha256:f1cc337a79c6
+  revision  sha256:379f3d03e441
+  observed  2026-11-17T12:01:00Z (snapshot sha256:1fbca8322caf)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeAptRepo web/apt-repo/docker  [blocked]
+    MAM-PLAN-0153 /etc/apt/sources.list.d/docker.list on web names a URI and suite of APT source docker too: apt refuses one source with two keys (Signed-By), and would then read no source at all
+      hint: remove that source from the node by hand (it came from a vendor's instructions or a package), or do not declare this one
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.
