@@ -49,7 +49,7 @@ jobs:
           path: .tools/downloads
           key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('toolchain.lock') }}
       - name: mise install (mise.toml, mise.lock)
-        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
       # The postinstall hook already ran it, but mise only warns when a hook fails.
       - name: Set up the repository (toolchain.lock, Pome.lock; fails if a Pome.lock would change)
         run: scripts/install-toolchain.sh
