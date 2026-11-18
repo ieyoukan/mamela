@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -141,7 +141,7 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 	}
 	var did []string
 	if key == nil {
-		b, refuse, err := downloadAptKey(ctx, x.System, a.KeyURL, a.KeySHA256)
+		b, refuse, err := downloadAptKey(ctx, x.System, name, a.KeyURL, a.KeySHA256)
 		switch {
 		case err != nil && refuse:
 			return refused(err.Error() + "; nothing was written")
@@ -168,7 +168,7 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 			return nil
 		}
 		ran = true
-		if err := writeTo(r, p, Write{Content: content, Mode: "0644"}, uid, gid, uid, gid); err != nil {
+		if err := writeTo(r, p, Write{Content: content, SHA256: sum, Mode: "0644"}, uid, gid, uid, gid); err != nil {
 			return fmt.Errorf("write %s: %w", p, err)
 		}
 		if after := inspect(r, p, acc); !rootFile(after, sum) {
@@ -204,50 +204,35 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 	return noderev.OutcomeDone, strings.Join(append(did, "ran apt-get update"), "; "), ran
 }
 
-// downloadAptKey downloads a source's key over https (redirects too), at most MaxAptKey bytes, within
-// AptKeyTimeout, and returns it only if its sha256 is want. refuse: what it got is not the approved
-// key (the next attempt gets the same); otherwise the download failed (it may work later).
-func downloadAptKey(ctx context.Context, s *mamelet.System, url, want string) (key []byte, refuse bool, err error) {
-	if !strings.HasPrefix(url, "https://") {
-		return nil, true, fmt.Errorf("the key's URL %s is not https", url)
+// downloadAptKey downloads a source's key with the extension's downloader (download.go: https only,
+// a redirect too, at most MaxAptKey bytes, within AptKeyTimeout) into mamelet's state directory, and
+// returns it only if its sha256 is want; the temporary file is removed whatever happens. refuse:
+// what it got is not the approved key (the next attempt gets the same); otherwise the download failed
+// (it may work later).
+func downloadAptKey(ctx context.Context, s *mamelet.System, name, url, want string) (key []byte, refuse bool, err error) {
+	dir := stateDir(s)
+	if dir == "" {
+		return nil, true, errors.New("mamelet has no state directory to download the key into")
 	}
-	client := s.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: AptKeyTimeout}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, false, err
 	}
-	c := *client
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if req.URL.Scheme != "https" {
-			return fmt.Errorf("redirected to %s, which is not https", req.URL.Redacted())
-		}
-		if len(via) >= 5 {
-			return errors.New("stopped after 5 redirects")
-		}
-		return nil
+	dest := filepath.Join(dir, ".linux-apt-key-"+name+".download")
+	if err := os.Remove(dest); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, false, fmt.Errorf("remove what an earlier download left: %w", err)
 	}
+	defer os.Remove(dest)
+	client := HTTPSClient(s.HTTP)
+	defer client.CloseIdleConnections()
 	dctx, cancel := context.WithTimeout(ctx, AptKeyTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
+	if err := Fetch(dctx, client, url, want, dest, MaxAptKey); err != nil {
+		var r *Refusal
+		return nil, errors.As(err, &r), fmt.Errorf("the key: %w", err)
+	}
+	b, err := os.ReadFile(dest)
 	if err != nil {
-		return nil, true, err
-	}
-	resp, err := c.Do(req)
-	if err != nil {
-		return nil, false, fmt.Errorf("download the key: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("download the key from %s: status %d", url, resp.StatusCode)
-	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxAptKey+1))
-	switch {
-	case err != nil:
-		return nil, false, fmt.Errorf("download the key from %s: %w", url, err)
-	case len(b) > MaxAptKey:
-		return nil, true, fmt.Errorf("the key at %s is larger than %d KiB, which a key is not", url, MaxAptKey>>10)
-	}
-	if got := ContentSHA256(string(b)); got != want {
-		return nil, true, fmt.Errorf("the key at %s has sha256 %s, not the approved %s", url, got, want)
+		return nil, false, err
 	}
 	return b, false, nil
 }

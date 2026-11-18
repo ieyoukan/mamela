@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"encoding/json/jsontext"
+	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -15,9 +16,12 @@ import (
 )
 
 // kinds are the extension's kinds, in canonical order. A kind declares what it adds to each layer
-// (fileKind in file.go) and adds itself here; NodeUser, NodeAptRepo and NodeArtifact take the orders
-// doc.go reserves for them.
-var kinds = []kind{aptRepoKind, fileKind}
+// (fileKind in file.go) and adds itself here; NodeUser takes the order doc.go reserves for it.
+var kinds = []kind{
+	aptRepoKind,  // 7: aptrepo.go
+	artifactKind, // 8: artifact.go
+	fileKind,     // 9: file.go
+}
 
 // kind is what one kind of the extension adds to each layer. Every function works on its own
 // members of Part and Observed, and leaves the others' alone.
@@ -209,6 +213,8 @@ func init() {
 
 // planCodes are the codes of the extension's plan notes (doc.go reserves ranges for the kinds that
 // follow).
-var planCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept,
-	// NodeAptRepo
-	codeAptRepoAwait, codeAptRepoPackageGate, codeAptRepoUnread, codeAptRepoConflict, codeAptRepoUnsafe, codeAptRepoUnobserved, codeAptRepoKept}
+var planCodes = slices.Concat(
+	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept},
+	artifactPlanCodes, // NodeArtifact: artifact_plan.go
+	aptRepoPlanCodes,  // NodeAptRepo: aptrepo_plan.go
+)

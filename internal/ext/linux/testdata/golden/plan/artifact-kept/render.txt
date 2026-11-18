@@ -1,0 +1,13 @@
+Plan sha256:807dadf092db
+  revision  sha256:245ac6dcf2d9
+  observed  2026-11-17T12:01:00Z (snapshot sha256:598135c9b8eb)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/node_exporter  [in sync]
+= TestVM web  [in sync]  via test
+= NodeArtifact web/artifact/usr/local/bin/node_exporter  [retained]
+    MAM-PLAN-0313 not in this declaration: the file stays on the node as it is (Mamela does not delete what it installed yet), and mamelet stops watching it once this plan is applied
+      hint: remove it by hand on the node if it should go
+
+Summary: 1 retained, 2 in sync.
+Nothing has been changed: a plan only describes.

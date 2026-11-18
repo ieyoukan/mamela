@@ -131,6 +131,40 @@ fn mamelet_release_is_declared() {
 }
 
 @test
+fn an_artifact_with_the_defaults() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.artifact(
+      app(),
+      "/usr/local/bin/tool",
+      "https://example.com/tool",
+      "1212121212121212121212121212121212121212121212121212121212121212",
+    )
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeArtifact\",\"name\":\"app-server/artifact/usr/local/bin/tool\",\"spec\":{\"group\":\"root\",\"mode\":\"0755\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/usr/local/bin/tool\",\"sha256\":\"1212121212121212121212121212121212121212121212121212121212121212\",\"url\":\"https://example.com/tool\"}}",
+  )
+}
+
+@test
+fn an_artifact_from_an_archive_with_its_owner_and_restart() {
+  a = Lib.Artifact(
+    extract: "node_exporter-1.8.2.linux-amd64/node_exporter",
+    mode: "0750",
+    group: "prometheus",
+    restart: ["node_exporter"],
+    ..Lib.artifact_of(
+      "/usr/local/bin/node_exporter",
+      "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz",
+      "3434343434343434343434343434343434343434343434343434343434343434",
+    ),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.artifact_with(app(), a)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeArtifact\",\"name\":\"app-server/artifact/usr/local/bin/node_exporter\",\"spec\":{\"extract\":\"node_exporter-1.8.2.linux-amd64/node_exporter\",\"group\":\"prometheus\",\"mode\":\"0750\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/usr/local/bin/node_exporter\",\"restart\":[\"node_exporter\"],\"sha256\":\"3434343434343434343434343434343434343434343434343434343434343434\",\"url\":\"https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz\"}}",
+  )
+}
+
+@test
 fn a_file_with_the_defaults() {
   g = Lib.empty()
     |> machine("app-server", Lib.Dhcp)

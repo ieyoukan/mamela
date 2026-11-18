@@ -16,7 +16,6 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
-	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/state"
 )
@@ -116,7 +115,7 @@ func TestGoldenAptRepoPlans(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			providers := spec.Providers{manifestWith(KindAptRepo)}.Digest()
+			providers := goldenProviders
 			p := plan.BuildFor(g, snap, s.pol, providers)
 			dir := "plan/" + s.name + "/"
 			golden(t, dir+"graph.json", append(g.Canonical(), '\n'))

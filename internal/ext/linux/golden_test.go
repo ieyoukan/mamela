@@ -22,8 +22,6 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
-	"github.com/ieyoukan/mamela/internal/provider/node"
-	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/provider/protocol"
@@ -54,19 +52,14 @@ func golden(t *testing.T, name string, got []byte) {
 	}
 }
 
-// manifestWith is the node provider's manifest with, of the linux kinds, only those named: the golden
-// plans of a kind are made with the contract of the core and that kind (its digest is in every plan),
-// so that a kind added later does not change them, as the core's are made without the extension.
-func manifestWith(keep ...graph.Kind) spec.Manifest {
-	m := node.Manifest()
-	m.Kinds = slices.DeleteFunc(slices.Clone(m.Kinds), func(k spec.Kind) bool {
-		_, linux := kindOf(k.Kind)
-		return linux && !slices.Contains(keep, k.Kind)
-	})
-	return m
-}
-
 var gt0 = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+
+// goldenProviders is the providers' digest the golden plans are made for: fixed, as the clock is.
+// The node provider's manifest has every kind of the extension, so its digest changes with each kind
+// that is added; what these files fix is how each kind plans, and each kind's contract is fixed by
+// requirements.json and TestEveryKindIsInTheContract. (It is the digest of the manifest when
+// NodeFile was its only linux kind.)
+const goldenProviders = "sha256:867bbc28c9fee4c4e8b2dcf990e099244996527ba5830b7fccf27ade860d9a72"
 
 const (
 	appConf = "listen 8080\nworkers 4\n"
@@ -220,7 +213,7 @@ func TestGoldenFilePlans(t *testing.T) {
 				t.Fatal(err)
 			}
 			snap := s.world.snapshot(g)
-			providers := spec.Providers{manifestWith(KindFile)}.Digest()
+			providers := goldenProviders
 			p := plan.BuildFor(g, snap, s.pol, providers)
 			dir := "plan/" + s.name + "/"
 			golden(t, dir+"graph.json", append(g.Canonical(), '\n'))

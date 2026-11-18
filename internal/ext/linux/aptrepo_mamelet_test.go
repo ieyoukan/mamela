@@ -133,11 +133,6 @@ func addGrant(k *keyServer, keyPath, key, op string, attempt int) AptRepo {
 		KeyURL: s.KeyURL, KeySHA256: s.KeySHA256, SourcesSHA256: armored, Grant: noderev.Once{Operation: op, Attempt: attempt, Action: ActionAddAptRepo}}}
 }
 
-func (n *mnode) exists(p string) bool {
-	_, err := os.Lstat(filepath.Join(n.root, p))
-	return err == nil
-}
-
 func aptState(t *testing.T, rep noderev.Report) AptRepoState {
 	t.Helper()
 	o := observedOf(t, rep)
@@ -220,9 +215,9 @@ func TestMameletRefusesAKeyThatIsNotTheApprovedOne(t *testing.T) {
 	}{
 		{"another sha256", "/armored", ContentSHA256("another key"), noderev.OutcomeRefused, "not the approved"},
 		{"html", "/html", ContentSHA256(testHTML), noderev.OutcomeRefused, "is not an OpenPGP public key"},
-		{"large", "/large", ContentSHA256(strings.Repeat("\x99", MaxAptKey+1)), noderev.OutcomeRefused, "larger than 64 KiB"},
-		{"redirect to http", "/to-http", armoredSHA, noderev.OutcomeFailed, "not https"},
-		{"not found", "/missing", armoredSHA, noderev.OutcomeFailed, "status 404"},
+		{"large", "/large", ContentSHA256(strings.Repeat("\x99", MaxAptKey+1)), noderev.OutcomeRefused, "larger than"},
+		{"redirect to http", "/to-http", armoredSHA, noderev.OutcomeRefused, "not https"},
+		{"not found", "/missing", armoredSHA, noderev.OutcomeFailed, "404"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n, apt, k := aptNode(t)

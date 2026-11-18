@@ -1,0 +1,1 @@
+{"resources":[{"kind":"NodeService","name":"web/node_exporter","spec":{"enabled":true,"node":"web","running":true,"service":"node_exporter"}},{"kind":"TestVM","name":"web","provider":"test","spec":{"network":{"mode":"dhcp"}}}],"schema":"mamela-graph/v2"}

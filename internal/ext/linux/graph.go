@@ -16,7 +16,9 @@ const (
 	CodeRestartUndeclared graph.Code = "MAM-GRAPH-0204"
 )
 
-var warningCodes = []graph.Code{CodeSecret, CodeRestartUndeclared}
+var warningCodes = []graph.Code{CodeSecret, CodeRestartUndeclared,
+	CodeArtifactRestartUndeclared, // NodeArtifact: artifact.go
+}
 
 // checkGraph checks what concerns more than one resource of the extension: on one node, no path is
 // claimed twice, nor a path and a directory above it (a file cannot be both); and the approved

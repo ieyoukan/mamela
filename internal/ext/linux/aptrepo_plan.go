@@ -21,6 +21,8 @@ const (
 	codeAptRepoKept        = "MAM-PLAN-0312" // not declared any more: kept on the node
 )
 
+var aptRepoPlanCodes = []string{codeAptRepoAwait, codeAptRepoPackageGate, codeAptRepoUnread, codeAptRepoConflict, codeAptRepoUnsafe, codeAptRepoUnobserved, codeAptRepoKept}
+
 // aptUpdate is what applying a source always does last (and the diff that says so, the same in
 // every plan of the source: running apply again after apt-get update failed retries it).
 const aptUpdate = "apt reads the package lists of every source again (apt-get update)"

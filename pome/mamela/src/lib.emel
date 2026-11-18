@@ -176,6 +176,80 @@ pub fn file_with(graph: Graph, node: Node, f: File) -> Graph {
   )
 }
 
+## A file on a node downloaded over https and pinned by its sha256 (the linux extension's
+## `NodeArtifact`): a release's binary at the absolute `path`, downloaded from `url` (https, without a
+## user or a fragment), whose bytes have `sha256` (64 lowercase hex digits, as the release's checksum
+## file lists them). With `extract`, the download is a gzip-compressed tar and only that member of it
+## (a regular file, named as `tar -tzf` lists it) is installed; `""` installs the download itself.
+## `mode`, `owner`, `group` and `restart` are as a `File`'s. `artifact_of` makes one with the
+## defaults, to change with `Artifact(extract: "app-1.0/app", ..Mamela.artifact_of(path, url, sha256))`.
+pub type Artifact(
+  path: String,
+  url: String,
+  sha256: String,
+  extract: String,
+  mode: String,
+  owner: String,
+  group: String,
+  restart: List[String],
+)
+
+## An artifact at `path`, the download of `url` with `sha256` itself, mode "0755", owned by root,
+## that restarts nothing.
+pub fn artifact_of(path: String, url: String, sha256: String) -> Artifact {
+  Artifact(
+    path:,
+    url:,
+    sha256:,
+    extract: "",
+    mode: "0755",
+    owner: "root",
+    group: "root",
+    restart: [],
+  )
+}
+
+## Declares that `node` has at `path` the download of `url` whose sha256 is `sha256`, mode "0755",
+## owned by root (`artifact_with` declares a member of a `.tar.gz`, another mode, owner, or services
+## to restart). The plan shows the URL and the sha256 and asks for an approval; mamelet installs
+## nothing whose sha256 is another, and keeps a record of what it installed, so that a file changed
+## by hand is installed again (with a new approval). An artifact that is no longer declared stays on
+## the node as it is. The paths it may not be are a file's.
+pub fn artifact(graph: Graph, node: Node, path: String, url: String, sha256: String) -> Graph {
+  artifact_with(graph, node, artifact_of(path, url, sha256))
+}
+
+## Declares the artifact `a` on `node`.
+pub fn artifact_with(graph: Graph, node: Node, a: Artifact) -> Graph {
+  extract = if a.extract == "" {
+    []
+  } else {
+    [("extract", Text(a.extract))]
+  }
+  restart = if List.is_empty(a.restart) {
+    []
+  } else {
+    [("restart", Items(a.restart.map(Text)))]
+  }
+  on_node(
+    graph,
+    node,
+    "NodeArtifact",
+    "#{node.name}/artifact#{a.path}",
+    List.append(
+      [
+        ("path", Text(a.path)),
+        ("url", Text(a.url)),
+        ("sha256", Text(a.sha256)),
+        ("mode", Text(a.mode)),
+        ("owner", Text(a.owner)),
+        ("group", Text(a.group)),
+      ],
+      List.append(extract, restart),
+    ),
+  )
+}
+
 ## An APT source of a node (the linux extension's `NodeAptRepo`), and the key that signs it: apt
 ## reads the `suites` (and `components`) of each of `uris` (1 to 4, http or https: apt checks every
 ## file it reads against the key), for the `architectures` named (every architecture of the node
