@@ -214,9 +214,10 @@ func fileStartGate(k *plan.Kit, node, service string) *plan.Note {
 	return nil
 }
 
-// undeclaredFiles are the files mamelet still observes on a machine of the declaration that no
-// NodeFile of it has any more: they stay on the node as they are (Mamela does not delete files yet),
-// and mamelet stops observing them when the plan is applied.
+// undeclaredFiles are the files the declaration in force has on a machine of this declaration (InForce:
+// Mamela may have written them) that this declaration does not have any more: they stay on the node as
+// they are (Mamela does not delete files yet), and mamelet stops observing them when the plan is
+// applied. A file only another declaration planned (a pull request's) is not this plan's business.
 func undeclaredFiles(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -235,7 +236,7 @@ func undeclaredFiles(k *plan.Kit) []plan.Change {
 		}
 		for _, f := range o.Files {
 			name := FileName(node, f.Path)
-			if declared[name] || !f.Exists || f.Error != "" {
+			if declared[name] || !f.Exists || f.Error != "" || !o.inForce(func(i *InForce) []string { return i.Files }, f.Path) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindFile, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

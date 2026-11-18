@@ -1,6 +1,6 @@
-Plan sha256:669df7579f50
+Plan sha256:cff0ba98f2fc
   revision  sha256:379f3d03e441
-  observed  2026-11-17T12:01:00Z (snapshot sha256:5c02a951d9f0)
+  observed  2026-11-17T12:01:00Z (snapshot sha256:3c26fa89e4aa)
   policy    sha256:b2ad900beffb
 
 = TestVM web  [in sync]  via test

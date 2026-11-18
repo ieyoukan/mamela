@@ -97,6 +97,16 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			}
 		}
 		observeExt(r, nr.Received, &snap)
+		var current *noderev.Revision
+		if rev != nil && rev.VMID == r.VMID {
+			current = rev
+		}
+		for _, e := range extensions {
+			if o, ok := snap.Ext[r.Node][e.Name]; ok && e.Annotate != nil {
+				e.Annotate(r.Node, current, &o)
+				snap.Ext[r.Node][e.Name] = o
+			}
+		}
 	}
 	return snap, nil
 }
@@ -394,9 +404,22 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		if !ok {
 			return fmt.Errorf("mamelet does not carry out %s", step.Op)
 		}
+		if ext := wireOps[step.Op]; ext != "" {
+			// The grant goes into the extension's part: a mamelet that does not take the part would never
+			// see it (the plan blocks such a change: MAM-PLAN-0122).
+			on := r.Node()
+			report, err := taken(ctx, p.Store, on)
+			if err != nil {
+				return err
+			}
+			if !noderev.Takes(report, ext) {
+				return fmt.Errorf("MAM-NODE-0104: %s of %s on %s: the mamelet there does not take the %s extension (it is older than it); update mamelet first (docs/mamelet-update.md), then plan again",
+					step.Op, r.ID(), on, ext)
+			}
+		}
 		// An extension's operation: it says on which node, what, and what the grant puts in the
 		// revision; the core gives the grant its operation, attempt and deadline, and waits.
-		g, ok, err := gf(ctx, GrantRequest{Store: p.Store, Step: step, Declaration: inputs.Revision})
+		g, ok, err := gf(ctx, GrantRequest{Store: p.Store, Step: step, Declaration: inputs.Revision, Observed: inputs.Snapshot})
 		if err != nil {
 			return err
 		}
@@ -406,20 +429,12 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		once := func(action string) noderev.Once {
 			return noderev.Once{Operation: step.OperationID, Attempt: attempt, Action: action, Expires: exp}
 		}
+		if wireOps[step.Op] != "" && g.Node != r.Node() {
+			// The node whose mamelet was found to take the part above.
+			return fmt.Errorf("%s: the grant is for node %s, the resource is on %s", step.Op, g.Node, r.Node())
+		}
 		node, what = g.Node, g.What
 		grant = func(rev *noderev.Revision) error { return g.Put(rev, once) }
-		if ext := wireOps[step.Op]; ext != "" {
-			// The grant goes into the extension's part: a mamelet that does not take the part would never
-			// see it (the plan blocks such a change: MAM-PLAN-0122).
-			report, err := taken(ctx, p.Store, node)
-			if err != nil {
-				return err
-			}
-			if !noderev.Takes(report, ext) {
-				return fmt.Errorf("MAM-NODE-0104: %s on %s: the mamelet there does not take the %s extension (it is older than it); update mamelet first (docs/mamelet-update.md), then plan again",
-					what, node, ext)
-			}
-		}
 	}
 
 	if !configure {

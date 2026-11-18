@@ -14,17 +14,20 @@ import (
 // (Observed.UserStates), NodeUser's.
 
 // User is a user mamelet observes (NodeUser), and changes once if Change grants it. Besides the
-// name, it says what mamelet reports on: whether Shell is an executable file on the node (the shell
-// the user is declared with, or would be made with), which of Groups exist, which user has UID
-// already (one declared for its creation), and whether to read its authorized_keys (Keys). None of
-// them allows anything.
+// name, it says what mamelet reports on (the observation targets of the declarations: wire.go):
+// whether each of Shells is an executable file on the node (the shells the user is declared with, or
+// would be made with), which of Groups exist, which user has each of UIDs already (those declared for
+// its creation), and whether to read its authorized_keys (Keys: a declaration has them). None of them
+// allows anything: Change carries every value it needs.
 type User struct {
-	Name   string      `json:"name"`
-	Shell  string      `json:"shell"`
-	Groups []string    `json:"groups,omitempty"`
-	UID    int         `json:"uid,omitzero"`
-	Keys   bool        `json:"keys,omitzero"`
-	Change *UserChange `json:"change,omitempty"`
+	Name   string   `json:"name"`
+	Shells []string `json:"shells,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+	UIDs   []int    `json:"uids,omitempty"`
+	Keys   bool     `json:"keys,omitzero"`
+	// InForce: the declaration in force has the user (File.InForce).
+	InForce bool        `json:"inForce,omitzero"`
+	Change  *UserChange `json:"change,omitempty"`
 }
 
 // UserChange is an approved, one-time change of a user: mamelet makes it (Create), adds it to the
@@ -35,8 +38,21 @@ type UserChange struct {
 	Groups []string    `json:"groups,omitempty"`
 	Shell  string      `json:"shell,omitempty"`
 	Keys   *KeysWrite  `json:"keys,omitempty"`
+	// Before is the user as the approved plan saw it: mamelet changes the shell and authorized_keys
+	// only while they are still so, or once they are already as approved (compare and swap). A new user
+	// is made only while there is none of its name (or one exactly as approved, made by an attempt that
+	// was interrupted).
+	Before UserBefore `json:"before"`
 	// Grant is the core's one-time permission (ActionCreateUser with Create, ActionChangeUser without).
 	Grant noderev.Once `json:"grant"`
+}
+
+// UserBefore is what the observation an approved change of a user was planned against found: whether
+// the user existed, its login shell, and its authorized_keys (when the change writes them).
+type UserBefore struct {
+	Exists bool    `json:"exists,omitzero"`
+	Shell  string  `json:"shell,omitempty"`
+	Keys   *Before `json:"keys,omitzero"`
 }
 
 // UserCreate is how useradd makes the user: a system user or not, with the uid (0: useradd
@@ -150,9 +166,8 @@ func handOutUsers(p *Part, now time.Time) {
 	}
 }
 
-// checkUsers is what mamelet checks of the users of a part before it uses it: names, values and
-// grants, and that a change is one of what the part says of the user (its groups, its keys). It
-// returns the problems.
+// checkUsers is what mamelet checks of the users of a part before it uses it: names, observation
+// targets and changes. It returns the problems.
 func checkUsers(users []User) []string {
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
@@ -166,19 +181,17 @@ func checkUsers(users []User) []string {
 			add("user %q: %s", u.Name, why)
 			continue
 		}
-		if why := pathShape(u.Shell); why != "" {
-			add("user %q: shell: %s", u.Name, why)
+		if why := targetsProblem(u.Shells, func(s string) bool { return pathShape(s) == "" }); why != "" {
+			add("user %q: shells: %s", u.Name, why)
 		}
-		for _, g := range u.Groups {
-			if !ValidAccount(g) {
-				add("user %q: %q is not a group's name", u.Name, g)
-			}
+		if why := targetsProblem(u.Groups, ValidAccount); why != "" {
+			add("user %q: groups: %s", u.Name, why)
 		}
-		if u.UID < 0 || u.UID > MaxUID {
-			add("user %q: uid %d is out of range", u.Name, u.UID)
+		if why := targetsProblem(u.UIDs, func(id int) bool { return id > 0 && id <= MaxUID }); why != "" {
+			add("user %q: uids: %s", u.Name, why)
 		}
 		if c := u.Change; c != nil {
-			if err := checkUserChange(u, *c); err != nil {
+			if err := checkUserChange(*c); err != nil {
 				add("user %q: %v", u.Name, err)
 			}
 		}
@@ -186,9 +199,10 @@ func checkUsers(users []User) []string {
 	return problems
 }
 
-// checkUserChange checks an approved change of user u: its grant, how it makes the user, that the
-// groups it adds and the keys it writes are the user's, and the keys' content against its sha256.
-func checkUserChange(u User, c UserChange) error {
+// checkUserChange checks an approved change of a user by itself (it carries every value it needs; what
+// the entry asks mamelet to observe is no part of it): its grant, how it makes the user, the groups it
+// adds, the shell it sets, the keys' content against its sha256, and what it was planned against.
+func checkUserChange(c UserChange) error {
 	action := ActionChangeUser
 	if c.Create != nil {
 		action = ActionCreateUser
@@ -200,34 +214,50 @@ func checkUserChange(u User, c UserChange) error {
 		switch {
 		case k.UID < 0 || k.UID > MaxUID:
 			return fmt.Errorf("uid %d is out of range", k.UID)
-		case k.UID != u.UID:
-			return fmt.Errorf("the uid %d it is made with is not the one the part names (%d)", k.UID, u.UID)
-		case k.Shell != u.Shell:
-			return fmt.Errorf("the shell %q it is made with is not the one the part names", k.Shell)
+		case pathShape(k.Shell) != "":
+			return fmt.Errorf("shell %q: %s", k.Shell, pathShape(k.Shell))
+		case c.Shell != "":
+			return fmt.Errorf("a user that is made gets its shell from how it is made")
+		case c.Before.Exists:
+			return fmt.Errorf("it makes a user the plan saw already")
 		}
 		if k.Home != "" {
 			if e := CheckHome(k.Home); e != nil {
 				return fmt.Errorf("home: %s", e.Message)
 			}
 		}
+	} else if !c.Before.Exists {
+		return fmt.Errorf("it changes a user the plan did not see")
 	}
-	for _, g := range c.Groups {
-		if !slices.Contains(u.Groups, g) {
-			return fmt.Errorf("it adds group %q, which the user is not declared with", g)
+	for i, g := range c.Groups {
+		if !ValidAccount(g) || i > 0 && c.Groups[i-1] >= g {
+			return fmt.Errorf("groups %v: each a group's name, sorted, once", c.Groups)
 		}
 	}
-	if c.Shell != "" && c.Shell != u.Shell {
-		return fmt.Errorf("it sets shell %q, which the user is not declared with", c.Shell)
+	if c.Shell != "" {
+		if why := pathShape(c.Shell); why != "" {
+			return fmt.Errorf("shell %q: %s", c.Shell, why)
+		}
+	}
+	if c.Before.Shell != "" {
+		if why := pathShape(c.Before.Shell); why != "" {
+			return fmt.Errorf("the shell the plan saw, %q: %s", c.Before.Shell, why)
+		}
 	}
 	if k := c.Keys; k != nil {
-		if !u.Keys {
-			return fmt.Errorf("it writes authorized_keys, which the user is not declared with")
-		}
 		if !names.SHA256(k.SHA256) || ContentSHA256(k.Content) != k.SHA256 {
 			return fmt.Errorf("the authorized_keys content is not the one approved (sha256 %s)", k.SHA256)
 		}
 		if _, err := parseKeysContent(k.Content); err != nil {
 			return fmt.Errorf("authorized_keys: %v", err)
+		}
+		if c.Create == nil && c.Before.Keys == nil {
+			return fmt.Errorf("it writes the authorized_keys of a user without what the plan saw of them")
+		}
+	}
+	if b := c.Before.Keys; b != nil {
+		if why := b.check(); why != "" {
+			return fmt.Errorf("the authorized_keys the plan saw: %s", why)
 		}
 	}
 	if c.Create == nil && len(c.Groups) == 0 && c.Shell == "" && c.Keys == nil {

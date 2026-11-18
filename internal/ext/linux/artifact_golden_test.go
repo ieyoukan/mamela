@@ -84,6 +84,7 @@ func TestGoldenArtifactPlans(t *testing.T) {
 		}), nil},
 		{"kept", []string{service}, with(now, func(w *world) {
 			w.observed = reported(installedFrom(exporterURL, goldenSum, exporterMember))
+			w.observed.InForce = &InForce{Artifacts: []string{path}} // the declaration in force has it
 		}), nil},
 		{"start-waits-for-artifact", []string{exporter, service}, with(now, func(w *world) {
 			w.observed = reported(ArtifactState{FileState: FileState{Path: path}})

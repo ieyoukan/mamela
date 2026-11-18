@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -132,7 +133,7 @@ func observeArtifacts(_ context.Context, s *mamelet.System, p Part, o *Observed)
 			}
 		}
 		o.Artifacts = append(o.Artifacts, st)
-		owners, groups := []string{a.Owner}, []string{a.Group}
+		owners, groups := slices.Clone(a.Owners), slices.Clone(a.Groups)
 		if in := a.Install; in != nil {
 			owners, groups = append(owners, in.Owner), append(groups, in.Group)
 		}
@@ -226,6 +227,11 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 	prev, recorded := rec.Artifacts[p]
 	same := recErr == nil && recorded && prev.SHA256 == in.SHA256 && prev.Extract == in.Extract &&
 		got.Exists && !got.Large && got.SHA256 == prev.Installed
+	// Compare and swap: the path is as the approved plan saw it, or has the approved installation
+	// already (an attempt that was interrupted, or another apply).
+	if !same && !in.Before.Is(got) {
+		return refused(fmt.Sprintf("%s changed since the plan (it was %s, it is %s); nothing was installed (plan again)", p, in.Before, beforeOf(got)))
+	}
 	dirUID, dirGID := 0, 0
 	if id, ok := acc.users["root"]; ok {
 		dirUID = id

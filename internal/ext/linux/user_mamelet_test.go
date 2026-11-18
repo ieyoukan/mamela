@@ -153,7 +153,7 @@ func appendTo(t *testing.T, n *mnode, p, line string) {
 // createApp is the approved creation of app with group docker and alice's key.
 func createApp(op string, attempt int) User {
 	content := KeysContent([]string{keyAlice})
-	return User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+	return User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
 		Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true},
 		Groups: []string{"docker"},
 		Keys:   &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
@@ -214,7 +214,7 @@ func TestMameletCreatesAUserOnce(t *testing.T) {
 // A system user: --system, its uid, nologin, no home (no keys).
 func TestMameletCreatesASystemUser(t *testing.T) {
 	n, f := newUserNode(t)
-	u := User{Name: "svc", Shell: DefaultSystemShell, UID: 990, Change: &UserChange{
+	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Change: &UserChange{
 		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell},
 		Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
 	n.offer(Part{Users: []User{u}}, nil)
@@ -282,11 +282,12 @@ func TestMameletChangesAUser(t *testing.T) {
 	write(t, filepath.Join(n.root, "bin/zsh"), "#!\n")
 	os.Chmod(filepath.Join(n.root, "bin/zsh"), 0o755)
 	content := KeysContent([]string{keyAlice, keyBob})
-	u := User{Name: "app", Shell: "/bin/zsh", Groups: []string{"docker", "www-data"}, Keys: true, Change: &UserChange{
+	u := User{Name: "app", Shells: []string{"/bin/zsh"}, Groups: []string{"docker", "www-data"}, Keys: true, Change: &UserChange{
 		Groups: []string{"docker", "www-data"}, Shell: "/bin/zsh", Keys: &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
-		Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
+		Before: UserBefore{Exists: true, Shell: "/bin/bash", Keys: &Before{Exists: true, SHA256: ContentSHA256(keyOldCI + "\n")}},
+		Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
 	// Before: what the plan reads.
-	n.offer(Part{Users: []User{{Name: u.Name, Shell: u.Shell, Groups: u.Groups, Keys: true}}}, nil)
+	n.offer(Part{Users: []User{{Name: u.Name, Shells: u.Shells, Groups: u.Groups, Keys: true}}}, nil)
 	before := userStateOf(t, observedOf(t, n.round()), "app")
 	if before.Keys == nil || len(before.Keys.Found) != 1 || before.Keys.Found[0].Fingerprint != fpOldCI || !before.Shells["/bin/zsh"] {
 		t.Fatalf("before %+v", before)
@@ -339,8 +340,8 @@ func TestMameletDoesNotWriteKeysThroughALink(t *testing.T) {
 			c.setup(n)
 			passwd := n.read("/etc/passwd")
 			content := KeysContent([]string{keyAlice})
-			u := User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
-				Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
+			u := User{Name: "app", Shells: []string{DefaultShell}, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
+				Before: UserBefore{Exists: true, Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}
 			n.offer(Part{Users: []User{u}}, nil)
 			rep := n.round()
 			if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "symbolic link") {
@@ -372,30 +373,32 @@ func TestMameletRefusesWhatIsNotTheUsers(t *testing.T) {
 		refuse bool // the part is refused as a whole (ExtRefused) rather than the change
 		says   string
 	}{
-		{"root by name", nil, User{Name: "root", Shell: DefaultShell, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, true, "never manages root"},
-		{"a group not declared", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Groups: []string{"sudo"}, Grant: once(ActionChangeUser)}}, true, "not declared with"},
-		{"keys not declared", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: once(ActionChangeUser)}}, true, "not declared with"},
-		{"keys not as approved", nil, User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256("other")}, Grant: once(ActionChangeUser)}}, true, "not the one approved"},
+		{"root by name", nil, User{Name: "root", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Before: UserBefore{Exists: true}, Grant: once(ActionChangeUser)}}, true, "never manages root"},
+		{"a group that is no name", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Groups: []string{"Sudo"}, Before: UserBefore{Exists: true}, Grant: once(ActionChangeUser)}}, true, "each a group's name"},
+		{"keys without what the plan saw", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Exists: true}, Grant: once(ActionChangeUser)}}, true, "without what the plan saw"},
+		{"a change of a user the plan did not see", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, true, "did not see"},
+		{"keys not as approved", nil, User{Name: "app", Shells: []string{DefaultShell}, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256("other")}, Before: UserBefore{Exists: true, Keys: &Before{}}, Grant: once(ActionChangeUser)}}, true, "not the one approved"},
 		{"keys with options", nil, func() User {
 			k := KeysContent([]string{"restrict " + keyAlice})
-			return User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: k, SHA256: ContentSHA256(k)}, Grant: once(ActionChangeUser)}}
+			return User{Name: "app", Shells: []string{DefaultShell}, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: k, SHA256: ContentSHA256(k)}, Before: UserBefore{Exists: true, Keys: &Before{}}, Grant: once(ActionChangeUser)}}
 		}(), true, "options"},
-		{"a create with the wrong action", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Grant: once(ActionChangeUser)}}, true, "not valid"},
-		{"a create with a home in /etc", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/etc/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, true, "the system's"},
-		{"a create with another shell", nil, User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: "/bin/sh"}, Grant: once(ActionCreateUser)}}, true, "not the one the part names"},
+		{"a create with the wrong action", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Grant: once(ActionChangeUser)}}, true, "not valid"},
+		{"a create with a home in /etc", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/etc/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, true, "the system's"},
+		{"a create with a shell that is no path", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: "sh"}, Grant: once(ActionCreateUser)}}, true, `shell "sh"`},
+		{"a create of a user the plan saw", nil, User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Before: UserBefore{Exists: true}, Grant: once(ActionCreateUser)}}, true, "saw already"},
 		{"uid 0", func(n *mnode) { appendTo(t, n, "etc/passwd", "app:x:0:0::/home/app:/bin/bash\n") },
-			User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, false, "uid 0"},
+			User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Before: UserBefore{Exists: true}, Grant: once(ActionChangeUser)}}, false, "uid 0"},
 		{"exists otherwise", func(n *mnode) { addUser(t, n, "app:x:%d:%d::/home/app:/bin/sh") },
-			User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, false, "its shell is /bin/sh"},
-		{"does not exist", nil, User{Name: "app", Shell: DefaultShell, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Grant: once(ActionChangeUser)}}, false, "does not exist"},
-		{"no such group", nil, User{Name: "app", Shell: DefaultShell, Groups: []string{"wheel"}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Groups: []string{"wheel"}, Grant: once(ActionCreateUser)}}, false, "group wheel does not exist"},
-		{"no such shell", nil, User{Name: "app", Shell: "/usr/bin/zsh", Change: &UserChange{Create: &UserCreate{Shell: "/usr/bin/zsh"}, Grant: once(ActionCreateUser)}}, false, "not an executable file"},
+			User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true}, Grant: once(ActionCreateUser)}}, false, "its shell is /bin/sh"},
+		{"does not exist", nil, User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Change: &UserChange{Groups: []string{"docker"}, Before: UserBefore{Exists: true}, Grant: once(ActionChangeUser)}}, false, "does not exist"},
+		{"no such group", nil, User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"wheel"}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Groups: []string{"wheel"}, Grant: once(ActionCreateUser)}}, false, "group wheel does not exist"},
+		{"no such shell", nil, User{Name: "app", Shells: []string{"/usr/bin/zsh"}, Change: &UserChange{Create: &UserCreate{Shell: "/usr/bin/zsh"}, Grant: once(ActionCreateUser)}}, false, "not an executable file"},
 		{"its group exists", func(n *mnode) { appendTo(t, n, "etc/group", "app:x:1500:\n") },
-			User{Name: "app", Shell: DefaultShell, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Grant: once(ActionCreateUser)}}, false, "a group called app exists"},
+			User{Name: "app", Shells: []string{DefaultShell}, Change: &UserChange{Create: &UserCreate{Shell: DefaultShell}, Grant: once(ActionCreateUser)}}, false, "a group called app exists"},
 		{"its uid is taken", func(n *mnode) { appendTo(t, n, "etc/passwd", "daemon:x:1:1::/usr/sbin:/usr/sbin/nologin\n") },
-			User{Name: "app", Shell: DefaultShell, UID: 1, Change: &UserChange{Create: &UserCreate{UID: 1, Shell: DefaultShell}, Grant: once(ActionCreateUser)}}, false, "uid 1 is daemon's"},
+			User{Name: "app", Shells: []string{DefaultShell}, UIDs: []int{1}, Change: &UserChange{Create: &UserCreate{UID: 1, Shell: DefaultShell}, Grant: once(ActionCreateUser)}}, false, "uid 1 is daemon's"},
 		{"a home in /etc", func(n *mnode) { addUser(t, n, "app:x:%d:%d::/etc/app:/bin/bash") },
-			User{Name: "app", Shell: DefaultShell, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: once(ActionChangeUser)}}, false, "the system's"},
+			User{Name: "app", Shells: []string{DefaultShell}, Keys: true, Change: &UserChange{Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Exists: true, Keys: &Before{}}, Grant: once(ActionChangeUser)}}, false, "the system's"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			n, f := newUserNode(t)
@@ -443,10 +446,11 @@ func TestCheckPartUsers(t *testing.T) {
 	}
 	for name, f := range map[string]func(u *User){
 		"name":       func(u *User) { u.Name = "-o" },
-		"shell":      func(u *User) { u.Shell = "bash" },
+		"shell":      func(u *User) { u.Shells = []string{"bash"} },
 		"group":      func(u *User) { u.Groups = []string{"Docker"} },
-		"uid":        func(u *User) { u.UID = -1 },
-		"create uid": func(u *User) { u.Change.Create.UID = 1500 },
+		"uid":        func(u *User) { u.UIDs = []int{-1} },
+		"uids":       func(u *User) { u.UIDs = []int{1500, 1000} },
+		"create uid": func(u *User) { u.Change.Create.UID = -1 },
 		"op":         func(u *User) { u.Change.Grant.Operation = "op-1" },
 		"attempt":    func(u *User) { u.Change.Grant.Attempt = 0 },
 		"empty": func(u *User) {

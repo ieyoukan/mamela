@@ -102,9 +102,17 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 				"Mamela never follows a symbolic link: replace what is there by hand (the mamela-* sources and keys are Mamela's)")
 		}
 	}
-	if len(got.Conflicts) > 0 {
+	// What apt reads and what other files name, of this declaration's URIs and suites (another
+	// declaration's are of no use here: the next report has these).
+	where := got.where(whereOf(want))
+	if where == nil {
+		c.Status, c.Note = plan.StatusWaiting, &plan.Note{Code: codeAptRepoAwait,
+			Message: fmt.Sprintf("waits for the agent on %s to report APT source %s for the URIs and suites declared here", want.Node, want.Name)}
+		return c
+	}
+	if len(where.Conflicts) > 0 {
 		return blocked(codeAptRepoConflict, fmt.Sprintf("%s on %s names a URI and suite of APT source %s too: apt refuses one source with two keys (Signed-By), and would then read no source at all",
-			strings.Join(got.Conflicts, ", "), want.Node, want.Name),
+			strings.Join(where.Conflicts, ", "), want.Node, want.Name),
 			"remove that source from the node by hand (it came from a vendor's instructions or a package), or do not declare this one")
 	}
 
@@ -124,7 +132,7 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
 
 	if known && rootFile(key, want.KeySHA256) && rootFile(got.Sources, sum) && !other.Exists {
-		if len(got.Unread) == 0 {
+		if len(where.Unread) == 0 {
 			return k.WithOps(c)
 		}
 		// In place, but apt has not read it: the update failed, or did not run. Only the update is
@@ -133,7 +141,7 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 		c = k.WithOps(c, policy.Subject{Op: OpAddAptRepo})
 		c.Note = &plan.Note{Code: codeAptRepoUnread,
 			Message: fmt.Sprintf("the files of APT source %s are in place on %s, but apt has not read %s: an apt-get update failed, or has not run since they were written",
-				want.Name, want.Node, strings.Join(got.Unread, ", ")),
+				want.Name, want.Node, strings.Join(where.Unread, ", ")),
 			Hint: "applying runs apt-get update again (approve this plan, or run apply again on the plan whose update failed); the result of the last attempt says why it failed"}
 		return c
 	}
@@ -215,9 +223,9 @@ func aptRepoPackageGate(k *plan.Kit, node, pkg string) *plan.Note {
 	return nil
 }
 
-// undeclaredAptRepos are the sources mamelet still observes on a machine of the declaration that no
-// NodeAptRepo of it has any more: they stay on the node as they are (Mamela does not remove sources
-// yet), and mamelet stops observing them when the plan is applied.
+// undeclaredAptRepos are the sources the declaration in force has on a machine of this declaration
+// (InForce) that this declaration does not have any more: they stay on the node as they are (Mamela
+// does not remove sources yet), and mamelet stops observing them when the plan is applied.
 func undeclaredAptRepos(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -236,7 +244,8 @@ func undeclaredAptRepos(k *plan.Kit) []plan.Change {
 		}
 		for _, s := range o.AptRepos {
 			name := AptRepoName(node, s.Name)
-			if declared[name] || s.Error != "" || !(s.Sources.Exists || s.KeyArmored.Exists || s.KeyBinary.Exists) {
+			if declared[name] || s.Error != "" || !(s.Sources.Exists || s.KeyArmored.Exists || s.KeyBinary.Exists) ||
+				!o.inForce(func(i *InForce) []string { return i.AptRepos }, s.Name) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindAptRepo, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

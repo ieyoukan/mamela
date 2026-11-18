@@ -442,9 +442,9 @@ func keysDiffs(c *plan.Change, want *UserSpec, got *UserState) *statusNote {
 	return nil
 }
 
-// undeclaredUsers are the users mamelet still observes on a machine of the declaration that no
-// NodeUser of it has any more: they stay on the node as they are (Mamela never deletes a user), and
-// mamelet stops observing them when the plan is applied.
+// undeclaredUsers are the users the declaration in force has on a machine of this declaration
+// (InForce) that this declaration does not have any more: they stay on the node as they are (Mamela
+// never deletes a user), and mamelet stops observing them when the plan is applied.
 func undeclaredUsers(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -463,7 +463,7 @@ func undeclaredUsers(k *plan.Kit) []plan.Change {
 		}
 		for _, u := range o.UserStates {
 			name := UserName(node, u.Name)
-			if declared[name] || !u.Exists || u.Error != "" {
+			if declared[name] || !u.Exists || u.Error != "" || !o.inForce(func(i *InForce) []string { return i.Users }, u.Name) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindUser, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

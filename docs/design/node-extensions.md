@@ -95,7 +95,7 @@ mamelet 側
 - **graph**（`graph.Register`）: `KindDef`（Kind、Order、Decode、Validate、Canonical、Node、Fields、Describe、New）、複数の資源にまたがる検査（`Check`）、警告と警告コード。spec は `Resource.Ext` に入り、核は中を見ない。並びは固定（核の kind は 1、2、5、k3s は 3、4、provider の kind は 5 で NodeMamelet と名前で並ぶ。前からの並びで、digest に入る）。kind・並び・警告コードの重複は起動時に panic。
 - **plan**（`plan.Register`）: kind ごとの `Planner`（Plan、Reported、Deleted）、マシン再起動の関門、サービス起動の関門、理由コード。拡張は `plan.Kit`（宣言の資源、観測の写し、policy、`NodeReady`、`AwaitAgent`、`Stale`、`Decide`、`WithOps`、マシンの削除・存在・再起動）だけを使う。保護ノードの拒否（`onNode`）と警告の付け方は核。理由コードは据え置き、核や他の拡張のものとの重複は panic。
 - **policy**（`policy.RegisterOp`）: 操作と、その判定。`ApprovalRequired` か `Denied` だけ（`Auto` は panic。拡張は承認を迂回できない）。核の操作・コード、他の拡張のものとの重複も panic。
-- **node provider**（`node.Register`）: Observe、Publish（足すだけ。宣言が外したものは取らない）、Protect、Prune、操作ごとの Grant、manifest の kind（graph の並びで並べる）。grant の operation・attempt・期限、登録の束縛、保護ノード、結果の待ちは核。
+- **node provider**（`node.Register`）: Observe、Annotate（拡張の観測に、Control Plane の記録、いまの revision から分かることを足す。linux の `inForce`）、Publish（足すだけ。宣言が外したものは取らない。観測の対象は宣言の和。ADR 0016 の 5a）、Protect、Prune（承認した宣言にない grant と、値の違う grant を取り下げる）、操作ごとの Grant（`GrantRequest.Observed` は承認した plan の観測で、grant の前の状態はそこから取る）、manifest の kind（graph の並びで並べる）。grant の operation・attempt・期限、登録の束縛、保護ノード、結果の待ちは核。
 - **mamelet**（`mamelet.Register`）: Observe、Act、Results、実行するプログラム。1 ラウンドの順序は前と同じ（パッケージ、拡張の BeforeUpdate、mamelet の更新、拡張の AfterUpdate、サービス）。許可プログラムは核と拡張の和集合。
 - `cmd/mamela` と `cmd/mamelet` が `_ ".../internal/ext/k3s"` で組み込む。`internal/ext/deps_test.go` が、核（`internal/...` と `provider/...` の ext 以外）が ext に依存しないこと、二つのプログラムが ext/k3s を組み込むことを `go list -deps` で確かめる。
 

@@ -126,7 +126,7 @@ func artifactNode(t *testing.T, rel *releases) *mnode {
 
 // install is an approved installation of url at path.
 func install(path, url, sum, extract, op string, attempt int) Artifact {
-	return Artifact{Path: path, Owner: "root", Group: "root", Install: &Install{URL: url, SHA256: sum, Extract: extract, Mode: "0755",
+	return Artifact{Path: path, Owners: []string{"root"}, Groups: []string{"root"}, Install: &Install{URL: url, SHA256: sum, Extract: extract, Mode: "0755",
 		Owner: "root", Group: "root", Grant: noderev.Once{Operation: op, Attempt: attempt, Action: ActionInstallArtifact}}}
 }
 
@@ -382,7 +382,7 @@ func TestMameletsRecordSurvivesARestart(t *testing.T) {
 	again := *n
 	again.a = &mamelet.Agent{Config: n.a.Config, CP: n.cp, System: &mamelet.System{Runner: n.sys, Root: n.root},
 		State: n.a.State, Now: n.a.Now, Version: "test"}
-	n.offer(Part{Artifacts: []Artifact{{Path: "/opt/tool/tool", Owner: "root", Group: "root"}}}, nil)
+	n.offer(Part{Artifacts: []Artifact{{Path: "/opt/tool/tool", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
 	st := artifactOf(t, again.round(), "/opt/tool/tool")
 	if st.From == nil || st.From.SHA256 != sum || st.From.Extract != "x/tool" || st.SHA256 != sha([]byte("v1")) {
 		t.Errorf("after a restart: %+v %+v", st, st.From)
@@ -432,9 +432,11 @@ func TestMameletDoesNotDownloadWhatIsInPlace(t *testing.T) {
 	if rel.count("/tool") != 1 {
 		t.Errorf("%d downloads", rel.count("/tool"))
 	}
-	// Changed by hand: the next installation downloads it again.
+	// Changed by hand: the next installation (planned against the patched file) downloads it again.
 	write(t, filepath.Join(n.root, "usr/local/bin/tool"), "patched")
-	n.offer(Part{Artifacts: []Artifact{install("/usr/local/bin/tool", rel.url("/tool"), sum, "", "op-dddddddddddddddddddddddd", 1)}}, nil)
+	d := install("/usr/local/bin/tool", rel.url("/tool"), sum, "", "op-dddddddddddddddddddddddd", 1)
+	d.Install.Before = Before{Exists: true, SHA256: ContentSHA256("patched")}
+	n.offer(Part{Artifacts: []Artifact{d}}, nil)
 	if r := result(t, n.round(), "op-dddddddddddddddddddddddd"); r.Outcome != noderev.OutcomeDone || n.read("/usr/local/bin/tool") != "tool" || rel.count("/tool") != 2 {
 		t.Errorf("result %+v, %d downloads", r, rel.count("/tool"))
 	}

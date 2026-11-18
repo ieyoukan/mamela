@@ -43,32 +43,50 @@ var artifactManifest = spec.Kind{Kind: KindArtifact, Operations: []spec.Operatio
 }}}
 
 // publishArtifacts adds to the part the artifacts g declares on the node that it does not have yet
-// (with no permission), and names in each the owner and group the declaration has now (what mamelet
-// reports the existence of: they allow nothing). An approved installation stays as it is.
+// (with no permission, not InForce), and adds to each the owner and group the declaration names (what
+// mamelet reports the existence of: they allow nothing). It takes nothing away (publishFiles).
 func publishArtifacts(g *graph.Graph, name string, p *Part) {
+	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
 		a := ArtifactOf(r)
 		if a == nil || a.Node != name {
 			continue
 		}
-		if cur := p.artifact(a.Path); cur != nil {
-			cur.Owner, cur.Group = a.Owner, a.Group
-		} else {
-			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path, Owner: a.Owner, Group: a.Group})
+		declared[a.Path] = true
+		cur := p.artifact(a.Path)
+		if cur == nil {
+			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path})
+			cur = &p.Artifacts[len(p.Artifacts)-1]
+		}
+		cur.Owners, cur.Groups = union(cur.Owners, []string{a.Owner}), union(cur.Groups, []string{a.Group})
+	}
+	p.Artifacts = boundCandidates(p.Artifacts, func(a Artifact) bool { return !a.InForce && a.Install == nil }, func(a Artifact) bool { return declared[a.Path] })
+}
+
+// pruneArtifacts makes the part the artifacts g, an approved declaration being applied, declares on
+// the node (pruneFiles): an installation of another download, mode, owner or services is withdrawn.
+// The files stay on the node.
+func pruneArtifacts(g *graph.Graph, name string, p *Part) {
+	declared := map[string]*ArtifactSpec{}
+	for _, r := range g.Resources {
+		if a := ArtifactOf(r); a != nil && a.Node == name {
+			declared[a.Path] = a
+		}
+	}
+	p.Artifacts = slices.DeleteFunc(p.Artifacts, func(a Artifact) bool { return declared[a.Path] == nil })
+	for i := range p.Artifacts {
+		a, want := &p.Artifacts[i], declared[p.Artifacts[i].Path]
+		a.InForce, a.Owners, a.Groups = true, []string{want.Owner}, []string{want.Group}
+		if in := a.Install; in != nil && !installs(*in, want) {
+			a.Install = nil
 		}
 	}
 }
 
-// pruneArtifacts takes out of the part the artifacts g no longer declares on the node, with their
-// installations. The files stay on the node.
-func pruneArtifacts(g *graph.Graph, name string, p *Part) {
-	declared := map[string]bool{}
-	for _, r := range g.Resources {
-		if a := ArtifactOf(r); a != nil && a.Node == name {
-			declared[a.Path] = true
-		}
-	}
-	p.Artifacts = slices.DeleteFunc(p.Artifacts, func(a Artifact) bool { return !declared[a.Path] })
+// installs reports whether an approved installation installs exactly what the declaration a has.
+func installs(in Install, a *ArtifactSpec) bool {
+	return in.URL == a.URL && in.SHA256 == a.SHA256 && in.Extract == a.Extract && in.Mode == a.Mode && in.Owner == a.Owner && in.Group == a.Group &&
+		slices.Equal(in.Restart, a.Restart)
 }
 
 // protectArtifacts takes every installation out of the part of a protected node.
@@ -78,13 +96,23 @@ func protectArtifacts(p *Part) {
 	}
 }
 
-// grantInstall grants the installation of exactly the artifact the approved plan showed.
+// grantInstall grants the installation of exactly the artifact the approved plan showed, against what
+// the plan's observation found at the path (Install.Before).
 func grantInstall(_ context.Context, q node.GrantRequest) (node.Grant, bool, error) {
 	want := ArtifactOf(q.Step.Resource)
 	if want == nil {
 		return node.Grant{}, false, nil
 	}
 	a := *want
+	o, err := observedAt(q.Observed, a.Node)
+	if err != nil {
+		return node.Grant{}, true, fmt.Errorf("install %s: %w (plan again)", a.Path, err)
+	}
+	got := o.artifact(a.Path)
+	if got == nil {
+		return node.Grant{}, true, fmt.Errorf("install %s: the approved plan was made without a report of it (plan again)", a.Path)
+	}
+	before := beforeOf(got.FileState)
 	g := node.Grant{Node: a.Node, What: "install " + a.Path}
 	g.Put = func(rev *noderev.Revision, once func(string) noderev.Once) error {
 		// Exactly what the approved plan showed, or nothing happens.
@@ -94,12 +122,15 @@ func grantInstall(_ context.Context, q node.GrantRequest) (node.Grant, bool, err
 			}
 		}
 		p := partOf(rev)
-		in := &Install{URL: a.URL, SHA256: a.SHA256, Extract: a.Extract, Mode: a.Mode, Owner: a.Owner, Group: a.Group, Restart: slices.Clone(a.Restart), Grant: once(ActionInstallArtifact)}
-		if cur := p.artifact(a.Path); cur != nil {
-			cur.Owner, cur.Group, cur.Install = a.Owner, a.Group, in
-		} else {
-			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path, Owner: a.Owner, Group: a.Group, Install: in})
+		in := &Install{URL: a.URL, SHA256: a.SHA256, Extract: a.Extract, Mode: a.Mode, Owner: a.Owner, Group: a.Group, Restart: slices.Clone(a.Restart),
+			Before: before, Grant: once(ActionInstallArtifact)}
+		cur := p.artifact(a.Path)
+		if cur == nil {
+			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path})
+			cur = &p.Artifacts[len(p.Artifacts)-1]
 		}
+		cur.Owners, cur.Groups = union(cur.Owners, []string{a.Owner}), union(cur.Groups, []string{a.Group})
+		cur.InForce, cur.Install = true, in
 		setPart(rev, p)
 		return nil
 	}

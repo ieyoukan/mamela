@@ -174,9 +174,9 @@ func artifactStartGate(k *plan.Kit, node, service string) *plan.Note {
 	return nil
 }
 
-// undeclaredArtifacts are the artifacts mamelet still observes on a machine of the declaration that
-// no NodeArtifact of it has any more: they stay on the node as they are (Mamela does not delete
-// them, ADR 0016), and mamelet stops observing them when the plan is applied.
+// undeclaredArtifacts are the artifacts the declaration in force has on a machine of this declaration
+// (InForce) that this declaration does not have any more: they stay on the node as they are (Mamela
+// does not delete them, ADR 0016), and mamelet stops observing them when the plan is applied.
 func undeclaredArtifacts(k *plan.Kit) []plan.Change {
 	machines, declared := map[string]bool{}, map[string]bool{}
 	for _, r := range k.Resources() {
@@ -195,7 +195,7 @@ func undeclaredArtifacts(k *plan.Kit) []plan.Change {
 		}
 		for _, a := range o.Artifacts {
 			name := ArtifactName(node, a.Path)
-			if declared[name] || !a.Exists || a.Error != "" {
+			if declared[name] || !a.Exists || a.Error != "" || !o.inForce(func(i *InForce) []string { return i.Artifacts }, a.Path) {
 				continue
 			}
 			out = append(out, plan.Change{Kind: KindArtifact, Name: name, Status: plan.StatusRetained, Diffs: []plan.Diff{}, Operations: []plan.Operation{},

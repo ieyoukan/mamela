@@ -36,6 +36,11 @@ type Extension struct {
 	// Observe adds what a node's report says of the extension's kinds to the snapshot (received:
 	// when the report arrived).
 	Observe func(r noderev.Report, received time.Time, snap *state.Snapshot)
+	// Annotate (an extension of the generic wire) adds to what the snapshot has of the extension's
+	// observation of node (the report's) what the Control Plane's own record of the node says: its
+	// current revision (nil: none for the machine that reported). The plan reads both as one
+	// observation.
+	Annotate func(node string, rev *noderev.Revision, o *state.ExtObservation)
 	// Publish works out what a node's revision gets from the declaration g, and returns the change
 	// to make to it: it adds what is new and takes away nothing the declaration in force allows.
 	Publish func(ctx context.Context, st *store.Store, g *graph.Graph, node string) (func(r *noderev.Revision), error)
@@ -57,6 +62,9 @@ type GrantRequest struct {
 	Step  reconcile.Step
 	// Declaration is the declaration of the approved plan.
 	Declaration *graph.Graph
+	// Observed is the observation the approved plan was made from: what the approver saw of the node
+	// before it changes (a grant's precondition comes from it).
+	Observed state.Snapshot
 }
 
 // Approved is the value a field gets in the approved change ("" when it has no such diff): what the

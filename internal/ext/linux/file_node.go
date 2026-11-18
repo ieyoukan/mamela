@@ -41,32 +41,51 @@ var fileManifest = spec.Kind{Kind: KindFile, Operations: []spec.Operation{{
 }}}
 
 // publishFiles adds to the part the files g declares on the node that it does not have yet (with no
-// permission), and names in each the owner and group the declaration has now (what mamelet reports
-// the existence of: they allow nothing). An approved write stays as it is.
+// permission, not InForce), and adds to each the owner and group the declaration names (what mamelet
+// reports the existence of: they allow nothing). It takes nothing away: an approved write stays as it
+// is, whatever g declares (g may be a declaration nobody approved).
 func publishFiles(g *graph.Graph, name string, p *Part) {
+	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
 		f := FileOf(r)
 		if f == nil || f.Node != name {
 			continue
 		}
-		if cur := p.file(f.Path); cur != nil {
-			cur.Owner, cur.Group = f.Owner, f.Group
-		} else {
-			p.Files = append(p.Files, File{Path: f.Path, Owner: f.Owner, Group: f.Group})
+		declared[f.Path] = true
+		cur := p.file(f.Path)
+		if cur == nil {
+			p.Files = append(p.Files, File{Path: f.Path})
+			cur = &p.Files[len(p.Files)-1]
+		}
+		cur.Owners, cur.Groups = union(cur.Owners, []string{f.Owner}), union(cur.Groups, []string{f.Group})
+	}
+	p.Files = boundCandidates(p.Files, func(f File) bool { return !f.InForce && f.Write == nil }, func(f File) bool { return declared[f.Path] })
+}
+
+// pruneFiles makes the part the files g, an approved declaration being applied, declares on the node:
+// the others go, with their writes (the files stay on the node); those it declares are InForce, with
+// its owner and group as targets, and keep a write only if it writes what g declares (a write approved
+// for another content is withdrawn: the plan of g said nothing of it).
+func pruneFiles(g *graph.Graph, name string, p *Part) {
+	declared := map[string]*FileSpec{}
+	for _, r := range g.Resources {
+		if f := FileOf(r); f != nil && f.Node == name {
+			declared[f.Path] = f
+		}
+	}
+	p.Files = slices.DeleteFunc(p.Files, func(f File) bool { return declared[f.Path] == nil })
+	for i := range p.Files {
+		f, want := &p.Files[i], declared[p.Files[i].Path]
+		f.InForce, f.Owners, f.Groups = true, []string{want.Owner}, []string{want.Group}
+		if w := f.Write; w != nil && !writes(*w, want) {
+			f.Write = nil
 		}
 	}
 }
 
-// pruneFiles takes out of the part the files g no longer declares on the node, with their writes.
-// The files stay on the node.
-func pruneFiles(g *graph.Graph, name string, p *Part) {
-	declared := map[string]bool{}
-	for _, r := range g.Resources {
-		if f := FileOf(r); f != nil && f.Node == name {
-			declared[f.Path] = true
-		}
-	}
-	p.Files = slices.DeleteFunc(p.Files, func(f File) bool { return !declared[f.Path] })
+// writes reports whether an approved write writes exactly what the declaration f has.
+func writes(w Write, f *FileSpec) bool {
+	return w.SHA256 == ContentSHA256(f.Content) && w.Mode == f.Mode && w.Owner == f.Owner && w.Group == f.Group && slices.Equal(w.Restart, f.Restart)
 }
 
 // protectFiles takes every write out of the part of a protected node.
@@ -76,7 +95,8 @@ func protectFiles(p *Part) {
 	}
 }
 
-// grantWrite grants the write of exactly the file the approved plan showed.
+// grantWrite grants the write of exactly the file the approved plan showed, against what the plan's
+// observation found at the path (Write.Before).
 func grantWrite(_ context.Context, q node.GrantRequest) (node.Grant, bool, error) {
 	want := FileOf(q.Step.Resource)
 	if want == nil {
@@ -84,6 +104,15 @@ func grantWrite(_ context.Context, q node.GrantRequest) (node.Grant, bool, error
 	}
 	f := *want
 	sum := ContentSHA256(f.Content)
+	o, err := observedAt(q.Observed, f.Node)
+	if err != nil {
+		return node.Grant{}, true, fmt.Errorf("write %s: %w (plan again)", f.Path, err)
+	}
+	got := o.file(f.Path)
+	if got == nil {
+		return node.Grant{}, true, fmt.Errorf("write %s: the approved plan was made without a report of it (plan again)", f.Path)
+	}
+	before := beforeOf(*got)
 	g := node.Grant{Node: f.Node, What: "write " + f.Path}
 	g.Put = func(rev *noderev.Revision, once func(string) noderev.Once) error {
 		// Exactly what the approved plan showed, or nothing happens.
@@ -96,12 +125,15 @@ func grantWrite(_ context.Context, q node.GrantRequest) (node.Grant, bool, error
 			}
 		}
 		p := partOf(rev)
-		w := &Write{Content: f.Content, SHA256: sum, Mode: f.Mode, Owner: f.Owner, Group: f.Group, Restart: slices.Clone(f.Restart), Grant: once(ActionWrite)}
-		if cur := p.file(f.Path); cur != nil {
-			cur.Owner, cur.Group, cur.Write = f.Owner, f.Group, w
-		} else {
-			p.Files = append(p.Files, File{Path: f.Path, Owner: f.Owner, Group: f.Group, Write: w})
+		w := &Write{Content: f.Content, SHA256: sum, Mode: f.Mode, Owner: f.Owner, Group: f.Group, Restart: slices.Clone(f.Restart),
+			Before: before, Grant: once(ActionWrite)}
+		cur := p.file(f.Path)
+		if cur == nil {
+			p.Files = append(p.Files, File{Path: f.Path})
+			cur = &p.Files[len(p.Files)-1]
 		}
+		cur.Owners, cur.Groups = union(cur.Owners, []string{f.Owner}), union(cur.Groups, []string{f.Group})
+		cur.InForce, cur.Write = true, w
 		setPart(rev, p)
 		return nil
 	}

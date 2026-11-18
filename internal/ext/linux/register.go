@@ -12,6 +12,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 	"github.com/ieyoukan/mamela/internal/provider/node"
 	"github.com/ieyoukan/mamela/internal/provider/spec"
+	"github.com/ieyoukan/mamela/internal/state"
 	"github.com/ieyoukan/mamela/internal/store"
 )
 
@@ -132,6 +133,9 @@ func init() {
 		Name:  Name,
 		Wire:  Version,
 		Kinds: manifest,
+		Annotate: func(_ string, rev *noderev.Revision, o *state.ExtObservation) {
+			annotate(rev, o)
+		},
 		Publish: func(_ context.Context, _ *store.Store, g *graph.Graph, name string) (func(r *noderev.Revision), error) {
 			return func(r *noderev.Revision) {
 				p := partOf(r)

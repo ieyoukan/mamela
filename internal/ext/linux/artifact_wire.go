@@ -16,10 +16,12 @@ import (
 // Artifact is an artifact mamelet observes, and installs once if Install grants it.
 type Artifact struct {
 	Path string `json:"path"`
-	// Owner and Group are what mamelet reports the existence of (Observed.Users and Groups): those
-	// the declaration names. They allow nothing.
-	Owner string `json:"owner"`
-	Group string `json:"group"`
+	// Owners and Groups are the users and groups whose existence mamelet reports (Observed.Users and
+	// Groups): those the declarations name (sorted). They allow nothing.
+	Owners []string `json:"owners,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+	// InForce: the declaration in force has the artifact (File.InForce).
+	InForce bool `json:"inForce,omitzero"`
 	// Install is an approved, one-time installation of exactly this download.
 	Install *Install `json:"install,omitempty"`
 }
@@ -36,6 +38,9 @@ type Install struct {
 	Owner   string   `json:"owner"`
 	Group   string   `json:"group"`
 	Restart []string `json:"restart,omitempty"`
+	// Before is what was at the path when the approved plan was made: mamelet installs only while it
+	// is still so, or once the path has the approved installation already (compare and swap).
+	Before Before `json:"before"`
 	// Grant is the core's one-time permission (its deadline is the Control Plane's, never sent).
 	Grant noderev.Once `json:"grant"`
 }
@@ -118,8 +123,8 @@ func checkArtifacts(p Part, add func(format string, args ...any)) {
 			add("artifact %q appears twice, or is a file's path too", a.Path)
 		}
 		seen[a.Path] = true
-		if !ValidAccount(a.Owner) || !ValidAccount(a.Group) {
-			add("artifact %q: owner %q / group %q are not names of a user and a group", a.Path, a.Owner, a.Group)
+		if why := accountsProblem(a.Owners, a.Groups); why != "" {
+			add("artifact %q: %s", a.Path, why)
 		}
 		if in := a.Install; in != nil {
 			if err := checkInstall(*in); err != nil {
@@ -139,6 +144,9 @@ func checkInstall(in Install) error {
 		return fmt.Errorf("%q is not a sha256", in.SHA256)
 	case !ValidAccount(in.Owner) || !ValidAccount(in.Group):
 		return fmt.Errorf("owner %q / group %q are not names of a user and a group", in.Owner, in.Group)
+	}
+	if why := in.Before.check(); why != "" {
+		return fmt.Errorf("what the installation was planned against: %s", why)
 	}
 	if err := CheckURL(in.URL); err != nil {
 		return err

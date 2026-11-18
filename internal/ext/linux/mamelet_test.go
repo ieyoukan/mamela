@@ -89,7 +89,7 @@ func write(t *testing.T, path, content string) {
 
 // grant is an approved write of path.
 func grant(path, content, op string, attempt int) File {
-	return File{Path: path, Owner: "root", Group: "root", Write: &Write{Content: content, SHA256: ContentSHA256(content), Mode: "0640",
+	return File{Path: path, Owners: []string{"root"}, Groups: []string{"root"}, Write: &Write{Content: content, SHA256: ContentSHA256(content), Mode: "0640",
 		Owner: "root", Group: "root", Grant: noderev.Once{Operation: op, Attempt: attempt, Action: ActionWrite}}}
 }
 
@@ -334,7 +334,9 @@ func TestMameletFinishesAnInterruptedWrite(t *testing.T) {
 	tmp := filepath.Join(n.root, "etc/app", tempName("app.conf"))
 	write(t, tmp, "half a fi")
 	write(t, filepath.Join(n.root, "etc/app/app.conf"), "old\n")
-	n.offer(Part{Files: []File{grant("/etc/app/app.conf", "new\n", opA, 1)}}, nil)
+	g := grant("/etc/app/app.conf", "new\n", opA, 1)
+	g.Write.Before = Before{Exists: true, SHA256: ContentSHA256("old\n")} // what the plan saw
+	n.offer(Part{Files: []File{g}}, nil)
 	rep := n.round()
 	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone || n.read("/etc/app/app.conf") != "new\n" {
 		t.Fatalf("result %+v", r)

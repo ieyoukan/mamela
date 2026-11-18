@@ -128,7 +128,11 @@ func TestGoldenUserPlans(t *testing.T) {
 				return w
 			}(), nil},
 		{"user-old-mamelet", []string{app}, func() world { w := now; w.mamelet, w.accepts = "0.9.2", 0; return w }(), nil},
-		{"user-kept", []string{}, observe(now, groupsOK, inSync(), UserState{Name: "gone"}), nil},
+		{"user-kept", []string{}, func() world {
+			w := observe(now, groupsOK, inSync(), UserState{Name: "gone"})
+			w.observed.InForce = &InForce{Users: []string{"app", "gone"}} // the declaration in force has them
+			return w
+		}(), nil},
 	} {
 		t.Run(s.name, func(t *testing.T) {
 			g, err := decodeGraph(s.resources...)

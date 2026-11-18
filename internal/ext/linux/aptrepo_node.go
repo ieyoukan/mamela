@@ -42,34 +42,72 @@ var aptRepoManifest = spec.Kind{Kind: KindAptRepo, Operations: []spec.Operation{
 	}},
 }}}
 
-// publishAptRepos adds to the part the sources g declares on the node that it does not have yet
-// (with no permission), and names in each the URIs and suites the declaration has now (what mamelet
-// reports of apt's lists and of other source files: they allow nothing). An approved addition stays
-// as it is.
+// whereOf is where the declaration a reads its source from.
+func whereOf(a *AptRepoSpec) AptWhere {
+	return AptWhere{URIs: slices.Clone(a.URIs), Suites: slices.Clone(a.Suites)}
+}
+
+// addWhere adds w to the URIs and suites of a source's entry (sorted, each once; only w past
+// maxTargets).
+func addWhere(cur []AptWhere, w AptWhere) []AptWhere {
+	if slices.ContainsFunc(cur, w.same) {
+		return cur
+	}
+	out := append(slices.Clone(cur), w)
+	if len(out) > maxTargets {
+		out = []AptWhere{w}
+	}
+	slices.SortFunc(out, compareWhere)
+	return out
+}
+
+// publishAptRepos adds to the part the sources g declares on the node that it does not have yet (with
+// no permission, not InForce), and adds to each the URIs and suites the declaration has (what mamelet
+// reports of apt's lists and of other source files: they allow nothing). It takes nothing away
+// (publishFiles).
 func publishAptRepos(g *graph.Graph, name string, p *Part) {
+	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
 		a := AptRepoOf(r)
 		if a == nil || a.Node != name {
 			continue
 		}
-		if cur := p.aptRepo(a.Name); cur != nil {
-			cur.URIs, cur.Suites = slices.Clone(a.URIs), slices.Clone(a.Suites)
-		} else {
-			p.AptRepos = append(p.AptRepos, AptRepo{Name: a.Name, URIs: slices.Clone(a.URIs), Suites: slices.Clone(a.Suites)})
+		declared[a.Name] = true
+		cur := p.aptRepo(a.Name)
+		if cur == nil {
+			p.AptRepos = append(p.AptRepos, AptRepo{Name: a.Name})
+			cur = &p.AptRepos[len(p.AptRepos)-1]
+		}
+		cur.Where = addWhere(cur.Where, whereOf(a))
+	}
+	p.AptRepos = boundCandidates(p.AptRepos, func(r AptRepo) bool { return !r.InForce && r.Add == nil }, func(r AptRepo) bool { return declared[r.Name] })
+}
+
+// pruneAptRepos makes the part the sources g, an approved declaration being applied, declares on the
+// node (pruneFiles): an addition of another source or key is withdrawn. The sources stay on the node.
+func pruneAptRepos(g *graph.Graph, name string, p *Part) {
+	declared := map[string]*AptRepoSpec{}
+	for _, r := range g.Resources {
+		if a := AptRepoOf(r); a != nil && a.Node == name {
+			declared[a.Name] = a
+		}
+	}
+	p.AptRepos = slices.DeleteFunc(p.AptRepos, func(r AptRepo) bool { return declared[r.Name] == nil })
+	for i := range p.AptRepos {
+		r, want := &p.AptRepos[i], declared[p.AptRepos[i].Name]
+		r.InForce, r.Where = true, []AptWhere{whereOf(want)}
+		if a := r.Add; a != nil && !adds(*a, want) {
+			r.Add = nil
 		}
 	}
 }
 
-// pruneAptRepos takes out of the part the sources g no longer declares on the node, with their
-// additions. The sources stay on the node.
-func pruneAptRepos(g *graph.Graph, name string, p *Part) {
-	declared := map[string]bool{}
-	for _, r := range g.Resources {
-		if a := AptRepoOf(r); a != nil && a.Node == name {
-			declared[a.Name] = true
-		}
-	}
-	p.AptRepos = slices.DeleteFunc(p.AptRepos, func(r AptRepo) bool { return !declared[r.Name] })
+// adds reports whether an approved addition adds exactly the source the declaration s has.
+func adds(a AptRepoAdd, s *AptRepoSpec) bool {
+	armored, binary := aptSourcesSHA256(*s)
+	return slices.Equal(a.URIs, s.URIs) && slices.Equal(a.Suites, s.Suites) && slices.Equal(a.Components, s.Components) &&
+		slices.Equal(a.Architectures, s.Architectures) && a.KeyURL == s.KeyURL && a.KeySHA256 == s.KeySHA256 &&
+		(a.SourcesSHA256 == armored || a.SourcesSHA256 == binary)
 }
 
 // protectAptRepos takes every addition out of the part of a protected node.
@@ -79,7 +117,8 @@ func protectAptRepos(p *Part) {
 	}
 }
 
-// grantAddAptRepo grants the addition of exactly the source the approved plan showed.
+// grantAddAptRepo grants the addition of exactly the source the approved plan showed, against what
+// the plan's observation found of its files (AptRepoAdd.Before).
 func grantAddAptRepo(_ context.Context, q node.GrantRequest) (node.Grant, bool, error) {
 	want := AptRepoOf(q.Step.Resource)
 	if want == nil {
@@ -98,16 +137,27 @@ func grantAddAptRepo(_ context.Context, q node.GrantRequest) (node.Grant, bool, 
 	if k := q.Approved("key sha256"); k != "" && k != s.KeySHA256 {
 		return node.Grant{}, true, fmt.Errorf("the key of APT source %s is not the one the approved plan showed (plan again)", s.Name)
 	}
+	o, err := observedAt(q.Observed, s.Node)
+	if err != nil {
+		return node.Grant{}, true, fmt.Errorf("APT source %s: %w (plan again)", s.Name, err)
+	}
+	got := o.aptRepo(s.Name)
+	if got == nil {
+		return node.Grant{}, true, fmt.Errorf("APT source %s on %s: the approved plan was made without a report of it (plan again)", s.Name, s.Node)
+	}
+	before := AptRepoBefore{Sources: beforeOf(got.Sources), KeyArmored: beforeOf(got.KeyArmored), KeyBinary: beforeOf(got.KeyBinary)}
 	g := node.Grant{Node: s.Node, What: "add APT source " + s.Name}
 	g.Put = func(rev *noderev.Revision, once func(string) noderev.Once) error {
 		p := partOf(rev)
 		add := &AptRepoAdd{URIs: slices.Clone(s.URIs), Suites: slices.Clone(s.Suites), Components: nonNil(slices.Clone(s.Components)),
-			Architectures: slices.Clone(s.Architectures), KeyURL: s.KeyURL, KeySHA256: s.KeySHA256, SourcesSHA256: sum, Grant: once(ActionAddAptRepo)}
-		if cur := p.aptRepo(s.Name); cur != nil {
-			cur.URIs, cur.Suites, cur.Add = slices.Clone(s.URIs), slices.Clone(s.Suites), add
-		} else {
-			p.AptRepos = append(p.AptRepos, AptRepo{Name: s.Name, URIs: slices.Clone(s.URIs), Suites: slices.Clone(s.Suites), Add: add})
+			Architectures: slices.Clone(s.Architectures), KeyURL: s.KeyURL, KeySHA256: s.KeySHA256, SourcesSHA256: sum, Before: before, Grant: once(ActionAddAptRepo)}
+		cur := p.aptRepo(s.Name)
+		if cur == nil {
+			p.AptRepos = append(p.AptRepos, AptRepo{Name: s.Name})
+			cur = &p.AptRepos[len(p.AptRepos)-1]
 		}
+		cur.Where = addWhere(cur.Where, whereOf(&s))
+		cur.InForce, cur.Add = true, add
 		setPart(rev, p)
 		return nil
 	}

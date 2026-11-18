@@ -15,7 +15,10 @@
 //
 //	register.go        the one registration with every layer (graph, plan, policy, node provider,
 //	                   mamelet, noderev), from kinds: a kind adds itself to that list
-//	wire.go            Part and Observed, their encoding, the grants in the part (noderev)
+//	wire.go            Part and Observed, their encoding, the grants in the part (noderev), what a
+//	                   grant was planned against (Before: mamelet compares and swaps)
+//	targets.go         what the part asks mamelet to observe (a union of the declarations planned,
+//	                   bounded), and what the declaration in force has (InForce, annotate)
 //	paths.go           CheckPath: the paths no kind writes (graph and mamelet check the same)
 //	accounts.go        user and group names, and the node's /etc/passwd and /etc/group
 //	fs.go              mamelet's view of the file system: no symbolic link is followed
