@@ -1,0 +1,15 @@
+Plan sha256:239ffaaada32
+  revision  sha256:d3ae3f0c695b
+  observed  2026-11-17T12:01:00Z (snapshot sha256:992829ad7855)
+  policy    sha256:b2ad900beffb
+
+= NodePackage web/docker-ce  [in sync]
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    warning MAM-GRAPH-0206 user app is added to group docker on web: its members control the Docker daemon, which runs containers as root with the host's files, so the user can become root there
+      hint: declare the group only if the user is meant to administer the node; Mamela never removes a membership, so taking it out of the declaration later does not take it away
+    MAM-PLAN-0147 group docker of user app does not exist on web
+      hint: the group is made by a package, such as docker-ce for docker: declare it (NodePackage), or make the group by hand
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

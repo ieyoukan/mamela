@@ -22,7 +22,7 @@ const (
 )
 
 // accountMakers say which resource of a declaration makes a user (group false) or a group on a node:
-// a file owned by one waits for it instead of being blocked. NodeUser adds its own (none yet).
+// a file owned by one waits for it instead of being blocked. NodeUser adds its own (user_plan.go).
 var accountMakers []func(g []graph.Resource, node, name string, group bool) (id string, ok bool)
 
 // filePlanner plans NodeFile.

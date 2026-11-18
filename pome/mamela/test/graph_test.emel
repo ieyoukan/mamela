@@ -190,6 +190,31 @@ fn a_file_with_its_mode_owner_and_restart() {
 }
 
 @test
+fn a_user_with_the_defaults() {
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.user(app(), "deploy")
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeUser\",\"name\":\"app-server/user/deploy\",\"spec\":{\"name\":\"deploy\",\"node\":\"app-server\",\"system\":false}}",
+  )
+}
+
+@test
+fn a_user_with_its_groups_keys_and_how_it_is_made() {
+  u = Lib.User(
+    system: True,
+    uid: Some(990),
+    shell: Some("/bin/sh"),
+    home: Some("/srv/deploy"),
+    groups: ["www-data", "adm"],
+    authorized_keys: Some(["ssh-ed25519 AAAAC3Nza alice@laptop"]),
+    ..Lib.user_of("deploy"),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.user_with(app(), u)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeUser\",\"name\":\"app-server/user/deploy\",\"spec\":{\"authorizedKeys\":[\"ssh-ed25519 AAAAC3Nza alice@laptop\"],\"groups\":[\"www-data\",\"adm\"],\"home\":\"/srv/deploy\",\"name\":\"deploy\",\"node\":\"app-server\",\"shell\":\"/bin/sh\",\"system\":true,\"uid\":990}}",
+  )
+}
+
+@test
 fn an_apt_repo_of_one_uri_and_suite() {
   g = Lib.empty()
     |> machine("app-server", Lib.Dhcp)

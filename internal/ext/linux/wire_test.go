@@ -106,7 +106,7 @@ func TestUnknownAndMalformedParts(t *testing.T) {
 		}
 	}
 	// A part with a member this Control Plane does not know (a newer one wrote it) is not signed.
-	r.Ext = map[string]jsontext.Value{Name: jsontext.Value(`{"users":[]}`)}
+	r.Ext = map[string]jsontext.Value{Name: jsontext.Value(`{"later":[]}`)}
 	if _, err := noderev.Sign(key, r); err == nil {
 		t.Error("signed a part it cannot read")
 	}
@@ -137,7 +137,7 @@ func TestCheckPart(t *testing.T) {
 	if err := checkPart(encode(Part{Files: []File{ok, ok}})); err == nil {
 		t.Error("a file twice")
 	}
-	if err := checkPart(jsontext.Value(`{"files":[],"users":[]}`)); err == nil {
+	if err := checkPart(jsontext.Value(`{"files":[],"later":[]}`)); err == nil {
 		t.Error("an unknown member")
 	}
 }

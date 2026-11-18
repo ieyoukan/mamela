@@ -1,0 +1,12 @@
+Plan sha256:8919bb797b61
+  revision  sha256:4ff98b51ca29
+  observed  2026-11-17T12:01:00Z (snapshot sha256:6c2b2319e0e3)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0146 user app on web has uid 0, root's: Mamela never manages root
+      hint: take the user out of the declaration; an account with uid 0 besides root is worth a look by hand
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -1,0 +1,18 @@
+Plan sha256:02b016c4b8bb
+  revision  sha256:a7b3e361b9e9
+  observed  2026-11-17T12:01:00Z (snapshot sha256:366069f2b2e9)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
++ NodeUser web/user/app  [needs approval]
+      user: app
+      shell: /bin/bash
+      home: /home/app (made)
+      group: app (the user's own, made)
+    linux.create-user: needs approval (MAM-POL-0221 makes a user on the node (useradd) with the shell, home, groups and SSH keys of this plan)
+      hint: the user can log in with the keys of this plan, and do what its groups allow (a group such as sudo or docker makes it root)
+. NodeFile web/file/etc/app.conf  [waiting]
+    MAM-PLAN-0143 waits for user app to be made on web (NodeUser web/user/app) before /etc/app.conf is written
+
+Summary: 1 needs approval, 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.
