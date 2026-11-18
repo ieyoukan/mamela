@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -319,6 +320,7 @@ var aptRepoKind = kind{
 			return fmt.Sprintf("APT source %s (%s %s) on %s", s.Name, strings.Join(s.URIs, " "), strings.Join(s.Suites, " "), s.Node)
 		},
 	},
+	codes:       aptRepoPlanCodes,
 	planner:     aptRepoPlanner,
 	ops:         []operation{addAptRepoOp},
 	manifest:    aptRepoManifest,
@@ -400,6 +402,32 @@ func checkAptRepos(g *graph.Graph, v *graph.Validator) {
 					continue
 				}
 				seen[key] = r.ID()
+			}
+		}
+	}
+	// A file of the declaration that apt reads as a source (sources.list, a .list or .sources file of
+	// sources.list.d) and names a URI and suite of a source of its node: the same conflict, which
+	// mamelet would only find once the file is written (and refuse the source then).
+	for _, r := range g.Sorted() {
+		f := FileOf(r)
+		if f == nil {
+			continue
+		}
+		var entries []aptEntry
+		switch dir, base := path.Split(f.Path); {
+		case f.Path == "/etc/apt/sources.list", dir == "/etc/apt/sources.list.d/" && strings.HasSuffix(base, ".list"):
+			entries = oneLineEntries(f.Path, f.Content)
+		case dir == "/etc/apt/sources.list.d/" && strings.HasSuffix(base, ".sources"):
+			entries = deb822Entries(f.Path, f.Content)
+		}
+		named := map[string]bool{}
+		for _, e := range entries {
+			key := f.Node + "\x00" + strings.TrimSuffix(e.uri, "/") + "\x00" + e.suite
+			if other, ok := seen[key]; ok && !named[other] {
+				named[other] = true
+				v.Problem(r, graph.CodeConflict, "spec.content", fmt.Sprintf("%s names %s %s, a source of %s on %s too: apt refuses one source with two keys, and then reads no source at all",
+					f.Path, e.uri, e.suite, other, f.Node),
+					"declare the source once: as the NodeAptRepo (with its key), or in this file")
 			}
 		}
 	}

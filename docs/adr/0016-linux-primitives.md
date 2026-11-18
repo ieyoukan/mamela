@@ -28,7 +28,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 
 - 拡張は、k3s と同じにコンパイル時に組み込む（`internal/ext/linux`、`cmd/mamela` と `cmd/mamelet` の blank import）。実行時に読み込むプラグインはない。
 - `NodePackage` と `NodeService` は核に残す。linux は、パッケージの導入が待つもの（`PackageGate`、NodeAptRepo のため）と、サービスの起動が待つもの（`StartGate`、`restart` に挙げたファイル）で関わる。
-- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。理由コードと操作の名前の範囲も、kind ごとに予約した（`internal/ext/linux/doc.go`）。
+- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。理由コードの範囲も kind ごとに予約した（`internal/ext/linux/codes.go`。操作の名前は `doc.go`）。
 
 ### 2. 任意のシェルはない
 

@@ -8,17 +8,13 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 )
 
-// The extension's graph warnings (MAM-GRAPH-0203..0219 are the linux extension's: doc.go).
+// The extension's graph warnings (the ranges of each kind are in codes.go).
 const (
 	// CodeSecret: a file's content looks like a secret (a private key, a token).
 	CodeSecret graph.Code = "MAM-GRAPH-0203"
 	// CodeRestartUndeclared: a file restarts a service that the declaration does not have on the node.
 	CodeRestartUndeclared graph.Code = "MAM-GRAPH-0204"
 )
-
-var warningCodes = []graph.Code{CodeSecret, CodeRestartUndeclared,
-	CodeArtifactRestartUndeclared, // NodeArtifact: artifact.go
-}
 
 // checkGraph checks what concerns more than one resource of the extension: on one node, no path is
 // claimed twice, nor a path and a directory above it (a file cannot be both); and the approved

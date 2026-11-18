@@ -16,6 +16,8 @@ const Retention = 30 * 24 * time.Hour
 // Pruned counts what Prune deleted.
 type Pruned struct {
 	Plans, Snapshots, Revisions, Policies, Programs, Events int
+	// NodeRevisions are the revisions of nodes older than the cutoff that are not a node's newest.
+	NodeRevisions int
 }
 
 // pruneEvery is how often PruneIfDue prunes.
@@ -49,7 +51,9 @@ func (s *Store) PruneIfDue(ctx context.Context, retention time.Duration) (Pruned
 // Prune deletes the plans made before the cutoff that were never approved and never had an operation
 // journaled, with their events and provider programs, and then the inputs only they used: their
 // revisions, observations and policies, and any observation older than the cutoff that no plan
-// uses (apply saves the one it observes). Everything else stays.
+// uses (apply saves the one it observes). It deletes the revisions of nodes made before the cutoff
+// that are not a node's newest: a node is offered only its newest (its serial never goes down), and
+// what was granted and done is in the operations and events. Everything else stays.
 func (s *Store) Prune(ctx context.Context, before time.Time) (Pruned, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -97,6 +101,8 @@ AND digest NOT IN (SELECT policy_digest FROM plans)`, nil},
 AND digest NOT IN (SELECT snapshot_digest FROM plans)`, []any{cut}},
 		{&n.Programs, `DELETE FROM provider_programs WHERE created_ms < ? AND digest NOT IN (SELECT program_digest FROM plan_programs)
 AND digest NOT IN (SELECT catalog_digest FROM plan_catalogs)`, []any{cut}},
+		{&n.NodeRevisions, `DELETE FROM node_revisions WHERE created_ms < ?
+AND serial < (SELECT MAX(r.serial) FROM node_revisions r WHERE r.node = node_revisions.node)`, []any{cut}},
 	}
 	for _, st := range steps {
 		if err := step(st.count, st.query, st.args...); err != nil {

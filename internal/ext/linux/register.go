@@ -3,7 +3,6 @@ package linux
 import (
 	"context"
 	"encoding/json/jsontext"
-	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
@@ -36,8 +35,8 @@ type kind struct {
 	content func(r graph.Resource) int
 	// warnings are the kind's warnings of the graph (in the canonical order of its resources).
 	warnings func(g *graph.Graph) []graph.Warning
-	// warningCodes are the codes of those warnings, and codes the codes of the kind's plan notes
-	// (NodeFile's are in warningCodes and planCodes): each is the extension's alone.
+	// warningCodes are the codes of those warnings, and codes the codes of the kind's plan notes:
+	// each is the extension's alone, in the ranges reserved for the kind (codes.go).
 	warningCodes []graph.Code
 	codes        []string
 	// programs are the programs mamelet runs for the kind (absolute paths), besides systemctl.
@@ -78,7 +77,8 @@ func init() {
 	planners := map[graph.Kind]plan.Planner{}
 	grants := map[policy.Op]node.GrantFunc{}
 	var manifest []spec.Kind
-	wcodes, codes := slices.Clone(warningCodes), slices.Clone(planCodes)
+	var wcodes []graph.Code
+	var codes []string
 	var programs []string
 	for _, k := range kinds {
 		defs = append(defs, k.def)
@@ -225,11 +225,3 @@ func init() {
 		},
 	})
 }
-
-// planCodes are the codes of the extension's plan notes (doc.go reserves ranges for the kinds that
-// follow); a kind may also name its own in kind.codes (NodeUser).
-var planCodes = slices.Concat(
-	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept},
-	artifactPlanCodes, // NodeArtifact: artifact_plan.go
-	aptRepoPlanCodes,  // NodeAptRepo: aptrepo_plan.go
-)

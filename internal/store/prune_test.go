@@ -2,9 +2,12 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/state"
 )
 
@@ -150,5 +153,42 @@ func TestPruneIfDueIsThrottled(t *testing.T) {
 	clock.Advance(pruneEvery)
 	if _, ran, err := s.PruneIfDue(ctx, Retention); err != nil || !ran {
 		t.Fatalf("an hour later: %v %v", ran, err)
+	}
+}
+
+// A node's revisions older than the cutoff go, but never its newest: it is what the node is offered,
+// and its serial never goes down. Recent ones stay.
+func TestPruneKeepsEachNodesNewestRevision(t *testing.T) {
+	ctx := context.Background()
+	s, clock, _ := open(t)
+	publish := func(node string, n int) {
+		for i := range n {
+			if _, err := s.PublishNodeRevision(ctx, node, func(prev *noderev.Revision) (noderev.Revision, error) {
+				r := noderev.Revision{VMID: 7001}
+				if prev != nil {
+					r = *prev
+				}
+				r.Packages = append(slices.Clone(r.Packages), noderev.Package{Name: fmt.Sprintf("p%d", i)})
+				return r, nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	publish("web", 5)
+	publish("db", 1)
+	clock.mu.Lock()
+	clock.now = clock.now.Add(Retention + time.Hour)
+	clock.mu.Unlock()
+	publish("web", 2) // two recent ones
+	n, err := s.Prune(ctx, clock.Now().Add(-Retention))
+	if err != nil || n.NodeRevisions != 5 {
+		t.Fatalf("pruned %+v %v", n, err)
+	}
+	if count(t, s, "node_revisions", "node = 'web'") != 2 || count(t, s, "node_revisions", "node = 'db'") != 1 {
+		t.Error("a newest or recent revision went")
+	}
+	if serial, _ := s.NodeRevisionSerial(ctx, "web"); serial != 7 {
+		t.Errorf("serial %d", serial)
 	}
 }

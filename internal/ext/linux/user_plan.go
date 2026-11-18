@@ -11,7 +11,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeUser (doc.go reserves the ranges).
+// The plan notes of NodeUser (codes.go reserves the ranges).
 const (
 	codeUserAwait      = "MAM-PLAN-0145" // waits for mamelet to report the user (or what it needs)
 	codeUserNever      = "MAM-PLAN-0146" // the user is not as declared in what Mamela never changes, or cannot be made
@@ -265,7 +265,10 @@ func userUpdate(k *plan.Kit, c *plan.Change, want *UserSpec, got *UserState, o O
 			Message: fmt.Sprintf("user %s on %s is also in %s: Mamela adds memberships and never removes one, so %s", want.Name, want.Node, what, stays),
 			Hint:    fmt.Sprintf("declare the group if it is meant, or take the user out of it by hand (gpasswd -d %s %s)", want.Name, extra[0])})
 	}
-	if sys := systemUID(got.UID); sys != want.System {
+	// Whether the node's user is a system user is told by its uid. A declared uid made it so (the
+	// declaration says both), so this is said only of a user the declaration gives no uid: one made
+	// otherwise, which stays as it is on every plan until the declaration says what it is.
+	if sys := systemUID(got.UID); sys != want.System && want.UID == 0 {
 		what := map[bool]string{true: "a system user", false: "a user (not a system user)"}
 		c.Warnings = append(c.Warnings, plan.Note{Code: codeUserAsIs,
 			Message: fmt.Sprintf("user %s on %s is %s (uid %d), but is declared as %s: Mamela does not change that, which only says how the user is made", want.Name, want.Node, what[sys], got.UID, what[want.System]),

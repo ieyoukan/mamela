@@ -1,6 +1,7 @@
 package linux
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/ieyoukan/mamela/internal/plan"
@@ -76,5 +77,33 @@ func TestAReportingNodeIsNotSilent(t *testing.T) {
 	p := plan.Build(g, world{}.snapshot(g), policy.Default)
 	if c := findChange(t, p, "NodeFile web/file/etc/app/app.conf"); c.Status != plan.StatusBlocked || c.Note.Code != "MAM-PLAN-0110" {
 		t.Errorf("silent: %+v %+v", c, c.Note)
+	}
+}
+
+// A user whose declaration gives its uid is what the declaration says: no warning that it is (or is
+// not) a system user repeats on every plan for what the declaration itself made. One the declaration
+// gives no uid, made otherwise, is still said.
+func TestTheSystemWarningIsForUsersMadeOtherwise(t *testing.T) {
+	for _, c := range []struct {
+		name, spec string
+		uid        int
+		warns      bool
+	}{
+		{"system with a uid of a user", `{"node":"web","name":"svc","system":true,"uid":1500}`, 1500, false},
+		{"a user with a uid of a system user", `{"node":"web","name":"svc","uid":990}`, 990, false},
+		{"system, made otherwise", `{"node":"web","name":"svc","system":true}`, 1500, true},
+	} {
+		g, err := decodeGraph(userRes("web/user/svc", c.spec))
+		if err != nil {
+			t.Fatal(err)
+		}
+		o := &Observed{UserStates: []UserState{{Name: "svc", Exists: true, UID: c.uid, GID: c.uid, Group: "svc", Home: "/home/svc", Shell: "/bin/bash",
+			Shells: map[string]bool{DefaultShell: true, DefaultSystemShell: true}}}, Groups: map[string]bool{"svc": true}, Users: map[string]bool{"svc": true}}
+		p := plan.Build(g, world{mamelet: Release, accepts: Version, observed: o}.snapshot(g), policy.Default)
+		ch := findChange(t, p, "NodeUser web/user/svc")
+		warned := slices.ContainsFunc(ch.Warnings, func(n plan.Note) bool { return n.Code == codeUserAsIs })
+		if ch.Status != plan.StatusInSync || warned != c.warns {
+			t.Errorf("%s: %+v (warned %v)", c.name, ch, warned)
+		}
 	}
 }

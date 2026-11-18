@@ -51,25 +51,13 @@
 // after all of them, in the order an apply should run them in (the operations of one plan run in
 // canonical order): accounts, sources, downloads, then files.
 //
-//	kind          order  operations (linux.<verb>-<object>)  plan notes           graph warnings   policy
-//	NodeUser      6      linux.create-user, linux.change-user MAM-PLAN-0145..0149  MAM-GRAPH-0206..  MAM-POL-0221..0222
-//	NodeAptRepo   7      linux.add-apt-repo                   MAM-PLAN-0150..0154  ..0219           MAM-POL-0223..0224
-//	NodeArtifact  8      linux.install-artifact, ...          MAM-PLAN-0155..0159  MAM-GRAPH-0215..  MAM-POL-0225..0226
-//	NodeFile      9      linux.write-file                     MAM-PLAN-0140..0144  MAM-GRAPH-0203..  MAM-POL-0220
+//	kind          order  operations (linux.<verb>-<object>)  resource name
+//	NodeUser      6      linux.create-user, linux.change-user  <node>/user/<name>
+//	NodeAptRepo   7      linux.add-apt-repo                    <node>/apt-repo/<name>
+//	NodeArtifact  8      linux.install-artifact                <node>/artifact/<path>
+//	NodeFile      9      linux.write-file                      <node>/file/<path>
 //
-// The plan's observation problems of linux are MAM-PLAN-0210..0219 (NodeFile 0210, 0211), its
-// retained notes MAM-PLAN-0310..0319 (NodeFile 0310), its graph warnings MAM-GRAPH-0203..0219
-// (NodeFile 0203, 0204). A kind's resource is named "<node>/<kind's word><what>", like
-// "<node>/file/etc/nginx/nginx.conf".
-//
-// NodeUser took MAM-PLAN-0145..0149, the observation problems MAM-PLAN-0212 and 0213, the retained
-// note MAM-PLAN-0311 and the graph warning MAM-GRAPH-0206; its resources are "<node>/user/<name>".
-//
-// NodeArtifact ("<node>/artifact/usr/local/bin/node_exporter") takes MAM-PLAN-0155..0159, 0216 and
-// 0217 (observation), 0313 (retained), MAM-GRAPH-0215 (0216..0219 kept for it), MAM-POL-0225 (0226
-// kept for it).
-//
-// NodeAptRepo ("<node>/apt-repo/docker") takes MAM-PLAN-0150..0153 (0154 kept for it), 0214 and 0215
-// (observation), 0312 (retained), MAM-POL-0223 (0224 kept for it); it has no graph warning (keeps
-// MAM-GRAPH-0210..0214).
+// The codes of each kind (its plan notes, graph warnings and policy decisions), and those kept for the
+// kinds that follow, are in one table: reserved, in codes.go. docs/reason-codes.md reserves the same
+// (codes_test.go checks it, and that every code the extension registers is in its kind's ranges).
 package linux

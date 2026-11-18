@@ -10,7 +10,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeArtifact (doc.go reserves the ranges).
+// The plan notes of NodeArtifact (codes.go reserves the ranges).
 const (
 	codeArtifactAwait         = "MAM-PLAN-0155" // waits for mamelet to report the artifact
 	codeArtifactNoAccount     = "MAM-PLAN-0156" // the owner or the group does not exist on the node
@@ -22,7 +22,7 @@ const (
 	codeArtifactKept          = "MAM-PLAN-0313" // not declared any more: kept on the node
 )
 
-// artifactPlanCodes are NodeArtifact's codes of plan notes (planCodes).
+// artifactPlanCodes are NodeArtifact's codes of plan notes.
 var artifactPlanCodes = []string{codeArtifactAwait, codeArtifactNoAccount, codeArtifactStartGate, codeArtifactAccountComing,
 	codeArtifactReplaces, codeArtifactUnsafe, codeArtifactUnobserved, codeArtifactKept}
 

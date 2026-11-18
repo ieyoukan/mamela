@@ -10,7 +10,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeFile (doc.go reserves the ranges).
+// The plan notes of NodeFile (codes.go reserves the ranges).
 const (
 	codeFileAwait         = "MAM-PLAN-0140" // waits for mamelet to report the file
 	codeFileNoAccount     = "MAM-PLAN-0141" // the owner or the group does not exist on the node
@@ -20,6 +20,8 @@ const (
 	codeFileUnobserved    = "MAM-PLAN-0211" // mamelet cannot observe it
 	codeFileKept          = "MAM-PLAN-0310" // not declared any more: kept on the node
 )
+
+var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept}
 
 // accountMakers say which resource of a declaration makes a user (group false) or a group on a node:
 // a file owned by one waits for it instead of being blocked. NodeUser adds its own (user_plan.go).

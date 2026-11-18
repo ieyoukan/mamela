@@ -10,7 +10,7 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// The plan notes of NodeAptRepo (doc.go reserves the ranges).
+// The plan notes of NodeAptRepo (codes.go reserves the ranges).
 const (
 	codeAptRepoAwait       = "MAM-PLAN-0150" // waits for mamelet to report the source
 	codeAptRepoPackageGate = "MAM-PLAN-0151" // a package's installation waits for a source of its node
