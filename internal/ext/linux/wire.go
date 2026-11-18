@@ -33,6 +33,10 @@ type Part struct {
 	// Files are the files mamelet observes, by path (sorted), each with its approved write, if any.
 	Files []File `json:"files,omitempty"`
 
+	// Users are the users mamelet observes, by name (sorted), each with its approved change, if any
+	// (NodeUser: user_wire.go).
+	Users []User `json:"users,omitempty"`
+
 	// Artifacts are the artifacts mamelet observes, by path (sorted), each with its approved
 	// installation, if any (NodeArtifact: artifact_wire.go).
 	Artifacts []Artifact `json:"artifacts,omitempty"`
@@ -74,6 +78,9 @@ type Observed struct {
 	// that user or group.
 	Users  map[string]bool `json:"users,omitempty"`
 	Groups map[string]bool `json:"groups,omitempty"`
+
+	// UserStates are what mamelet found of the part's users (NodeUser: user_wire.go).
+	UserStates []UserState `json:"userStates,omitempty"`
 
 	// Artifacts are what is at each artifact's path (NodeArtifact: artifact_wire.go).
 	Artifacts []ArtifactState `json:"artifacts,omitempty"`
@@ -143,10 +150,11 @@ func setPart(r *noderev.Revision, p Part) {
 	for k, v := range r.Ext {
 		ext[k] = v
 	}
-	if len(p.Files) == 0 && len(p.Artifacts) == 0 {
+	if len(p.Files) == 0 && len(p.Users) == 0 && len(p.Artifacts) == 0 {
 		delete(ext, Name)
 	} else {
 		slices.SortFunc(p.Files, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
+		sortUsers(&p)
 		sortArtifacts(&p)
 		ext[Name] = encode(p)
 	}
@@ -177,6 +185,7 @@ func partGrants(raw jsontext.Value) ([]noderev.Grant, error) {
 			out = append(out, noderev.Grant{Operation: w.Grant.Operation, Attempt: w.Grant.Attempt, Action: w.Grant.Action, Expires: w.Grant.Expires})
 		}
 	}
+	out = append(out, userGrants(p)...)
 	out = append(out, artifactGrants(p)...)
 	return out, nil
 }
@@ -199,6 +208,7 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 			}
 		}
 	}
+	handOutUsers(&p, now)
 	handOutArtifacts(&p, now)
 	return encode(p), nil
 }
@@ -228,6 +238,7 @@ func checkPart(raw jsontext.Value) error {
 			}
 		}
 	}
+	problems = append(problems, checkUsers(p.Users)...)
 	checkArtifacts(p, add)
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid linux part: %s", strings.Join(problems, "; "))

@@ -1,0 +1,12 @@
+Plan sha256:5a3acbbbb7e1
+  revision  sha256:645057c46cda
+  observed  2026-11-17T12:01:00Z (snapshot sha256:060434b25cb0)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0146 user app on web has uid 1001, not the declared 1500: Mamela never changes a uid (the user's files keep the old one)
+      hint: declare uid 1001, or leave uid out (it is used only when Mamela makes the user)
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

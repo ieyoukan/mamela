@@ -1,0 +1,12 @@
+Plan sha256:8da97abda96a
+  revision  sha256:4ff98b51ca29
+  observed  2026-11-17T12:01:00Z (snapshot sha256:7445b84bdb35)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0146 user app cannot be made on web: a group called app exists already, and useradd makes a group of the user's name
+      hint: remove the group by hand if nothing uses it, or make the user by hand in it (useradd -g app app); Mamela then manages the user
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

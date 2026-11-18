@@ -1,0 +1,12 @@
+Plan sha256:0c6513f22dde
+  revision  sha256:d198400ecff7
+  observed  2026-11-17T12:01:00Z (snapshot sha256:de58cd2779ab)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    MAM-PLAN-0147 shell /usr/bin/zsh of user app does not exist on web
+      hint: install the package that has the shell (NodePackage, such as zsh), or declare another shell
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

@@ -24,6 +24,12 @@
 //	file_plan.go       NodeFile: plan, the start gate of the services it restarts, files kept
 //	file_node.go       NodeFile: the node's revision (publish, prune, protect, grant)
 //	file_mamelet.go    NodeFile: what mamelet observes and does
+//	authkeys.go        the lines of authorized_keys (graph and mamelet read them alike)
+//	user.go            NodeUser: spec, decoding, validation, warnings (graph)
+//	user_plan.go       NodeUser: plan, the users files wait for, users kept
+//	user_wire.go       NodeUser: its members of Part and Observed
+//	user_node.go       NodeUser: the node's revision (publish, prune, protect, grant)
+//	user_mamelet.go    NodeUser: what mamelet observes and does (useradd, usermod, authorized_keys)
 //	artifact*.go       NodeArtifact, in the same layers (artifact_wire.go: its members of Part and
 //	                   Observed); artifact_mamelet.go keeps mamelet's record of what it installed
 //	download.go        downloads over https pinned by sha256, and a member of a .tar.gz: no type of
@@ -37,7 +43,7 @@
 // canonical order): accounts, sources, downloads, then files.
 //
 //	kind          order  operations (linux.<verb>-<object>)  plan notes           graph warnings   policy
-//	NodeUser      6      linux.create-user, ...               MAM-PLAN-0145..0149  MAM-GRAPH-0206..  MAM-POL-0221..0222
+//	NodeUser      6      linux.create-user, linux.change-user MAM-PLAN-0145..0149  MAM-GRAPH-0206..  MAM-POL-0221..0222
 //	NodeAptRepo   7      linux.add-apt-repo, ...              MAM-PLAN-0150..0154  ..0219           MAM-POL-0223..0224
 //	NodeArtifact  8      linux.install-artifact, ...          MAM-PLAN-0155..0159  MAM-GRAPH-0215..  MAM-POL-0225..0226
 //	NodeFile      9      linux.write-file                     MAM-PLAN-0140..0144  MAM-GRAPH-0203..  MAM-POL-0220
@@ -46,6 +52,9 @@
 // retained notes MAM-PLAN-0310..0319 (NodeFile 0310), its graph warnings MAM-GRAPH-0203..0219
 // (NodeFile 0203, 0204). A kind's resource is named "<node>/<kind's word><what>", like
 // "<node>/file/etc/nginx/nginx.conf".
+//
+// NodeUser took MAM-PLAN-0145..0149, the observation problems MAM-PLAN-0212 and 0213, the retained
+// note MAM-PLAN-0311 and the graph warning MAM-GRAPH-0206; its resources are "<node>/user/<name>".
 //
 // NodeArtifact ("<node>/artifact/usr/local/bin/node_exporter") takes MAM-PLAN-0155..0159, 0216 and
 // 0217 (observation), 0313 (retained), MAM-GRAPH-0215 (0216..0219 kept for it), MAM-POL-0225 (0226

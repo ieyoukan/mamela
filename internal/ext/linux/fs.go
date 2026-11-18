@@ -169,7 +169,14 @@ func writeFrom(r *os.Root, p string, src io.Reader, sum, modeText string, uid, g
 		return err
 	}
 	defer dir.Close()
-	base, tmp := path.Base(p), tempName(path.Base(p))
+	return replaceIn(dir, path.Base(p), src, sum, fs.FileMode(mode), uid, gid)
+}
+
+// replaceIn writes the content src reads (whose sha256 must be sum) into a temporary file in dir
+// (synced, owned by uid:gid, with mode), renames it over base, and syncs dir.
+func replaceIn(dir *os.Root, base string, src io.Reader, sum string, mode fs.FileMode, uid, gid int) error {
+	tmp := tempName(base)
+	p := base
 	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
 	}
@@ -198,7 +205,7 @@ func writeFrom(r *os.Root, p string, src io.Reader, sum, modeText string, uid, g
 	if err := f.Chown(uid, gid); err != nil {
 		return err
 	}
-	if err := f.Chmod(fs.FileMode(mode)); err != nil {
+	if err := f.Chmod(mode); err != nil {
 		return err
 	}
 	if err := f.Close(); err != nil {
