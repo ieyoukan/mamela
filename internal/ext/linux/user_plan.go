@@ -174,6 +174,21 @@ func userCreate(k *plan.Kit, c *plan.Change, want *UserSpec, got *UserState, o O
 		return *n
 	}
 	home, made := want.CreateHome()
+	if made && home != "" {
+		switch hs := got.NewHome; {
+		case hs == nil || hs.Path != home:
+			return awaitReport(want, "whether its home "+home+" is there already")
+		case hs.Error != "":
+			return statusNote{plan.StatusBlocked, &plan.Note{Code: codeUserUnobserved,
+				Message: fmt.Sprintf("the agent on %s cannot look at the home %s of user %s: %s", want.Node, home, want.Name, hs.Error),
+				Hint:    "fix the cause on the node, then plan again"}}
+		case hs.Exists:
+			return statusNote{plan.StatusBlocked, &plan.Note{Code: codeUserNever,
+				Message: fmt.Sprintf("user %s cannot be made on %s with home %s: it %s, and useradd would make it the home of %s as it is (it only warns), without making it %s's: %s would share another's files, and Mamela would write its SSH keys into another's ~/.ssh",
+					want.Name, want.Node, home, homeThere(hs), want.Name, want.Name, want.Name),
+				Hint: fmt.Sprintf("declare another home for %s, or remove or move %s by hand if nothing needs it; Mamela never takes over a directory that is there", want.Name, home)}}
+		}
+	}
 	c.Diffs = append(c.Diffs, plan.Diff{Field: diffUser, To: want.Name})
 	if want.System {
 		c.Diffs = append(c.Diffs, plan.Diff{Field: diffSystem, To: "true (useradd --system)"})
@@ -369,6 +384,11 @@ func keysDiffs(c *plan.Change, want *UserSpec, got *UserState) *statusNote {
 			Message: fmt.Sprintf("mamelet does not write the SSH keys of user %s on %s: %s", want.Name, want.Node, ks.File.Unsafe),
 			Hint:    "Mamela never follows a symbolic link: replace the link by a directory by hand, or leave authorizedKeys out"}}
 	}
+	if ks.NotOwned != "" {
+		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeUserUnsafe,
+			Message: fmt.Sprintf("mamelet does not write the SSH keys of user %s on %s: %s, and Mamela never writes into another user's home or ~/.ssh", want.Name, want.Node, ks.NotOwned),
+			Hint:    fmt.Sprintf("give %s a home of its own by hand (usermod --home), or make the directory %s's (chown) if it is meant to be; or leave authorizedKeys out", want.Name, want.Name)}}
+	}
 	sshDir := got.Home + "/.ssh"
 	if len(ks.File.Missing) > 1 || len(ks.File.Missing) == 1 && ks.File.Missing[0] != sshDir {
 		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeUserUnsafe,
@@ -410,13 +430,19 @@ func keysDiffs(c *plan.Change, want *UserSpec, got *UserState) *statusNote {
 				c.Diffs = append(c.Diffs, plan.Diff{Field: diffRemoveKey, To: "the options of " + k.Type + " " + k.Fingerprint + " (the key stays, without them)"})
 			}
 		}
+		if ks.More > 0 {
+			c.Diffs = append(c.Diffs, plan.Diff{Field: diffRemoveKey, To: count(ks.More, "more key") + " (the agent lists at most " + fmt.Sprint(MaxFoundKeys) + ")"})
+		}
 		if ks.Other > 0 {
 			c.Diffs = append(c.Diffs, plan.Diff{Field: diffOther, To: count(ks.Other, "line") + " that Mamela does not read as a key (a certificate, another key type)"})
 		}
-		if len(lost) > 0 || ks.Other > 0 {
+		if len(lost) > 0 || ks.More > 0 || ks.Other > 0 {
 			var what []string
 			if len(lost) > 0 {
 				what = append(what, count(len(lost), "key")+" ("+strings.Join(lost, ", ")+")")
+			}
+			if ks.More > 0 {
+				what = append(what, count(ks.More, "more key"))
 			}
 			if ks.Other > 0 {
 				what = append(what, count(ks.Other, "other line"))

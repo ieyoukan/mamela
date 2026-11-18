@@ -60,12 +60,16 @@ var userManifest = spec.Kind{Kind: KindUser, Operations: []spec.Operation{
 
 // userEntry is what the part says of a user the declaration has (what mamelet reports on).
 func userEntry(s *UserSpec) User {
-	return User{Name: s.Name, Shell: s.CreateShell(), Groups: slices.Clone(s.Groups), UID: s.UID, Keys: s.AuthorizedKeys != nil}
+	u := User{Name: s.Name, Shell: s.CreateShell(), Groups: slices.Clone(s.Groups), UID: s.UID, Keys: s.AuthorizedKeys != nil}
+	if home, made := s.CreateHome(); made {
+		u.Home = home
+	}
+	return u
 }
 
 // sameEntry is whether two entries of a user ask for the same (their changes aside).
 func sameEntry(a, b User) bool {
-	return a.Name == b.Name && a.Shell == b.Shell && slices.Equal(a.Groups, b.Groups) && a.UID == b.UID && a.Keys == b.Keys
+	return a.Name == b.Name && a.Shell == b.Shell && slices.Equal(a.Groups, b.Groups) && a.UID == b.UID && a.Home == b.Home && a.Keys == b.Keys
 }
 
 // publishUsers adds to the part the users g declares on the node that it does not have yet (with no

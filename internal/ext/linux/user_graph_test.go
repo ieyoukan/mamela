@@ -85,9 +85,9 @@ func TestScanAuthorizedKeys(t *testing.T) {
 		"ssh-dss AAAAB3NzaC1kc3MAAACBAP x\n" +
 		"  " + keyOldCI + "  \n" +
 		"garbage\n"
-	keys, other := scanAuthorizedKeys(content)
+	keys, more, other := scanAuthorizedKeys(content)
 	want := []FoundKey{{Type: "ssh-ed25519", Fingerprint: fpAlice}, {Type: "ecdsa-sha2-nistp256", Fingerprint: fpBob, Options: true}, {Type: "ssh-rsa", Fingerprint: fpOldCI}}
-	if len(keys) != len(want) || other != 2 {
+	if len(keys) != len(want) || more != 0 || other != 2 {
 		t.Fatalf("keys %+v, other %d", keys, other)
 	}
 	for i := range want {

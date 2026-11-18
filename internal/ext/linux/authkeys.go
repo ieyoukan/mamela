@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 	"slices"
 	"strings"
 
@@ -100,16 +101,90 @@ func ParseAuthorizedKey(line string) (AuthorizedKey, error) {
 }
 
 // blobType is the key type written at the start of a public key (the SSH wire form: a uint32
-// length, then the type), and whether there is anything after it.
+// length, then the type), and whether the rest is a public key of that type as OpenSSH writes it
+// (keyShape): a few bytes after a type are not a key.
 func blobType(blob []byte) (string, bool) {
-	if len(blob) < 4 {
+	w := wire(blob)
+	typ, ok := w.str()
+	if !ok || len(typ) == 0 {
 		return "", false
 	}
-	n := binary.BigEndian.Uint32(blob)
-	if n == 0 || uint64(n)+4 >= uint64(len(blob)) {
-		return "", false
+	return string(typ), keyShape(string(typ), w)
+}
+
+// wire reads the strings of the SSH wire form (RFC 4251: a uint32 length, then the bytes).
+type wire []byte
+
+func (w *wire) str() ([]byte, bool) {
+	if len(*w) < 4 {
+		return nil, false
 	}
-	return string(blob[4 : 4+n]), true
+	n := binary.BigEndian.Uint32(*w)
+	if uint64(n) > uint64(len(*w)-4) {
+		return nil, false
+	}
+	s := (*w)[4 : 4+n]
+	*w = (*w)[4+n:]
+	return s, true
+}
+
+// The sizes OpenSSH takes of an RSA key's modulus, in bits.
+const (
+	minRSABits = 1024
+	maxRSABits = 16384
+)
+
+// keyShape is whether the rest of a public key's blob (after its type) is what OpenSSH writes for
+// that type, and nothing more: an Ed25519 key of 32 bytes; an ECDSA key's curve and an uncompressed
+// point of its size; an RSA key's exponent and a modulus of 1024 to 16384 bits; and the application
+// of a security key's.
+func keyShape(typ string, w wire) bool {
+	curve := map[string]struct {
+		name  string
+		point int
+	}{
+		"ecdsa-sha2-nistp256":                {"nistp256", 65},
+		"ecdsa-sha2-nistp384":                {"nistp384", 97},
+		"ecdsa-sha2-nistp521":                {"nistp521", 133},
+		"sk-ecdsa-sha2-nistp256@openssh.com": {"nistp256", 65},
+	}
+	switch typ {
+	case "ssh-ed25519", "sk-ssh-ed25519@openssh.com":
+		if k, ok := w.str(); !ok || len(k) != 32 {
+			return false
+		}
+	case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "sk-ecdsa-sha2-nistp256@openssh.com":
+		c := curve[typ]
+		name, ok1 := w.str()
+		q, ok2 := w.str()
+		if !ok1 || !ok2 || string(name) != c.name || len(q) != c.point || q[0] != 4 {
+			return false
+		}
+	case "ssh-rsa":
+		e, ok1 := w.str()
+		n, ok2 := w.str()
+		if !ok1 || !ok2 || !positiveMPInt(e) || !positiveMPInt(n) {
+			return false
+		}
+		bits := new(big.Int).SetBytes(n).BitLen()
+		if bits < minRSABits || bits > maxRSABits {
+			return false
+		}
+	default:
+		return false
+	}
+	if strings.HasPrefix(typ, "sk-") {
+		if app, ok := w.str(); !ok || len(app) == 0 {
+			return false
+		}
+	}
+	return len(w) == 0
+}
+
+// positiveMPInt is whether b is a positive mpint as SSH writes one: not empty, no sign bit, no
+// leading zero byte it does not need.
+func positiveMPInt(b []byte) bool {
+	return len(b) > 0 && b[0]&0x80 == 0 && !(b[0] == 0 && (len(b) == 1 || b[1]&0x80 == 0))
 }
 
 // fingerprint is a public key's fingerprint as OpenSSH shows it.
@@ -134,11 +209,18 @@ type FoundKey struct {
 	Options     bool   `json:"options,omitzero"`
 }
 
+// MaxFoundKeys bounds the keys mamelet reports of one authorized_keys (one more than a user may be
+// declared with, so that the plan can tell a file with more): what the file has besides is counted
+// (KeysState.More), so that a file of thousands of keys does not make the report too large.
+const MaxFoundKeys = MaxKeys + 1
+
 // scanAuthorizedKeys reads the keys of an authorized_keys file as sshd would find them, options
-// included, to say which the plan removes: the keys (in the file's order), and how many other
-// lines are neither a key, a comment nor empty (a key of a type Mamela does not know, a
-// certificate, a line it cannot read).
-func scanAuthorizedKeys(content string) (keys []FoundKey, other int) {
+// included, to say which the plan removes: the keys (in the file's order, each once, at most
+// MaxFoundKeys), how many other keys there are besides (more), and how many other lines are neither
+// a key, a comment nor empty (a key of a type Mamela does not know, a certificate, a line it cannot
+// read).
+func scanAuthorizedKeys(content string) (keys []FoundKey, more, other int) {
+	seen := map[string]bool{}
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -154,15 +236,24 @@ func scanAuthorizedKeys(content string) (keys []FoundKey, other int) {
 			if t, ok := blobType(blob); err != nil || !ok || t != f {
 				break
 			}
-			keys = append(keys, FoundKey{Type: f, Fingerprint: fingerprint(blob), Options: i > 0})
 			found = true
+			k := FoundKey{Type: f, Fingerprint: fingerprint(blob), Options: i > 0}
+			switch id := k.Fingerprint + map[bool]string{true: " options"}[k.Options]; {
+			case seen[id]:
+			case len(keys) < MaxFoundKeys:
+				seen[id] = true
+				keys = append(keys, k)
+			default:
+				seen[id] = true
+				more++
+			}
 			break
 		}
 		if !found {
 			other++
 		}
 	}
-	return keys, other
+	return keys, more, other
 }
 
 // splitOutsideQuotes splits a line at spaces and tabs that are not inside double quotes (an option

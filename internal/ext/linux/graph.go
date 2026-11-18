@@ -20,14 +20,18 @@ var warningCodes = []graph.Code{CodeSecret, CodeRestartUndeclared,
 	CodeArtifactRestartUndeclared, // NodeArtifact: artifact.go
 }
 
+// claim is a path a resource writes, and the resource.
+type claim struct {
+	path string
+	id   string
+}
+
 // checkGraph checks what concerns more than one resource of the extension: on one node, no path is
-// claimed twice, nor a path and a directory above it (a file cannot be both); and the approved
-// writes of a node's files fit in its revision (MaxNodeContent).
+// claimed twice, nor a path and a directory above it (a file cannot be both), nor a path in a
+// declared user's home; the approved writes of a node's files fit in its revision (MaxNodeContent);
+// and a node has no more of a kind than mamelet observes.
 func checkGraph(g *graph.Graph, v *graph.Validator) {
-	type claim struct {
-		path string
-		id   string
-	}
+
 	byNode := map[string][]claim{}
 	total := map[string]int{}
 	for _, r := range g.Sorted() {
@@ -65,6 +69,55 @@ func checkGraph(g *graph.Graph, v *graph.Validator) {
 		}
 	}
 	checkAptRepos(g, v) // NodeAptRepo
+	checkHomes(g, v, byNode)
+	checkCounts(g, v)
+}
+
+// checkHomes refuses, on one node, a file (NodeFile, NodeArtifact) in the home of a user the
+// declaration has: the home is the user's, who can replace what root puts in it (and a directory
+// mamelet made above the file would be root's, in the user's way); and a home that is a file's path
+// or under it.
+func checkHomes(g *graph.Graph, v *graph.Validator, claims map[string][]claim) {
+	for _, r := range g.Sorted() {
+		u := UserOf(r)
+		if u == nil {
+			continue
+		}
+		home, _ := u.CreateHome()
+		if home == "" || CheckHome(home) != nil {
+			continue
+		}
+		for _, c := range claims[u.Node] {
+			p, id := c.path, c.id
+			switch {
+			case Under(p, home):
+				v.Problem(r, graph.CodeConflict, "spec.home", fmt.Sprintf("%s declares %s on %s, in the home %s of user %s: a home is its user's, who can replace what root puts in it", id, p, u.Node, home, u.Name),
+					"put the file outside the home (such as /etc/<app> or /srv/<app>), or give the user another home")
+			case Under(home, p):
+				v.Problem(r, graph.CodeConflict, "spec.home", fmt.Sprintf("the home %s of user %s is %s, which %s declares as a file on %s", home, u.Name, map[bool]string{true: "that path", false: "under " + p}[home == p], id, u.Node),
+					"a path is a file or a directory, not both: change the home or the file's path")
+			}
+		}
+	}
+}
+
+// checkCounts refuses more of a kind on one node than mamelet observes (MaxNodeFiles and the like):
+// mamelet would refuse the whole linux part of the node's revision.
+func checkCounts(g *graph.Graph, v *graph.Validator) {
+	most := map[graph.Kind]int{KindFile: MaxNodeFiles, KindUser: MaxNodeUsers, KindAptRepo: MaxNodeAptRepos, KindArtifact: MaxNodeArtifacts}
+	seen := map[string]int{}
+	for _, r := range g.Sorted() {
+		k, ok := kindOf(r.Kind)
+		if !ok {
+			continue
+		}
+		node := k.def.Node(r.Ext)
+		key := string(r.Kind) + "\x00" + node
+		if seen[key]++; seen[key] == most[r.Kind]+1 {
+			v.Problem(r, graph.CodeInvalidValue, "spec.node", fmt.Sprintf("more than %d %s are declared on %s; mamelet observes at most %d of them on one node", most[r.Kind], r.Kind, node, most[r.Kind]),
+				"spread them over more nodes, or put several files into one (a larger file is a NodeArtifact)")
+		}
+	}
 }
 
 // kindOf is the extension's kind of that name.
