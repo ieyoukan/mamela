@@ -45,7 +45,11 @@ func readAccounts(r *os.Root) accounts {
 }
 
 // inspect observes what is at p (an absolute path CheckPath accepts) and the directories above it.
-func inspect(r *os.Root, p string, a accounts) FileState {
+func inspect(r *os.Root, p string, a accounts) FileState { return inspectUpTo(r, p, a, MaxContent) }
+
+// inspectUpTo is inspect of a file that is hashed only if it has at most max bytes (Large: it has
+// more).
+func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 	st := FileState{Path: p}
 	for i, d := range parents(p) {
 		fi, err := r.Lstat(rel(d))
@@ -88,11 +92,11 @@ func inspect(r *os.Root, p string, a accounts) FileState {
 	if uid, gid, ok := ownerOf(fi); ok {
 		st.Owner, st.Group = a.userName(uid), a.groupName(gid)
 	}
-	if fi.Size() > MaxContent {
+	if fi.Size() > max {
 		st.Large = true
 		return st
 	}
-	sum, err := hashFile(r, p)
+	sum, err := hashFile(r, p, max)
 	if err != nil {
 		st.Error = err.Error()
 		return st
@@ -101,8 +105,9 @@ func inspect(r *os.Root, p string, a accounts) FileState {
 	return st
 }
 
-// hashFile is the sha256 of the regular file at p (a pipe put there meanwhile does not block it).
-func hashFile(r *os.Root, p string) (string, error) {
+// hashFile is the sha256 of the regular file at p, of its first max+1 bytes at most (a pipe put
+// there meanwhile does not block it).
+func hashFile(r *os.Root, p string, max int64) (string, error) {
 	f, err := r.OpenFile(rel(p), os.O_RDONLY|openNonBlock, 0)
 	if err != nil {
 		return "", err
@@ -116,7 +121,7 @@ func hashFile(r *os.Root, p string) (string, error) {
 		return "", fmt.Errorf("%s is not a regular file", p)
 	}
 	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, MaxContent+1)); err != nil {
+	if _, err := io.Copy(h, io.LimitReader(f, max+1)); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
@@ -149,7 +154,13 @@ func tempName(base string) string {
 // mode), renamed over p, and the directory synced. The caller checked the path, the directories
 // above it and what is at it (inspect) just before.
 func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error {
-	mode, err := ParseMode(w.Mode)
+	return writeFrom(r, p, strings.NewReader(w.Content), w.SHA256, w.Mode, uid, gid, dirUID, dirGID)
+}
+
+// writeFrom is writeTo of the content src reads (to its end), whose sha256 must be sum: what is
+// read is hashed as it is written, and a content of another sha256 is never renamed over p.
+func writeFrom(r *os.Root, p string, src io.Reader, sum, modeText string, uid, gid, dirUID, dirGID int) error {
+	mode, err := ParseMode(modeText)
 	if err != nil {
 		return err
 	}
@@ -158,13 +169,14 @@ func writeTo(r *os.Root, p string, w Write, uid, gid, dirUID, dirGID int) error 
 		return err
 	}
 	defer dir.Close()
-	return replaceFile(dir, path.Base(p), w.Content, fs.FileMode(mode), uid, gid)
+	return replaceIn(dir, path.Base(p), src, sum, fs.FileMode(mode), uid, gid)
 }
 
-// replaceFile writes content into a temporary file in dir (synced, owned by uid:gid, with mode),
-// renames it over base, and syncs dir.
-func replaceFile(dir *os.Root, base, content string, mode fs.FileMode, uid, gid int) error {
+// replaceIn writes the content src reads (whose sha256 must be sum) into a temporary file in dir
+// (synced, owned by uid:gid, with mode), renames it over base, and syncs dir.
+func replaceIn(dir *os.Root, base string, src io.Reader, sum string, mode fs.FileMode, uid, gid int) error {
 	tmp := tempName(base)
+	p := base
 	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
 	}
@@ -180,8 +192,12 @@ func replaceFile(dir *os.Root, base, content string, mode fs.FileMode, uid, gid 
 			dir.Remove(tmp)
 		}
 	}()
-	if _, err := f.WriteString(content); err != nil {
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(f, h), src); err != nil {
 		return err
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
+		return fmt.Errorf("the content has sha256 %s, not %s; nothing was put at %s", got, sum, p)
 	}
 	if err := f.Sync(); err != nil {
 		return err

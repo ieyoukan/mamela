@@ -424,7 +424,7 @@ func writeKeys(r *os.Root, home, content string, uid, gid int) (wrote bool, err 
 			}
 		}
 	}
-	if err := replaceFile(dir, "authorized_keys", content, 0o600, uid, gid); err != nil {
+	if err := replaceIn(dir, "authorized_keys", strings.NewReader(content), ContentSHA256(content), 0o600, uid, gid); err != nil {
 		return wrote, err
 	}
 	return true, nil

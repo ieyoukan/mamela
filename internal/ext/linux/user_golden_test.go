@@ -14,7 +14,6 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
-	"github.com/ieyoukan/mamela/internal/provider/spec"
 	"github.com/ieyoukan/mamela/internal/site"
 	"github.com/ieyoukan/mamela/internal/state"
 )
@@ -143,7 +142,7 @@ func TestGoldenUserPlans(t *testing.T) {
 			if snap, err = state.Decode(snap.Canonical()); err != nil {
 				t.Fatal(err)
 			}
-			providers := spec.Providers{manifestOf(KindUser, KindFile)}.Digest()
+			providers := goldenProviders
 			p := plan.BuildFor(g, snap, pol, providers)
 			dir := "plan/" + s.name + "/"
 			golden(t, dir+"graph.json", append(g.Canonical(), '\n'))

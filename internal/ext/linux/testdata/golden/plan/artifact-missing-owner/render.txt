@@ -1,0 +1,12 @@
+Plan sha256:f2168a27b183
+  revision  sha256:fe891f5db1bf
+  observed  2026-11-17T12:01:00Z (snapshot sha256:1fd7d84c43da)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeArtifact web/artifact/usr/local/bin/node_exporter  [blocked]
+    MAM-PLAN-0156 user node-exp does not exist on web, so /usr/local/bin/node_exporter cannot be owned by it
+      hint: install the package that makes node-exp, declare it (NodeUser, when it comes), or own the artifact by an existing user such as root
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

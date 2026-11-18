@@ -16,11 +16,11 @@ import (
 )
 
 // kinds are the extension's kinds, in canonical order. A kind declares what it adds to each layer
-// (fileKind in file.go) and adds itself here; NodeAptRepo and NodeArtifact take the orders doc.go
-// reserves for them.
+// (fileKind in file.go) and adds itself here; NodeAptRepo takes the order doc.go reserves for it.
 var kinds = []kind{
-	userKind, // 6
-	fileKind, // 9
+	userKind,     // 6: user.go
+	artifactKind, // 8: artifact.go
+	fileKind,     // 9: file.go
 }
 
 // kind is what one kind of the extension adds to each layer. Every function works on its own
@@ -209,6 +209,9 @@ func init() {
 	})
 }
 
-// planCodes are the codes of NodeFile's plan notes; the other kinds name theirs in kind.codes (doc.go
-// reserves their ranges).
-var planCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept}
+// planCodes are the codes of the extension's plan notes (doc.go reserves ranges for the kinds that
+// follow); a kind may also name its own in kind.codes (NodeUser).
+var planCodes = slices.Concat(
+	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept},
+	artifactPlanCodes, // NodeArtifact: artifact_plan.go
+)

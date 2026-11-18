@@ -35,7 +35,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## kind
 
-組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`、`NodeUser`（linux、ADR 0016）で、どれもマシンの上のものである。
+組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`、`NodeUser`、`NodeArtifact`（linux、ADR 0016）で、どれもマシンの上のものである。
 
 **マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
@@ -206,6 +206,60 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 - **この版でしないこと:** パスワード、sudo の設定（`/etc/sudoers.d`）、グループを作ること（グループはパッケージが作るか手で作る）、グループから外すこと、uid・home を変えること、鍵のオプション。
 - **mamelet の版:** 0.10.0 より前の mamelet は linux を受け取らない。そのノードの `NodeUser` は Blocked（MAM-PLAN-0122）。
 
+### NodeArtifact
+
+ノードの上の 1 つのファイルを、https のダウンロードから、sha256 で固定して置く（linux 拡張、ADR 0016）。リリースのバイナリ、または `.tar.gz` の中の 1 つのファイル。宣言は Mamela Pome（0.4.0 から）の `Mamela.artifact(graph, node, path, url, sha256)`（ダウンロードそのもの、mode 0755、root の所有、再起動なし）、または `Mamela.artifact_with(graph, node, Mamela.Artifact(extract: "app-1.0/app", restart: ["app"], ..Mamela.artifact_of(path, url, sha256)))`。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/artifact<path>`（`web/artifact/usr/local/bin/node_exporter`） |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.url` | string | `https://` の URL（2048 バイトまで）。ホストがあり、ユーザー・パスワード（`user@`）と fragment（`#`）はない。文字は RFC 3986 のものだけ（空白・制御文字なし）。`http://` は拒否 |
+| `spec.sha256` | string | ダウンロードしたバイト列の sha256（小文字 16 進 64 桁）。リリースのチェックサムファイル（`sha256sums.txt` など）に載っている値 |
+| `spec.path` | string | 置く場所。`NodeFile` の `path` と同じ規則（書かない場所も同じ） |
+| `spec.extract` | string | 省略できる。書くと、ダウンロードは gzip で圧縮した tar で、その中のこのメンバー（通常のファイル）だけを置く。`tar -tzf` が示す名前で、相対・`Clean` したもの（先頭の `/` と `./`、`..`、末尾の `/` なし）。各部分は英数字と `. _ + @ = : , -` だけ。1024 バイトまで |
+| `spec.mode` | string | 省略できる（既定 `"0755"`）。`NodeFile` と同じ規則 |
+| `spec.owner`、`spec.group` | string | 省略できる（既定 `"root"`）。`NodeFile` と同じ。ノードにないと Blocked（MAM-PLAN-0156）、同じ宣言の NodeUser が作るなら待つ（MAM-PLAN-0158） |
+| `spec.restart` | string の配列 | 省略できる。置いたあと、動いていれば再起動するサービス（`try-restart`）。宣言していないサービスは警告（MAM-GRAPH-0215） |
+
+- **同じ path:** 同じノードで、`NodeArtifact` と `NodeFile` が同じ path を宣言するもの、一方がもう一方の上のディレクトリになるものは、MAM-GRAPH-0110。
+- **in sync:** path のファイルが、mamelet が宣言した sha256 のダウンロード（と `extract` のメンバー）から置いたままのもので、mode・owner・group が宣言と同じとき。展開したメンバーの sha256 はダウンロードの sha256 と違うので、mamelet は自分の状態ディレクトリ（`stateDir`）に、置いたものの記録（`linux-artifacts.json`。path ごとに、URL、ダウンロードの sha256、メンバー、置いたファイルの sha256）を持つ。ファイルの sha256 が記録と同じときだけ、mamelet は記録の URL・sha256・メンバーを報告する。URL だけが違う（ミラー）ものは、同じダウンロードなので in sync。
+- **承認:** `linux.install-artifact`（MAM-POL-0225）。plan の diff に、path、URL、sha256、`extract`、mode・owner・group の変化、作るディレクトリ、unit なら `daemon-reload`、再起動するサービスが出る。前の状態は diff の「from」に出る。なければ新規（`+`）、mamelet が別のダウンロードから置いたものなら、その URL・sha256・メンバー、Mamela が置いたものでない（手で変えた、ほかの方法で置いた）なら、そのファイルの sha256 と MAM-PLAN-0159 の注記（置き換える）。mode・owner だけが違うときは、mamelet はダウンロードし直さない。
+- **置き方:** mamelet が、承認のあと一度だけ行う。path の規則と、path とその上がシンボリックリンクでないことを確かめ、URL を https だけで（リダイレクトも https だけ、10 回まで）、時間（10 分）と大きさ（512 MiB）を限ってダウンロードする。状態ディレクトリの一時ファイル（mamelet だけが読める）に、sha256 を計りながら書き、sha256 が承認したものでなければ、何も置かずに断る。`extract` なら tar を最後まで読み、そのメンバーがちょうど 1 つあり、通常のファイル（512 MiB まで）であることを確かめて取り出す（リンク・ディレクトリ・デバイス、ないもの、2 つあるものは断る。展開した全体は 4 GiB まで）。そのあと `NodeFile` と同じく、同じディレクトリの一時ファイルに書いて rename で置き換え、置いたファイルの sha256 と mode・所有者を確かめ、記録を書き（一時ファイルと rename）、unit なら `daemon-reload`、`restart` のサービスを `try-restart` する。一時ファイルは、成功しても失敗しても消す。途中で止まった（mamelet が殺された）ダウンロードは、次の試みが消して最初からやり直す。外部のプログラムは使わない（Go の `net/http`、`compress/gzip`、`archive/tar`）。
+- **消さない:** 宣言から外したものは、ノードにそのまま残る（MAM-PLAN-0313、retained）。apply のあと mamelet は観測しなくなる。
+- **mamelet の版:** `NodeFile` と同じ（0.10.0 から。MAM-PLAN-0122）。
+
+例（Prometheus の node_exporter を、リリースの `.tar.gz` から置き、`NodeFile` の unit で動かす）。**sha256 は例のための仮の値**で、本当の値はリリースの `sha256sums.txt` から写す。
+
+~~~emela
+import Mamela
+
+const UNIT = "[Unit]\nDescription=Prometheus node exporter\nAfter=network-online.target\n\n[Service]\nExecStart=/usr/local/bin/node_exporter\nDynamicUser=yes\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n"
+
+pub fn node_exporter(graph: Mamela.Graph, node: Mamela.Node) -> Mamela.Graph {
+  dir = "node_exporter-1.8.2.linux-amd64"
+  exporter = Mamela.Artifact(
+    extract: "#{dir}/node_exporter",
+    restart: ["node_exporter"],
+    ..Mamela.artifact_of(
+      "/usr/local/bin/node_exporter",
+      "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/#{dir}.tar.gz",
+      "0000000000000000000000000000000000000000000000000000000000000000",
+    ),
+  )
+  graph
+    |> Mamela.artifact_with(node, exporter)
+    |> Mamela.file_with(
+      node,
+      Mamela.File(
+        restart: ["node_exporter"],
+        ..Mamela.file_of("/etc/systemd/system/node_exporter.service", UNIT),
+      ),
+    )
+    |> Mamela.service(node, "node_exporter", True, True)
+}
+~~~
+
 ## プロバイダーのリソース（`mamela-graph/v2`）
 
 外部のプロバイダーの種類のリソースは、`provider` を持つ。これがある文書は `"schema": "mamela-graph/v2"` にする（v1 の文書にあれば MAM-GRAPH-0011）。v1 の文書は、プロバイダーのリソースがない v2 の文書と同じ意味である。Mamela は両方を読み、プロバイダーのリソースがないときは v1 を書く。
@@ -246,7 +300,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、7〜8 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、7 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 

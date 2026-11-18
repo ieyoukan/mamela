@@ -74,7 +74,9 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0204 | `NodeFile` の `restart` に、その node で宣言していないサービスがある。動いていれば再起動されるが、名前の誤りかもしれない。`Mamela.service` で宣言するか、名前を確かめる |
 | MAM-GRAPH-0205 | 予約（linux 拡張の警告） |
 | MAM-GRAPH-0206 | `NodeUser` の `groups` に、メンバーが root になれるグループ（`sudo`、`admin`、`wheel`、`docker`、`lxd`、`incus-admin`、`libvirt`、`disk`、`shadow`、`root`）がある。そのユーザーは、そのノードで root になれる。ノードを管理するユーザーにだけ宣言する。Mamela はグループから外さないので、宣言から消しても権限は残る |
-| MAM-GRAPH-0207〜0219 | 予約（linux 拡張の警告。NodeUser、NodeAptRepo、NodeArtifact が使う） |
+| MAM-GRAPH-0207〜0214 | 予約（linux 拡張の警告。NodeAptRepo が使う） |
+| MAM-GRAPH-0215 | `NodeArtifact` の `restart` に、その node で宣言していないサービスがある。動いていれば再起動されるが、名前の誤りかもしれない。`Mamela.service` で宣言するか、名前を確かめる |
+| MAM-GRAPH-0216〜0219 | 予約（linux 拡張の警告。NodeArtifact） |
 
 ## MAM-POL — ポリシーの判定
 
@@ -99,7 +101,9 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0220 | ApprovalRequired | `linux.write-file`（`NodeFile`）。root としてファイルを、plan のとおりの内容・mode・owner で書き、挙げたサービスを（動いていれば）再起動する。plan に全文が出る |
 | MAM-POL-0221 | ApprovalRequired | `linux.create-user`（`NodeUser`）。ユーザーを作る（`useradd`。plan のとおりの shell・home・uid と、ユーザーの名前のグループ）。宣言したグループに入れ、SSH の公開鍵を書く。そのユーザーは、その鍵でログインでき、グループが許すことができる |
 | MAM-POL-0222 | ApprovalRequired | `linux.change-user`（`NodeUser`）。あるユーザーを、宣言したグループに入れ（`usermod --append`。外さない）、宣言した shell にし、`authorized_keys` を宣言した鍵だけにする。plan が、足す鍵と外す鍵を fingerprint で示す |
-| MAM-POL-0223〜0226 | — | 予約（linux 拡張の操作。NodeAptRepo 0223〜0224、NodeArtifact 0225〜0226） |
+| MAM-POL-0223〜0224 | — | 予約（linux 拡張の操作。NodeAptRepo） |
+| MAM-POL-0225 | ApprovalRequired | `linux.install-artifact`（`NodeArtifact`）。https でダウンロードし、sha256 が plan のものであるときだけ、それ（または `.tar.gz` の 1 つのメンバー）を root として、plan のとおりの mode・owner で置き、挙げたサービスを（動いていれば）再起動する。plan に URL・sha256・メンバーが出る。承認する前に、公開元のリリース（チェックサムファイル）と照らす |
+| MAM-POL-0226 | — | 予約（linux 拡張の操作。NodeArtifact） |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
@@ -149,7 +153,12 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0147 | ユーザーの `groups` のグループ、または shell が、ノードにない。同じノードの `NodePackage` がまだ入っていなければ、それが作るかもしれないので待つ（Waiting。`docker-ce` が `docker` を作るように）。そうでなければ Blocked。作るパッケージを宣言するか、手で作るか、shell を変える |
 | MAM-PLAN-0148 | 警告。ノードのユーザーに、宣言にないものがある。宣言にない補助グループ（Mamela はグループから外さないので残る）、宣言の `system` と違うこと（uid が 1000 未満かで判断する。作るときにだけ使うので変えない）。plan の状態も操作も変えない |
 | MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
-| MAM-PLAN-0150〜0159 | 予約（linux 拡張。NodeAptRepo 0150〜0154、NodeArtifact 0155〜0159） |
+| MAM-PLAN-0150〜0154 | 予約（linux 拡張。NodeAptRepo） |
+| MAM-PLAN-0155 | mamelet からの `NodeArtifact` の報告を待つ。宣言を変えた直後に、所有者・グループがあるかの報告を待つときもこれ |
+| MAM-PLAN-0156 | `NodeArtifact` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする |
+| MAM-PLAN-0157 | サービスの起動が、そのサービスを `restart` に挙げた `NodeArtifact` が置かれるのを待つ（バイナリを置いてから起動する） |
+| MAM-PLAN-0158 | `NodeArtifact` の owner または group を、同じ宣言の別のリソース（NodeUser）が作るので、それを待つ |
+| MAM-PLAN-0159 | `NodeArtifact` の path にあるファイルは、Mamela が置いたものではない（ほかの方法で置いた、または置いたあとで変わった。mamelet の記録の sha256 と違う）。承認すると、ダウンロードしたもので置き換える。承認する前に、ノードに何があるかを確かめる（change の注記） |
 | MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
 | MAM-PLAN-0130 | ノードの mamelet が、Control Plane の revision を拒否している（Blocked）。理由は mamelet の報告のとおり。未知のメンバー（mamelet が Control Plane より古い。[mamelet の更新](mamelet-update.md)の限界）、serial の巻き戻し（Control Plane の DB を古い写しから戻した。最新の DB に戻す）、時計のずれ（ノードの時計を直す）、署名や宛先の不一致（ノードの設定）、revision の内容が不正（宣言の名前や値）。許可は revision で届くので、拒否されているあいだは、承認しても何も届かない。同じノードで同期している（in sync）ものは、そのまま。Control Plane のログにも、拒否の始まりと終わりが出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
@@ -160,7 +169,10 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0211 | mamelet がファイルを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
 | MAM-PLAN-0212 | mamelet は、そのユーザーの SSH の鍵を書かない（Blocked）。`~/.ssh` か `authorized_keys` か home がシンボリックリンク、または home がない。Mamela はリンクをたどらない。手でディレクトリに置き換える（home を作る）か、`authorizedKeys` を省く |
 | MAM-PLAN-0213 | mamelet がユーザーを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がユーザーや home を断ったときもこれ。home が `/etc` の下など） |
-| MAM-PLAN-0214〜0219 | 予約（linux 拡張の観測の問題。NodeAptRepo、NodeArtifact） |
+| MAM-PLAN-0214〜0215 | 予約（linux 拡張の観測の問題。NodeAptRepo） |
+| MAM-PLAN-0216 | mamelet は、その path に `NodeArtifact` を置かない（Blocked）。path がシンボリックリンク・ディレクトリ・デバイス、または上のディレクトリがリンクかディレクトリでない。本当の path を宣言するか、手で置き換える |
+| MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
+| MAM-PLAN-0218〜0219 | 予約（linux 拡張の観測の問題） |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306 が詳しい） |
 | MAM-PLAN-0302 | 現在の宣言にないが、別の宣言（stack）が作った物なので保持する（ADR 0013）。作った宣言から消す |
@@ -170,7 +182,9 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
 | MAM-PLAN-0310 | 宣言から外れた `NodeFile`。ファイルはノードにそのまま残る（Mamela はまだファイルを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で |
 | MAM-PLAN-0311 | 宣言から外れた `NodeUser`。ユーザーは、グループ・home・SSH の鍵とともにノードにそのまま残る（Mamela はユーザーを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（`userdel`） |
-| MAM-PLAN-0312〜0319 | 予約（linux 拡張の、宣言から外れたものの保持） |
+| MAM-PLAN-0312 | 予約（linux 拡張の、宣言から外れたものの保持） |
+| MAM-PLAN-0313 | 宣言から外れた `NodeArtifact`。ファイルはノードにそのまま残る（Mamela はまだ消さない）。plan を apply すると、mamelet はそれを観測しなくなる（記録は残る）。消すなら手で |
+| MAM-PLAN-0314〜0319 | 予約（linux 拡張の、宣言から外れたものの保持） |
 | MAM-PLAN-0307 | 現在の宣言にあるが、Mamela が別の宣言（stack）のために作った物なので、何も変えない（Blocked。その上のパッケージ・サービス・k3s は待つ）。同じ名前のリソースが 2 つの宣言にある。宣言を 1 か所にする（作った宣言から消すと、プロバイダーがその kind を削除できるなら、それは削除の plan になる）か、こちらの名前を変える |
 | MAM-PLAN-0401 | 警告。動いている k3s の版から 7 マイナー版以上戻す宣言（`v1.37.2` から `v1.30.0` など）。Kubernetes は版を戻すことを支えず、新しい版が保存したものを古い版が読めないことがある。打ち間違いなら version と sha256 を直す。本当に戻すなら、その版のときに取ったスナップショットから復旧する（Mamela はクラスタを巻き戻さない）。plan の状態も操作も変えない |
 
