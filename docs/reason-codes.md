@@ -60,7 +60,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0107 | 同じ固定アドレスが複数のマシンに宣言されている（マシンの `spec.network.address`） |
 | MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに、そのリソースから一周する経路（`Thing a -> Thing b -> Thing a`）を示して報告する。経路の中の依存を 1 つ外す |
 | MAM-GRAPH-0109 | 文字列が、見たとおりのものとして表示されない文字を含む。C0・DEL・C1 の制御文字（k3s の manifest の内容と provider の `spec` の文字列は、改行 `\n` とタブ `\t` だけ許す。復帰 `\r`、ESC、ベルを含む）、bidi 制御（U+202A–202E、U+2066–2069、U+200E/F、U+061C）、ゼロ幅文字（U+200B–200D、U+2060、U+FEFF）、U+2028/2029、タグ文字、UTF-8 でないバイト。plan の表示を偽装できるので（k3s は manifest を cluster-admin で適用する）、何がどこ（行・列、`spec` では JSON pointer）にあるかを示して拒否する。manifest は LF の改行で書き、YAML に必要な文字はエスケープ（`"\u202e"`）で書く |
-| MAM-GRAPH-0110 | 同じものへの宣言が矛盾している。同じ node の同じ unit（`nginx` と `nginx.service` は同じ）を、`enabled`・`running` を変えて 2 回宣言した。k3s を宣言した（`NodeK3s`）node で、k3s の service を `running=false` にした。宣言を 1 つにするか、同じにする |
+| MAM-GRAPH-0110 | 同じものへの宣言が矛盾している。同じ node の同じ unit（`nginx` と `nginx.service` は同じ）を、`enabled`・`running` を変えて 2 回宣言した。k3s を宣言した（`NodeK3s`）node で、k3s の service を `running=false` にした。同じ node の 2 つの `NodeAptRepo` が、同じ URI と suite を持つ（apt は 1 つのソースに 2 つの鍵を認めない）。宣言を 1 つにするか、同じにする |
 
 ## MAM-GRAPH — 警告（拒否ではない）
 
@@ -101,7 +101,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-POL-0220 | ApprovalRequired | `linux.write-file`（`NodeFile`）。root としてファイルを、plan のとおりの内容・mode・owner で書き、挙げたサービスを（動いていれば）再起動する。plan に全文が出る |
 | MAM-POL-0221 | ApprovalRequired | `linux.create-user`（`NodeUser`）。ユーザーを作る（`useradd`。plan のとおりの shell・home・uid と、ユーザーの名前のグループ）。宣言したグループに入れ、SSH の公開鍵を書く。そのユーザーは、その鍵でログインでき、グループが許すことができる |
 | MAM-POL-0222 | ApprovalRequired | `linux.change-user`（`NodeUser`）。あるユーザーを、宣言したグループに入れ（`usermod --append`。外さない）、宣言した shell にし、`authorized_keys` を宣言した鍵だけにする。plan が、足す鍵と外す鍵を fingerprint で示す |
-| MAM-POL-0223〜0224 | — | 予約（linux 拡張の操作。NodeAptRepo） |
+| MAM-POL-0223 | ApprovalRequired | `linux.add-apt-repo`（`NodeAptRepo`）。root として APT のソースとその鍵（sha256 で固定）を置き、`apt-get update` を走らせる。そのソースのパッケージは、システムのパッケージを置き換えうる（apt は版の高いものを入れる）し、maintainer script は root で動く。plan にソースのファイルの全文が出る。そのパッケージを入れるには、origin を policy の `allowedAptOrigins` と mamelet の `allowedOrigins` に足す |
+| MAM-POL-0224 | — | 予約（linux 拡張の操作。NodeAptRepo） |
 | MAM-POL-0225 | ApprovalRequired | `linux.install-artifact`（`NodeArtifact`）。https でダウンロードし、sha256 が plan のものであるときだけ、それ（または `.tar.gz` の 1 つのメンバー）を root として、plan のとおりの mode・owner で置き、挙げたサービスを（動いていれば）再起動する。plan に URL・sha256・メンバーが出る。承認する前に、公開元のリリース（チェックサムファイル）と照らす |
 | MAM-POL-0226 | — | 予約（linux 拡張の操作。NodeArtifact） |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
@@ -153,7 +154,11 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0147 | ユーザーの `groups` のグループ、または shell が、ノードにない。同じノードの `NodePackage` がまだ入っていなければ、それが作るかもしれないので待つ（Waiting。`docker-ce` が `docker` を作るように）。そうでなければ Blocked。作るパッケージを宣言するか、手で作るか、shell を変える |
 | MAM-PLAN-0148 | 警告。ノードのユーザーに、宣言にないものがある。宣言にない補助グループ（Mamela はグループから外さないので残る）、宣言の `system` と違うこと（uid が 1000 未満かで判断する。作るときにだけ使うので変えない）。plan の状態も操作も変えない |
 | MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
-| MAM-PLAN-0150〜0154 | 予約（linux 拡張。NodeAptRepo） |
+| MAM-PLAN-0150 | mamelet からの APT のソース（`NodeAptRepo`）の報告を待つ |
+| MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が in sync になる（ファイルが揃い、apt がそれを読む）のを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す |
+| MAM-PLAN-0152 | `NodeAptRepo` のファイルは揃っているが、apt がまだそのソースを読んでいない（`/var/lib/apt/lists` にリリースファイルがない）。apt-get update が失敗したか、まだ走っていない。承認した plan をもう一度 apply するか、この plan を承認すると、update をやり直す。失敗の理由は前の試みの結果にある |
+| MAM-PLAN-0153 | ノードのほかのソースのファイルが、`NodeAptRepo` と同じ URI と suite を持つ（Blocked）。apt は 1 つのソースに 2 つの鍵（`Signed-By`）を認めず、すべてのソースを読まなくなる。そのファイルを手で消すか、宣言しない |
+| MAM-PLAN-0154 | 予約（linux 拡張。NodeAptRepo） |
 | MAM-PLAN-0155 | mamelet からの `NodeArtifact` の報告を待つ。宣言を変えた直後に、所有者・グループがあるかの報告を待つときもこれ |
 | MAM-PLAN-0156 | `NodeArtifact` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを入れるか、ある owner（root など）にする |
 | MAM-PLAN-0157 | サービスの起動が、そのサービスを `restart` に挙げた `NodeArtifact` が置かれるのを待つ（バイナリを置いてから起動する） |
@@ -169,7 +174,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0211 | mamelet がファイルを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
 | MAM-PLAN-0212 | mamelet は、そのユーザーの SSH の鍵を書かない（Blocked）。`~/.ssh` か `authorized_keys` か home がシンボリックリンク、または home がない。Mamela はリンクをたどらない。手でディレクトリに置き換える（home を作る）か、`authorizedKeys` を省く |
 | MAM-PLAN-0213 | mamelet がユーザーを観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がユーザーや home を断ったときもこれ。home が `/etc` の下など） |
-| MAM-PLAN-0214〜0215 | 予約（linux 拡張の観測の問題。NodeAptRepo） |
+| MAM-PLAN-0214 | mamelet は、`NodeAptRepo` のソースか鍵の path に書かない（Blocked）。path かその上のディレクトリがシンボリックリンク、または path がディレクトリ。`mamela-*` のソースと鍵は Mamela のもので、手で置き換える |
+| MAM-PLAN-0215 | mamelet が `NodeAptRepo` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がソースの値を断ったときもこれ） |
 | MAM-PLAN-0216 | mamelet は、その path に `NodeArtifact` を置かない（Blocked）。path がシンボリックリンク・ディレクトリ・デバイス、または上のディレクトリがリンクかディレクトリでない。本当の path を宣言するか、手で置き換える |
 | MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ） |
 | MAM-PLAN-0218〜0219 | 予約（linux 拡張の観測の問題） |
@@ -182,7 +188,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
 | MAM-PLAN-0310 | 宣言から外れた `NodeFile`。ファイルはノードにそのまま残る（Mamela はまだファイルを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で |
 | MAM-PLAN-0311 | 宣言から外れた `NodeUser`。ユーザーは、グループ・home・SSH の鍵とともにノードにそのまま残る（Mamela はユーザーを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（`userdel`） |
-| MAM-PLAN-0312 | 予約（linux 拡張の、宣言から外れたものの保持） |
+| MAM-PLAN-0312 | 宣言から外れた `NodeAptRepo`。ソースと鍵はノードにそのまま残り、apt はそれを読み続ける（Mamela はまだソースを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（2 つのファイルを消して apt-get update） |
 | MAM-PLAN-0313 | 宣言から外れた `NodeArtifact`。ファイルはノードにそのまま残る（Mamela はまだ消さない）。plan を apply すると、mamelet はそれを観測しなくなる（記録は残る）。消すなら手で |
 | MAM-PLAN-0314〜0319 | 予約（linux 拡張の、宣言から外れたものの保持） |
 | MAM-PLAN-0307 | 現在の宣言にあるが、Mamela が別の宣言（stack）のために作った物なので、何も変えない（Blocked。その上のパッケージ・サービス・k3s は待つ）。同じ名前のリソースが 2 つの宣言にある。宣言を 1 か所にする（作った宣言から消すと、プロバイダーがその kind を削除できるなら、それは削除の plan になる）か、こちらの名前を変える |

@@ -1,0 +1,17 @@
+Plan sha256:20317ad7be6f
+  revision  sha256:ca5b33fa4073
+  observed  2026-11-17T12:01:00Z (snapshot sha256:754ec05fd310)
+  policy    sha256:051da4591384
+
+~ NodePackage web/docker-ce  [needs approval]
+      installed: false -> true
+      changeSet: sha256:0195eb239db40b4531750e6085cd1e902c83a038f134be91ad1ae4d155ce296f
+      apt: install containerd.io 1.7.27-1 (Docker CE:noble)
+      apt: install docker-ce 5:28.3.3-1~ubuntu.24.04~noble (Docker CE:noble)
+    install-package: needs approval (MAM-POL-0204 installing a package runs its maintainer scripts as root)
+      hint: approve after checking the package and its source
+= TestVM web  [in sync]  via test
+= NodeAptRepo web/apt-repo/docker  [in sync]
+
+Summary: 1 needs approval, 2 in sync.
+Nothing has been changed: a plan only describes.

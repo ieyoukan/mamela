@@ -40,6 +40,10 @@ type Part struct {
 	// Artifacts are the artifacts mamelet observes, by path (sorted), each with its approved
 	// installation, if any (NodeArtifact: artifact_wire.go).
 	Artifacts []Artifact `json:"artifacts,omitempty"`
+
+	// NodeAptRepo (aptrepo_wire.go): the APT sources mamelet observes, by name (sorted), each with
+	// its approved addition, if any.
+	AptRepos []AptRepo `json:"aptRepos,omitempty"`
 }
 
 // File is a file mamelet observes, and writes once if Write grants it.
@@ -84,6 +88,9 @@ type Observed struct {
 
 	// Artifacts are what is at each artifact's path (NodeArtifact: artifact_wire.go).
 	Artifacts []ArtifactState `json:"artifacts,omitempty"`
+
+	// NodeAptRepo (aptrepo_wire.go): what mamelet found of each APT source of the part.
+	AptRepos []AptRepoState `json:"aptRepos,omitempty"`
 }
 
 // FileState is what is at a file's path.
@@ -150,12 +157,13 @@ func setPart(r *noderev.Revision, p Part) {
 	for k, v := range r.Ext {
 		ext[k] = v
 	}
-	if len(p.Files) == 0 && len(p.Users) == 0 && len(p.Artifacts) == 0 {
+	if len(p.Files) == 0 && len(p.Users) == 0 && len(p.Artifacts) == 0 && len(p.AptRepos) == 0 {
 		delete(ext, Name)
 	} else {
 		slices.SortFunc(p.Files, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
 		sortUsers(&p)
 		sortArtifacts(&p)
+		sortAptRepos(&p) // NodeAptRepo
 		ext[Name] = encode(p)
 	}
 	r.Ext = ext
@@ -187,6 +195,7 @@ func partGrants(raw jsontext.Value) ([]noderev.Grant, error) {
 	}
 	out = append(out, userGrants(p)...)
 	out = append(out, artifactGrants(p)...)
+	out = append(out, aptRepoGrants(p)...) // NodeAptRepo
 	return out, nil
 }
 
@@ -210,6 +219,7 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	}
 	handOutUsers(&p, now)
 	handOutArtifacts(&p, now)
+	handOutAptRepos(&p, now) // NodeAptRepo
 	return encode(p), nil
 }
 
@@ -240,6 +250,7 @@ func checkPart(raw jsontext.Value) error {
 	}
 	problems = append(problems, checkUsers(p.Users)...)
 	checkArtifacts(p, add)
+	problems = append(problems, aptRepoPartProblems(p)...) // NodeAptRepo
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid linux part: %s", strings.Join(problems, "; "))
 	}

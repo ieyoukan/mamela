@@ -16,9 +16,10 @@ import (
 )
 
 // kinds are the extension's kinds, in canonical order. A kind declares what it adds to each layer
-// (fileKind in file.go) and adds itself here; NodeAptRepo takes the order doc.go reserves for it.
+// (fileKind in file.go) and adds itself here, in the order doc.go reserves for it.
 var kinds = []kind{
 	userKind,     // 6: user.go
+	aptRepoKind,  // 7: aptrepo.go
 	artifactKind, // 8: artifact.go
 	fileKind,     // 9: file.go
 }
@@ -44,6 +45,8 @@ type kind struct {
 	planner    plan.Planner
 	startGate  func(k *plan.Kit, node, service string) *plan.Note
 	undeclared func(k *plan.Kit) []plan.Change
+	// packageGate says what the installation of a package on a node waits for (nil: nothing).
+	packageGate func(k *plan.Kit, node, pkg string) *plan.Note
 
 	ops      []operation
 	manifest spec.Kind
@@ -95,6 +98,16 @@ func init() {
 			for _, kd := range kinds {
 				if kd.startGate != nil {
 					if n := kd.startGate(k, node, service); n != nil {
+						return n
+					}
+				}
+			}
+			return nil
+		},
+		PackageGate: func(k *plan.Kit, node, pkg string) *plan.Note {
+			for _, kd := range kinds {
+				if kd.packageGate != nil {
+					if n := kd.packageGate(k, node, pkg); n != nil {
 						return n
 					}
 				}
@@ -214,4 +227,5 @@ func init() {
 var planCodes = slices.Concat(
 	[]string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept},
 	artifactPlanCodes, // NodeArtifact: artifact_plan.go
+	aptRepoPlanCodes,  // NodeAptRepo: aptrepo_plan.go
 )

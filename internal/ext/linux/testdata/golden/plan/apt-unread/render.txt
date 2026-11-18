@@ -1,0 +1,16 @@
+Plan sha256:6c2cef185bfa
+  revision  sha256:379f3d03e441
+  observed  2026-11-17T12:01:00Z (snapshot sha256:1ed099fccd47)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
++ NodeAptRepo web/apt-repo/docker  [needs approval]
+      apt source: /etc/apt/sources.list.d/mamela-docker.sources
+      apt-get update: apt reads the package lists of every source again (apt-get update)
+    linux.add-apt-repo: needs approval (MAM-POL-0223 adds an APT source and the key that signs it on the node as root, and runs apt-get update: apt then installs packages of this source too, a package of it with a higher version replaces the system's own (apt installs the highest version), and its maintainer scripts run as root)
+      hint: check the URIs and the key's sha256 against the vendor's instructions; a package of this source is installed only from an origin the policy allows (allowedAptOrigins) and the node's mamelet allows (allowedOrigins in /etc/mamelet/config.json)
+    MAM-PLAN-0152 the files of APT source docker are in place on web, but apt has not read https://download.docker.com/linux/ubuntu noble: an apt-get update failed, or has not run since they were written
+      hint: applying runs apt-get update again (approve this plan, or run apply again on the plan whose update failed); the result of the last attempt says why it failed
+
+Summary: 1 needs approval, 1 in sync.
+Nothing has been changed: a plan only describes.

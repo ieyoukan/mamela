@@ -35,7 +35,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## kind
 
-組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeFile`、`NodeUser`、`NodeArtifact`（linux、ADR 0016）で、どれもマシンの上のものである。
+組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeUser`、`NodeAptRepo`、`NodeArtifact`、`NodeFile`（linux、ADR 0016）で、どれもマシンの上のものである。
 
 **マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
@@ -206,6 +206,65 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 - **この版でしないこと:** パスワード、sudo の設定（`/etc/sudoers.d`）、グループを作ること（グループはパッケージが作るか手で作る）、グループから外すこと、uid・home を変えること、鍵のオプション。
 - **mamelet の版:** 0.10.0 より前の mamelet は linux を受け取らない。そのノードの `NodeUser` は Blocked（MAM-PLAN-0122）。
 
+### NodeAptRepo
+
+ノードの APT のソースと、それに署名する鍵（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.apt_repo(graph, node, name, uri, suite, components, key_url, key_sha256)`（URI と suite が 1 つ、ノードのすべてのアーキテクチャ）、または `Mamela.apt_repo_with(graph, node, Mamela.AptRepo(architectures: ["amd64"], ..Mamela.apt_repo_of(name, uri, suite, components, key_url, key_sha256)))`。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/apt-repo/<name>`（`web/apt-repo/docker`） |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.name` | string | 小文字・数字・`-` の 1〜40 文字で、小文字か数字で始まる。ファイルの名前になる（`mamela-<name>.sources`、`mamela-<name>.asc`） |
+| `spec.uris` | string の配列 | 1〜4 個。`http://` か `https://`、ホスト（英数字と `.` `-`。IPv6 のアドレスは不可）、ポート（省略可）、パス（英数字と `. _ ~ + -`、`%XX`。`.` と `..` の部分は不可）だけ。ユーザー名・パスワード（平文で宣言と plan に残る。認証はノードの `/etc/apt/auth.conf.d` に置く）、クエリ、フラグメント、apt のほかの方式（`file:`、`mirror+` など）は不可。http でもよい: apt は、取得するファイルをすべて鍵の署名で確かめる（盗み見と、古い内容を見せ続けることまでは防げないので、https を選べるならそちら） |
+| `spec.suites` | string の配列 | 1〜8 個。`noble`、`bookworm-updates`、`stable/updates` のような名前（英数字と `. _ + ~ -`、`/` で区切る。`.` と `..` の部分は不可）。`/` で終わるものは flat なリポジトリのパス（`./`、`/`、`stable/`） |
+| `spec.components` | string の配列 | 0〜16 個（`main`、`stable` など）。flat なリポジトリ（suite がすべて `/` で終わる）では空で、それ以外では 1 つ以上。`/` で終わる suite と終わらない suite は混ぜられない |
+| `spec.architectures` | string の配列 | 省略できる（ノードのすべてのアーキテクチャ。空の配列も同じで、正規形では書かない）。dpkg のアーキテクチャ名（`amd64`、`arm64`）を 8 個まで |
+| `spec.keyUrl` | string | `https://` だけ（512 バイトまで）。ユーザー名・パスワード、フラグメントは不可。クエリは書ける（鍵サーバーの検索） |
+| `spec.keySha256` | string | 取得したままの鍵ファイルの sha256（小文字の 16 進 64 桁。取得したファイルを `sha256sum` したもの） |
+
+- **行を足せない:** 値は狭い形だけを通す。空白・改行・制御文字・`#`・`$`・`[` を含められないので、どの値も、ソースのファイルに行やオプション（別の `Signed-By`、`trusted=yes`）を足せない。それぞれの配列で同じ値を 2 度書けない。
+- **同じソースを 2 度宣言しない:** 同じノードの 2 つの NodeAptRepo が同じ URI（末尾の `/` は区別しない）と suite を持つと MAM-GRAPH-0110。apt は 1 つのソースに 2 つの鍵を認めず、すべてのソースを読まなくなるため。
+- **書くもの:** 鍵は `/etc/apt/keyrings/mamela-<name>.asc`（ASCII armor の鍵）か `/etc/apt/keyrings/mamela-<name>.gpg`（バイナリの鍵）、ソースは `/etc/apt/sources.list.d/mamela-<name>.sources`（deb822）。どちらも 0644、root の所有で、`/etc/apt/keyrings` がなければ 0755 で作る。`mamela-*` の名前は NodeAptRepo のもので、`NodeFile` は書けない。ファイルは Go の 1 つの関数（`AptSources`）が描き、Control Plane（plan の表示と、比べる sha256）と mamelet（書き込み）が同じものを使う:
+
+  ```
+  # Mamela's APT source docker (NodeAptRepo): change the declaration, not this file.
+  Types: deb
+  URIs: https://download.docker.com/linux/ubuntu
+  Suites: noble
+  Components: stable
+  Signed-By: /etc/apt/keyrings/mamela-docker.asc
+  ```
+
+- **鍵の形:** 鍵を取得するまで、Control Plane には、鍵が armor かバイナリかが分からない。plan は armor の鍵（`.asc`）として全文を示し、バイナリなら `Signed-By` が `.gpg` を指すことを添える。違いはこの 1 か所で、鍵は sha256 で固定されているので、承認した中身は 1 つに決まる（鍵がノードにあれば、plan はその形で示す）。mamelet は、`-----BEGIN PGP PUBLIC KEY BLOCK-----` で始まり（前の空白は許す）終わりの行がある鍵を armor、最初のバイトが OpenPGP の公開鍵のパケット（tag 6。旧形式の 0x98・0x99・0x9a、新形式の 0xc6）のものをバイナリとし、それ以外（エラーの HTML、秘密鍵、GnuPG の keybox）は断る。
+- **承認:** `linux.add-apt-repo`（MAM-POL-0223）。plan の diff に、ソースのファイルの全文と sha256（古いものは sha256 だけ）、鍵の URL と sha256、鍵のファイル、消すもう一方の形の鍵、作るディレクトリ、`apt-get update` が出る。判定の文は、このソースのパッケージがシステムのパッケージを置き換えうること（apt はどのソースのものでも版の高いものを入れる）と、その maintainer script が root で動くことを言う。
+- **in sync:** 鍵が 2 つのファイルのどちらかに宣言した sha256 であり、ソースのファイルがその鍵の形で描いたものと同じで、どちらも 0644・root の所有、もう一方の形のファイルがなく、apt が各 URI と suite のリリースファイル（`/var/lib/apt/lists` の `InRelease` か `Release`。apt-get update が読んで確かめたもの）を持つとき。
+- **mamelet の動き:** 承認のあと 1 回だけ（試みごと）。revision から描き直したファイルが承認した sha256 と合わなければ、その部分ごと断る。ノードのほかのソースのファイル（`/etc/apt/sources.list`、`sources.list.d` の `.list` と `.sources`）が同じ URI と suite を持てば断る。path とその上のリンクはたどらない。鍵は、承認した sha256 のものがノードにあればそれを使い、なければ https で取得する（64 KiB まで、30 秒、リダイレクトも https だけ）。sha256 と形を確かめるまで何も書かない。鍵、ソースの順に書き（同じディレクトリの一時ファイルから rename）、もう一方の形の鍵を消し、`apt-get update` を、核がパッケージを入れるのと同じ `/usr/bin/apt-get`、環境（`DEBIAN_FRONTEND=noninteractive`）、ロックの待ち（`-o DPkg::Lock::Timeout=300`）で走らせる（10 分まで）。途中で止まった試みは、済んだ手順を飛ばして、同じ試みでやり直す。
+- **apt-get update の失敗:** 結果は failed で、apt の言葉（末尾の数行、1000 バイトまで）を示す。ファイルは残す。apt はまだソースを読んでいないので、plan は、ファイルは揃っているが update が要る変更として示す（MAM-PLAN-0152。diff は「apt source」と「apt-get update」だけで、最初の plan のものと同じ）。原因を直して、承認した plan をもう一度 `mamela apply` すると update をやり直す（attempt 2。鍵はノードのものを使い、取得し直さない）。新しい plan を承認してもよい。
+- **パッケージは待つ（`PackageGate`）:** そのノードの `NodePackage` の導入は、そのノードの NodeAptRepo がすべて in sync になるまで待つ（MAM-PLAN-0151）。どのパッケージがどのソースから来るかは、apt がすべてのソースを読むまで分からないので、すべてのパッケージを待たせる（入っているパッケージは関係ない）。mamelet は、何かを変えた周の中でパッケージを観測し直すので、ソースを足した周の報告に、そのソースのパッケージの変更集合（apt-get -s）がもう入っている。パッケージの導入は次の段の plan になる: mamelacd の `sync = "push"`（ADR 0014）なら次の poll で承認・apply され、`"approval"` と手の運用では、その plan をもう一度承認する。
+- **origin:** ソースを足しても、そのパッケージは、policy の `allowedAptOrigins`（既定は `Ubuntu:`）と、ノードの mamelet の `allowedOrigins`（`/etc/mamelet/config.json`。マシンを作るときに既定の policy から書かれる）の両方が、その origin（plan の apt の行に出る。`Docker CE:noble` など）を許すまで入らない（plan は MAM-POL-0305 で拒み、mamelet も断る）。どちらにも、確かめたうえで足す。mamelet の設定は、今は手で書き換えて mamelet を再起動する（Mamela はまだ変えない）。
+- **ほかのソースとの衝突:** ノードのほかのソースのファイル（ベンダーの手順で足したもの、パッケージが置いたもの）が同じ URI と suite を持つと、plan は Blocked（MAM-PLAN-0153）。apt は 1 つのソースに 2 つの鍵（`Signed-By`）を認めず、すべてのソースを読まなくなる（セキュリティ更新も止まる）からである。そのファイルを手で消してから plan する。
+- **リンクをたどらない:** ソース・鍵の path かその上のディレクトリがリンク、path がディレクトリなら Blocked（MAM-PLAN-0214）。観測できなければ MAM-PLAN-0215。
+- **消さない:** 宣言から外したソースと鍵は、ノードに残り、apt はそれを読み続ける。plan は MAM-PLAN-0312（retained）で示し、apply のあと mamelet は観測しなくなる。消すなら手で（2 つのファイルを消して `apt-get update`）。
+- **mamelet の版:** `NodeFile` と同じく 0.10.0 から（それより前は MAM-PLAN-0122）。
+
+例（Docker の Ubuntu 24.04 向けのソースと docker-ce。**sha256 は例の値で、本物ではない**。使う前に鍵を取得して `sha256sum` で求め、Docker の文書の鍵の指紋と照らす。`web` は、プロバイダーの Pome が返す `Mamela.Node`）:
+
+```emela
+Mamela.empty()
+  |> Mamela.apt_repo(
+    web,
+    "docker",
+    "https://download.docker.com/linux/ubuntu",
+    "noble",
+    ["stable"],
+    "https://download.docker.com/linux/ubuntu/gpg",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+  )
+  |> Mamela.package(web, "docker-ce")
+```
+
+最初の plan はソースを足し（承認が要る）、docker-ce は MAM-PLAN-0151 で待つ。apply のあとの plan が docker-ce の変更集合を示す。Docker のパッケージの origin（`Docker CE:noble`）を policy の `allowedAptOrigins` とノードの mamelet の `allowedOrigins` に足すまで、その導入は拒まれる。
+
 ### NodeArtifact
 
 ノードの上の 1 つのファイルを、https のダウンロードから、sha256 で固定して置く（linux 拡張、ADR 0016）。リリースのバイナリ、または `.tar.gz` の中の 1 つのファイル。宣言は Mamela Pome（0.4.0 から）の `Mamela.artifact(graph, node, path, url, sha256)`（ダウンロードそのもの、mode 0755、root の所有、再起動なし）、または `Mamela.artifact_with(graph, node, Mamela.Artifact(extract: "app-1.0/app", restart: ["app"], ..Mamela.artifact_of(path, url, sha256)))`。
@@ -300,7 +359,7 @@ pub fn node_exporter(graph: Mamela.Graph, node: Mamela.Node) -> Mamela.Graph {
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持ち、7 は予約）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持つ）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 

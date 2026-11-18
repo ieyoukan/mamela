@@ -34,6 +34,12 @@
 //	                   Observed); artifact_mamelet.go keeps mamelet's record of what it installed
 //	download.go        downloads over https pinned by sha256, and a member of a .tar.gz: no type of
 //	                   the extension, so that another (k3s) can use them
+//	aptrepo.go         NodeAptRepo: spec, decoding, validation, the source's file (AptSources)
+//	aptrepo_wire.go    NodeAptRepo: its members of Part and Observed, their grants and checks
+//	aptrepo_plan.go    NodeAptRepo: plan, the gate of the packages of its node, sources kept
+//	aptrepo_node.go    NodeAptRepo: the node's revision (publish, prune, protect, grant)
+//	aptrepo_mamelet.go NodeAptRepo: what mamelet observes (its files, apt's lists, other sources)
+//	                   and does (the key's download with download.go, the files, apt-get update)
 //
 // # Reserved for the kinds that follow
 //
@@ -44,7 +50,7 @@
 //
 //	kind          order  operations (linux.<verb>-<object>)  plan notes           graph warnings   policy
 //	NodeUser      6      linux.create-user, linux.change-user MAM-PLAN-0145..0149  MAM-GRAPH-0206..  MAM-POL-0221..0222
-//	NodeAptRepo   7      linux.add-apt-repo, ...              MAM-PLAN-0150..0154  ..0219           MAM-POL-0223..0224
+//	NodeAptRepo   7      linux.add-apt-repo                   MAM-PLAN-0150..0154  ..0219           MAM-POL-0223..0224
 //	NodeArtifact  8      linux.install-artifact, ...          MAM-PLAN-0155..0159  MAM-GRAPH-0215..  MAM-POL-0225..0226
 //	NodeFile      9      linux.write-file                     MAM-PLAN-0140..0144  MAM-GRAPH-0203..  MAM-POL-0220
 //
@@ -59,4 +65,8 @@
 // NodeArtifact ("<node>/artifact/usr/local/bin/node_exporter") takes MAM-PLAN-0155..0159, 0216 and
 // 0217 (observation), 0313 (retained), MAM-GRAPH-0215 (0216..0219 kept for it), MAM-POL-0225 (0226
 // kept for it).
+//
+// NodeAptRepo ("<node>/apt-repo/docker") takes MAM-PLAN-0150..0153 (0154 kept for it), 0214 and 0215
+// (observation), 0312 (retained), MAM-POL-0223 (0224 kept for it); it has no graph warning (keeps
+// MAM-GRAPH-0210..0214).
 package linux

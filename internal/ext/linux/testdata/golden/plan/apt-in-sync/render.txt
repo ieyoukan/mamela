@@ -1,0 +1,10 @@
+Plan sha256:237e176cca45
+  revision  sha256:379f3d03e441
+  observed  2026-11-17T12:01:00Z (snapshot sha256:07708594af80)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+= NodeAptRepo web/apt-repo/docker  [in sync]
+
+Summary: 2 in sync.
+Nothing has been changed: a plan only describes.
