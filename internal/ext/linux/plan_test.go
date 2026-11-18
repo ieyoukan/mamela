@@ -53,3 +53,28 @@ func TestOwnersAPackageMakesAreWaitedFor(t *testing.T) {
 		}
 	}
 }
+
+// A machine that has run for an hour, whose declaration has only linux resources so far (added after
+// its mamelet last looked): its mamelet reports (which release it runs, and that it takes linux), so
+// it is not silent, and the file waits for its next report instead of "never reported" (MAM-PLAN-0110).
+func TestAReportingNodeIsNotSilent(t *testing.T) {
+	g, err := decodeGraph(flowFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, w := range map[string]world{
+		"it takes linux, and observed nothing yet": {mamelet: Release, accepts: Version},
+		"it observed nothing of the file":          {mamelet: Release, accepts: Version, observed: &Observed{}},
+		"it said only what it observed of linux":   {accepts: Version, observed: &Observed{}},
+	} {
+		p := plan.Build(g, w.snapshot(g), policy.Default)
+		if c := findChange(t, p, "NodeFile web/file/etc/app/app.conf"); c.Status != plan.StatusWaiting || c.Note.Code == "MAM-PLAN-0110" {
+			t.Errorf("%s: %+v %+v", name, c, c.Note)
+		}
+	}
+	// One that never reported anything is silent.
+	p := plan.Build(g, world{}.snapshot(g), policy.Default)
+	if c := findChange(t, p, "NodeFile web/file/etc/app/app.conf"); c.Status != plan.StatusBlocked || c.Note.Code != "MAM-PLAN-0110" {
+		t.Errorf("silent: %+v %+v", c, c.Note)
+	}
+}

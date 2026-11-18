@@ -183,3 +183,23 @@ func TestReleaseOlder(t *testing.T) {
 		}
 	}
 }
+
+// A machine that has run for an hour, whose mamelet reports (which release it runs) but not yet the
+// package a new declaration added: it is not silent, and the package waits for its next report.
+func TestAMameletThatReportsIsNotSilent(t *testing.T) {
+	g := desired(t)
+	s := state.Empty(t0)
+	machineObserved(&s, g, "app-server", true, true, true, 3600)
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusBlocked || c.Note.Code != "MAM-PLAN-0110" {
+		t.Errorf("silent: %+v", c)
+	}
+	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {SHA256: strings.Repeat("ab", 32), Version: "0.10.0", ObservedAt: t0}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Errorf("reports: %+v", c)
+	}
+	s.Mamelets = nil
+	s.Ext = map[string]map[string]state.ExtObservation{"app-server": {"linux": {Accepts: 1, ObservedAt: t0}}}
+	if c := find(t, Build(g, s, policy.Default), "NodePackage app-server/nginx"); c.Status != StatusWaiting || c.Note.Code != "MAM-PLAN-0103" {
+		t.Errorf("reports an extension: %+v", c)
+	}
+}
