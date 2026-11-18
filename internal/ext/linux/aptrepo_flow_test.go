@@ -141,7 +141,7 @@ func TestAFailedAptUpdateIsRetriedByApply(t *testing.T) {
 }
 
 // A mamelet older than the extension gets nothing of the source, and no grant: the source is
-// blocked, and the package waits for it.
+// blocked, and the package is not held by it (it shows its own problem).
 func TestAnOldMameletGetsNoAptRepo(t *testing.T) {
 	f, _, _ := aptFlow(t)
 	f.publish()
@@ -154,7 +154,7 @@ func TestAnOldMameletGetsNoAptRepo(t *testing.T) {
 	if c := change(t, p, repoID); c.Status != plan.StatusBlocked || c.Note.Code != "MAM-PLAN-0122" {
 		t.Fatalf("the source %+v", c)
 	}
-	if c := change(t, p, pkgID); c.Status != plan.StatusWaiting || c.Note.Code != codeAptRepoPackageGate {
+	if c := change(t, p, pkgID); c.Status != plan.StatusBlocked || c.Note.Code != "MAM-PLAN-0202" {
 		t.Fatalf("the package %+v", c)
 	}
 	var res graph.Resource

@@ -189,16 +189,23 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 }
 
 // aptRepoPackageGate: the installation of any package on a node waits while an APT source of that
-// node is not in place and read by apt: the package may come from it (Mamela cannot tell which
-// source a package comes from before apt has read them all), and its change set is worked out only
-// then. A package that is installed is not affected.
+// node is about to be written: its plan writes its files (a change other than running apt-get update
+// again), or waits (for its first report, for mamelet's update). The package may come from it (Mamela
+// cannot tell which source a package comes from before apt has read them all), and its change set is
+// worked out only once apt has read it. A source that is blocked (a conflict, a link, a report that
+// cannot be read), or whose files are in place but which apt does not read (apt-get update failed: a
+// suite that does not exist, an https source whose certificates are not installed yet) does not hold
+// the packages: it shows its own problem, and a package such as ca-certificates that would make it
+// readable can still be installed. A package that is installed is not affected.
 func aptRepoPackageGate(k *plan.Kit, node, pkg string) *plan.Note {
 	for _, r := range k.Resources() {
 		a := AptRepoOf(r)
 		if a == nil || a.Node != node {
 			continue
 		}
-		if c := aptRepoChange(k, r); c.Status != plan.StatusInSync {
+		c := aptRepoChange(k, r)
+		writes := c.Status == plan.StatusChange && (c.Note == nil || c.Note.Code != codeAptRepoUnread)
+		if writes || c.Status == plan.StatusWaiting {
 			return &plan.Note{Code: codeAptRepoPackageGate,
 				Message: fmt.Sprintf("waits for APT source %s on %s to be in place and read by apt before %s is installed: the package may come from it", a.Name, node, pkg),
 				Hint: "apply the plan that adds the source; the next plan installs the package, with what apt would change " +

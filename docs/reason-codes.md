@@ -156,7 +156,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0148 | 警告。ノードのユーザーに、宣言にないものがある。宣言にない補助グループ（Mamela はグループから外さないので残る）、宣言の `system` と違うこと（uid が 1000 未満かで判断する。作るときにだけ使うので変えない）。plan の状態も操作も変えない |
 | MAM-PLAN-0149 | 警告。`authorized_keys` から鍵（または Mamela が鍵として読まない行）を外す。その鍵でのログインは、apply のあとできなくなる。残る鍵でログインできること（ほかの入り口があること）を確かめてから承認する |
 | MAM-PLAN-0150 | mamelet からの APT のソース（`NodeAptRepo`）の報告を待つ |
-| MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が in sync になる（ファイルが揃い、apt がそれを読む）のを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す |
+| MAM-PLAN-0151 | パッケージ（`NodePackage`）の導入が、同じノードの `NodeAptRepo` が置かれ、apt がそれを読むのを待つ。パッケージがそのソースから来るかもしれないため。ソースを足す plan を apply すると、次の plan が導入を示す。待たせるのは、ソースの plan がファイルを書く（apt-get update をやり直すだけではない change）か、ソースが待つ（報告、mamelet の更新）あいだだけ。Blocked のソース（衝突、リンク、読めない報告）や、ファイルは揃っているが apt が読めないソース（MAM-PLAN-0152。存在しない suite、証明書がまだない https のソース）は、パッケージを待たせない（自分の問題を示す。`ca-certificates` を入れれば読めるようになるソースが、その導入を止めない） |
 | MAM-PLAN-0152 | `NodeAptRepo` のファイルは揃っているが、apt がまだそのソースを読んでいない（`/var/lib/apt/lists` にリリースファイルがない）。apt-get update が失敗したか、まだ走っていない。承認した plan をもう一度 apply するか、この plan を承認すると、update をやり直す。失敗の理由は前の試みの結果にある |
 | MAM-PLAN-0153 | ノードのほかのソースのファイルが、`NodeAptRepo` と同じ URI と suite を持つ（Blocked）。apt は 1 つのソースに 2 つの鍵（`Signed-By`）を認めず、すべてのソースを読まなくなる。そのファイルを手で消すか、宣言しない |
 | MAM-PLAN-0154 | 予約（linux 拡張。NodeAptRepo） |
