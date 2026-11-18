@@ -176,6 +176,90 @@ pub fn file_with(graph: Graph, node: Node, f: File) -> Graph {
   )
 }
 
+## An APT source of a node (the linux extension's `NodeAptRepo`), and the key that signs it: apt
+## reads the `suites` (and `components`) of each of `uris` (1 to 4, http or https: apt checks every
+## file it reads against the key), for the `architectures` named (every architecture of the node
+## when empty), and trusts only the key at `key_url` (https) whose sha256 is `key_sha256` (of the file
+## as it is downloaded). A flat repository's suites end with "/" (such as "./"), and it has no
+## components. `apt_repo_of` makes one with one URI and one suite, to change with
+## `AptRepo(architectures: ["amd64"], ..Mamela.apt_repo_of(...))`.
+pub type AptRepo(
+  name: String,
+  uris: List[String],
+  suites: List[String],
+  components: List[String],
+  architectures: List[String],
+  key_url: String,
+  key_sha256: String,
+)
+
+## The source `name` of `suite` and `components` at `uri`, signed by the key at `key_url` whose sha256
+## is `key_sha256`, for every architecture of the node.
+pub fn apt_repo_of(
+  name: String,
+  uri: String,
+  suite: String,
+  components: List[String],
+  key_url: String,
+  key_sha256: String,
+) -> AptRepo {
+  AptRepo(
+    name:,
+    uris: [uri],
+    suites: [suite],
+    components:,
+    architectures: [],
+    key_url:,
+    key_sha256:,
+  )
+}
+
+## Declares that `node` has the APT source `name` (`apt_repo_with` declares several URIs or suites,
+## or the architectures): mamelet downloads the key, keeps it only if its sha256 is `key_sha256`, and
+## writes it to /etc/apt/keyrings/mamela-<name>.asc (.gpg for a binary key) and the source to
+## /etc/apt/sources.list.d/mamela-<name>.sources, then runs apt-get update. The plan shows the whole
+## file and asks for an approval; a package of the node waits for the source before it is installed.
+## A package of the source is installed only from an origin that the policy (`allowedAptOrigins`)
+## and the node's mamelet allow. A source that is no longer declared stays on the node.
+pub fn apt_repo(
+  graph: Graph,
+  node: Node,
+  name: String,
+  uri: String,
+  suite: String,
+  components: List[String],
+  key_url: String,
+  key_sha256: String,
+) -> Graph {
+  apt_repo_with(graph, node, apt_repo_of(name, uri, suite, components, key_url, key_sha256))
+}
+
+## Declares the APT source `r` on `node`.
+pub fn apt_repo_with(graph: Graph, node: Node, r: AptRepo) -> Graph {
+  architectures = if List.is_empty(r.architectures) {
+    []
+  } else {
+    [("architectures", Items(r.architectures.map(Text)))]
+  }
+  on_node(
+    graph,
+    node,
+    "NodeAptRepo",
+    "#{node.name}/apt-repo/#{r.name}",
+    List.append(
+      [
+        ("name", Text(r.name)),
+        ("uris", Items(r.uris.map(Text))),
+        ("suites", Items(r.suites.map(Text))),
+        ("components", Items(r.components.map(Text))),
+        ("keyUrl", Text(r.key_url)),
+        ("keySha256", Text(r.key_sha256)),
+      ],
+      architectures,
+    ),
+  )
+}
+
 ## Declares that `name` is installed on `node`.
 pub fn package(graph: Graph, node: Node, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)

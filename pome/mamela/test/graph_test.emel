@@ -154,3 +154,41 @@ fn a_file_with_its_mode_owner_and_restart() {
     "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/nginx/conf.d/app.conf\",\"spec\":{\"content\":\"server {}\\n\",\"group\":\"www-data\",\"mode\":\"0640\",\"node\":\"app-server\",\"owner\":\"www-data\",\"path\":\"/etc/nginx/conf.d/app.conf\",\"restart\":[\"nginx\",\"php-fpm\"]}}",
   )
 }
+
+@test
+fn an_apt_repo_of_one_uri_and_suite() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.apt_repo(
+      app(),
+      "docker",
+      "https://download.docker.com/linux/ubuntu",
+      "noble",
+      ["stable"],
+      "https://download.docker.com/linux/ubuntu/gpg",
+      "0000000000000000000000000000000000000000000000000000000000000000",
+    )
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptRepo\",\"name\":\"app-server/apt-repo/docker\",\"spec\":{\"components\":[\"stable\"],\"keySha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"keyUrl\":\"https://download.docker.com/linux/ubuntu/gpg\",\"name\":\"docker\",\"node\":\"app-server\",\"suites\":[\"noble\"],\"uris\":[\"https://download.docker.com/linux/ubuntu\"]}}",
+  )
+}
+
+@test
+fn a_flat_apt_repo_with_its_architectures() {
+  r = Lib.AptRepo(
+    uris: ["http://deb.example.org/repo", "https://mirror.example.org/repo"],
+    architectures: ["amd64", "arm64"],
+    ..Lib.apt_repo_of(
+      "flat",
+      "http://deb.example.org/repo",
+      "./",
+      [],
+      "https://deb.example.org/key.asc",
+      "1111111111111111111111111111111111111111111111111111111111111111",
+    ),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.apt_repo_with(app(), r)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptRepo\",\"name\":\"app-server/apt-repo/flat\",\"spec\":{\"architectures\":[\"amd64\",\"arm64\"],\"components\":[],\"keySha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"keyUrl\":\"https://deb.example.org/key.asc\",\"name\":\"flat\",\"node\":\"app-server\",\"suites\":[\"./\"],\"uris\":[\"http://deb.example.org/repo\",\"https://mirror.example.org/repo\"]}}",
+  )
+}
