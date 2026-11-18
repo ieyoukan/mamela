@@ -143,34 +143,55 @@ type statusNote struct {
 	note   *plan.Note
 }
 
+// accountCodes are the codes of what a kind's resource owned by a user and a group waits for.
+type accountCodes struct {
+	await  string // mamelet has not said whether the user or group exists
+	coming string // something of the declaration makes it: a NodeUser, or a package not installed yet
+	none   string // nothing does: blocked
+}
+
 // accountNote says what a file whose owner or group is not on the node waits for (nil when both are
-// there): the declaration's resource that makes it, or a person (blocked).
+// there).
 func accountNote(k *plan.Kit, o Observed, want *FileSpec) *statusNote {
+	return accountWait(k, o, want.Node, want.Path, want.Owner, want.Group, "written", "the file",
+		accountCodes{codeFileAwait, codeFileAccountComing, codeFileNoAccount})
+}
+
+// accountWait says what a resource at path on node owned by owner and group waits for while one of
+// them is not on the node (nil when both are there): the declaration's resource that makes it
+// (accountMakers: a NodeUser), a package declared on the node that is not installed yet (it may make
+// it, as the package prometheus makes the user prometheus: the same as NodeUser's needs), or a person
+// (blocked). done is what happens to the resource ("written"), what what it is ("the file").
+func accountWait(k *plan.Kit, o Observed, node, path, owner, group, done, what string, codes accountCodes) *statusNote {
 	for _, a := range []struct {
 		name   string
 		group  bool
 		exists map[string]bool
 		what   string
-	}{{want.Owner, false, o.Users, "user"}, {want.Group, true, o.Groups, "group"}} {
+	}{{owner, false, o.Users, "user"}, {group, true, o.Groups, "group"}} {
 		exists, observedName := a.exists[a.name]
 		switch {
 		case !observedName:
 			// The revision named another owner when mamelet last looked (the declaration changed): it
 			// says once it has the new revision.
-			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeFileAwait,
-				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", want.Node, a.what, a.name)}}
+			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.await,
+				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", node, a.what, a.name)}}
 		case exists:
 			continue
 		}
 		for _, made := range accountMakers {
-			if id, ok := made(k.Resources(), want.Node, a.name, a.group); ok {
-				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeFileAccountComing,
-					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is written", a.what, a.name, want.Node, id, want.Path)}}
+			if id, ok := made(k.Resources(), node, a.name, a.group); ok {
+				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.coming,
+					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is %s", a.what, a.name, node, id, path, done)}}
 			}
 		}
-		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeFileNoAccount,
-			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, want.Node, want.Path),
-			Hint:    fmt.Sprintf("install the package that makes %s, declare it (NodeUser, when it comes), or own the file by an existing %s such as root", a.name, a.what)}}
+		if pkg := pendingPackage(k, node); pkg != "" {
+			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codes.coming,
+				Message: fmt.Sprintf("waits for %s %s on %s before %s is %s: package %s is not installed there yet, and a package may make it", a.what, a.name, node, path, done, pkg)}}
+		}
+		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codes.none,
+			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, node, path),
+			Hint:    fmt.Sprintf("declare the package that makes %s (NodePackage) or the %s itself (NodeUser), or own %s by an existing %s such as root", a.name, a.what, what, a.what)}}
 	}
 	return nil
 }

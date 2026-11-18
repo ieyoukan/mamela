@@ -150,36 +150,10 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 }
 
 // artifactAccountNote says what an artifact whose owner or group is not on the node waits for (nil
-// when both are there): the declaration's resource that makes it (accountMakers), or a person
-// (blocked).
+// when both are there), as a file's (accountWait).
 func artifactAccountNote(k *plan.Kit, o Observed, want *ArtifactSpec) *statusNote {
-	for _, a := range []struct {
-		name   string
-		group  bool
-		exists map[string]bool
-		what   string
-	}{{want.Owner, false, o.Users, "user"}, {want.Group, true, o.Groups, "group"}} {
-		exists, observedName := a.exists[a.name]
-		switch {
-		case !observedName:
-			// The revision named another owner when mamelet last looked (the declaration changed): it
-			// says once it has the new revision.
-			return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeArtifactAwait,
-				Message: fmt.Sprintf("waits for the agent on %s to report whether %s %s exists", want.Node, a.what, a.name)}}
-		case exists:
-			continue
-		}
-		for _, made := range accountMakers {
-			if id, ok := made(k.Resources(), want.Node, a.name, a.group); ok {
-				return &statusNote{plan.StatusWaiting, &plan.Note{Code: codeArtifactAccountComing,
-					Message: fmt.Sprintf("waits for %s %s to be made on %s (%s) before %s is installed", a.what, a.name, want.Node, id, want.Path)}}
-			}
-		}
-		return &statusNote{plan.StatusBlocked, &plan.Note{Code: codeArtifactNoAccount,
-			Message: fmt.Sprintf("%s %s does not exist on %s, so %s cannot be owned by it", a.what, a.name, want.Node, want.Path),
-			Hint:    fmt.Sprintf("install the package that makes %s, declare it (NodeUser, when it comes), or own the artifact by an existing %s such as root", a.name, a.what)}}
-	}
-	return nil
+	return accountWait(k, o, want.Node, want.Path, want.Owner, want.Group, "installed", "the artifact",
+		accountCodes{codeArtifactAwait, codeArtifactAccountComing, codeArtifactNoAccount})
 }
 
 // artifactStartGate: the start of a service that an artifact of its node restarts waits for that
