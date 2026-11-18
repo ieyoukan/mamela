@@ -48,7 +48,7 @@ func (p *Provider) Observe(ctx context.Context) (state.Snapshot, error) {
 			return state.Snapshot{}, err
 		}
 		if enrolled {
-			if a.VMID != r.VMID || nr.Received.Before(a.Enrolled) {
+			if !nr.Current(a) {
 				continue
 			}
 			if snap.AgentRegistrations == nil {
@@ -161,7 +161,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			}
 			adds = append(adds, add)
 		}
-		ok, err := taken(ctx, st, name)
+		report, err := taken(ctx, st, name)
 		if err != nil {
 			return fmt.Errorf("observe node %s: %w", name, err)
 		}
@@ -190,7 +190,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			}
 			// An extension's part goes only to a mamelet that takes it (noderev's ext.go): an older
 			// mamelet would refuse the whole revision.
-			onlyTaken(&r, ok)
+			r.KeepTaken(report)
 			if pol.Protected(name) {
 				for i := range r.Packages {
 					r.Packages[i].Install = nil
@@ -243,7 +243,7 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 		if before == nil {
 			continue
 		}
-		ok, err := taken(ctx, st, name)
+		report, err := taken(ctx, st, name)
 		if err != nil {
 			return changed, fmt.Errorf("prune node %s: %w", name, err)
 		}
@@ -262,7 +262,7 @@ func Prune(ctx context.Context, st *store.Store, g *graph.Graph) ([]string, erro
 					e.Prune(g, name, &r)
 				}
 			}
-			onlyTaken(&r, ok)
+			r.KeepTaken(report)
 			return r, nil
 		})
 		switch {
@@ -411,11 +411,11 @@ func (p *Provider) Apply(ctx context.Context, step reconcile.Step) error {
 		if ext := wireOps[step.Op]; ext != "" {
 			// The grant goes into the extension's part: a mamelet that does not take the part would never
 			// see it (the plan blocks such a change: MAM-PLAN-0122).
-			ok, err := taken(ctx, p.Store, node)
+			report, err := taken(ctx, p.Store, node)
 			if err != nil {
 				return err
 			}
-			if !ok[ext] {
+			if !noderev.Takes(report, ext) {
 				return fmt.Errorf("MAM-NODE-0104: %s on %s: the mamelet there does not take the %s extension (it is older than it); update mamelet first (docs/mamelet-update.md), then plan again",
 					what, node, ext)
 			}

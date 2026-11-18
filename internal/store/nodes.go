@@ -189,6 +189,30 @@ type NodeReport struct {
 	Received time.Time
 }
 
+// Current reports whether the report was sent under the registration a (the node's enrollment): for
+// the same VMID, and received after it enrolled. A report of an earlier registration says what
+// another mamelet (an older one, or one on a machine the name had before) observed and takes.
+func (nr NodeReport) Current(a Agent) bool {
+	return a.VMID == nr.Report.VMID && !nr.Received.Before(a.Enrolled)
+}
+
+// CurrentNodeReport returns the node's latest report when it belongs to the node's current
+// registration (Current), or when the node has no registration (a report put directly, as tests do).
+func (s *Store) CurrentNodeReport(ctx context.Context, node string) (NodeReport, bool, error) {
+	nr, ok, err := s.NodeReportOf(ctx, node)
+	if err != nil || !ok {
+		return NodeReport{}, false, err
+	}
+	a, enrolled, err := s.Agent(ctx, node)
+	if err != nil {
+		return NodeReport{}, false, err
+	}
+	if enrolled && !nr.Current(a) {
+		return NodeReport{}, false, nil
+	}
+	return nr, true, nil
+}
+
 // PutNodeReport stores a node's latest report, received now.
 func (s *Store) PutNodeReport(ctx context.Context, r noderev.Report) error {
 	data, err := json.Marshal(r, json.Deterministic(true))

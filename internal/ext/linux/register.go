@@ -126,7 +126,7 @@ func init() {
 		Codes: codes,
 	})
 
-	noderev.RegisterPart(Name, noderev.Part{Grants: partGrants, ForMamelet: partForMamelet})
+	noderev.RegisterPart(Name, noderev.Part{Version: Version, Grants: partGrants, ForMamelet: partForMamelet})
 
 	node.Register(node.Extension{
 		Name:  Name,

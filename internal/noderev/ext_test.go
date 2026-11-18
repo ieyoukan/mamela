@@ -15,6 +15,7 @@ type testPart struct {
 
 func init() {
 	RegisterPart("test-ext", Part{
+		Version: 1,
 		Grants: func(raw jsontext.Value) ([]Grant, error) {
 			var p testPart
 			if err := json.Unmarshal(raw, &p, json.RejectUnknownMembers(true)); err != nil {
@@ -104,5 +105,24 @@ func TestOlderMembersStillRead(t *testing.T) {
 	payload, _ := json.Marshal(sample(), json.Deterministic(true))
 	if strings.Contains(string(payload), "ext") {
 		t.Errorf("%s", payload)
+	}
+}
+
+// A mamelet takes a part at the version this Control Plane writes or a later one; KeepTaken keeps
+// only those, in a map of its own (a copied revision shares its map).
+func TestTakesAndKeepTaken(t *testing.T) {
+	r := &Report{Extensions: map[string]int{"test-ext": 1}}
+	if !Takes(r, "test-ext") || Takes(nil, "test-ext") || Takes(r, "unknown") || Takes(&Report{Extensions: map[string]int{"test-ext": 0}}, "test-ext") {
+		t.Error("Takes")
+	}
+	prev := Revision{Ext: map[string]jsontext.Value{"test-ext": jsontext.Value(`{}`), "unknown": jsontext.Value(`{}`)}}
+	next := prev
+	next.KeepTaken(r)
+	if len(next.Ext) != 1 || len(prev.Ext) != 2 {
+		t.Errorf("kept %v, the copied revision has %v", next.Ext, prev.Ext)
+	}
+	next.KeepTaken(nil)
+	if next.Ext != nil {
+		t.Errorf("no report: %v", next.Ext)
 	}
 }
