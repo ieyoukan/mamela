@@ -66,6 +66,8 @@ type fakeApt struct {
 	root       string
 	commands   []string
 	updateFail string
+	// locked: how many updates find apt's lists locked by another apt (and fail at once, as apt does).
+	locked int
 	// simulate answers apt-get -s install <package> once apt has read a source of these URIs.
 	simulate map[string]string
 }
@@ -98,6 +100,10 @@ func (f *fakeApt) Run(_ context.Context, program string, args []string, env []st
 		return nil, []byte("E: Unable to locate package " + pkg), 100, nil
 	}
 	f.commands = append(f.commands, "apt-get "+strings.Join(args, " "))
+	if f.locked > 0 {
+		f.locked--
+		return nil, []byte("E: Could not get lock /var/lib/apt/lists/lock. It is held by process 4242 (apt-get)\nE: Unable to lock directory /var/lib/apt/lists/\n"), 100, nil
+	}
 	if f.updateFail != "" {
 		return []byte("Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n"), []byte(f.updateFail), 100, nil
 	}

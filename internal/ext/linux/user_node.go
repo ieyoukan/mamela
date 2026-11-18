@@ -59,11 +59,15 @@ var userManifest = spec.Kind{Kind: KindUser, Operations: []spec.Operation{
 }}
 
 // addTargets adds to a user's entry what the declaration s asks mamelet to observe of it: the shell it
-// is made with or set to, its groups, its uid (only used to make it) and its keys.
+// is made with or set to, its groups, its uid and the home useradd would make (only used to make it),
+// and its keys.
 func addTargets(u *User, s *UserSpec) {
 	u.Shells, u.Groups = union(u.Shells, []string{s.CreateShell()}), union(u.Groups, s.Groups)
 	if s.UID != 0 {
 		u.UIDs = union(u.UIDs, []int{s.UID})
+	}
+	if home, made := s.CreateHome(); made && home != "" {
+		u.Homes = union(u.Homes, []string{home})
 	}
 	u.Keys = u.Keys || s.AuthorizedKeys != nil
 }

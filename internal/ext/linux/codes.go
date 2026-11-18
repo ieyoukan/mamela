@@ -14,7 +14,7 @@ type reservation struct {
 // graph warnings and policy decisions are in its ranges; doc.go and docs/reason-codes.md say the same
 // (codes_test.go checks both, and every code the extension registers, against this).
 var reserved = []reservation{
-	{KindFile, "MAM-PLAN", 140, 144}, {KindFile, "MAM-PLAN", 210, 211}, {KindFile, "MAM-PLAN", 310, 310},
+	{KindFile, "MAM-PLAN", 140, 144}, {KindFile, "MAM-PLAN", 210, 211}, {KindFile, "MAM-PLAN", 218, 218}, {KindFile, "MAM-PLAN", 310, 310},
 	{KindFile, "MAM-GRAPH", 203, 204}, {KindFile, "MAM-POL", 220, 220},
 
 	{KindUser, "MAM-PLAN", 145, 149}, {KindUser, "MAM-PLAN", 212, 213}, {KindUser, "MAM-PLAN", 311, 311},
@@ -26,5 +26,5 @@ var reserved = []reservation{
 	{KindArtifact, "MAM-PLAN", 155, 159}, {KindArtifact, "MAM-PLAN", 216, 217}, {KindArtifact, "MAM-PLAN", 313, 313},
 	{KindArtifact, "MAM-GRAPH", 215, 219}, {KindArtifact, "MAM-POL", 225, 226},
 
-	{"", "MAM-PLAN", 218, 219}, {"", "MAM-PLAN", 314, 319}, {"", "MAM-GRAPH", 205, 205},
+	{"", "MAM-PLAN", 219, 219}, {"", "MAM-PLAN", 314, 319}, {"", "MAM-GRAPH", 205, 205},
 }

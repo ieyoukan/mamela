@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -52,7 +51,7 @@ func observeAptRepos(_ context.Context, s *mamelet.System, p Part, o *Observed) 
 	}
 	defer r.Close()
 	a := readAccounts(r)
-	others := readAptSourceFiles(r)
+	others, unread := readAptSourceFiles(r)
 	for _, repo := range p.AptRepos {
 		st := AptRepoState{Name: repo.Name}
 		var problem string
@@ -66,7 +65,12 @@ func observeAptRepos(_ context.Context, s *mamelet.System, p Part, o *Observed) 
 		}
 		if problem != "" {
 			st.Error = "mamelet refuses the source: " + problem
+		} else if unread != "" {
+			st.Error = unread
 		} else {
+			for _, f := range []string{AptSourcesPath(repo.Name), AptKeyPath(repo.Name, true), AptKeyPath(repo.Name, false)} {
+				removeStaleTemp(r, f)
+			}
 			st.Sources = inspect(r, AptSourcesPath(repo.Name), a)
 			st.KeyArmored = inspect(r, AptKeyPath(repo.Name, true), a)
 			st.KeyBinary = inspect(r, AptKeyPath(repo.Name, false), a)
@@ -89,6 +93,9 @@ func actAptRepos(ctx context.Context, x *mamelet.Act, p Part) bool {
 	changed := false
 	for _, r := range p.AptRepos {
 		a := r.Add
+		if ctx.Err() != nil {
+			break // mamelet is stopping: what is left goes on in a later round
+		}
 		if a == nil || x.Done(a.Grant.Operation, a.Grant.Attempt) {
 			continue
 		}
@@ -136,7 +143,11 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 			return refused("mamelet does not write " + f.Path + ": " + f.Unsafe + " (mamelet never follows a symbolic link)")
 		}
 	}
-	if c := aptConflicts(readAptSourceFiles(r), srcPath, a.URIs, a.Suites); len(c) > 0 {
+	entries, unread := readAptSourceFiles(r)
+	if unread != "" {
+		return refused(unread + "; nothing was written")
+	}
+	if c := aptConflicts(entries, srcPath, a.URIs, a.Suites); len(c) > 0 {
 		return refused(fmt.Sprintf("%s names a URI and suite of this source too: apt refuses one source with two keys, and would then read no source at all; nothing was written",
 			strings.Join(c, ", ")))
 	}
@@ -152,7 +163,7 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 	var key []byte
 	for _, f := range []FileState{asc, gpg} {
 		if f.Exists && !f.Large && f.SHA256 == a.KeySHA256 {
-			if b, err := r.ReadFile(rel(f.Path)); err == nil && ContentSHA256(string(b)) == a.KeySHA256 {
+			if b, err := readRegular(r, f.Path, MaxContent); err == nil && ContentSHA256(string(b)) == a.KeySHA256 {
 				key = b
 				break
 			}
@@ -288,16 +299,42 @@ func aptKeyForm(b []byte) (armored bool, err error) {
 	return false, fmt.Errorf("is not an OpenPGP public key, ASCII-armored (%s) or binary (a public-key packet): it starts with %s", armorBegin, quote(string(head)))
 }
 
+// The lock of apt's lists: apt-get update takes it without waiting (DPkg::Lock::Timeout is for
+// dpkg's lock, which update does not take: apt 3.0 fails at once, "Could not get lock
+// /var/lib/apt/lists/lock. It is held by process N"), and apt-daily or another apt-get update may hold
+// it for minutes. mamelet waits for it, AptListsLockWait at most, trying again every
+// AptListsLockRetry.
+var (
+	AptListsLockWait  = 5 * time.Minute
+	AptListsLockRetry = 5 * time.Second
+)
+
+// aptListsLock is how apt names the lock in what it says (LANG=C, as mamelet runs it).
+const aptListsLock = aptListsDir + "/lock"
+
 // aptGetUpdate runs apt-get update as the core runs apt-get (its environment and lock timeout), within
-// AptUpdateTimeout.
+// AptUpdateTimeout, waiting for the lock of apt's lists while another apt holds it (within
+// AptListsLockWait).
 func aptGetUpdate(ctx context.Context, s *mamelet.System) error {
 	uctx, cancel := context.WithTimeout(ctx, AptUpdateTimeout)
 	defer cancel()
-	_, err := s.Run(uctx, progAptGet, []string{"-o", "DPkg::Lock::Timeout=300", "update"}, "DEBIAN_FRONTEND=noninteractive")
-	if err != nil && uctx.Err() != nil && ctx.Err() == nil {
-		return fmt.Errorf("apt-get update did not finish within %s", AptUpdateTimeout)
+	deadline := time.Now().Add(AptListsLockWait)
+	for {
+		_, err := s.Run(uctx, progAptGet, []string{"-o", "DPkg::Lock::Timeout=300", "update"}, "DEBIAN_FRONTEND=noninteractive")
+		switch {
+		case err != nil && uctx.Err() != nil && ctx.Err() == nil:
+			return fmt.Errorf("apt-get update did not finish within %s", AptUpdateTimeout)
+		case err == nil || !strings.Contains(err.Error(), aptListsLock):
+			return err
+		case time.Now().After(deadline):
+			return fmt.Errorf("another apt held %s for more than %s (apt-daily, or an apt-get run by hand): %w", aptListsLock, AptListsLockWait, err)
+		}
+		select {
+		case <-uctx.Done():
+			return fmt.Errorf("while waiting for %s: %w", aptListsLock, uctx.Err())
+		case <-time.After(AptListsLockRetry):
+		}
 	}
-	return err
 }
 
 // removeFile removes the regular file at p, walking to its directory one directory at a time (no
@@ -384,25 +421,37 @@ func aptListsName(uri, suite, file string) string {
 // aptEntry is one URI and suite that a source file of the node names.
 type aptEntry struct{ file, uri, suite string }
 
+// maxAptSourceFile bounds a source file of the node mamelet reads.
+const maxAptSourceFile = 1 << 20
+
 // readAptSourceFiles reads the URIs and suites of the node's source files (sources.list, and the
-// .list and .sources files of sources.list.d) that apt reads. A file it cannot read is left out.
-func readAptSourceFiles(r *os.Root) []aptEntry {
+// .list and .sources files of sources.list.d) that apt reads. A file that is a link is read where it
+// leads (the directory is root's: a link there is the system's, such as one a package made; resolve
+// looks only, and the file is then read without following anything more). unread says which files
+// could not be read (nothing when all were): apt reads them, so mamelet cannot tell whether they name
+// a source too, and does not judge without them (fail closed).
+func readAptSourceFiles(r *os.Root) (entries []aptEntry, unread string) {
+	var problems []string
 	read := func(p string) string {
-		f, err := r.OpenFile(rel(p), os.O_RDONLY|openNonBlock, 0)
-		if err != nil {
-			return ""
+		target, err := resolve(r, p)
+		var b []byte
+		if err == nil {
+			b, err = readRegular(r, target, maxAptSourceFile)
 		}
-		defer f.Close()
-		if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-			return ""
+		switch {
+		case errors.Is(err, fs.ErrNotExist) && p == "/etc/apt/sources.list":
+		case err != nil:
+			problems = append(problems, p+": "+err.Error())
 		}
-		b, _ := io.ReadAll(io.LimitReader(f, 1<<20))
 		return string(b)
 	}
 	out := oneLineEntries("/etc/apt/sources.list", read("/etc/apt/sources.list"))
 	const dir = "/etc/apt/sources.list.d"
-	entries, _ := fs.ReadDir(r.FS(), rel(dir))
-	for _, e := range entries {
+	list, err := fs.ReadDir(r.FS(), rel(dir))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		problems = append(problems, dir+": "+err.Error())
+	}
+	for _, e := range list {
 		p := dir + "/" + e.Name()
 		switch {
 		case strings.HasSuffix(e.Name(), ".list"):
@@ -411,7 +460,16 @@ func readAptSourceFiles(r *os.Root) []aptEntry {
 			out = append(out, deb822Entries(p, read(p))...)
 		}
 	}
-	return out
+	if len(problems) == 0 {
+		return out, ""
+	}
+	more := ""
+	if len(problems) > 3 {
+		more = fmt.Sprintf(" (and %d more)", len(problems)-3)
+		problems = problems[:3]
+	}
+	return out, "mamelet cannot read the APT source files " + strings.Join(problems, "; ") + more +
+		": apt reads them, so mamelet cannot tell whether one names this source too (apt would then read no source at all); make them regular files root can read, or remove them"
 }
 
 // oneLineEntries reads a source file of the one-line format ("deb [options] uri suite components").

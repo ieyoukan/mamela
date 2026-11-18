@@ -83,6 +83,9 @@ func observeUser(r *os.Root, a accounts, u User) UserState {
 				st.UIDs[strconv.Itoa(id)] = a.userOf[id]
 			}
 		}
+		for _, h := range u.Homes {
+			st.NewHomes = append(st.NewHomes, *observeHome(r, a, h))
+		}
 		return st
 	}
 	st.Exists, st.UID, st.GID, st.Home, st.Shell = true, e.uid, e.gid, e.home, e.shell
@@ -94,16 +97,55 @@ func observeUser(r *os.Root, a accounts, u User) UserState {
 	return st
 }
 
-// executable is whether p is an executable regular file (a link to one is followed: /bin is one on
-// a merged /usr).
+// observeHome observes what is at the home a user would be made with: useradd --create-home takes a
+// directory that is there as it is (it only warns, and does not make it the user's), so one that is
+// there already, another user's above all, is not made the new user's home (the plan blocks).
+func observeHome(r *os.Root, a accounts, home string) *HomeState {
+	hs := &HomeState{Path: home}
+	if e := CheckHome(home); e != nil {
+		hs.Error = "mamelet refuses the home: " + e.Message
+		return hs
+	}
+	fi, err := r.Lstat(rel(home))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return hs
+	case err != nil:
+		hs.Error = err.Error()
+		return hs
+	}
+	hs.Exists, hs.Mode = true, modeString(fi.Mode())
+	switch m := fi.Mode(); {
+	case m&fs.ModeSymlink != 0:
+		hs.What = "a symbolic link"
+	case m.IsDir():
+		hs.What = "a directory"
+	case m.IsRegular():
+		hs.What = "a file"
+	default:
+		hs.What = "a device, a socket or a pipe"
+	}
+	if uid, gid, ok := ownerOf(fi); ok {
+		hs.Owner, hs.Group = a.userName(uid), a.groupName(gid)
+	}
+	return hs
+}
+
+// executable is whether p is an executable regular file. The links in it are followed (/bin is one
+// on a merged /usr, and a shell of the alternatives is an absolute link such as /usr/bin/ksh ->
+// /etc/alternatives/ksh -> /bin/ksh93) by looking only: nothing is opened.
 func executable(r *os.Root, p string) bool {
-	fi, err := r.Stat(rel(p))
+	target, err := resolve(r, p)
+	if err != nil {
+		return false
+	}
+	fi, err := r.Lstat(rel(target))
 	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
 }
 
-// observeKeys observes a user's ~/.ssh/authorized_keys: the file, ~/.ssh, and the keys in it. The
-// home comes from /etc/passwd, and is checked again (CheckHome); the file is read through the
-// directories one at a time, never through a link.
+// observeKeys observes a user's ~/.ssh/authorized_keys: the file, ~/.ssh, the home's and ~/.ssh's
+// owners, and the keys in it. The home comes from /etc/passwd, and is checked again (CheckHome); the
+// file is read through the directories one at a time, never through a link.
 func observeKeys(r *os.Root, a accounts, name string, e passwdEntry) *KeysState {
 	p := e.home + "/.ssh/authorized_keys"
 	ks := &KeysState{File: FileState{Path: p}}
@@ -111,12 +153,16 @@ func observeKeys(r *os.Root, a accounts, name string, e passwdEntry) *KeysState 
 		ks.File.Error = "mamelet does not write SSH keys into the home of " + name + ": " + err.Message
 		return ks
 	}
+	removeStaleTemp(r, p)
 	ks.File = inspect(r, p, a)
+	// The home is the user's: that the user can change what is in it is the point, not a warning.
+	ks.File.Exposed = nil
 	if fi, err := r.Lstat(rel(e.home + "/.ssh")); err == nil && fi.IsDir() && fi.Mode()&fs.ModeSymlink == 0 {
 		if uid, gid, ok := ownerOf(fi); ok {
 			ks.Dir = modeString(fi.Mode()) + " " + a.userName(uid) + ":" + a.groupName(gid)
 		}
 	}
+	ks.NotOwned = notOwned(r, a, name, e)
 	if !ks.File.Exists || ks.File.Unsafe != "" || ks.File.Error != "" || ks.File.Large {
 		return ks
 	}
@@ -127,53 +173,37 @@ func observeKeys(r *os.Root, a accounts, name string, e passwdEntry) *KeysState 
 	}
 	// What was read through the directories is what the plan judges.
 	ks.File.SHA256 = ContentSHA256(content)
-	ks.Found, ks.Other = scanAuthorizedKeys(content)
+	ks.Found, ks.More, ks.Other = scanAuthorizedKeys(content)
 	return ks
 }
 
-// readKeys reads the authorized_keys of home, opening each directory down to ~/.ssh by itself (no
-// link followed), so that nothing the user put in its home leads the read elsewhere.
-func readKeys(r *os.Root, home string) (string, error) {
-	dir, err := openDir(r, home+"/.ssh")
-	if err != nil {
-		return "", err
+// notOwned says why the home of user name (e) or its ~/.ssh is not the user's to have SSH keys
+// written into ("" when they are): the home must be the user's, and ~/.ssh the user's or root's (one
+// mamelet made and had not given yet). A home that is another user's (useradd takes a directory
+// that is there as it is) is never taken over.
+func notOwned(r *os.Root, a accounts, name string, e passwdEntry) string {
+	rootUID, _ := a.rootIDs()
+	for _, d := range []struct {
+		path   string
+		orRoot bool
+	}{{e.home, false}, {e.home + "/.ssh", true}} {
+		fi, err := r.Lstat(rel(d.path))
+		if err != nil || !fi.IsDir() {
+			continue // missing, or a link: the file's own state says so
+		}
+		if uid, _, ok := ownerOf(fi); ok && uid != e.uid && !(d.orRoot && uid == rootUID) {
+			return fmt.Sprintf("%s is %s's (uid %d), not %s's", d.path, a.userName(uid), uid, name)
+		}
 	}
-	defer dir.Close()
-	f, err := dir.OpenFile("authorized_keys", os.O_RDONLY|openNonBlock, 0)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return "", fmt.Errorf("%s/.ssh/authorized_keys is not a regular file", home)
-	}
-	b, err := io.ReadAll(io.LimitReader(f, MaxContent+1))
-	return string(b), err
+	return ""
 }
 
-// openDir opens the directory dir (absolute) one component at a time from the root, each a
-// directory and not a link when it is looked at; it makes nothing.
-func openDir(r *os.Root, dir string) (*os.Root, error) {
-	cur, err := r.OpenRoot(".")
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range strings.Split(strings.TrimPrefix(dir, "/"), "/") {
-		fi, err := cur.Lstat(name)
-		if err == nil && (fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir()) {
-			err = fmt.Errorf("%s: %s is a symbolic link or not a directory", dir, name)
-		}
-		var next *os.Root
-		if err == nil {
-			next, err = cur.OpenRoot(name)
-		}
-		cur.Close()
-		if err != nil {
-			return nil, err
-		}
-		cur = next
-	}
-	return cur, nil
+// readKeys reads the authorized_keys of home, opening each directory down to ~/.ssh by itself and
+// the file without following a link (openRegular), so that nothing the user put in its home leads
+// the read elsewhere.
+func readKeys(r *os.Root, home string) (string, error) {
+	b, err := readRegular(r, home+"/.ssh/authorized_keys", MaxContent)
+	return string(b), err
 }
 
 // actUsers carries out the approved changes of users, each attempt once, from a revision fetched
@@ -185,6 +215,9 @@ func actUsers(ctx context.Context, x *mamelet.Act, p Part) bool {
 	changed := false
 	for _, u := range p.Users {
 		c := u.Change
+		if ctx.Err() != nil {
+			break // mamelet is stopping: what is left goes on in a later round
+		}
 		if c == nil || x.Done(c.Grant.Operation, c.Grant.Attempt) {
 			continue
 		}
@@ -256,6 +289,13 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 		if who, taken := a.userOf[k.UID]; k.UID != 0 && taken {
 			return refused(fmt.Sprintf("uid %d is %s's", k.UID, who))
 		}
+		if k.CreateHome && k.Home != "" {
+			// useradd --create-home takes a directory that is there as it is (it only warns): the new
+			// user would get another's home, and its SSH keys would go into another's ~/.ssh.
+			if hs := observeHome(r, a, k.Home); hs.Exists || hs.Error != "" {
+				return refused(fmt.Sprintf("the home %s of user %s %s: mamelet makes a user only with a home of its own (plan again)", k.Home, u.Name, homeThere(hs)))
+			}
+		}
 		ran = true
 		if _, err := x.System.Run(ctx, progUseradd, useraddArgs(u.Name, *k)); err != nil {
 			return failed(err.Error())
@@ -264,6 +304,13 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 		a = readAccounts(r)
 		if e, exists = a.entries[u.Name]; !exists || e.uid == 0 {
 			return failed("after useradd, user " + u.Name + " is not in /etc/passwd as made")
+		}
+		if k.CreateHome {
+			// Made meanwhile by someone else, or useradd's default home was there: the home is not the
+			// user's, and nothing more is done in it.
+			if why := notOwned(r, a, u.Name, e); why != "" {
+				return refused(fmt.Sprintf("after useradd, %s (useradd takes a home that is there as it is): mamelet does not write into it; give the user a home of its own by hand (usermod --home)", why))
+			}
 		}
 	}
 	var add []string
@@ -303,9 +350,13 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			return refused(fmt.Sprintf("%s/.ssh/authorized_keys changed since the plan (it was %s, it is %s); it was not written (plan again)",
 				e.home, c.Before.Keys, beforeOf(st)))
 		}
-		wrote, err := writeKeys(r, e.home, k.Content, e.uid, e.gid)
+		wrote, err := writeKeys(r, a, u.Name, e.home, k.Content, e.uid, e.gid)
 		ran = ran || wrote
-		if err != nil {
+		var no *Refusal
+		switch {
+		case errors.As(err, &no):
+			return refused("mamelet does not write the SSH keys of " + u.Name + ": " + err.Error())
+		case err != nil:
 			return failed("write " + e.home + "/.ssh/authorized_keys: " + err.Error())
 		}
 		if wrote {
@@ -378,33 +429,50 @@ func unlikeCreate(e passwdEntry, k UserCreate) string {
 	return ""
 }
 
-// writeKeys writes a user's ~/.ssh/authorized_keys with content, unless it is so already: ~/.ssh is
-// a directory of the user's, 0700 (made if missing), and the file the user's, 0600, written to a
+// homeThere says what is at a home that is there already (HomeState), for a message.
+func homeThere(hs *HomeState) string {
+	switch {
+	case hs.Error != "":
+		return "cannot be looked at (" + hs.Error + ")"
+	case hs.What == "a directory":
+		return fmt.Sprintf("exists already (a directory, %s %s:%s)", hs.Mode, hs.Owner, hs.Group)
+	}
+	return fmt.Sprintf("exists already (%s, %s:%s)", hs.What, hs.Owner, hs.Group)
+}
+
+// writeKeys writes the ~/.ssh/authorized_keys of user name with content, unless it is so already:
+// the home must be the user's and ~/.ssh the user's or root's (never another user's: a Refusal);
+// ~/.ssh is made the user's, 0700 (made if missing), and the file is the user's, 0600, written to a
 // temporary file in ~/.ssh and renamed over it. The home is the user's, so the user may have put a
 // link anywhere in it: the home and ~/.ssh are opened one component at a time, each checked not to
-// be a link, and nothing opened under one can lead out of it. wrote says whether it changed
-// anything.
-func writeKeys(r *os.Root, home, content string, uid, gid int) (wrote bool, err error) {
+// be a link and to be the directory looked at, their owners are read from what was opened, and what
+// is changed of ~/.ssh is changed through it. wrote says whether it changed anything.
+func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int) (wrote bool, err error) {
+	rootUID, _ := a.rootIDs()
 	h, err := openDir(r, home)
 	if err != nil {
 		return false, err
 	}
 	defer h.Close()
-	fi, err := h.Lstat(".ssh")
-	if errors.Is(err, fs.ErrNotExist) {
-		if err = h.Mkdir(".ssh", 0o700); err == nil {
-			wrote = true
-			fi, err = h.Lstat(".ssh")
-		}
-	}
-	switch {
-	case err != nil:
-		return wrote, err
-	case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
-		return wrote, fmt.Errorf("%s/.ssh is a symbolic link or not a directory (mamelet never follows a link)", home)
-	}
-	dir, err := h.OpenRoot(".ssh")
+	hfi, err := h.Stat(".")
 	if err != nil {
+		return false, err
+	}
+	if u, _, ok := ownerOf(hfi); ok && u != uid {
+		return false, &Refusal{Reason: fmt.Sprintf("the home %s is %s's (uid %d), not %s's: mamelet never writes into another's home", home, a.userName(u), u, name)}
+	}
+	if _, err := h.Lstat(".ssh"); errors.Is(err, fs.ErrNotExist) {
+		if err = h.Mkdir(".ssh", 0o700); err != nil {
+			return false, err
+		}
+		wrote = true
+	}
+	dir, err := openSubdir(h, ".ssh", home+"/.ssh")
+	if err != nil {
+		var unsafe *unsafeError
+		if errors.As(err, &unsafe) {
+			err = fmt.Errorf("%w (mamelet never follows a link)", err)
+		}
 		return wrote, err
 	}
 	defer dir.Close()
@@ -419,7 +487,11 @@ func writeKeys(r *os.Root, home, content string, uid, gid int) (wrote bool, err 
 	if err != nil {
 		return wrote, err
 	}
-	if u, g, ok := ownerOf(dfi); !ok || u != uid || g != gid {
+	u, g, ok := ownerOf(dfi)
+	if ok && u != uid && u != rootUID {
+		return wrote, &Refusal{Reason: fmt.Sprintf("%s/.ssh is %s's (uid %d), not %s's: mamelet never takes another's ~/.ssh", home, a.userName(u), u, name)}
+	}
+	if !ok || u != uid || g != gid {
 		if err := d.Chown(uid, gid); err != nil {
 			return wrote, err
 		}
@@ -431,14 +503,18 @@ func writeKeys(r *os.Root, home, content string, uid, gid int) (wrote bool, err 
 		}
 		wrote = true
 	}
-	if fi, err := dir.Lstat("authorized_keys"); err == nil && fi.Mode().IsRegular() && modeString(fi.Mode()) == keysMode {
-		if u, g, ok := ownerOf(fi); ok && u == uid && g == gid {
-			if got, err := readKeys(r, home); err == nil && got == content {
-				return wrote, nil
-			}
+	if f, fi, _, err := openLeaf(dir, "authorized_keys", home+"/.ssh/authorized_keys"); err == nil {
+		same := false
+		if u, g, ok := ownerOf(fi); ok && u == uid && g == gid && modeString(fi.Mode()) == keysMode && fi.Size() == int64(len(content)) {
+			b, err := io.ReadAll(io.LimitReader(f, MaxContent+1))
+			same = err == nil && string(b) == content
+		}
+		f.Close()
+		if same {
+			return wrote, nil
 		}
 	}
-	if err := replaceIn(dir, "authorized_keys", strings.NewReader(content), ContentSHA256(content), 0o600, uid, gid); err != nil {
+	if err := replaceIn(dir, home+"/.ssh", "authorized_keys", strings.NewReader(content), int64(len(content)), ContentSHA256(content), 0o600, uid, gid); err != nil {
 		return wrote, err
 	}
 	return true, nil

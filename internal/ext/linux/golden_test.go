@@ -165,6 +165,18 @@ func TestGoldenFilePlans(t *testing.T) {
 		{"in-sync", []string{appFile, appService}, with(now, func(w *world) {
 			w.observed = reported(present("/etc/app/app.conf", appConf))
 		}), pol},
+		// Written as declared, but its restart failed (or mamelet stopped): not in sync until it runs.
+		{"restart-pending", []string{appFile, appService}, with(now, func(w *world) {
+			f := present("/etc/app/app.conf", appConf)
+			f.Pending = &Pending{SHA256: ContentSHA256(appConf), Restart: []string{"app"}}
+			w.observed = reported(f)
+		}), pol},
+		// A directory above the file that another user can change: a warning on the write.
+		{"exposed", []string{appFile, appService}, with(now, func(w *world) {
+			f := present("/etc/app/app.conf", oldConf)
+			f.Exposed = []DirOwner{{Dir: "/etc/app", Mode: "0775", Owner: "deploy", Group: "deploy"}}
+			w.observed = reported(f)
+		}), pol},
 		{"symlink", []string{appFile, appService}, with(now, func(w *world) {
 			w.observed = reported(FileState{Path: "/etc/app/app.conf", Exists: true, Unsafe: "/etc/app/app.conf is a symbolic link"})
 		}), pol},

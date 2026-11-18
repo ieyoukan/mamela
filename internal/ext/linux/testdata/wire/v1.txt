@@ -31,6 +31,7 @@ part: linux.Part {
     "shells" (omitempty) []string
     "groups" (omitempty) []string
     "uids" (omitempty) []int
+    "homes" (omitempty) []string
     "keys" (omitzero) bool
     "inForce" (omitzero) bool
     "change" (omitempty) *linux.UserChange {
@@ -143,6 +144,17 @@ report: linux.Observed {
     "group" (omitempty) string
     "missing" (omitempty) []string
     "unsafe" (omitempty) string
+    "exposed" (omitempty) []linux.DirOwner {
+      "dir" string
+      "mode" string
+      "owner" string
+      "group" string
+    }
+    "pending" (omitempty) *linux.Pending {
+      "sha256" string
+      "reload" (omitzero) bool
+      "restart" (omitempty) []string
+    }
     "error" (omitempty) string
   }
   "users" (omitempty) map[string]bool
@@ -158,6 +170,15 @@ report: linux.Observed {
     "groups" (omitempty) []string
     "shells" (omitempty) map[string]bool
     "uids" (omitempty) map[string]string
+    "newHomes" (omitempty) []linux.HomeState {
+      "path" string
+      "exists" (omitzero) bool
+      "what" (omitempty) string
+      "mode" (omitempty) string
+      "owner" (omitempty) string
+      "group" (omitempty) string
+      "error" (omitempty) string
+    }
     "keys" (omitempty) *linux.KeysState {
       "file" linux.FileState {
         "path" string
@@ -169,14 +190,27 @@ report: linux.Observed {
         "group" (omitempty) string
         "missing" (omitempty) []string
         "unsafe" (omitempty) string
+        "exposed" (omitempty) []linux.DirOwner {
+          "dir" string
+          "mode" string
+          "owner" string
+          "group" string
+        }
+        "pending" (omitempty) *linux.Pending {
+          "sha256" string
+          "reload" (omitzero) bool
+          "restart" (omitempty) []string
+        }
         "error" (omitempty) string
       }
       "dir" (omitempty) string
+      "notOwned" (omitempty) string
       "found" (omitempty) []linux.FoundKey {
         "type" string
         "fingerprint" string
         "options" (omitzero) bool
       }
+      "more" (omitzero) int
       "other" (omitzero) int
     }
     "error" (omitempty) string
@@ -192,6 +226,17 @@ report: linux.Observed {
       "group" (omitempty) string
       "missing" (omitempty) []string
       "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
       "error" (omitempty) string
     }
     "from" (omitempty) *linux.Source {
@@ -212,6 +257,17 @@ report: linux.Observed {
       "group" (omitempty) string
       "missing" (omitempty) []string
       "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
       "error" (omitempty) string
     }
     "keyAsc" linux.FileState {
@@ -224,6 +280,17 @@ report: linux.Observed {
       "group" (omitempty) string
       "missing" (omitempty) []string
       "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
       "error" (omitempty) string
     }
     "keyGpg" linux.FileState {
@@ -236,6 +303,17 @@ report: linux.Observed {
       "group" (omitempty) string
       "missing" (omitempty) []string
       "unsafe" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
+      "pending" (omitempty) *linux.Pending {
+        "sha256" string
+        "reload" (omitzero) bool
+        "restart" (omitempty) []string
+      }
       "error" (omitempty) string
     }
     "where" (omitempty) []linux.AptWhereState {
@@ -248,6 +326,7 @@ report: linux.Observed {
     }
     "error" (omitempty) string
   }
+  "error" (omitempty) string
   "inForce" (omitempty) *linux.InForce {
     "files" (omitempty) []string
     "users" (omitempty) []string

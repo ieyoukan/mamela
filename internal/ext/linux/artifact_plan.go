@@ -93,7 +93,12 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 	}
 	from := got.From
 	installed := got.Exists && !got.Large && from != nil && from.SHA256 == want.SHA256 && from.Extract == want.Extract
-	if installed && got.Mode == want.Mode && got.Owner == want.Owner && got.Group == want.Group {
+	same := installed && got.Mode == want.Mode && got.Owner == want.Owner && got.Group == want.Group
+	var left *Pending
+	if installed {
+		left = pendingFor(got.Pending, got.SHA256, want.Path, want.Restart)
+	}
+	if same && left == nil {
 		return k.WithOps(c)
 	}
 	if note := artifactAccountNote(k, o, want); note != nil {
@@ -101,6 +106,10 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 		return c
 	}
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
+	if same {
+		c.Diffs = []plan.Diff{diff("artifact", "", want.Path)}
+		return pendingChange(k, c, want.Node, want.Path, *left, want.Restart, OpInstallArtifact)
+	}
 	// What is installed: always shown, so that the plan says what the approval lets mamelet fetch;
 	// what was there before is the "from" of each.
 	var oldURL, oldSHA, oldExtract string
@@ -140,6 +149,9 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 	}
 	if len(want.Restart) > 0 {
 		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(want.Restart, ", ")+" (each only if it runs: systemctl try-restart)"))
+	}
+	if w := exposedWarning(want.Node, want.Path, want.Owner, want.Group, got.Exposed); w != nil {
+		c.Warnings = append(c.Warnings, *w)
 	}
 	if got.Exists && from == nil {
 		c.Note = &plan.Note{Code: codeArtifactReplaces,

@@ -17,14 +17,18 @@ import (
 // name, it says what mamelet reports on (the observation targets of the declarations: wire.go):
 // whether each of Shells is an executable file on the node (the shells the user is declared with, or
 // would be made with), which of Groups exist, which user has each of UIDs already (those declared for
-// its creation), and whether to read its authorized_keys (Keys: a declaration has them). None of them
-// allows anything: Change carries every value it needs.
+// its creation), what is at each of Homes (the homes useradd would make for it, while it does not
+// exist), and whether to read its authorized_keys (Keys: a declaration has them). None of them allows
+// anything: Change carries every value it needs.
 type User struct {
 	Name   string   `json:"name"`
 	Shells []string `json:"shells,omitempty"`
 	Groups []string `json:"groups,omitempty"`
 	UIDs   []int    `json:"uids,omitempty"`
-	Keys   bool     `json:"keys,omitzero"`
+	// Homes are the homes useradd would make for the user, when it does not exist (mamelet reports
+	// whether something is at each already: UserState.NewHomes).
+	Homes []string `json:"homes,omitempty"`
+	Keys  bool     `json:"keys,omitzero"`
 	// InForce: the declaration in force has the user (File.InForce).
 	InForce bool        `json:"inForce,omitzero"`
 	Change  *UserChange `json:"change,omitempty"`
@@ -97,6 +101,9 @@ type UserState struct {
 	// and a group of the user's name, exist is in Observed.Groups.
 	Shells map[string]bool   `json:"shells,omitempty"`
 	UIDs   map[string]string `json:"uids,omitempty"`
+	// NewHomes are what is at each of the part's homes of a user that does not exist (by Path: a home
+	// that is missing was not asked for when mamelet looked).
+	NewHomes []HomeState `json:"newHomes,omitempty"`
 	// Keys is its authorized_keys, when the part asks for it and the user exists.
 	Keys *KeysState `json:"keys,omitempty"`
 	// Error says why mamelet does not observe the user (a name it refuses).
@@ -110,10 +117,38 @@ type KeysState struct {
 	File FileState `json:"file"`
 	// Dir is ~/.ssh when it is a directory: "0700 app:app".
 	Dir string `json:"dir,omitempty"`
-	// Found are the keys in the file (fingerprints, not comments); Other counts its lines that are
-	// neither a key Mamela reads, a comment nor empty.
+	// NotOwned says why the home or ~/.ssh is not the user's to have its keys written into (another
+	// user's): mamelet never writes there, and the plan blocks (MAM-PLAN-0212).
+	NotOwned string `json:"notOwned,omitempty"`
+	// Found are the keys in the file (fingerprints, not comments), each once, at most MaxFoundKeys:
+	// More counts the other keys there are besides; Other counts its lines that are neither a key
+	// Mamela reads, a comment nor empty.
 	Found []FoundKey `json:"found,omitempty"`
+	More  int        `json:"more,omitzero"`
 	Other int        `json:"other,omitzero"`
+}
+
+// HomeState is what is at a home a user would be made with (UserState.NewHomes).
+type HomeState struct {
+	Path   string `json:"path"`
+	Exists bool   `json:"exists,omitzero"`
+	// Of what is there: what it is ("a directory", "a symbolic link", "a file"), its mode and owner.
+	What  string `json:"what,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Owner string `json:"owner,omitempty"`
+	Group string `json:"group,omitempty"`
+	// Error says why it was not looked at (a home mamelet refuses: CheckHome).
+	Error string `json:"error,omitempty"`
+}
+
+// newHome is what mamelet found at home, a home the user would be made with (nil: it has not looked).
+func (s UserState) newHome(home string) *HomeState {
+	for i := range s.NewHomes {
+		if s.NewHomes[i].Path == home {
+			return &s.NewHomes[i]
+		}
+	}
+	return nil
 }
 
 func (p *Part) user(name string) *User {
@@ -189,6 +224,9 @@ func checkUsers(users []User) []string {
 		}
 		if why := targetsProblem(u.UIDs, func(id int) bool { return id > 0 && id <= MaxUID }); why != "" {
 			add("user %q: uids: %s", u.Name, why)
+		}
+		if why := targetsProblem(u.Homes, func(h string) bool { return CheckHome(h) == nil }); why != "" {
+			add("user %q: homes: %s", u.Name, why)
 		}
 		if c := u.Change; c != nil {
 			if err := checkUserChange(*c); err != nil {

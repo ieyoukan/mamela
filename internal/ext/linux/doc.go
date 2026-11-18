@@ -22,6 +22,8 @@
 //	paths.go           CheckPath: the paths no kind writes (graph and mamelet check the same)
 //	accounts.go        user and group names, and the node's /etc/passwd and /etc/group
 //	fs.go              mamelet's view of the file system: no symbolic link is followed
+//	nofollow_*.go      the opening of a file without following a link (x/sys/unix on Linux and macOS)
+//	pending.go         what follows a write (daemon-reload, restarts), and what did not finish
 //	graph.go           what concerns more than one resource: paths claimed twice, warnings
 //	file.go            NodeFile: spec, decoding, validation (graph)
 //	file_plan.go       NodeFile: plan, the start gate of the services it restarts, files kept
@@ -60,4 +62,18 @@
 // The codes of each kind (its plan notes, graph warnings and policy decisions), and those kept for the
 // kinds that follow, are in one table: reserved, in codes.go. docs/reason-codes.md reserves the same
 // (codes_test.go checks it, and that every code the extension registers is in its kind's ranges).
+//
+// NodeFile and NodeArtifact share two notes (pending.go, file_plan.go): MAM-PLAN-0144, the warning of
+// a file written below a directory a user other than root can change, and MAM-PLAN-0218, a file that
+// is as declared but whose daemon-reload or restart did not finish after it was written. MAM-PLAN-0219
+// is left (codes.go reserves 0144 and 0218 for both).
+//
+// # What mamelet opens
+//
+// fs.go and nofollow_*.go: mamelet runs as root, and the paths it observes may be in directories
+// users can change (a home). It walks each directory by itself from the root (each one checked not
+// to be a link, and to be the one it looked at), opens a file only with O_NOFOLLOW, O_NOCTTY and
+// O_NONBLOCK, and only a regular file (fstat of the descriptor), so that no link a user swaps in can
+// lead it to a terminal or a device. A directory it makes gets its owner and mode through a
+// descriptor, never its name. A home is never taken from another user (user_mamelet.go).
 package linux

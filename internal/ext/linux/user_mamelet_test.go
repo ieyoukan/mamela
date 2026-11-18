@@ -153,7 +153,7 @@ func appendTo(t *testing.T, n *mnode, p, line string) {
 // createApp is the approved creation of app with group docker and alice's key.
 func createApp(op string, attempt int) User {
 	content := KeysContent([]string{keyAlice})
-	return User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+	return User{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Homes: []string{"/home/app"}, Keys: true, Change: &UserChange{
 		Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true},
 		Groups: []string{"docker"},
 		Keys:   &KeysWrite{Content: content, SHA256: ContentSHA256(content)},

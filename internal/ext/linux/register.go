@@ -186,10 +186,12 @@ func init() {
 			for _, k := range kinds {
 				k.observe(ctx, s, p, &o)
 			}
+			observePending(s, &o)
+			cleanStateDir(s)
 			if rep.Ext == nil {
 				rep.Ext = map[string]jsontext.Value{}
 			}
-			rep.Ext[Name] = encode(o)
+			rep.Ext[Name] = encodeObserved(o)
 		},
 		Act: func(ctx context.Context, x *mamelet.Act, phase mamelet.Phase) bool {
 			// After the packages (a package may make the user that owns a file, or the directory), before

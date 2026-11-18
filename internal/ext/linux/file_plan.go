@@ -3,6 +3,7 @@ package linux
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -16,12 +17,15 @@ const (
 	codeFileNoAccount     = "MAM-PLAN-0141" // the owner or the group does not exist on the node
 	codeFileStartGate     = "MAM-PLAN-0142" // a service's start waits for a file it is restarted by
 	codeFileAccountComing = "MAM-PLAN-0143" // the owner or the group is declared on the node, not made yet
+	codeFileExposed       = "MAM-PLAN-0144" // warning: a user other than root can change a directory above the file (NodeArtifact too)
 	codeFileUnsafe        = "MAM-PLAN-0210" // mamelet does not write there (a link, a directory)
 	codeFileUnobserved    = "MAM-PLAN-0211" // mamelet cannot observe it
 	codeFileKept          = "MAM-PLAN-0310" // not declared any more: kept on the node
+	codePending           = "MAM-PLAN-0218" // written, but its daemon-reload or a restart did not finish (NodeArtifact too)
 )
 
-var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileUnsafe, codeFileUnobserved, codeFileKept}
+// filePlanCodes are NodeFile's codes of plan notes, with the two it shares with NodeArtifact (0144, 0218).
+var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileExposed, codeFileUnsafe, codeFileUnobserved, codeFileKept, codePending}
 
 // accountMakers say which resource of a declaration makes a user (group false) or a group on a node:
 // a file owned by one waits for it instead of being blocked. NodeUser adds its own (user_plan.go).
@@ -107,7 +111,9 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 		return c
 	}
 	sum := ContentSHA256(want.Content)
-	if got.Exists && !got.Large && got.SHA256 == sum && got.Mode == want.Mode && got.Owner == want.Owner && got.Group == want.Group {
+	same := got.Exists && !got.Large && got.SHA256 == sum && got.Mode == want.Mode && got.Owner == want.Owner && got.Group == want.Group
+	left := pendingFor(got.Pending, sum, want.Path, want.Restart)
+	if same && left == nil {
 		return k.WithOps(c)
 	}
 	if note := accountNote(k, o, want); note != nil {
@@ -116,6 +122,9 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 	}
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
 	c.Diffs = []plan.Diff{diff("file", "", want.Path)}
+	if same {
+		return pendingChange(k, c, want.Node, want.Path, *left, want.Restart, OpWriteFile)
+	}
 	old := got.SHA256
 	if got.Large {
 		old = fmt.Sprintf("(larger than %d bytes)", MaxContent)
@@ -137,7 +146,85 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 	if len(want.Restart) > 0 {
 		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(want.Restart, ", ")+" (each only if it runs: systemctl try-restart)"))
 	}
+	if w := exposedWarning(want.Node, want.Path, want.Owner, want.Group, got.Exposed); w != nil {
+		c.Warnings = append(c.Warnings, *w)
+	}
 	return k.WithOps(c, policy.Subject{Op: OpWriteFile})
+}
+
+// pendingFor is what of what mamelet reports pending after the last write of path (left) the
+// declaration still asks for: the file is still the declared one (sum), systemd reads it again if it
+// is a unit, and the services it restarts that are still declared (nil: nothing).
+func pendingFor(left *Pending, sum, path string, restart []string) *Pending {
+	if left == nil || left.SHA256 != sum {
+		return nil
+	}
+	out := Pending{SHA256: sum, Reload: left.Reload && IsUnitFile(path)}
+	for _, svc := range left.Restart {
+		unit := strings.TrimSuffix(svc, ".service")
+		if slices.ContainsFunc(restart, func(s string) bool { return strings.TrimSuffix(s, ".service") == unit }) {
+			out.Restart = append(out.Restart, svc)
+		}
+	}
+	if !out.Reload && len(out.Restart) == 0 {
+		return nil
+	}
+	return &out
+}
+
+// pendingChange is the change of a file (or an artifact) that is as declared, but after whose last
+// write what follows did not finish (left): approving it lets mamelet do it, the file being as
+// approved already (its grant writes nothing then). change has its first diff (the path).
+func pendingChange(k *plan.Kit, c plan.Change, node, path string, left Pending, restart []string, op policy.Op) plan.Change {
+	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
+	c.Diffs = append(c.Diffs, diff("pending", "", "the file is as declared; after it was written, "+pendingText(left)+" did not finish"))
+	if IsUnitFile(path) {
+		c.Diffs = append(c.Diffs, diff("daemon-reload", "", "systemd reads its units again (the file is one of them)"))
+	}
+	if len(restart) > 0 {
+		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(restart, ", ")+" (each only if it runs: systemctl try-restart)"))
+	}
+	c = k.WithOps(c, policy.Subject{Op: op})
+	c.Note = &plan.Note{Code: codePending,
+		Message: fmt.Sprintf("%s on %s was written as declared, but %s did not finish afterwards (it failed, or mamelet stopped meanwhile): what runs may not use it yet", path, node, pendingText(left)),
+		Hint:    "approve this plan to have mamelet do it now (the file is not written again); the result of the last attempt says why it did not finish"}
+	return c
+}
+
+// exposedWarning is the warning of a file (or an artifact) owned by owner:group that is written
+// below a directory someone else than root and its owner can change (exposed: what mamelet reported
+// of the directories above it): they can replace it, or put something in its way (nil when no one
+// can).
+func exposedWarning(node, path, owner, group string, exposed []DirOwner) *plan.Note {
+	var who []string
+	add := func(w string) {
+		if !slices.Contains(who, w) {
+			who = append(who, w)
+		}
+	}
+	first := ""
+	for _, d := range exposed {
+		mode, _ := strconv.ParseUint(d.Mode, 8, 32)
+		n := len(who)
+		if d.Owner != "root" && d.Owner != owner {
+			add("user " + d.Owner)
+		}
+		if mode&0o020 != 0 && d.Group != "root" && d.Group != group {
+			add("group " + d.Group)
+		}
+		if mode&0o002 != 0 {
+			add("every user")
+		}
+		if len(who) > n && first == "" {
+			first = fmt.Sprintf("%s (%s %s:%s)", d.Dir, d.Mode, d.Owner, d.Group)
+		}
+	}
+	if len(who) == 0 {
+		return nil
+	}
+	return &plan.Note{Code: codeFileExposed,
+		Message: fmt.Sprintf("%s on %s is below %s, which %s can change: they can replace what Mamela writes there (owned by %s:%s), or put something in its way", path, node, first, strings.Join(who, ", "), owner, group),
+		Hint:    "write the file under a directory only root can change (such as /etc/<app> or /opt/<app>), or make the directory root's by hand (chown root:root, chmod go-w)"}
 }
 
 type statusNote struct {

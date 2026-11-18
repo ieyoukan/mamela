@@ -67,14 +67,17 @@ func loadRecord(dir string) (artifactRecord, error) {
 	return rec, nil
 }
 
-// saveRecord replaces the record, atomically: a new file (readable by mamelet only), synced, renamed
-// over the old one.
-func saveRecord(dir string, rec artifactRecord) error {
-	data, err := json.Marshal(rec, json.Deterministic(true))
+// saveRecord replaces the record (saveJSON).
+func saveRecord(dir string, rec artifactRecord) error { return saveJSON(dir, recordName, rec) }
+
+// saveJSON replaces the file name of mamelet's state directory dir with v, atomically: a new file
+// (readable by mamelet only), synced, renamed over the old one.
+func saveJSON(dir, name string, v any) error {
+	data, err := json.Marshal(v, json.Deterministic(true))
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(dir, "."+recordName+".tmp")
+	tmp := filepath.Join(dir, "."+name+".tmp")
 	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -90,7 +93,7 @@ func saveRecord(dir string, rec artifactRecord) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, filepath.Join(dir, recordName))
+		err = os.Rename(tmp, filepath.Join(dir, name))
 	}
 	if err != nil {
 		os.Remove(tmp)
@@ -126,6 +129,7 @@ func observeArtifacts(_ context.Context, s *mamelet.System, p Part, o *Observed)
 		if e := CheckPath(a.Path); e != nil {
 			st.Error = "mamelet refuses the path: " + e.Message
 		} else {
+			removeStaleTemp(r, a.Path)
 			st.FileState = inspectUpTo(r, a.Path, acc, MaxArtifact)
 			if in, ok := rec.Artifacts[a.Path]; ok && st.Exists && st.Unsafe == "" && st.Error == "" && !st.Large && st.SHA256 == in.Installed {
 				from := in.Source
@@ -161,6 +165,9 @@ func actArtifacts(ctx context.Context, x *mamelet.Act, p Part) bool {
 	changed := false
 	for _, a := range p.Artifacts {
 		in := a.Install
+		if ctx.Err() != nil {
+			break // mamelet is stopping: what is left goes on in a later round
+		}
 		if in == nil || x.Done(in.Grant.Operation, in.Grant.Attempt) {
 			continue
 		}
@@ -250,11 +257,11 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 		// Only the mode or the owner differs: the installed file is put in place again with them,
 		// without downloading it (what is copied must still be what mamelet installed).
 		ran = true
-		src, err := r.OpenFile(rel(p), os.O_RDONLY|openNonBlock, 0)
+		src, fi, _, err := openRegular(r, p)
 		if err != nil {
 			return noderev.OutcomeFailed, "open " + p + ": " + err.Error(), ran
 		}
-		err = writeFrom(r, p, src, prev.Installed, in.Mode, uid, gid, dirUID, dirGID)
+		err = writeFrom(r, p, src, fi.Size(), prev.Installed, in.Mode, uid, gid, dirUID, dirGID)
 		src.Close()
 		if err != nil {
 			return noderev.OutcomeFailed, "install " + p + " again: " + err.Error(), ran
@@ -272,7 +279,11 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 				return err
 			}
 			defer src.Close()
-			return writeFrom(r, p, src, sum, in.Mode, uid, gid, dirUID, dirGID)
+			fi, err := src.Stat()
+			if err != nil {
+				return err
+			}
+			return writeFrom(r, p, src, fi.Size(), sum, in.Mode, uid, gid, dirUID, dirGID)
 		})
 		if err != nil {
 			var no *Refusal
@@ -303,20 +314,8 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; but the record of it could not be written: " + err.Error(), ran
 		}
 	}
-	ran = true
-	if IsUnitFile(p) {
-		if _, err := x.System.Run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
-			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; systemctl daemon-reload: " + err.Error(), ran
-		}
-		did = append(did, "reloaded systemd")
-	}
-	for _, svc := range in.Restart {
-		if err := tryRestart(ctx, x.System, svc); err != nil {
-			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; restart " + svc + ": " + err.Error(), ran
-		}
-		did = append(did, "restarted "+svc+" if it ran")
-	}
-	return noderev.OutcomeDone, strings.Join(did, "; "), ran
+	outcome, detail = followUp(ctx, x, p, sum, in.Restart, did)
+	return outcome, detail, true
 }
 
 // fetchArtifact downloads the installation's URL into mamelet's state directory, checks its sha256,
