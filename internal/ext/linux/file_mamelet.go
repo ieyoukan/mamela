@@ -166,12 +166,31 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 func tryRestart(ctx context.Context, s *mamelet.System, name string) error {
 	sctx, cancel := context.WithTimeout(ctx, mamelet.StartTimeout)
 	defer cancel()
-	_, err := s.Run(sctx, progSystemctl, []string{"try-restart", "--", name})
-	if err != nil && sctx.Err() != nil && ctx.Err() == nil {
+	args := []string{"try-restart", "--", name}
+	out, errOut, code, err := s.Runner.Run(sctx, progSystemctl, args, nil)
+	switch {
+	case (err != nil || code != 0) && sctx.Err() != nil && ctx.Err() == nil:
 		return fmt.Errorf("%s did not finish restarting within %s (systemd keeps starting it)", name, mamelet.StartTimeout)
+	case err != nil:
+		return err
+	case code == 0:
+		return nil
+	case code == systemctlNotLoaded:
+		// The unit is not loaded: there is no unit file for it (yet: the file that makes it may come
+		// later in the same round, after an artifact it runs). A service that does not exist does not
+		// run, and try-restart restarts only what runs: there is nothing to do.
+		return nil
 	}
-	return err
+	msg := strings.TrimSpace(string(errOut))
+	if msg == "" {
+		msg = strings.TrimSpace(string(out))
+	}
+	return fmt.Errorf("%s %s: exit %d: %s", progSystemctl, strings.Join(args, " "), code, msg)
 }
+
+// systemctlNotLoaded is systemctl's exit status for a unit that is not loaded (LSB "program is not
+// installed"): "Unit x.service not found."
+const systemctlNotLoaded = 5
 
 // fileResults are the recorded outcomes of the part's writes.
 func fileResults(p Part, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result {
