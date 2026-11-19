@@ -175,7 +175,7 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 		st.Owner, st.Group = a.userName(uid), a.groupName(gid)
 	}
 	if fi.Size() > max {
-		st.Large = true
+		st.Large, st.Stamp = true, stampText(stamp)
 		return st
 	}
 	key := r.Name() + "\x00" + p

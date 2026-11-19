@@ -17,6 +17,7 @@ part: linux.Part {
         "exists" (omitzero) bool
         "sha256" (omitempty) string
         "large" (omitzero) bool
+        "stamp" (omitempty) string
       }
       "grant" noderev.Once {
         "operation" string
@@ -55,6 +56,7 @@ part: linux.Part {
           "exists" (omitzero) bool
           "sha256" (omitempty) string
           "large" (omitzero) bool
+          "stamp" (omitempty) string
         }
       }
       "grant" noderev.Once {
@@ -82,6 +84,7 @@ part: linux.Part {
         "exists" (omitzero) bool
         "sha256" (omitempty) string
         "large" (omitzero) bool
+        "stamp" (omitempty) string
       }
       "grant" noderev.Once {
         "operation" string
@@ -111,16 +114,19 @@ part: linux.Part {
           "exists" (omitzero) bool
           "sha256" (omitempty) string
           "large" (omitzero) bool
+          "stamp" (omitempty) string
         }
         "keyAsc" linux.Before {
           "exists" (omitzero) bool
           "sha256" (omitempty) string
           "large" (omitzero) bool
+          "stamp" (omitempty) string
         }
         "keyGpg" linux.Before {
           "exists" (omitzero) bool
           "sha256" (omitempty) string
           "large" (omitzero) bool
+          "stamp" (omitempty) string
         }
       }
       "grant" noderev.Once {
@@ -139,6 +145,7 @@ report: linux.Observed {
     "exists" (omitzero) bool
     "sha256" (omitempty) string
     "large" (omitzero) bool
+    "stamp" (omitempty) string
     "mode" (omitempty) string
     "owner" (omitempty) string
     "group" (omitempty) string
@@ -191,6 +198,7 @@ report: linux.Observed {
         "exists" (omitzero) bool
         "sha256" (omitempty) string
         "large" (omitzero) bool
+        "stamp" (omitempty) string
         "mode" (omitempty) string
         "owner" (omitempty) string
         "group" (omitempty) string
@@ -227,6 +235,7 @@ report: linux.Observed {
       "exists" (omitzero) bool
       "sha256" (omitempty) string
       "large" (omitzero) bool
+      "stamp" (omitempty) string
       "mode" (omitempty) string
       "owner" (omitempty) string
       "group" (omitempty) string
@@ -258,6 +267,7 @@ report: linux.Observed {
       "exists" (omitzero) bool
       "sha256" (omitempty) string
       "large" (omitzero) bool
+      "stamp" (omitempty) string
       "mode" (omitempty) string
       "owner" (omitempty) string
       "group" (omitempty) string
@@ -281,6 +291,7 @@ report: linux.Observed {
       "exists" (omitzero) bool
       "sha256" (omitempty) string
       "large" (omitzero) bool
+      "stamp" (omitempty) string
       "mode" (omitempty) string
       "owner" (omitempty) string
       "group" (omitempty) string
@@ -304,6 +315,7 @@ report: linux.Observed {
       "exists" (omitzero) bool
       "sha256" (omitempty) string
       "large" (omitzero) bool
+      "stamp" (omitempty) string
       "mode" (omitempty) string
       "owner" (omitempty) string
       "group" (omitempty) string

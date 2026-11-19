@@ -8,6 +8,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -88,7 +89,8 @@ type Write struct {
 }
 
 // Before is what an approved change was planned against: what the observation the plan was made of
-// found at a path (nothing, a regular file of that sha256, or one too large to hash). Mamelet changes
+// found at a path (nothing, a regular file of that sha256, or one too large to hash, known by its
+// stamp). Mamelet changes
 // the path only while it is still so, or once it is already as approved; otherwise it refuses, and the
 // next plan shows what is there now. A change that was approved for one state of the node never
 // overwrites another (a person's edit, another plan's apply).
@@ -96,22 +98,37 @@ type Before struct {
 	Exists bool   `json:"exists,omitzero"`
 	SHA256 string `json:"sha256,omitempty"`
 	Large  bool   `json:"large,omitzero"`
+	// Stamp is the stamp of a file too large to hash (FileState.Stamp): without it, a large file is
+	// never taken for the one the plan saw.
+	Stamp string `json:"stamp,omitempty"`
 }
 
 // beforeOf is the before-state of what an observation found at a path.
-func beforeOf(f FileState) Before { return Before{Exists: f.Exists, SHA256: f.SHA256, Large: f.Large} }
-
-// Is reports whether the path is still as the plan saw it.
-func (b Before) Is(f FileState) bool {
-	return b.Exists == f.Exists && b.Large == f.Large && b.SHA256 == f.SHA256
+func beforeOf(f FileState) Before {
+	return Before{Exists: f.Exists, SHA256: f.SHA256, Large: f.Large, Stamp: f.Stamp}
 }
 
-// String is the before-state for a person ("absent", "sha256 0123456789ab", "a file too large to hash").
+// Is reports whether the path is still as the plan saw it. A file too large to hash is the one the
+// plan saw only while it is the same file, unchanged since (the same stamp: its inode, size and the
+// times of its last changes); one the plan has no stamp of never is, so that a change approved for
+// one large file never overwrites another (they have no sha256 to tell them apart).
+func (b Before) Is(f FileState) bool {
+	if b.Large || f.Large {
+		return b.Exists && f.Exists && b.Large && f.Large && b.Stamp != "" && b.Stamp == f.Stamp
+	}
+	return b.Exists == f.Exists && b.SHA256 == f.SHA256
+}
+
+// String is the before-state for a person ("absent", "sha256 0123456789ab", "a file too large to
+// hash (inode 1234, 300000 bytes)").
 func (b Before) String() string {
 	switch {
 	case !b.Exists:
 		return "absent"
 	case b.Large:
+		if ino, size, ok := stampFields(b.Stamp); ok {
+			return fmt.Sprintf("a file too large to hash (inode %s, %s bytes)", ino, size)
+		}
 		return "a file too large to hash"
 	case b.SHA256 == "":
 		return "not a regular file"
@@ -122,14 +139,37 @@ func (b Before) String() string {
 // check says what is wrong with a before-state in a revision ("" nothing).
 func (b Before) check() string {
 	switch {
-	case !b.Exists && (b.SHA256 != "" || b.Large):
+	case !b.Exists && (b.SHA256 != "" || b.Large || b.Stamp != ""):
 		return "a path that does not exist has no content"
 	case b.Exists && b.Large && b.SHA256 != "":
 		return "a file too large to hash has no sha256"
 	case b.Exists && !b.Large && !names.SHA256(b.SHA256):
 		return fmt.Sprintf("%q is not a sha256", b.SHA256)
+	case b.Stamp != "" && (!b.Large || !stampRe.MatchString(b.Stamp)):
+		return fmt.Sprintf("%q is not the stamp of a file too large to hash", b.Stamp)
 	}
 	return ""
+}
+
+// stampRe is a stamp as stampText writes it.
+var stampRe = regexp.MustCompile(`^[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,20}:-?[0-9]{1,20}:-?[0-9]{1,20}$`)
+
+// stampText is a file's stamp as FileState and Before carry it: "<device>:<inode>:<size>:<mtime
+// ns>:<ctime ns>" ("" when the system gave none).
+func stampText(s fileStamp) string {
+	if !s.OK {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d:%d:%d:%d", s.Dev, s.Ino, s.Size, s.Mtime, s.Ctime)
+}
+
+// stampFields are the inode and size of a stamp, for a person.
+func stampFields(stamp string) (ino, size string, ok bool) {
+	f := strings.Split(stamp, ":")
+	if len(f) != 5 {
+		return "", "", false
+	}
+	return f[1], f[2], true
 }
 
 // ActionWrite is the action of a file's grant.
@@ -180,7 +220,11 @@ type FileState struct {
 	Exists bool   `json:"exists,omitzero"`
 	SHA256 string `json:"sha256,omitempty"` // of a regular file, unless it is Large
 	// Large: a regular file larger than any content Mamela writes (MaxContent); it is not hashed.
-	Large bool   `json:"large,omitzero"`
+	Large bool `json:"large,omitzero"`
+	// Stamp is what tells a Large file apart, instead of its sha256: its device and inode, its size,
+	// and the times of its last change of content and of anything (ctime, which no user can set back),
+	// "<device>:<inode>:<size>:<mtime ns>:<ctime ns>"; it changes whenever the content does.
+	Stamp string `json:"stamp,omitempty"`
 	Mode  string `json:"mode,omitempty"`  // of a regular file: "0644" (with the setuid bits)
 	Owner string `json:"owner,omitempty"` // the user's name ("#1001" when the node has no name for the id)
 	Group string `json:"group,omitempty"`
