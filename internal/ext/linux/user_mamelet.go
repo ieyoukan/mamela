@@ -99,13 +99,21 @@ func observeUser(r *os.Root, a accounts, u User) UserState {
 
 // observeHome observes what is at the home a user would be made with: useradd --create-home takes a
 // directory that is there as it is (it only warns, and does not make it the user's), so one that is
-// there already, another user's above all, is not made the new user's home (the plan blocks).
+// there already, another user's above all, is not made the new user's home (the plan blocks); and so
+// are the directories above it that a user other than root can change, where that user could put one
+// there between mamelet's look and useradd's making it.
 func observeHome(r *os.Root, a accounts, home string) *HomeState {
 	hs := &HomeState{Path: home}
 	if e := CheckHome(home); e != nil {
 		hs.Error = "mamelet refuses the home: " + e.Message
 		return hs
 	}
+	exposed, err := exposedAbove(r, a, home)
+	if err != nil {
+		hs.Error = err.Error()
+		return hs
+	}
+	hs.Exposed = exposed
 	fi, err := r.Lstat(rel(home))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -129,6 +137,64 @@ func observeHome(r *os.Root, a accounts, home string) *HomeState {
 		hs.Owner, hs.Group = a.userName(uid), a.groupName(gid)
 	}
 	return hs
+}
+
+// exposedAbove are the directories above p that exist and that a user other than root can change
+// (one it owns, or one its group, other than root's, or everyone may write), outermost first. A link
+// among them is followed as useradd would follow it (resolve), and the directories it leads to are
+// looked at too. A directory that is missing ends the walk (useradd makes it, root's); one that is not
+// a directory is an error.
+func exposedAbove(r *os.Root, a accounts, p string) ([]DirOwner, error) {
+	rootUID, rootGID := a.rootIDs()
+	var out []DirOwner
+	seen := map[string]bool{}
+	look := func(d string) (exists bool, err error) {
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false, nil
+		case err != nil:
+			return false, err
+		case !fi.IsDir():
+			return false, fmt.Errorf("%s, above the home %s, is not a directory", d, p)
+		}
+		if seen[d] {
+			return true, nil
+		}
+		seen[d] = true
+		if uid, gid, ok := ownerOf(fi); ok && (uid != rootUID || (fi.Mode()&0o020 != 0 && gid != rootGID) || fi.Mode()&0o002 != 0) {
+			out = append(out, DirOwner{Dir: d, Mode: modeString(fi.Mode()), Owner: a.userName(uid), Group: a.groupName(gid)})
+		}
+		return true, nil
+	}
+	for _, d := range parents(p) {
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return out, nil
+		case err != nil:
+			return nil, err
+		case fi.Mode()&fs.ModeSymlink != 0:
+			t, err := resolve(r, d)
+			if errors.Is(err, fs.ErrNotExist) {
+				return out, nil
+			} else if err != nil {
+				return nil, err
+			}
+			for _, td := range append(parents(t), t) {
+				if exists, err := look(td); err != nil {
+					return nil, err
+				} else if !exists {
+					return out, nil
+				}
+			}
+			continue
+		}
+		if _, err := look(d); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // executable is whether p is an executable regular file. The links in it are followed (/bin is one
@@ -299,11 +365,16 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 		if who, taken := a.userOf[k.UID]; k.UID != 0 && taken {
 			return refused(fmt.Sprintf("uid %d is %s's", k.UID, who))
 		}
-		if k.CreateHome && k.Home != "" {
+		if k.CreateHome {
 			// useradd --create-home takes a directory that is there as it is (it only warns): the new
-			// user would get another's home, and its SSH keys would go into another's ~/.ssh.
-			if hs := observeHome(r, a, k.Home); hs.Exists || hs.Error != "" {
+			// user would get another's home, and its SSH keys would go into another's ~/.ssh. So the
+			// home must not be there, nor be where a user other than root can put it meanwhile.
+			switch hs := observeHome(r, a, k.Home); {
+			case hs.Exists || hs.Error != "":
 				return refused(fmt.Sprintf("the home %s of user %s %s: mamelet makes a user only with a home of its own (plan again)", k.Home, u.Name, homeThere(hs)))
+			case len(hs.Exposed) > 0:
+				return refused(fmt.Sprintf("the home %s of user %s is below %s, which %s: they could put a directory or a link of their own there before useradd makes it (plan again)",
+					k.Home, u.Name, hs.Exposed[0].Dir, exposedBy(hs.Exposed[0])))
 			}
 		}
 		ran = true
@@ -508,6 +579,20 @@ func keysCAS(home string, c UserChange, st FileState) string {
 		return ""
 	}
 	return fmt.Sprintf("%s/.ssh/authorized_keys changed since the plan (it was %s, it is %s); nothing was changed (plan again)", home, b, beforeOf(st))
+}
+
+// exposedBy says who other than root can change the directory d, for a message: "is app's (0755
+// app:app)", "its group staff may write (0775 root:staff)", "everyone may write (0777 root:root)".
+func exposedBy(d DirOwner) string {
+	mode, _ := strconv.ParseUint(d.Mode, 8, 32)
+	how := fmt.Sprintf("(%s %s:%s)", d.Mode, d.Owner, d.Group)
+	switch {
+	case mode&0o002 != 0:
+		return "everyone may write " + how
+	case d.Owner != "root":
+		return d.Owner + " owns " + how
+	}
+	return "its group " + d.Group + " may write " + how
 }
 
 // homeThere says what is at a home that is there already (HomeState), for a message.

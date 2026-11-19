@@ -70,28 +70,90 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 	}
 }
 
-// H1: useradd's default home of a system user was there (bob's): useradd takes it as it is, and
-// mamelet refuses to go on into it.
-func TestMameletRefusesAHomeUseraddTookAsItIs(t *testing.T) {
+// H1: the home of a system user with keys (named by the Control Plane: /home/<name>, never
+// useradd's default) is there already (bob's): mamelet does not run useradd, which would take it as it
+// is. A grant that makes a home without naming it is refused whole.
+func TestMameletRefusesAHomeUseraddWouldTakeAsItIs(t *testing.T) {
 	notRoot(t)
 	n, f := newUserNode(t)
 	addBob(t, n)
 	write(t, filepath.Join(n.root, "home/svc/.ssh/authorized_keys"), keyBob+"\n")
 	keys := KeysContent([]string{keyAlice})
-	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Keys: true, Change: &UserChange{
-		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, CreateHome: true},
+	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Homes: []string{"/home/svc"}, Keys: true, Change: &UserChange{
+		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, Home: "/home/svc", CreateHome: true},
 		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
-	r := result(t, rep, opA)
-	if r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "made user svc") || !strings.Contains(r.Detail, "/home/svc is bob's") {
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "the home /home/svc of user svc exists already") {
 		t.Errorf("result %+v", r)
 	}
-	if want := []string{"useradd --system --create-home --uid 990 --shell /usr/sbin/nologin --user-group -- svc"}; !slices.Equal(f.commands, want) {
+	if len(f.commands) != 0 {
 		t.Errorf("ran %q", f.commands)
 	}
 	if got := n.read("/home/svc/.ssh/authorized_keys"); got != keyBob+"\n" {
 		t.Errorf("the keys in the home are now %q", got)
+	}
+	u.Change.Create.Home = ""
+	if err := checkPart(encode(Part{Users: []User{u}})); err == nil || !strings.Contains(err.Error(), "makes a home without naming it") {
+		t.Errorf("a home made without a name: %v", err)
+	}
+}
+
+// rootIsTheTestsUser makes root of the node the test's own user (whose the test's directories are).
+func rootIsTheTestsUser(t *testing.T, n *mnode) {
+	t.Helper()
+	write(t, filepath.Join(n.root, "etc/passwd"), fmt.Sprintf("root:x:%d:%d:root:/root:/bin/bash\n", os.Getuid(), os.Getgid()))
+	write(t, filepath.Join(n.root, "etc/group"), fmt.Sprintf("root:x:%d:\ndocker:x:998:\nwww-data:x:33:\n", os.Getgid()))
+}
+
+// The home would be made below a directory a user other than root can change (everyone may write
+// /home here; or a link leads to one): that user could put a directory or a link of their own at the
+// home between mamelet's look and useradd's making it. mamelet reports it, and does not run useradd.
+func TestMameletDoesNotMakeAHomeBelowADirectoryOthersCanChange(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		setup   func(t *testing.T, root string)
+		exposed string
+	}{
+		{"everyone may write /home", func(t *testing.T, root string) {
+			os.MkdirAll(filepath.Join(root, "home"), 0o755)
+			os.Chmod(filepath.Join(root, "home"), 0o777)
+		}, "/home"},
+		{"/home is a link to a directory everyone may write", func(t *testing.T, root string) {
+			os.MkdirAll(filepath.Join(root, "var/home"), 0o755)
+			os.Chmod(filepath.Join(root, "var/home"), 0o777)
+			os.Symlink("var/home", filepath.Join(root, "home"))
+		}, "/var/home"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, f := newUserNode(t)
+			rootIsTheTestsUser(t, n)
+			c.setup(t, n.root)
+			entry := createApp(opA, 1)
+			change := entry.Change
+			entry.Change = nil
+			n.offer(Part{Users: []User{entry}}, nil)
+			h := userStateOf(t, observedOf(t, n.round()), "app").newHome("/home/app")
+			if h == nil || h.Exists || len(h.Exposed) != 1 || h.Exposed[0].Dir != c.exposed || h.Exposed[0].Mode != "0777" {
+				t.Fatalf("the home is reported as %+v", h)
+			}
+			entry.Change = change
+			n.offer(Part{Users: []User{entry}}, nil)
+			if r := result(t, n.round(), opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "is below "+c.exposed+", which everyone may write") {
+				t.Errorf("result %+v", r)
+			}
+			if len(f.commands) != 0 {
+				t.Errorf("ran %q", f.commands)
+			}
+		})
+	}
+	// Only root can change /home: nothing to report.
+	n, _ := newUserNode(t)
+	rootIsTheTestsUser(t, n)
+	os.MkdirAll(filepath.Join(n.root, "home"), 0o755)
+	n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell}, Homes: []string{"/home/app"}}}}, nil)
+	if h := userStateOf(t, observedOf(t, n.round()), "app").newHome("/home/app"); h == nil || len(h.Exposed) != 0 || h.Error != "" {
+		t.Errorf("the home is reported as %+v", h)
 	}
 }
 

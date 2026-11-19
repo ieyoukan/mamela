@@ -71,6 +71,13 @@ func TestGoldenUserPlans(t *testing.T) {
 		// The declared home is another user's directory: useradd would take it as it is.
 		{"user-create-home-taken", []string{userRes("web/user/app", `{"node":"web","name":"app","home":"/home/bob"}`)}, observe(now, accountsOf("!app"),
 			UserState{Name: "app", Shells: bash, NewHomes: []HomeState{{Path: "/home/bob", Exists: true, What: "a directory", Mode: "0750", Owner: "bob", Group: "bob"}}}), nil},
+		// The home would be made below a directory everyone may write: someone could put theirs there
+		// before useradd makes it.
+		{"user-create-home-exposed", []string{app}, observe(now, accountsOf("!app", "docker", "www-data"),
+			UserState{Name: "app", Shells: bash, NewHomes: []HomeState{{Path: "/home/app", Exposed: []DirOwner{{Dir: "/home", Mode: "0777", Owner: "root", Group: "root"}}}}}), nil},
+		// A system user with keys and no declared home: its home is named (/home/svc), shown and looked at.
+		{"user-create-system-keys", []string{userRes("web/user/svc", `{"node":"web","name":"svc","system":true,"authorizedKeys":`+keys(keyAlice)+`}`)},
+			observe(now, accountsOf("!svc"), UserState{Name: "svc", Shells: map[string]bool{DefaultSystemShell: true}, NewHomes: []HomeState{{Path: "/home/svc"}}}), nil},
 		// The user's home (from /etc/passwd) is another's: its keys are not written there.
 		{"user-keys-home-not-owned", []string{app}, observe(now, groupsOK, func() UserState {
 			u := existing("docker", "www-data")

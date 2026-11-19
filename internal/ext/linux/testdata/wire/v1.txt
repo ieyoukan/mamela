@@ -177,6 +177,12 @@ report: linux.Observed {
       "mode" (omitempty) string
       "owner" (omitempty) string
       "group" (omitempty) string
+      "exposed" (omitempty) []linux.DirOwner {
+        "dir" string
+        "mode" string
+        "owner" string
+        "group" string
+      }
       "error" (omitempty) string
     }
     "keys" (omitempty) *linux.KeysState {

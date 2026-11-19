@@ -187,6 +187,12 @@ func userCreate(k *plan.Kit, c *plan.Change, want *UserSpec, got *UserState, o O
 				Message: fmt.Sprintf("user %s cannot be made on %s with home %s: it %s, and useradd would make it the home of %s as it is (it only warns), without making it %s's: %s would share another's files, and Mamela would write its SSH keys into another's ~/.ssh",
 					want.Name, want.Node, home, homeThere(hs), want.Name, want.Name, want.Name),
 				Hint: fmt.Sprintf("declare another home for %s, or remove or move %s by hand if nothing needs it; Mamela never takes over a directory that is there", want.Name, home)}}
+		case len(hs.Exposed) > 0:
+			d := hs.Exposed[0]
+			return statusNote{plan.StatusBlocked, &plan.Note{Code: codeUserNever,
+				Message: fmt.Sprintf("user %s cannot be made on %s with home %s: it is below %s, which %s, so a user other than root could put a directory or a link of their own at %s before useradd makes it, and useradd would take it as it is",
+					want.Name, want.Node, home, d.Dir, exposedBy(d), home),
+				Hint: fmt.Sprintf("make %s root's and not writable by others by hand (chown root:root, chmod go-w), or declare a home below a directory only root can change", d.Dir)}}
 		}
 	}
 	c.Diffs = append(c.Diffs, plan.Diff{Field: diffUser, To: want.Name})
@@ -198,12 +204,10 @@ func userCreate(k *plan.Kit, c *plan.Change, want *UserSpec, got *UserState, o O
 	}
 	c.Diffs = append(c.Diffs, plan.Diff{Field: diffShell, To: shell})
 	switch {
-	case home != "" && made:
+	case made:
 		c.Diffs = append(c.Diffs, plan.Diff{Field: diffHome, To: home + " (made)"})
 	case home != "":
 		c.Diffs = append(c.Diffs, plan.Diff{Field: diffHome, To: home + " (not made: a system user)"})
-	case made:
-		c.Diffs = append(c.Diffs, plan.Diff{Field: diffHome, To: "useradd's default for a system user (made, for its SSH keys)"})
 	default:
 		c.Diffs = append(c.Diffs, plan.Diff{Field: diffHome, To: "useradd's default for a system user (not made)"})
 	}

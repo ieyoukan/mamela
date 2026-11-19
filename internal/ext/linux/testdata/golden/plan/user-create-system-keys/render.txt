@@ -1,0 +1,19 @@
+Plan sha256:640423d6f920
+  revision  sha256:0bcc9a62f742
+  observed  2026-11-17T12:01:00Z (snapshot sha256:167e1a9d9dba)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
++ NodeUser web/user/svc  [needs approval]
+      user: svc
+      system: true (useradd --system)
+      shell: /usr/sbin/nologin
+      home: /home/svc (made)
+      group: svc (the user's own, made)
+      authorized_keys sha256: f769a15f6a4377c454269091eb7b3882433cf83db536d48ab0d4aacac9b2aacf
+      add key: ssh-ed25519 SHA256:qH4TdBBALJZE6kzSMDYbGormDVp8hza5+wXLGeZ2Wws alice@laptop
+    linux.create-user: needs approval (MAM-POL-0221 makes a user on the node (useradd) with the shell, home, groups and SSH keys of this plan)
+      hint: the user can log in with the keys of this plan, and do what its groups allow (a group such as sudo or docker makes it root)
+
+Summary: 1 needs approval, 1 in sync.
+Nothing has been changed: a plan only describes.

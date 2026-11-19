@@ -138,7 +138,13 @@ type HomeState struct {
 	Mode  string `json:"mode,omitempty"`
 	Owner string `json:"owner,omitempty"`
 	Group string `json:"group,omitempty"`
-	// Error says why it was not looked at (a home mamelet refuses: CheckHome).
+	// Exposed are the directories above it (those that exist, the links among them followed) that a
+	// user other than root can change: that user can put a directory or a link of their own at the
+	// home between mamelet's look and useradd's making it, and useradd takes what is there (the plan
+	// blocks, and mamelet does not make the user).
+	Exposed []DirOwner `json:"exposed,omitempty"`
+	// Error says why it was not looked at (a home mamelet refuses: CheckHome; a directory above it
+	// that is not one).
 	Error string `json:"error,omitempty"`
 }
 
@@ -264,6 +270,10 @@ func checkUserChange(c UserChange) error {
 			if e := CheckHome(k.Home); e != nil {
 				return fmt.Errorf("home: %s", e.Message)
 			}
+		} else if k.CreateHome {
+			// The home useradd would make by default is the node's /etc/default/useradd's to say: a home
+			// that is made is named, so that the plan showed it and mamelet looks at it first.
+			return fmt.Errorf("it makes a home without naming it")
 		}
 	} else if !c.Before.Exists {
 		return fmt.Errorf("it changes a user the plan did not see")

@@ -30,7 +30,7 @@ type UserSpec struct {
 	System bool
 	UID    int    // 0: not declared (useradd chooses). Used only when the user is made
 	Shell  string // "": not declared (DefaultShell, or DefaultSystemShell, when the user is made)
-	Home   string // "": not declared (HomeBase/<name> for a user, useradd's default for a system user). Used only when the user is made
+	Home   string // "": not declared (HomeBase/<name> when the home is made; useradd's default, not made, for a system user without keys). Used only when the user is made
 	Groups []string
 	// AuthorizedKeys are the lines of ~/.ssh/authorized_keys (nil: not declared).
 	AuthorizedKeys []string
@@ -63,14 +63,18 @@ func (s *UserSpec) CreateShell() string {
 	return DefaultShell
 }
 
-// CreateHome is the home the user is made with ("": useradd's default) and whether useradd makes
-// it: a user's always; a system user's only when its SSH keys are declared (they are written there).
+// CreateHome is the home the user is made with ("": useradd's default, for a system user whose home
+// is not made) and whether useradd makes it: a user's always; a system user's only when its SSH keys
+// are declared (they are written there). A home that is made is always named (HomeBase/<name> when
+// none is declared), never useradd's default, which /etc/default/useradd on the node decides: the
+// plan shows it, and mamelet checks what is there before useradd makes it.
 func (s *UserSpec) CreateHome() (home string, made bool) {
+	made = !s.System || s.AuthorizedKeys != nil
 	home = s.Home
-	if home == "" && !s.System {
+	if home == "" && made {
 		home = HomeBase + "/" + s.Name
 	}
-	return home, !s.System || s.AuthorizedKeys != nil
+	return home, made
 }
 
 // KeysContent is the content of the user's authorized_keys ("" when it is not declared).
