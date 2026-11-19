@@ -40,7 +40,8 @@ type Extension struct {
 	Check func(part jsontext.Value) error
 	// Programs are the programs it runs (absolute paths), added to what ExecRunner allows.
 	Programs []string
-	// Observe adds to the report what the extension observes of what the revision declares.
+	// Observe adds to the report what the extension observes of what the revision declares. The
+	// report has the recorded outcomes of the revision's grants already (Report.Results).
 	Observe func(ctx context.Context, s *System, rev *noderev.Revision, rep *noderev.Report)
 	// Act carries out the extension's grants of the phase, and says whether it changed the system.
 	Act func(ctx context.Context, x *Act, phase Phase) bool

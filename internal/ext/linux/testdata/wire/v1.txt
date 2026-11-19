@@ -354,6 +354,7 @@ report: linux.Observed {
       "unread" (omitempty) []string
       "conflicts" (omitempty) []string
     }
+    "failed" (omitempty) string
     "error" (omitempty) string
   }
   "error" (omitempty) string

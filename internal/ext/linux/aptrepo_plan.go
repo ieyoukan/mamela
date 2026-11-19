@@ -147,6 +147,12 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 			Message: fmt.Sprintf("the files of APT source %s are in place on %s, but apt has not read %s: an apt-get update failed, or has not run since they were written",
 				want.Name, want.Node, strings.Join(where.Unread, ", ")),
 			Hint: "applying runs apt-get update again (approve this plan, or run apply again on the plan whose update failed); the result of the last attempt says why it failed"}
+		if got.Failed != "" {
+			c.Note.Message += "; the last attempt failed: " + got.Failed
+			c.Note.Hint = "fix what the last attempt says (a URI or suite that does not exist: the declaration; a network, proxy or DNS the node cannot use, " +
+				"or certificates it does not have yet, ca-certificates: the node), then apply again: applying runs apt-get update again (approve this plan, " +
+				"or run apply again on the plan whose update failed; mamelacd with sync = \"push\" retries it until its retry_max)"
+		}
 		return c
 	}
 
