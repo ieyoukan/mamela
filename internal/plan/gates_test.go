@@ -185,6 +185,35 @@ func TestExtNotTakenWaitsForTheMameletUpdate(t *testing.T) {
 	}
 }
 
+// A node whose mamelet takes the extension, and whose declaration puts an older release on it (a
+// downgrade): the extension's resources are blocked at plan time, not at apply (MAM-NODE-0104).
+func TestExtNotTakenBlocksADowngradeBelowTheExtension(t *testing.T) {
+	const cur, older = "1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"
+	decl := func(version, sha string) *graph.Graph {
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("app-server", `{"mode":"dhcp"}`) + `,` +
+			`{"kind":"NodeMamelet","name":"app-server/mamelet","spec":{"node":"app-server","sha256":"` + sha + `","version":"` + version + `"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	s := state.Empty(t0)
+	machineObserved(&s, decl("0.10.0", cur), "app-server", true, true, true, 600)
+	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {SHA256: cur, Version: "0.10.0", ObservedAt: t0}}
+	s.Ext = map[string]map[string]state.ExtObservation{"app-server": {"linux": {Accepts: 1, ObservedAt: t0}}}
+	for _, tc := range []struct {
+		version, sha string
+		blocked      bool
+	}{{"0.9.3", older, true}, {"0.10.0", cur, false}, {"0.11.0", older, false}, {"", older, false}} {
+		k := newKit(builder{snap: s, pol: policy.Default, g: decl(tc.version, tc.sha)})
+		st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0")
+		if tc.blocked != (st == StatusBlocked && n != nil && n.Code == "MAM-PLAN-0122" && strings.Contains(n.Message, "puts mamelet 0.9.3 on node app-server") &&
+			strings.Contains(n.Hint, "declare mamelet 0.10.0 or later")) || !tc.blocked && n != nil {
+			t.Errorf("%q: %s %+v", tc.version, st, n)
+		}
+	}
+}
+
 func TestReleaseOlder(t *testing.T) {
 	for _, tc := range []struct {
 		a, b  string

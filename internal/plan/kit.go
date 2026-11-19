@@ -90,6 +90,10 @@ func (k *Kit) Ext(node, ext string) (state.ExtObservation, bool) {
 //     (docs/mamelet-update.md), and the plan after the update has the extension's part. An update
 //     to a release whose label says it is older than release does not bring it.
 //   - Blocked (MAM-PLAN-0122) otherwise, and always when the mamelet refused the part.
+//
+// It is blocked too when the node's mamelet takes the extension but the declaration puts a release on
+// the node whose label says it is older than release (a downgrade): after it, the node would get
+// nothing of the extension.
 func (k *Kit) ExtNotTaken(node, ext string, version int, release string) (Status, *Note) {
 	o, listed := k.snap.Ext[node][ext]
 	if listed && o.Refused != "" {
@@ -103,6 +107,14 @@ func (k *Kit) ExtNotTaken(node, ext string, version int, release string) (Status
 			Hint:    hint}
 	}
 	if listed && o.Accepts >= version {
+		if pinned := k.mameletPinned(node); releaseOlder(pinned, release) {
+			// It takes the extension now, but the declaration puts an older mamelet on the node: its
+			// update would come first, and nothing of the extension would reach the node after it.
+			return StatusBlocked, &Note{Code: "MAM-PLAN-0122",
+				Message: fmt.Sprintf("this declaration puts mamelet %s on node %s, which does not carry out the %s extension (mamelet %s and later do): once it runs there, Mamela gives the node nothing of it, and an approved change of it is never carried out (MAM-NODE-0104)",
+					pinned, node, ext, release),
+				Hint: fmt.Sprintf("declare mamelet %s or later on %s (Mamela.mamelet), or take the %s resources off the node (they stay on it as they are)", release, node, ext)}
+		}
 		return "", nil
 	}
 	m, known := k.snap.Mamelets[node+"/mamelet"]
@@ -124,6 +136,17 @@ func (k *Kit) ExtNotTaken(node, ext string, version int, release string) (Status
 			node, running, ext, release),
 		Hint: fmt.Sprintf("update mamelet on %s first, to %s or later: put it at the site's controlplane.mamelet_binary, declare it with Mamela.mamelet and apply (docs/mamelet-update.md; a Control Plane is updated before its mamelets); then plan again",
 			node, release)}
+}
+
+// mameletPinned is the release label of the mamelet the declaration puts on node ("" when it declares
+// none, or none with a label).
+func (k *Kit) mameletPinned(node string) string {
+	for _, r := range k.Resources() {
+		if m := r.NodeMamelet; m != nil && m.Node == node {
+			return m.Version
+		}
+	}
+	return ""
 }
 
 // mameletUpdate says whether this plan updates the mamelet of node (its NodeMamelet is a change that
