@@ -388,6 +388,7 @@ Mamela のバイナリにはまだ版のタグがなく、`mamela version` は b
 | `pome/mamela` | 0.3.0 | `NodePackage`、`NodeService`、プロバイダーの kind（`provided`、`provided_after`、`on_node`） | PR #12（`d2c2d03`）以降 |
 | `pome/mamela` | 0.3.1 | `NodeMamelet`（`Mamela.mamelet`） | PR #23（`37ab2b5`）以降 |
 | `pome/mamela` | 0.3.2 | Pome の API は 0.3.1 と同じ。0.3.2 の Mamela（監査 2026-11-17 の修正、k3s を `internal/ext/k3s` へ）に合わせた版。graph の検証が厳しくなった（service 名の `:`、制御文字、optional の null などを拒否） | どの版でも読めるが、0.3.2 の修正は PR #36 以降のバイナリ |
+| `pome/mamela` | 0.4.0 | linux 拡張（ADR 0016）の `NodeFile`（`Mamela.file`）、`NodeUser`（`Mamela.user`）、`NodeAptRepo`（`Mamela.apt_repo`）、`NodeArtifact`（`Mamela.artifact`）。ノードの mamelet が linux を受け取る版（0.10.0 以降）でなければ、その資源は MAM-PLAN-0122 | PR #39（`7ecf714`）以降。PR #49 までの修正を含むバイナリを使う。CP を先に、mamelet をあとに更新する（ADR 0016 §4） |
 | `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
 | `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
 
