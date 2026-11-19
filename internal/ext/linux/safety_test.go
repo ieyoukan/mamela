@@ -838,8 +838,7 @@ func TestMameletKeepsARestartThatFailedPending(t *testing.T) {
 	}
 }
 
-// M4: a pending restart is forgotten once the file changed (the next write restarts anyway), and is
-// not reported for a file the part no longer names.
+// M4: a pending restart is forgotten once the file changed (the next write restarts anyway).
 func TestPendingIsForgottenWhenTheFileChanges(t *testing.T) {
 	n := newNode(t)
 	n.sys.fail = "try-restart"
@@ -1319,5 +1318,32 @@ func TestWhatFollowsAWriteIsRecordedBeforeIt(t *testing.T) {
 	}
 	if rec, err := loadPending(state); err != nil || len(rec.Pending) != 0 {
 		t.Errorf("the record is %+v %v", rec, err)
+	}
+}
+
+// A pending restart outlives the declaration of its file: a file taken out of the declaration (the
+// part no longer names it) and put back unchanged still has its restart to do, and is reported then
+// (found in the lab: the restart after an artifact's install was lost this way).
+func TestPendingSurvivesAFileTakenOutAndPutBack(t *testing.T) {
+	n := newNode(t)
+	n.sys.fail = "try-restart"
+	f := grant("/etc/app.conf", "x\n", opA, 1)
+	f.Write.Restart = []string{"app"}
+	n.offer(Part{Files: []File{f}}, nil)
+	n.round()
+	n.sys.fail = ""
+	other := grant("/etc/other.conf", "y\n", opB, 1)
+	n.offer(Part{Files: []File{other}}, nil) // taken out of the declaration; another file stays
+	n.round()
+	if !n.exists("/var/lib/mamelet/" + pendingName) {
+		t.Fatal("the record was dropped with the declaration")
+	}
+	back := f
+	back.Write = nil
+	other.Write = nil
+	n.offer(Part{Files: []File{back, other}}, nil) // put back, unchanged
+	got := observedOf(t, n.round()).file(f.Path).Pending
+	if got == nil || !slices.Equal(got.Restart, []string{"app"}) {
+		t.Errorf("pending %+v", got)
 	}
 }
