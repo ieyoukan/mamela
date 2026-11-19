@@ -175,7 +175,7 @@ func TestMameletDoesNotWriteKeysIntoAnotherUsersHome(t *testing.T) {
 	before, _ := os.Stat(filepath.Join(n.root, "home/bob/.ssh"))
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
-	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "the home /home/bob is bob's") {
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "/home/bob is bob's") || !strings.Contains(r.Detail, "nothing was changed") {
 		t.Errorf("result %+v", r)
 	}
 	if got := n.read("/home/bob/.ssh/authorized_keys"); got != keyBob+"\n" || len(f.commands) != 0 {

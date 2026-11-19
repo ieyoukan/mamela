@@ -582,6 +582,48 @@ func TestMameletComparesTheKeysBeforeItChangesAnything(t *testing.T) {
 	}
 }
 
+// What would refuse the keys refuses the whole change before its groups and shell are changed (check,
+// then act): a home mamelet does not write into, ~/.ssh a link, a home that does not exist, a home
+// that is not the user's. Nothing runs, and the user is as it was.
+func TestMameletChecksTheHomeBeforeItChangesAnything(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		line  string
+		setup func(n *mnode)
+		says  string
+	}{
+		{"a home in /etc", "app:x:%d:%d::/etc/app:/bin/bash", nil, "the system's"},
+		{"~/.ssh is a link", appLine, func(n *mnode) {
+			if err := os.Symlink("../../etc", filepath.Join(n.root, "home/app/.ssh")); err != nil {
+				t.Fatal(err)
+			}
+		}, "symbolic link"},
+		{"no home", appLine, func(n *mnode) { os.Remove(filepath.Join(n.root, "home/app")) }, "does not exist"},
+		{"another's home", "app:x:5000:%[2]d::/home/app:/bin/bash", nil, "not app's"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, f := newUserNode(t)
+			addUser(t, n, c.line)
+			if c.setup != nil {
+				c.setup(n)
+			}
+			passwd, group := n.read("/etc/passwd"), n.read("/etc/group")
+			keys := KeysContent([]string{keyAlice})
+			n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell, "/usr/sbin/nologin"}, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+				Groups: []string{"docker"}, Shell: "/usr/sbin/nologin", Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)},
+				Before: UserBefore{Exists: true, Shell: DefaultShell, Keys: &Before{}},
+				Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}}}, nil)
+			r := result(t, n.round(), opA)
+			if r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, c.says) || !strings.Contains(r.Detail, "nothing was changed") {
+				t.Errorf("result %+v, want it to say %q", r, c.says)
+			}
+			if len(f.commands) != 0 || n.read("/etc/passwd") != passwd || n.read("/etc/group") != group {
+				t.Errorf("ran %q", f.commands)
+			}
+		})
+	}
+}
+
 // cancelDuring is a runner that cancels the round (as SIGTERM would) when mamelet runs program, and
 // says whether what it ran then was cancelled with it, and bounded.
 type cancelDuring struct {

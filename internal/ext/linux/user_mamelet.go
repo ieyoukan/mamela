@@ -366,9 +366,15 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			return refused(fmt.Sprintf("group %s does not exist on this node", g))
 		}
 	}
-	// Compare and swap of authorized_keys, before anything is changed (a refusal then leaves the user
-	// as it was), and again when it is written.
+	// Whether the keys can be written into the home, and the compare and swap of authorized_keys,
+	// before anything is changed (a refusal then leaves the user as it was: check, then act); again
+	// once the user is made, before its groups and shell; and again when they are written.
 	if k := c.Keys; k != nil && exists {
+		if refuse, fail := keysProblem(r, a, u.Name, e); refuse != "" {
+			return refused(refuse + "; nothing was changed")
+		} else if fail != "" {
+			return failed(fail + "; nothing was changed")
+		}
 		if why := keysChanged(r, a, e, c); why != "" {
 			return refused(why)
 		}
@@ -411,6 +417,13 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			// user's, and nothing more is done in it.
 			if why := notOwned(r, a, u.Name, e); why != "" {
 				return refused(fmt.Sprintf("after useradd, %s (useradd takes a home that is there as it is): mamelet does not write into it; give the user a home of its own by hand (usermod --home)", why))
+			}
+		}
+		if c.Keys != nil {
+			if refuse, fail := keysProblem(r, a, u.Name, e); refuse != "" {
+				return refused("after useradd, " + refuse + "; its groups and shell were not changed")
+			} else if fail != "" {
+				return failed("after useradd, " + fail)
 			}
 		}
 	}
@@ -581,6 +594,31 @@ func unlikeCreate(r *os.Root, a accounts, name string, e passwdEntry, c UserChan
 		return fmt.Sprintf("it has an authorized_keys (%s) this change did not write", beforeOf(st))
 	}
 	return ""
+}
+
+// keysProblem says why the approved keys of user name cannot be written into its home (e, as
+// /etc/passwd has it), so that it is said before anything of the user is changed (refuse), or that
+// what is there could not be looked at (fail): the home is one mamelet does not write into
+// (CheckHome), authorized_keys or a directory above it is a symbolic link or not a directory, the
+// home does not exist, or the home or ~/.ssh is another user's (notOwned). writeKeys checks it all
+// again as it writes.
+func keysProblem(r *os.Root, a accounts, name string, e passwdEntry) (refuse, fail string) {
+	if err := CheckHome(e.home); err != nil {
+		return "mamelet does not write SSH keys into the home of " + name + ": " + err.Message, ""
+	}
+	st := inspect(r, e.home+"/.ssh/authorized_keys", a)
+	switch {
+	case st.Error != "":
+		return "", "observe " + st.Path + ": " + st.Error
+	case st.Unsafe != "":
+		return "mamelet does not write the SSH keys of " + name + ": " + st.Unsafe + " (mamelet never follows a symbolic link)", ""
+	case len(st.Missing) > 1 || len(st.Missing) == 1 && st.Missing[0] != e.home+"/.ssh":
+		return "the home " + e.home + " of " + name + " does not exist", ""
+	}
+	if why := notOwned(r, a, name, e); why != "" {
+		return why + ": mamelet never writes SSH keys into another's home or ~/.ssh", ""
+	}
+	return "", ""
 }
 
 // keysChanged is keysCAS of the authorized_keys of the user that exists (e), before anything is
