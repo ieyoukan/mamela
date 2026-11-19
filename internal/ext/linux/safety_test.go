@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -485,6 +486,44 @@ func randomKeys(t *testing.T, n int) string {
 		b.WriteString("ssh-ed25519 " + base64.StdEncoding.EncodeToString(blob) + "\n")
 	}
 	return b.String()
+}
+
+// A directory another puts in place of the one mamelet just made (between its mkdir and its
+// opening) is refused: mamelet gives its owner and mode only to the directory it made (its own,
+// 0700), never to one a user made.
+func TestMakeDirRefusesADirectoryPutInPlaceOfTheOneItMade(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("mamelet opens what it made by itself on Linux (and macOS) only")
+	}
+	dir := t.TempDir()
+	r, _ := os.OpenRoot(dir)
+	defer r.Close()
+	top, err := treeDir(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer top.Close()
+	actAs(t, rootID, rootID)
+	testHookMadeDir = func(p string) {
+		testHookMadeDir = nil
+		os.Rename(filepath.Join(dir, "new"), filepath.Join(dir, "made"))
+		os.Mkdir(filepath.Join(dir, "new"), 0o755)
+		os.Chmod(filepath.Join(dir, "new"), 0o775)
+	}
+	t.Cleanup(func() { testHookMadeDir = nil })
+	if err := makeDir(top, "new", "/new", rootID, rootID); err == nil || !strings.Contains(err.Error(), "changed while mamelet made it") {
+		t.Fatalf("made: %v", err)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "new")); err != nil || fi.Mode().Perm() != 0o775 {
+		t.Errorf("the directory put there was changed: %v %v", fi.Mode(), err)
+	}
+	// Left alone, it is made as asked.
+	if err := makeDir(top, "other", "/other", rootID, rootID); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Join(dir, "other")); fi.Mode().Perm() != 0o755 {
+		t.Errorf("made %v", fi.Mode())
+	}
 }
 
 // M2: the keys found are listed once each and at most MaxFoundKeys, the rest counted.

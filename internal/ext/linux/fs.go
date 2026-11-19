@@ -97,8 +97,9 @@ func openDir(r *os.Root, dir string) (*dirFD, error) {
 }
 
 // Tests put something else in place of a file (testHookOpenLeaf) or a directory (testHookOpenSubdir)
-// between mamelet's look at it and its opening (p: its path), as a user racing mamelet would.
-var testHookOpenLeaf, testHookOpenSubdir func(p string)
+// between mamelet's look at it and its opening, or of a directory mamelet made between its making and
+// its opening (testHookMadeDir) (p: its path), as a user racing mamelet would.
+var testHookOpenLeaf, testHookOpenSubdir, testHookMadeDir func(p string)
 
 // openRegular opens the regular file at p (absolute) for reading, following no link on the way
 // (openDir, openLeaf). The FileInfo and the stamp are the opened descriptor's.
