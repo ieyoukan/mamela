@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/plan"
 	"github.com/ieyoukan/mamela/internal/policy"
@@ -374,18 +375,22 @@ func TestMameletComparesBeforeTheOtherKinds(t *testing.T) {
 	})
 }
 
-// A plan's observation targets are bounded: a list past maxTargets keeps only the planned
-// declaration's, and a kind's entries are never more than mamelet observes on a node: those in force
-// or granted first, then the planned declaration's, then what other plans added, each by name.
+// A plan's observation targets are bounded: a list past maxTargets keeps the declaration in force's
+// values, then the planned declaration's, then the others', and a kind's entries are never more than
+// mamelet observes on a node: those in force or granted first, then the planned declaration's, then
+// what other plans added, each by name.
 func TestObservationTargetsAreBounded(t *testing.T) {
 	var many []string
 	for i := range maxTargets {
 		many = append(many, "u"+strings.Repeat("x", i))
 	}
-	if got := union(many, []string{"root"}); !slices.Equal(got, []string{"root"}) {
-		t.Errorf("past the bound: %q", got)
+	if got := union(nil, many, []string{"root"}); len(got) != maxTargets || !slices.Contains(got, "root") || slices.Contains(got, many[maxTargets-1]) {
+		t.Errorf("past the bound, nothing in force: %q", got)
 	}
-	if got := union(many[:3], []string{"root", many[0]}); len(got) != 4 {
+	if got := union(many[:2], many, []string{"root"}); len(got) != maxTargets || !slices.Contains(got, "root") || !slices.Contains(got, many[0]) || !slices.Contains(got, many[1]) {
+		t.Errorf("past the bound, two in force: %q", got)
+	}
+	if got := union(nil, many[:3], []string{"root", many[0]}); len(got) != 4 {
 		t.Errorf("within it: %q", got)
 	}
 	full := func() Part {
@@ -439,6 +444,84 @@ func TestObservationTargetsAreBounded(t *testing.T) {
 		if got := kept(p, "/etc/left"); !slices.Equal(got, c.wantOthers) {
 			t.Errorf("%d declared: kept %q of other plans, want %q", c.mine, got, c.wantOthers)
 		}
+	}
+}
+
+// A user's groups in force are never taken out by a declaration nobody approved: a pull request that
+// adds 7 groups to the 10 of the declaration in force gets those that fit (6), and main's user, in
+// sync, does not wait again for its own (it did, in turn with the pull request's plans). Plans of the
+// two in turn do not change the revision; a third declaration takes the room of the second, never of
+// the one in force; and the next apply of a declaration makes its own the ones kept.
+func TestTheTargetsInForceAreKeptPastTheBound(t *testing.T) {
+	user := func(groups ...string) string {
+		return fmt.Sprintf(`{"kind":"NodeUser","name":"web/user/app","spec":{"node":"web","name":"app","groups":[%s]}}`, `"`+strings.Join(groups, `","`)+`"`)
+	}
+	names := func(prefix string, n int) []string {
+		var out []string
+		for i := range n {
+			out = append(out, fmt.Sprintf("%s%02d", prefix, i))
+		}
+		return out
+	}
+	graphOf := func(groups []string) *graph.Graph {
+		g, err := decodeGraph(user(groups...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	mainG, pr, pr2 := graphOf(names("g", 10)), graphOf(names("p", 7)), graphOf(names("q", 5))
+	p := Part{}
+	pruneUsers(mainG, "web", &p) // main applied: in force
+	publishUsers(pr, "web", &p)
+	got := p.user("app").Groups
+	for _, g := range names("g", 10) {
+		if !slices.Contains(got, g) {
+			t.Fatalf("the pull request took %s of the declaration in force out: %q", g, got)
+		}
+	}
+	if len(got) != maxTargets || !slices.Contains(got, "p05") || slices.Contains(got, "p06") {
+		t.Errorf("the pull request's that fit: %q", got)
+	}
+	// main and the pull request planned in turn: the part does not change.
+	before := string(encode(p))
+	for _, g := range []*graph.Graph{mainG, pr, mainG, pr} {
+		publishUsers(g, "web", &p)
+		if after := string(encode(p)); after != before {
+			t.Fatalf("the part changed:\n%s\n%s", before, after)
+		}
+	}
+	// Another pull request: its own fit after main's, in place of the first's.
+	publishUsers(pr2, "web", &p)
+	got = p.user("app").Groups
+	for _, g := range slices.Concat(names("g", 10), names("q", 5)) {
+		if !slices.Contains(got, g) {
+			t.Fatalf("%s is not kept: %q", g, got)
+		}
+	}
+	// What mamelet gets has no bookkeeping of the Control Plane.
+	rev := &noderev.Revision{}
+	setPart(rev, p)
+	out, err := partForMamelet(rev.Ext[Name], time.Now())
+	if err != nil || strings.Contains(string(out), `"held"`) {
+		t.Errorf("mamelet gets %s (%v)", out, err)
+	}
+	// The pull request applied: its groups are the ones in force.
+	pruneUsers(pr, "web", &p)
+	if got := p.user("app"); !slices.Equal(got.Groups, names("p", 7)) || !slices.Equal(got.Held.Groups, names("p", 7)) {
+		t.Errorf("after the apply: %+v", got)
+	}
+
+	// The URIs and suites of a source: the same.
+	held := AptWhere{URIs: []string{"https://example.com/main"}, Suites: []string{"stable"}}
+	cur := []AptWhere{held}
+	for i := range maxTargets - 1 {
+		cur = addWhere(&held, cur, AptWhere{URIs: []string{fmt.Sprintf("https://example.com/pr%02d", i)}, Suites: []string{"stable"}})
+	}
+	w := AptWhere{URIs: []string{"https://example.com/zz"}, Suites: []string{"stable"}}
+	cur = addWhere(&held, cur, w)
+	if len(cur) != maxTargets || !slices.ContainsFunc(cur, held.same) || !slices.ContainsFunc(cur, w.same) {
+		t.Errorf("the URIs and suites past the bound: %+v", cur)
 	}
 }
 

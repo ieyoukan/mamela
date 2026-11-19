@@ -340,6 +340,8 @@ func needs(k *plan.Kit, want *UserSpec, got *UserState, o Observed, shell string
 		switch {
 		case !checked:
 			n := awaitReport(want, "whether group "+g+" exists")
+			n.note.Hint = fmt.Sprintf("mamelet reports it in its round after this plan; if a later plan still waits, the declarations planned name more groups of %s than the %d mamelet observes of one user, "+
+				"and the declaration in force keeps its own first: approve and apply this plan (on the Control Plane's host: mamela approve <digest>, then mamela apply), after which mamelet observes this declaration's", want.Name, maxTargets)
 			return &n
 		case !exists:
 			groups = append(groups, g)

@@ -6,6 +6,10 @@ part: linux.Part {
     "owners" (omitempty) []string
     "groups" (omitempty) []string
     "inForce" (omitzero) bool
+    "held" (omitempty) *linux.OwnerTargets {
+      "owners" (omitempty) []string
+      "groups" (omitempty) []string
+    }
     "write" (omitempty) *linux.Write {
       "content" string
       "sha256" string
@@ -35,6 +39,12 @@ part: linux.Part {
     "homes" (omitempty) []string
     "keys" (omitzero) bool
     "inForce" (omitzero) bool
+    "held" (omitempty) *linux.UserTargets {
+      "shells" (omitempty) []string
+      "groups" (omitempty) []string
+      "uids" (omitempty) []int
+      "homes" (omitempty) []string
+    }
     "change" (omitempty) *linux.UserChange {
       "create" (omitempty) *linux.UserCreate {
         "system" (omitzero) bool
@@ -72,6 +82,10 @@ part: linux.Part {
     "owners" (omitempty) []string
     "groups" (omitempty) []string
     "inForce" (omitzero) bool
+    "held" (omitempty) *linux.OwnerTargets {
+      "owners" (omitempty) []string
+      "groups" (omitempty) []string
+    }
     "install" (omitempty) *linux.Install {
       "url" string
       "sha256" string
@@ -101,6 +115,10 @@ part: linux.Part {
       "suites" []string
     }
     "inForce" (omitzero) bool
+    "held" (omitempty) *linux.AptWhere {
+      "uris" []string
+      "suites" []string
+    }
     "add" (omitempty) *linux.AptRepoAdd {
       "uris" []string
       "suites" []string

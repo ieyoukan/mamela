@@ -60,7 +60,7 @@ func publishArtifacts(g *graph.Graph, name string, p *Part) {
 			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path})
 			cur = &p.Artifacts[len(p.Artifacts)-1]
 		}
-		cur.Owners, cur.Groups = union(cur.Owners, []string{a.Owner}), union(cur.Groups, []string{a.Group})
+		cur.Owners, cur.Groups = union(cur.Held.heldOwners(), cur.Owners, []string{a.Owner}), union(cur.Held.heldGroups(), cur.Groups, []string{a.Group})
 	}
 	p.Artifacts = bound(p.Artifacts, func(a Artifact) string { return a.Path }, func(a Artifact) bool { return a.InForce || a.Install != nil }, declared, MaxNodeArtifacts)
 }
@@ -84,6 +84,7 @@ func pruneArtifacts(g *graph.Graph, name string, p *Part) {
 	for i := range p.Artifacts {
 		a, want := &p.Artifacts[i], declared[p.Artifacts[i].Path]
 		a.InForce, a.Owners, a.Groups = true, []string{want.Owner}, []string{want.Group}
+		a.Held = &OwnerTargets{Owners: []string{want.Owner}, Groups: []string{want.Group}}
 		if in := a.Install; in != nil && !installs(*in, want) {
 			a.Install = nil
 		}
@@ -136,7 +137,7 @@ func grantInstall(_ context.Context, q node.GrantRequest) (node.Grant, bool, err
 			p.Artifacts = append(p.Artifacts, Artifact{Path: a.Path})
 			cur = &p.Artifacts[len(p.Artifacts)-1]
 		}
-		cur.Owners, cur.Groups = union(cur.Owners, []string{a.Owner}), union(cur.Groups, []string{a.Group})
+		cur.Owners, cur.Groups = union(cur.Held.heldOwners(), cur.Owners, []string{a.Owner}), union(cur.Held.heldGroups(), cur.Groups, []string{a.Group})
 		cur.InForce, cur.Install = true, in
 		setPart(rev, p)
 		return nil

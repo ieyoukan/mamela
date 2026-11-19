@@ -21,7 +21,9 @@ import (
 // them to that declaration's: the others' come back at their next plan.
 //
 // The union is bounded, and the bound decides by a fixed order, never by chance: a list of an entry
-// that would grow past maxTargets is set to the planned declaration's; the entries of a kind on a node
+// that would grow past maxTargets keeps the values of the declaration in force (Held, which the
+// Control Plane keeps for itself), then the planned declaration's, then those others added, as many as
+// fit (an unapproved declaration never takes out what the one in force observes); the entries of a kind on a node
 // are never more than mamelet observes (MaxNodeFiles and the like, room), kept in this order, each
 // group by key: those the declaration in force has or a grant is for, then the planned declaration's,
 // then those plans of other declarations added. What does not fit is left out of the part: the planned
@@ -35,26 +37,36 @@ import (
 // maxTargets groups).
 const maxTargets = 16
 
-// union is a and b, sorted, each value once; a when it would hold more than maxTargets values, then b
-// alone (the planned declaration's).
-func union[T cmp.Ordered](a, b []T) []T {
-	out := slices.Concat(a, b)
-	slices.Sort(out)
-	out = slices.Compact(out)
-	if len(out) > maxTargets {
-		out = slices.Clone(b)
-		slices.Sort(out)
-		out = slices.Compact(out)
+// union is a and b, sorted, each value once, while that is at most maxTargets values. Past it, it
+// keeps held (the values of the declaration in force, which it never takes out), then b's (the
+// planned declaration's), then a's others (other declarations'), each in order, as many as fit: an
+// unapproved declaration (a pull request) never takes out what the declaration in force observes,
+// whatever it declares, and its own come before the others'.
+func union[T cmp.Ordered](held, a, b []T) []T {
+	out := sorted(slices.Concat(a, b))
+	if len(out) <= maxTargets {
+		return out
 	}
-	if len(out) == 0 {
-		return nil
+	var keep []T
+	for _, l := range [][]T{held, b, a} {
+		for _, v := range sorted(l) {
+			if len(keep) < maxTargets && !slices.Contains(keep, v) {
+				keep = append(keep, v)
+			}
+		}
 	}
-	return out
+	return sorted(keep)
 }
 
 // sorted is l sorted, each value once (nil when empty).
 func sorted[T cmp.Ordered](l []T) []T {
-	return union[T](nil, l)
+	out := slices.Clone(l)
+	slices.Sort(out)
+	out = slices.Compact(out)
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // room is how many entries of a kind mamelet observes on one node, and how Publish and the plan find

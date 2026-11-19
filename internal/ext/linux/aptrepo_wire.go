@@ -20,6 +20,8 @@ type AptRepo struct {
 	Where []AptWhere `json:"where,omitempty"`
 	// InForce: the declaration in force has the source (File.InForce).
 	InForce bool `json:"inForce,omitzero"`
+	// Held are the URIs and suites of the declaration in force (File.Held: never sent to mamelet).
+	Held *AptWhere `json:"held,omitempty"`
 	// Add is an approved, one-time addition (or change) of exactly this source and key.
 	Add *AptRepoAdd `json:"add,omitempty"`
 }

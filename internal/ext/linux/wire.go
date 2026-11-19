@@ -68,8 +68,33 @@ type File struct {
 	// what only another declaration planned is not shown at all. Mamelet reads it only to choose what to
 	// observe first of a part that names more than it observes (fit).
 	InForce bool `json:"inForce,omitzero"`
+	// Held are the owner and group the declaration in force names (set when an approved plan is
+	// applied, Prune): a union of the targets past maxTargets keeps them first. The Control Plane's
+	// own bookkeeping: never sent to mamelet (partForMamelet).
+	Held *OwnerTargets `json:"held,omitempty"`
 	// Write is an approved, one-time write of exactly this content, mode and owner.
 	Write *Write `json:"write,omitempty"`
+}
+
+// OwnerTargets are the owners and groups of a file or an artifact that the declaration in force names.
+type OwnerTargets struct {
+	Owners []string `json:"owners,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+}
+
+// heldOwners and heldGroups are what h holds (nil: nothing).
+func (h *OwnerTargets) heldOwners() []string {
+	if h == nil {
+		return nil
+	}
+	return h.Owners
+}
+
+func (h *OwnerTargets) heldGroups() []string {
+	if h == nil {
+		return nil
+	}
+	return h.Groups
 }
 
 // Write is an approved, one-time write of a file: mamelet writes exactly Content (whose sha256 is
@@ -415,6 +440,7 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	if err := decodeStrict(raw, &p); err != nil {
 		return nil, err
 	}
+	stripHeld(&p)
 	for i := range p.Files {
 		if w := p.Files[i].Write; w != nil {
 			if g := noderev.HandOut(&w.Grant, now); g != nil {
@@ -430,6 +456,22 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	handOutArtifacts(&p, now)
 	handOutAptRepos(&p, now) // NodeAptRepo
 	return encode(p), nil
+}
+
+// stripHeld takes the Control Plane's own bookkeeping (Held) out of a part, as mamelet gets it.
+func stripHeld(p *Part) {
+	for i := range p.Files {
+		p.Files[i].Held = nil
+	}
+	for i := range p.Users {
+		p.Users[i].Held = nil
+	}
+	for i := range p.Artifacts {
+		p.Artifacts[i].Held = nil
+	}
+	for i := range p.AptRepos {
+		p.AptRepos[i].Held = nil
+	}
 }
 
 // checkPart is what mamelet checks of the part of a verified revision before it uses it
