@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -42,8 +43,9 @@ var fileManifest = spec.Kind{Kind: KindFile, Operations: []spec.Operation{{
 
 // publishFiles adds to the part the files g declares on the node that it does not have yet (with no
 // permission, not InForce), and adds to each the owner and group the declaration names (what mamelet
-// reports the existence of: they allow nothing). It takes nothing away: an approved write stays as it
-// is, whatever g declares (g may be a declaration nobody approved).
+// reports the existence of: they allow nothing). It takes nothing away that the declaration in force
+// has: an approved write stays as it is, whatever g declares (g may be a declaration nobody approved).
+// Only what no approved plan needs is left out, past what mamelet observes on a node (bound).
 func publishFiles(g *graph.Graph, name string, p *Part) {
 	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
@@ -59,13 +61,14 @@ func publishFiles(g *graph.Graph, name string, p *Part) {
 		}
 		cur.Owners, cur.Groups = union(cur.Owners, []string{f.Owner}), union(cur.Groups, []string{f.Group})
 	}
-	p.Files = boundCandidates(p.Files, func(f File) bool { return !f.InForce && f.Write == nil }, func(f File) bool { return declared[f.Path] })
+	p.Files = bound(p.Files, func(f File) string { return f.Path }, func(f File) bool { return f.InForce || f.Write != nil }, declared, MaxNodeFiles)
 }
 
 // pruneFiles makes the part the files g, an approved declaration being applied, declares on the node:
-// the others go, with their writes (the files stay on the node); those it declares are InForce, with
-// its owner and group as targets, and keep a write only if it writes what g declares (a write approved
-// for another content is withdrawn: the plan of g said nothing of it).
+// the others go, with their writes (the files stay on the node); those it declares are InForce (those
+// a plan left out for want of room too: bound), with its owner and group as targets, and keep a write
+// only if it writes what g declares (a write approved for another content is withdrawn: the plan of g
+// said nothing of it).
 func pruneFiles(g *graph.Graph, name string, p *Part) {
 	declared := map[string]*FileSpec{}
 	for _, r := range g.Resources {
@@ -74,6 +77,11 @@ func pruneFiles(g *graph.Graph, name string, p *Part) {
 		}
 	}
 	p.Files = slices.DeleteFunc(p.Files, func(f File) bool { return declared[f.Path] == nil })
+	for _, path := range slices.Sorted(maps.Keys(declared)) {
+		if p.file(path) == nil {
+			p.Files = append(p.Files, File{Path: path})
+		}
+	}
 	for i := range p.Files {
 		f, want := &p.Files[i], declared[p.Files[i].Path]
 		f.InForce, f.Owners, f.Groups = true, []string{want.Owner}, []string{want.Group}

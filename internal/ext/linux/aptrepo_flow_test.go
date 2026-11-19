@@ -140,6 +140,44 @@ func TestAFailedAptUpdateIsRetriedByApply(t *testing.T) {
 	}
 }
 
+// apt-get update fails once (the network) after the source's files were written, and docker-ce comes
+// only from that source: apt cannot find it. The next plan does not block it (which would stop
+// mamelacd's sync = "push" from approving the plan): it waits for the source, whose plan runs the update
+// again; once that is applied, the package is planned. (A package apt cannot find while every source
+// is read is blocked: the golden plan apt-package-not-found.)
+func TestAPackageWaitsForASourceWhoseUpdateFailed(t *testing.T) {
+	f, apt, _ := aptFlow(t)
+	f.publish()
+	f.node.round()
+	f.publish()
+	f.node.round()
+	p, _ := f.plan()
+	apt.updateFail = "E: Failed to fetch https://download.docker.com/linux/ubuntu/dists/noble/InRelease  Could not resolve 'download.docker.com'"
+	if rep := f.apply(p); rep.Stopped == nil {
+		t.Fatalf("apply %+v", rep)
+	}
+	apt.updateFail = ""
+	f.node.round() // apt still has not read the source: docker-ce is not found
+	p, _ = f.plan()
+	if c := change(t, p, repoID); c.Status != plan.StatusChange || c.Note == nil || c.Note.Code != codeAptRepoUnread {
+		t.Fatalf("the source: %+v %+v", c, c.Note)
+	}
+	c := change(t, p, pkgID)
+	if c.Status != plan.StatusWaiting || c.Note.Code != codeAptRepoPackageGate || !strings.Contains(c.Note.Message, "unable to locate package") {
+		t.Fatalf("the package: %+v %+v", c, c.Note)
+	}
+	for _, c := range p.Changes {
+		if c.Status == plan.StatusBlocked {
+			t.Errorf("blocked: %+v", c)
+		}
+	}
+	f.apply(p) // apt-get update again
+	p, _ = f.plan()
+	if c := change(t, p, pkgID); c.Status != plan.StatusChange {
+		t.Fatalf("the package once the source is read: %+v %+v", c, c.Note)
+	}
+}
+
 // A mamelet older than the extension gets nothing of the source, and no grant: the source is
 // blocked, and the package is not held by it (it shows its own problem).
 func TestAnOldMameletGetsNoAptRepo(t *testing.T) {

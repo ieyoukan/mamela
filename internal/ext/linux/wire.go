@@ -64,7 +64,8 @@ type File struct {
 	Groups []string `json:"groups,omitempty"`
 	// InForce: the declaration in force has the file (the declaration of the plan applied last, or of
 	// an approved write). A plan of a declaration that does not have it shows it as kept (retained);
-	// what only another declaration planned is not shown at all. Mamelet does not read it.
+	// what only another declaration planned is not shown at all. Mamelet reads it only to choose what to
+	// observe first of a part that names more than it observes (fit).
 	InForce bool `json:"inForce,omitzero"`
 	// Write is an approved, one-time write of exactly this content, mode and owner.
 	Write *Write `json:"write,omitempty"`
@@ -225,8 +226,9 @@ const MaxContent = 256 << 10
 // in the node's revision (MAM-GRAPH-0106 beyond it).
 const MaxNodeContent = 1 << 20
 
-// The most of each kind one node has (the graph refuses more, and mamelet refuses a part with more):
-// they bound what mamelet observes and hashes each round, and its report.
+// The most of each kind one node has (the graph refuses more, the Control Plane puts no more in a
+// part, and mamelet observes no more: fit): they bound what mamelet observes and hashes each round, and
+// its report.
 const (
 	MaxNodeFiles     = 256
 	MaxNodeUsers     = 64
@@ -374,7 +376,10 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 
 // checkPart is what mamelet checks of the part of a verified revision before it uses it
 // (mamelet.Extension.Check): its shape, names and grants. A path is checked by itself when it is
-// observed and written (CheckPath), so that one path mamelet refuses does not stop the others.
+// observed and written (CheckPath), so that one path mamelet refuses does not stop the others. A part
+// that asks mamelet to observe more than it does on one node is not refused for that: mamelet observes
+// what fits and leaves the rest out (fit), so that the grants in it are still carried out. Only grants
+// past what it observes refuse the part.
 func checkPart(raw jsontext.Value) error {
 	var p Part
 	if err := decodeStrict(raw, &p); err != nil {
@@ -382,12 +387,33 @@ func checkPart(raw jsontext.Value) error {
 	}
 	var problems []string
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+	var files, users, repos, artifacts int // with a grant
+	for _, f := range p.Files {
+		if f.Write != nil {
+			files++
+		}
+	}
+	for _, u := range p.Users {
+		if u.Change != nil {
+			users++
+		}
+	}
+	for _, r := range p.AptRepos {
+		if r.Add != nil {
+			repos++
+		}
+	}
+	for _, a := range p.Artifacts {
+		if a.Install != nil {
+			artifacts++
+		}
+	}
 	for _, n := range []struct {
 		what      string
 		got, most int
-	}{{"files", len(p.Files), MaxNodeFiles}, {"users", len(p.Users), MaxNodeUsers}, {"APT sources", len(p.AptRepos), MaxNodeAptRepos}, {"artifacts", len(p.Artifacts), MaxNodeArtifacts}} {
+	}{{"files", files, MaxNodeFiles}, {"users", users, MaxNodeUsers}, {"APT sources", repos, MaxNodeAptRepos}, {"artifacts", artifacts, MaxNodeArtifacts}} {
 		if n.got > n.most {
-			add("it names %d %s; mamelet observes at most %d on one node (declare fewer)", n.got, n.what, n.most)
+			add("it grants changes of %d %s; mamelet observes at most %d on one node", n.got, n.what, n.most)
 		}
 	}
 	seen := map[string]bool{}
@@ -445,7 +471,7 @@ func checkWrite(w Write) error {
 }
 
 // accountsProblem says what is wrong with the users and groups an entry asks about ("" nothing): each
-// a name, sorted, none twice, at most maxTargets.
+// a name, sorted, none twice.
 func accountsProblem(users, groups []string) string {
 	for _, l := range []struct {
 		what  string
@@ -459,11 +485,8 @@ func accountsProblem(users, groups []string) string {
 }
 
 // targetsProblem says what is wrong with a list of observation targets ("" nothing): each valid,
-// sorted, none twice, at most maxTargets.
+// sorted, none twice. Past maxTargets, mamelet observes the first ones only (fit).
 func targetsProblem[T cmp.Ordered](l []T, valid func(T) bool) string {
-	if len(l) > maxTargets {
-		return fmt.Sprintf("%d values; at most %d", len(l), maxTargets)
-	}
 	for i, v := range l {
 		if !valid(v) {
 			return fmt.Sprintf("%v is not valid", v)
@@ -473,4 +496,108 @@ func targetsProblem[T cmp.Ordered](l []T, valid func(T) bool) string {
 		}
 	}
 	return ""
+}
+
+// leftOut are the entries of a part that mamelet does not observe, by kind (fit).
+type leftOut struct {
+	files, users, aptRepos, artifacts []string
+}
+
+// fit keeps the part within what mamelet observes on one node: of each kind, at most MaxNodeFiles and
+// the like, and of each list of observation targets, the first maxTargets. A Control Plane keeps its
+// parts so (bound, union, the graph's limits); a part past them (a Control Plane of another release) is
+// not refused, which would leave every grant in it undone: mamelet keeps every entry with a grant, then
+// those the declaration in force has, then the rest by key, and says which it left out.
+func (p *Part) fit() leftOut {
+	var left leftOut
+	p.Files, left.files = fitEntries(p.Files, func(f File) string { return f.Path }, func(f File) bool { return f.Write != nil },
+		func(f File) bool { return f.InForce }, MaxNodeFiles)
+	for i := range p.Files {
+		f := &p.Files[i]
+		f.Owners, f.Groups = firstTargets(f.Owners), firstTargets(f.Groups)
+	}
+	p.Users, left.users = fitEntries(p.Users, func(u User) string { return u.Name }, func(u User) bool { return u.Change != nil },
+		func(u User) bool { return u.InForce }, MaxNodeUsers)
+	for i := range p.Users {
+		u := &p.Users[i]
+		u.Shells, u.Groups, u.UIDs, u.Homes = firstTargets(u.Shells), firstTargets(u.Groups), firstTargets(u.UIDs), firstTargets(u.Homes)
+	}
+	p.AptRepos, left.aptRepos = fitEntries(p.AptRepos, func(r AptRepo) string { return r.Name }, func(r AptRepo) bool { return r.Add != nil },
+		func(r AptRepo) bool { return r.InForce }, MaxNodeAptRepos)
+	for i := range p.AptRepos {
+		p.AptRepos[i].Where = firstTargets(p.AptRepos[i].Where)
+	}
+	p.Artifacts, left.artifacts = fitEntries(p.Artifacts, func(a Artifact) string { return a.Path }, func(a Artifact) bool { return a.Install != nil },
+		func(a Artifact) bool { return a.InForce }, MaxNodeArtifacts)
+	for i := range p.Artifacts {
+		a := &p.Artifacts[i]
+		a.Owners, a.Groups = firstTargets(a.Owners), firstTargets(a.Groups)
+	}
+	return left
+}
+
+// fitEntries keeps at most most entries: those granted first, then those in force, then the rest, each
+// by key; it returns them in the order they came (by key), and the keys of those it left out.
+func fitEntries[E any](entries []E, key func(E) string, granted, inForce func(E) bool, most int) ([]E, []string) {
+	if len(entries) <= most {
+		return entries, nil
+	}
+	rank := func(e E) int {
+		switch {
+		case granted(e):
+			return 0
+		case inForce(e):
+			return 1
+		}
+		return 2
+	}
+	order := slices.Clone(entries)
+	slices.SortStableFunc(order, func(a, b E) int {
+		if c := cmp.Compare(rank(a), rank(b)); c != 0 {
+			return c
+		}
+		return strings.Compare(key(a), key(b))
+	})
+	keep := map[string]bool{}
+	for _, e := range order[:most] {
+		keep[key(e)] = true
+	}
+	var kept []E
+	var left []string
+	for _, e := range entries {
+		if keep[key(e)] {
+			kept = append(kept, e)
+		} else {
+			left = append(left, key(e))
+		}
+	}
+	return kept, left
+}
+
+// firstTargets is a list of observation targets cut to maxTargets.
+func firstTargets[T any](l []T) []T {
+	if len(l) > maxTargets {
+		return l[:maxTargets]
+	}
+	return l
+}
+
+// add puts into the observation what mamelet left out, each with the reason (the plan blocks it, and
+// says so).
+func (l leftOut) add(o *Observed) {
+	why := func(most int, what string) string {
+		return fmt.Sprintf("mamelet observes at most %d %s on one node, and the revision names more: this one was left out (the Control Plane and mamelet are of different releases?)", most, what)
+	}
+	for _, path := range l.files {
+		o.Files = append(o.Files, FileState{Path: path, Error: why(MaxNodeFiles, "files")})
+	}
+	for _, name := range l.users {
+		o.UserStates = append(o.UserStates, UserState{Name: name, Error: why(MaxNodeUsers, "users")})
+	}
+	for _, name := range l.aptRepos {
+		o.AptRepos = append(o.AptRepos, AptRepoState{Name: name, Error: why(MaxNodeAptRepos, "APT sources")})
+	}
+	for _, path := range l.artifacts {
+		o.Artifacts = append(o.Artifacts, ArtifactState{FileState: FileState{Path: path, Error: why(MaxNodeArtifacts, "artifacts")}})
+	}
 }

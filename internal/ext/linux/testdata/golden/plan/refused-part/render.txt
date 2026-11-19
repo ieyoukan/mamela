@@ -1,4 +1,4 @@
-Plan sha256:68497c160b5c
+Plan sha256:6ca562768490
   revision  sha256:4f86ac1dd34c
   observed  2026-11-17T12:01:00Z (snapshot sha256:d84f655ae13a)
   policy    sha256:b2ad900beffb
@@ -7,7 +7,7 @@ Plan sha256:68497c160b5c
 = TestVM web  [in sync]  via test
 ! NodeFile web/file/etc/app/app.conf  [blocked]
     MAM-PLAN-0122 mamelet on node web refused the part of the linux extension in its revision: invalid linux part: file "/etc/app/app.conf": the content is not the one approved (sha256 0000)
-      hint: see the reason (mamelet logs it too: journalctl -u mamelet on the node); a mamelet refuses a part it cannot read, so a mamelet older than this Control Plane is updated first (docs/mamelet-update.md)
+      hint: mamelet read the part and refused what it says (the reason above; journalctl -u mamelet on the node logs it too), and goes on with the rest of the revision: change what the reason names (a value, how many) and plan again; if it names nothing the declaration has, this Control Plane and the mamelet on web are of different releases: update them (the Control Plane first, docs/mamelet-update.md)
 
 Summary: 1 blocked, 2 in sync.
 Nothing has been changed: a plan only describes.
