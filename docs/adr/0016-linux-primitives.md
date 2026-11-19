@@ -92,7 +92,7 @@ mamelet は root で動き、観測する path はユーザーが変えられる
 - **大きさ:** 1 つのノードの部品の数（ファイル 256、ユーザー 64、ソース 32、artifact 64）、報告する鍵の数（65）、linux の報告（512 KiB。超えれば、詳しいことを除いて理由だけを送る）に上限を置く。ノードの上のものが報告を Control Plane の上限（1 MiB）より大きくし、ノードが止まったように見えることがないように。artifact は、変わったとき（inode・大きさ・mtime・ctime）だけ計り直す。書く前とダウンロードの前に、ファイルシステムの空きを確かめる。
   - 数を超える部分を、mamelet は断らない（2026-11-19）。断ると、その中の grant（承認した main の変更）が行われないからである。mamelet は、grant のある項目、`inForce` の項目、残りを名前の順に、上限まで観測し、ほかは報告に理由（`error`）だけを書く（plan は Blocked で理由を示す）。観測の対象の一覧（所有者、グループなど）は、はじめの 16 だけを見る。断るのは、grant が上限を超える部分だけ。Control Plane は上限を超える部分を作らないので（5a）、これは版の違う Control Plane への備えである。
 
-ここで足した報告と revision のメンバー（`exposed`、`pending`、`newHomes`、`notOwned`、`more`、ユーザーの `homes`、`error`）は、linux の部分の版（`Version` 1）を上げずに足した（作る home は 5a の観測の対象の和で、`homes` と、home ごとの `newHomes`。形は `internal/ext/linux/testdata/wire/v1.txt`）。linux を受け取る mamelet 0.10.0 は、まだリリースしていない（タグがない）からである。リリースのあとに足すものは版を上げる。
+ここで足した報告と revision のメンバー（`exposed`、`pending`、`newHomes`、`notOwned`、`more`、ユーザーの `homes`、`error`。2026-11-19 の再レビューの `shadows`、ソースの `failed`、Control Plane だけが持つ `held`）は、linux の部分の版（`Version` 1）を上げずに足した（作る home は 5a の観測の対象の和で、`homes` と、home ごとの `newHomes`。形は `internal/ext/linux/testdata/wire/v1.txt`）。linux を受け取る mamelet 0.10.0 は、まだリリースしていない（タグがない）からである。リリースのあとに足すものは版を上げる。
 
 ## 結果
 
