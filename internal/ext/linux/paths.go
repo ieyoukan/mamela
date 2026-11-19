@@ -118,6 +118,14 @@ var forbidden = []struct {
 	{"/etc/dpkg/dpkg.cfg", "file", "dpkg's configuration can run commands as root at every installation (pre-invoke, post-invoke)", ""},
 	{"/etc/dpkg/dpkg.cfg.d", "dir", "dpkg's configuration can run commands as root at every installation (pre-invoke, post-invoke)", ""},
 	{"/usr/lib/apt", "dir", "it holds the programs apt-get runs as root (its methods)", ""},
+	// What the packages' scripts and APT's hooks run or read as root besides: Python's site
+	// configuration (sitecustomize, which every python3 loads), needrestart's (Perl it evaluates, from
+	// an APT hook on Ubuntu), the kernel's and the initramfs's hooks, ca-certificates' hooks.
+	{"/etc/python3", "prefix", "Python reads its site configuration from there (sitecustomize, /etc/python3.X) whenever it starts, and APT's hooks and the packages' scripts run python3 as root", "configure an application's Python under /opt/<app> (a virtual environment)"},
+	{"/etc/needrestart", "dir", "needrestart, which an APT hook runs as root after each installation (Ubuntu), evaluates its configuration as Perl and runs its hooks", "set it by hand on the node if it must be"},
+	{"/etc/kernel", "dir", "the kernel's packages run the scripts there as root at each installation of a kernel (postinst.d, postrm.d)", "install what needs them as a package (NodePackage)"},
+	{"/etc/initramfs-tools", "dir", "update-initramfs runs its hooks and scripts as root, and puts them into the initramfs the node boots", "install what needs them as a package (NodePackage)"},
+	{"/etc/ca-certificates/update.d", "dir", "update-ca-certificates runs the scripts there as root (when ca-certificates is installed or upgraded)", "install what needs them as a package (NodePackage)"},
 	// systemd's settings of every service (mamelet's too), and what makes units at each daemon-reload.
 	{"/etc/systemd/system.conf", "file", "it sets what every service runs with (DefaultEnvironment=, mamelet's too)", "set it in the unit of the one service (Environment=, a drop-in <unit>.service.d/*.conf)"},
 	{"/etc/systemd/system.conf.d", "dir", "it sets what every service runs with (DefaultEnvironment=, mamelet's too)", "set it in the unit of the one service (Environment=, a drop-in <unit>.service.d/*.conf)"},
@@ -166,14 +174,28 @@ var packageDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"}
 // (mamelet.Programs, added by programNames), apt's and dpkg's and those dpkg needs on its PATH, the
 // shells and interpreters of the packages' scripts, and what those run to install services, make
 // users and become another user.
+//
+// It is the graph's check, for the names it knows; mamelet, which knows the node, refuses besides any
+// name the node has in a directory of the packages' programs (shadowed).
 var rootRuns = []string{
-	"addgroup", "adduser", "apt", "apt-cache", "apt-config", "apt-extracttemplates", "apt-get", "apt-key", "apt-mark",
-	"bash", "dash", "deb-systemd-helper", "deb-systemd-invoke", "debconf", "debconf-apt-progress", "debconf-communicate",
-	"debconf-copydb", "debconf-escape", "debconf-set-selections", "debconf-show", "diff", "dpkg", "dpkg-deb", "dpkg-divert",
-	"dpkg-maintscript-helper", "dpkg-preconfigure", "dpkg-query", "dpkg-realpath", "dpkg-reconfigure", "dpkg-split",
-	"dpkg-statoverride", "dpkg-trigger", "env", "groupadd", "invoke-rc.d", "ldconfig", "ldconfig.real", "nscd", "perl",
-	"python3", "rm", "service", "sh", "sss_cache", "start-stop-daemon", "su", "sudo", "systemctl", "systemd-sysusers",
-	"systemd-tmpfiles", "tar", "ucf", "ucfr", "update-alternatives", "update-rc.d", "useradd", "usermod",
+	"add-shell", "addgroup", "adduser", "apt", "apt-cache", "apt-config", "apt-extracttemplates", "apt-get", "apt-key", "apt-mark",
+	"awk", "base64", "basename", "bash", "bzip2", "c_rehash", "cat", "chfn", "chgrp", "chmod", "chown", "chpasswd", "chroot", "chsh",
+	"cmp", "cp", "cut", "dash", "date", "dd", "deb-systemd-helper", "deb-systemd-invoke", "debconf", "debconf-apt-progress",
+	"debconf-communicate", "debconf-copydb", "debconf-escape", "debconf-set-selections", "debconf-show", "delgroup", "deluser",
+	"depmod", "df", "diff", "dirname", "dpkg", "dpkg-deb", "dpkg-divert", "dpkg-maintscript-helper", "dpkg-preconfigure",
+	"dpkg-query", "dpkg-realpath", "dpkg-reconfigure", "dpkg-split", "dpkg-statoverride", "dpkg-trigger", "echo", "egrep", "env",
+	"expr", "false", "fgrep", "find", "findmnt", "flock", "gawk", "getent", "getopt", "gpasswd", "gpg", "gpg-agent", "gpgconf",
+	"gpgv", "grep", "groupadd", "groupdel", "groupmod", "grub-install", "grub-mkconfig", "grub-probe", "gunzip", "gzip", "head",
+	"hostname", "id", "insserv", "install", "install-info", "installkernel", "invoke-rc.d", "ionice", "ischroot", "journalctl",
+	"kill", "kmod", "ldconfig", "ldconfig.real", "ldd", "ln", "logger", "login", "ls", "lsb_release", "mawk", "md5sum", "mkdir",
+	"mkinitramfs", "mknod", "mktemp", "modprobe", "mount", "mv", "needrestart", "newgrp", "nologin", "nscd", "openssl", "passwd",
+	"perl", "pgrep", "pidof", "pkill", "printf", "ps", "py3clean", "py3compile", "python3", "readlink", "realpath", "remove-shell",
+	"rm", "rmdir", "run-parts", "runuser", "savelog", "sed", "seq", "service", "setpriv", "sh", "sha1sum", "sha256sum",
+	"sha512sum", "sleep", "sort", "sss_cache", "start-stop-daemon", "stat", "su", "sudo", "sync", "sysctl", "systemctl",
+	"systemd-detect-virt", "systemd-escape", "systemd-run", "systemd-sysusers", "systemd-tmpfiles", "tail", "tar", "tee",
+	"tempfile", "test", "touch", "tr", "true", "ucf", "ucfr", "udevadm", "umount", "uname", "unattended-upgrade",
+	"unattended-upgrades", "uniq", "unxz", "update-alternatives", "update-ca-certificates", "update-grub", "update-initramfs",
+	"update-rc.d", "update-shells", "useradd", "userdel", "usermod", "wc", "which", "xargs", "xz", "zcat", "zstd",
 }
 
 // programNames are rootRuns and the names of mamelet's programs.

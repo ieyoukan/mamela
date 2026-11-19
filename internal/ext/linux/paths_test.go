@@ -61,6 +61,34 @@ func TestCheckPath(t *testing.T) {
 		"/root/.ssh/authorized_keys":                 "log in",
 		"/home/alice/.ssh/authorized_keys2":          "log in",
 		"/var/lib/dpkg/status":                       "installed packages",
+		// Programs root runs by name that a file of /usr/local would run instead of (the static list:
+		// mamelet refuses the others the node has, shadowed).
+		"/usr/local/bin/sed":        "first in the PATH",
+		"/usr/local/bin/grep":       "first in the PATH",
+		"/usr/local/bin/awk":        "first in the PATH",
+		"/usr/local/bin/find":       "first in the PATH",
+		"/usr/local/bin/cp":         "first in the PATH",
+		"/usr/local/bin/mv":         "first in the PATH",
+		"/usr/local/bin/chown":      "first in the PATH",
+		"/usr/local/bin/mktemp":     "first in the PATH",
+		"/usr/local/bin/getent":     "first in the PATH",
+		"/usr/local/bin/gzip":       "first in the PATH",
+		"/usr/local/bin/install":    "first in the PATH",
+		"/usr/local/bin/ln":         "first in the PATH",
+		"/usr/local/bin/mkdir":      "first in the PATH",
+		"/usr/local/bin/cat":        "first in the PATH",
+		"/usr/local/bin/gpgv":       "first in the PATH",
+		"/usr/local/sbin/depmod":    "first in the PATH",
+		"/usr/local/sbin/run-parts": "first in the PATH",
+		// What APT's hooks and the packages' scripts run or read as root.
+		"/etc/python3.11/sitecustomize.py":      "sitecustomize",
+		"/etc/python3/debian_config":            "sitecustomize",
+		"/etc/needrestart/conf.d/50-local.conf": "needrestart",
+		"/etc/needrestart/needrestart.conf":     "needrestart",
+		"/etc/kernel/postinst.d/zz-local":       "kernel",
+		"/etc/initramfs-tools/hooks/local":      "update-initramfs",
+		"/etc/initramfs-tools/initramfs.conf":   "update-initramfs",
+		"/etc/ca-certificates/update.d/local":   "update-ca-certificates",
 	} {
 		err := CheckPath(p)
 		if err == nil {

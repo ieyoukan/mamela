@@ -153,7 +153,7 @@ func result(t *testing.T, rep noderev.Report, op string) noderev.Result {
 	return noderev.Result{}
 }
 
-const opA, opB = "op-aaaaaaaaaaaaaaaaaaaaaaaa", "op-bbbbbbbbbbbbbbbbbbbbbbbb"
+const opA, opB, opC = "op-aaaaaaaaaaaaaaaaaaaaaaaa", "op-bbbbbbbbbbbbbbbbbbbbbbbb", "op-cccccccccccccccccccccccc"
 
 // An approved write: the directories it needs, the content, mode and owner, and the services it
 // names restarted if they run; once.

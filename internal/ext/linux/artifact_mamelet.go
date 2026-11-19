@@ -159,7 +159,7 @@ func observeArtifacts(_ context.Context, s *mamelet.System, p Part, o *Observed)
 			st.Error = recErr.Error() + ": whether the file at the path is the one mamelet installed cannot be told; the record is left as it is and read again the next time"
 		} else {
 			removeStaleTemp(r, a.Path)
-			st.FileState = inspectUpTo(r, a.Path, acc, MaxArtifact)
+			st.FileState = withShadows(r, inspectUpTo(r, a.Path, acc, MaxArtifact))
 			if in, ok := rec.Artifacts[a.Path]; ok && st.Exists && st.Unsafe == "" && st.Error == "" && !st.Large && st.SHA256 == in.Installed {
 				from := in.Source
 				st.From = &from
@@ -243,6 +243,12 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 		return noderev.OutcomeFailed, err.Error(), false
 	}
 	defer r.Close()
+	switch prog, err := shadowed(r, p); {
+	case err != nil:
+		return noderev.OutcomeFailed, err.Error() + "; nothing was installed", false
+	case prog != "":
+		return refused("mamelet does not install " + p + ": " + shadowsWhy(p, prog) + "; nothing was installed")
+	}
 	acc := readAccounts(r)
 	uid, okU := acc.users[in.Owner]
 	gid, okG := acc.groups[in.Group]

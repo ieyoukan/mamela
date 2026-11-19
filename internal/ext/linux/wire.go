@@ -241,6 +241,10 @@ type FileState struct {
 	// Unsafe says why mamelet does not write there: the path is a symbolic link, a directory or a
 	// device, or a directory above it is a link or not a directory. Mamela never follows a link.
 	Unsafe string `json:"unsafe,omitempty"`
+	// Shadows is the program of the node's packages a file at the path would run instead of, for a
+	// path in /usr/local/sbin or /usr/local/bin whose name the node has in /usr/sbin, /usr/bin, /sbin
+	// or /bin ("/usr/bin/sed" for /usr/local/bin/sed): mamelet does not write it (shadowed).
+	Shadows string `json:"shadows,omitempty"`
 	// Exposed are the directories above the path that a user other than root can change (one it
 	// owns, or one its group or everyone may write): that user can replace what is at the path, so
 	// a file root puts there is in its hands (the plan warns: MAM-PLAN-0144).

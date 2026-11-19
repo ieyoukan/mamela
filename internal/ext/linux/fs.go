@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -307,6 +308,58 @@ func resolve(r *os.Root, p string) (string, error) {
 		todo = append(strings.Split(strings.TrimPrefix(t, "/"), "/"), todo...)
 	}
 	return cur, nil
+}
+
+// shadowed says, of a path in /usr/local/sbin or /usr/local/bin (localDirs), which program of the
+// node's packages a file there would run instead of ("" none): the first of the directories of the
+// packages' programs (packageDirs) that has one of its name. The /usr/local ones come first in the
+// PATH of root's shells and of systemd's services (apt-daily-upgrade.service runs dpkg, and so the
+// packages' scripts, with it), so a file there runs as root instead of the system's program of that
+// name, whichever it is: the graph knows only some names (rootRuns), mamelet the node's. The links
+// of the node are followed by looking only (resolve: a merged /usr's /bin, a link of the
+// alternatives); a name that leads nowhere is no program. An error says that it cannot be told
+// (mamelet then refuses the path: fail closed).
+func shadowed(r *os.Root, p string) (string, error) {
+	dir, base := path.Dir(p), path.Base(p)
+	if !slices.Contains(localDirs, dir) {
+		return "", nil
+	}
+	for _, d := range packageDirs {
+		q := d + "/" + base
+		_, err := resolve(r, q)
+		switch {
+		case err == nil:
+			return q, nil
+		case errors.Is(err, fs.ErrNotExist):
+		default:
+			return "", fmt.Errorf("mamelet cannot tell whether the node has %s, which a file at %s would run instead of: %w", q, p, err)
+		}
+	}
+	return "", nil
+}
+
+// withShadows is st with what a file there would run instead of (Shadows), or why that cannot be
+// told (Error), when it was observed.
+func withShadows(r *os.Root, st FileState) FileState {
+	if st.Error != "" || st.Unsafe != "" {
+		return st
+	}
+	switch prog, err := shadowed(r, st.Path); {
+	case err != nil:
+		st.Error = err.Error()
+	case prog != "":
+		st.Shadows = prog
+	}
+	return st
+}
+
+// localDirs are the directories of pathDirs that are not the packages': a program there comes first.
+var localDirs = []string{"/usr/local/sbin", "/usr/local/bin"}
+
+// shadowsWhy says why mamelet does not write p, a file that would run instead of prog.
+func shadowsWhy(p, prog string) string {
+	return fmt.Sprintf("the node has %s, and %s comes first in the PATH of root's shells and of systemd's services (apt-daily-upgrade runs dpkg and the packages' scripts with it): a file at %s would run as root instead of it",
+		prog, path.Dir(p), p)
 }
 
 // modeString is a file's mode as four octal digits, with the setuid, setgid and sticky bits.

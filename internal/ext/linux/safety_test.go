@@ -22,6 +22,8 @@ import (
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
+	"github.com/ieyoukan/mamela/internal/plan"
+	"github.com/ieyoukan/mamela/internal/policy"
 )
 
 // notRoot skips a test that tells users apart by the owner of the test's files: run as root, they
@@ -1104,6 +1106,65 @@ func TestAnUnreadableRecordOfWhatIsPendingIsNotForgotten(t *testing.T) {
 	}
 	if got := observedOf(t, rep).file(entry.Path).Pending; got != nil {
 		t.Errorf("still pending: %+v", got)
+	}
+}
+
+// A program of /usr/local/sbin or /usr/local/bin runs, for root's shells and systemd's services, instead
+// of the one of its name in a directory of the packages' programs. The graph refuses the names it
+// knows; mamelet refuses any name the node has (following the node's links, by looking only), reports
+// it for the plan to block, and writes nothing there. A name that leads nowhere is no program.
+func TestMameletDoesNotShadowTheNodesPrograms(t *testing.T) {
+	rel := newReleases(t)
+	sum := rel.put("/frobctl", []byte("frobctl"))
+	n := artifactNode(t, rel)
+	write(t, filepath.Join(n.root, "usr/bin/frobnicate"), "#!/bin/sh\n")
+	write(t, filepath.Join(n.root, "usr/lib/frob/frobctl"), "#!/bin/sh\n")
+	write(t, filepath.Join(n.root, "etc/alternatives/.keep"), "")
+	if err := os.MkdirAll(filepath.Join(n.root, "usr/sbin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// /sbin is /usr/sbin (a merged /usr); frobctl is a link of the alternatives.
+	for link, to := range map[string]string{"sbin": "usr/sbin", "usr/sbin/frobctl": "/etc/alternatives/frobctl",
+		"etc/alternatives/frobctl": "/usr/lib/frob/frobctl", "usr/bin/ghost": "/nowhere"} {
+		if err := os.Symlink(to, filepath.Join(n.root, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, p := range []string{"/usr/local/bin/frobnicate", "/usr/local/sbin/frobctl", "/usr/local/bin/ghost"} {
+		if err := CheckPath(p); err != nil {
+			t.Fatalf("%s: the graph's list was to let it through: %s", p, err.Message)
+		}
+	}
+	n.offer(Part{Files: []File{grant("/usr/local/bin/frobnicate", "#!/bin/sh\nexit 0\n", opA, 1), grant("/usr/local/bin/ghost", "x\n", opC, 1)},
+		Artifacts: []Artifact{install("/usr/local/sbin/frobctl", rel.url("/frobctl"), sum, "", opB, 1)}}, nil)
+	rep := n.round()
+	for op, want := range map[string]string{opA: "the node has /usr/bin/frobnicate", opB: "the node has /usr/sbin/frobctl"} {
+		if r := result(t, rep, op); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, want) || !strings.Contains(r.Detail, "first in the PATH") {
+			t.Errorf("%s: %+v", op, r)
+		}
+	}
+	if r := result(t, rep, opC); r.Outcome != noderev.OutcomeDone {
+		t.Errorf("a name that leads nowhere: %+v", r)
+	}
+	if n.exists("/usr/local/bin/frobnicate") || n.exists("/usr/local/sbin/frobctl") || rel.count("/frobctl") != 0 {
+		t.Error("written or downloaded")
+	}
+	o := observedOf(t, rep)
+	if f, a := o.file("/usr/local/bin/frobnicate"), o.artifact("/usr/local/sbin/frobctl"); f.Shadows != "/usr/bin/frobnicate" || a.Shadows != "/usr/sbin/frobctl" || o.file("/usr/local/bin/ghost").Shadows != "" {
+		t.Errorf("observed %+v %+v", f, a)
+	}
+
+	// The plan blocks them, saying which program they would run instead of.
+	g, err := decodeGraph(fileRes("web/file/usr/local/bin/frobnicate", `{"node":"web","path":"/usr/local/bin/frobnicate","content":"x\n","mode":"0755"}`),
+		artifactRes("web/artifact/usr/local/sbin/frobctl", `{"node":"web","url":"https://example.com/frobctl","sha256":"`+sumA+`","path":"/usr/local/sbin/frobctl"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := plan.Build(g, world{mamelet: Release, accepts: Version, observed: &o}.snapshot(g), policy.Default)
+	for id, code := range map[string]string{"NodeFile web/file/usr/local/bin/frobnicate": codeFileUnsafe, "NodeArtifact web/artifact/usr/local/sbin/frobctl": codeArtifactUnsafe} {
+		if c := findChange(t, p, id); c.Status != plan.StatusBlocked || c.Note.Code != code || !strings.Contains(c.Note.Message, "the node has /usr/") || !strings.Contains(c.Note.Hint, "/opt/<app>") {
+			t.Errorf("%s: %+v %+v", id, c, c.Note)
+		}
 	}
 }
 
