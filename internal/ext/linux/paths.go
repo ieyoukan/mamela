@@ -72,8 +72,8 @@ var forbidden = []struct {
 	// What APT trusts: a source written by hand ("[trusted=yes]", a key of its own) would bypass the
 	// key NodeAptRepo scopes to it (Signed-By) and the origins mamelet allows, and a key replaced
 	// would make apt trust another's packages; pinning chooses the version and origin apt installs.
-	{"/etc/apt/sources.list", "file", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptRepoHint},
-	{"/etc/apt/sources.list.d", "dir", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptRepoHint},
+	{"/etc/apt/sources.list", "file", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptSourcesHint},
+	{"/etc/apt/sources.list.d", "dir", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptSourcesHint},
 	{"/etc/apt/trusted.gpg", "prefix", "it is a key APT trusts for every source", aptRepoHint},
 	{"/etc/apt/keyrings", "dir", "it holds the keys APT trusts for the sources that name them (and NodeAptRepo's own)", aptRepoHint},
 	{"/usr/share/keyrings", "dir", "it holds the keys APT trusts for the system's sources (the distribution's archive key)", aptRepoHint},
@@ -149,8 +149,13 @@ var forbidden = []struct {
 // sudoHint: what to do instead of writing sudoers.
 const sudoHint = "rules of sudo are not supported yet (NodeUser can add a user to group sudo, which lets it run anything as root); write them by hand on the node"
 
-// aptRepoHint: what to do instead of writing APT's sources and keys.
+// aptRepoHint: what to do instead of writing APT's keys.
 const aptRepoHint = "declare the APT source with NodeAptRepo (the linux extension): it writes the source and its key, scoped to it"
+
+// aptSourcesHint: what to do instead of writing APT's sources. NodeAptRepo is for a source of one's
+// own; the distribution's sources cannot be declared yet (ADR 0016, a limitation).
+const aptSourcesHint = "declare a vendor's source (Docker's, a database's) with NodeAptRepo (the linux extension): it writes the source and its key, scoped to it. " +
+	"The distribution's own sources (another mirror, a component such as non-free-firmware) cannot be declared yet: NodeAptRepo would name the URIs and suites of the distribution's file, which apt refuses; change them by hand on the node"
 
 // The reasons and hint of the libraries' places.
 const (
