@@ -28,8 +28,10 @@ var componentRe = regexp.MustCompile(`^[A-Za-z0-9._+@=:,-]+$`)
 
 // forbidden are the places no kind of linux writes: the kernel's and the boot's, mamelet's own, k3s's,
 // what another kind (or the core) declares, what changes the programs mamelet runs as root (the
-// dynamic linker's, APT's and dpkg's configuration, systemd's settings of every service), and the
-// directories every user may write to. It is not every place a root file matters (a declaration
+// dynamic linker's, APT's and dpkg's configuration, what APT trusts, what useradd reads, systemd's
+// settings of every service, the libraries and modules they load), and the directories every user
+// may write to. The programs that run by name (pathProblem) and the system's libraries
+// (libraryProblem) are checked besides. It is not every place a root file matters (a declaration
 // approved as shown may write a unit that runs anything); it is those whose effect an approver would
 // not see in the file itself. Each says why and what to use instead. A path is in
 // one when it is the place or under it (dir), or when it is the place exactly (file); prefix: its
@@ -67,13 +69,50 @@ var forbidden = []struct {
 	{"/etc/subgid-", "file", "users and groups are not files to write", "declare users with NodeUser (the linux extension)"},
 	{"/etc/sudoers", "file", "who may become root is not a file to write", sudoHint},
 	{"/etc/sudoers.d", "dir", "who may become root is not a file to write", sudoHint},
-	{"/etc/apt/sources.list.d/mamela-", "prefix", "it is where NodeAptRepo puts the APT sources it declares", "declare the APT source with NodeAptRepo (the linux extension), or name the file otherwise"},
-	{"/etc/apt/keyrings/mamela-", "prefix", "it is where NodeAptRepo puts the keys of the APT sources it declares", "declare the APT source with NodeAptRepo (the linux extension), or name the file otherwise"},
+	// What APT trusts: a source written by hand ("[trusted=yes]", a key of its own) would bypass the
+	// key NodeAptRepo scopes to it (Signed-By) and the origins mamelet allows, and a key replaced
+	// would make apt trust another's packages; pinning chooses the version and origin apt installs.
+	{"/etc/apt/sources.list", "file", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptRepoHint},
+	{"/etc/apt/sources.list.d", "dir", "APT's sources say where packages come from and which keys sign them: one written by hand bypasses the key NodeAptRepo scopes to each source (Signed-By) and the origins mamelet allows", aptRepoHint},
+	{"/etc/apt/trusted.gpg", "prefix", "it is a key APT trusts for every source", aptRepoHint},
+	{"/etc/apt/keyrings", "dir", "it holds the keys APT trusts for the sources that name them (and NodeAptRepo's own)", aptRepoHint},
+	{"/usr/share/keyrings", "dir", "it holds the keys APT trusts for the system's sources (the distribution's archive key)", aptRepoHint},
+	{"/etc/apt/preferences", "file", "pinning chooses which version, and from which source, apt installs: mamelet's installations and every other", "pin by hand on the node if it must be; Mamela does not declare APT preferences"},
+	{"/etc/apt/preferences.d", "dir", "pinning chooses which version, and from which source, apt installs: mamelet's installations and every other", "pin by hand on the node if it must be; Mamela does not declare APT preferences"},
 	{"/var/lib/dpkg", "dir", "it is the database of the installed packages", "install packages with NodePackage"},
+	// What useradd and usermod (which mamelet runs), and adduser (which the packages' scripts run),
+	// read or run as root.
+	{"/etc/login.defs", "file", "it sets how useradd and usermod make users (the uid ranges, the mode of a new home), which an approval of a NodeUser does not show", "set it by hand on the node if it must be"},
+	{"/etc/default/useradd", "file", "it sets how useradd makes users (where homes go, the directory copied into a new home: SKEL), which an approval of a NodeUser does not show", "declare the user's home and shell with NodeUser"},
+	{"/etc/shadow-maint", "dir", "useradd and usermod run what is there as root", ""},
+	{"/etc/adduser.conf", "file", "it sets how adduser, which the packages' scripts run as root, makes users", "set it by hand on the node if it must be"},
+	{"/usr/local/sbin/adduser.local", "file", "adduser, which the packages' scripts run, runs it as root", ""},
+	{"/usr/local/sbin/deluser.local", "file", "deluser, which the packages' scripts run, runs it as root", ""},
 	// What every program mamelet runs (and their children) reads: a file here runs as root at once.
 	{"/etc/ld.so.preload", "file", "the dynamic linker loads what it names into every program, mamelet and what it runs included", ""},
-	{"/etc/ld.so.conf", "file", "it says where every program finds its libraries, mamelet's programs included", "install libraries as a package (NodePackage)"},
-	{"/etc/ld.so.conf.d", "dir", "it says where every program finds its libraries, mamelet's programs included", "install libraries as a package (NodePackage)"},
+	{"/etc/ld.so.conf", "file", "it says where every program finds its libraries, mamelet's programs included", libHint},
+	{"/etc/ld.so.conf.d", "dir", "it says where every program finds its libraries, mamelet's programs included", libHint},
+	{"/etc/ld.so.cache", "file", "the dynamic linker finds every program's libraries through it, mamelet's programs included", libHint},
+	{"/etc/nsswitch.conf", "file", "it names the modules every program loads to look users and hosts up (useradd, apt and dpkg included), and so which users exist", "install a package that brings its name service (NodePackage)"},
+	// The directories of the system's libraries (the dynamic linker's, and the modules programs load by
+	// name: NSS, PAM, gconv, Perl's and Python's), whole: a file there is loaded into what runs as root.
+	{"/lib64", "dir", libWhy, libHint},
+	{"/usr/lib64", "dir", libWhy, libHint},
+	{"/lib32", "dir", libWhy, libHint},
+	{"/usr/lib32", "dir", libWhy, libHint},
+	{"/libx32", "dir", libWhy, libHint},
+	{"/usr/libx32", "dir", libWhy, libHint},
+	// The modules of the interpreters apt and dpkg run as root (debconf is Perl, APT's hooks are
+	// Python), in the order they are looked for.
+	{"/etc/perl", "dir", moduleWhy, libHint},
+	{"/usr/local/lib/site_perl", "dir", moduleWhy, libHint},
+	{"/usr/local/share/perl", "dir", moduleWhy, libHint},
+	{"/usr/share/perl", "dir", moduleWhy, libHint},
+	{"/usr/share/perl5", "dir", moduleWhy, libHint},
+	{"/usr/local/lib/python3", "prefix", moduleWhy, libHint},
+	{"/usr/lib/python3", "prefix", moduleWhy, libHint},
+	{"/usr/share/debconf", "dir", "the packages' scripts run what is there as root (debconf's confmodule)", ""},
+	{"/usr/lib/dpkg", "dir", "it holds the programs dpkg runs as root", ""},
 	{"/etc/apt/apt.conf", "file", "APT's configuration can run commands as root at every installation (DPkg::Pre-Invoke and the like), and mamelet runs apt-get", "install a package that brings its APT configuration (NodePackage)"},
 	{"/etc/apt/apt.conf.d", "dir", "APT's configuration can run commands as root at every installation (DPkg::Pre-Invoke and the like), and mamelet runs apt-get", "install a package that brings its APT configuration (NodePackage)"},
 	{"/etc/dpkg/dpkg.cfg", "file", "dpkg's configuration can run commands as root at every installation (pre-invoke, post-invoke)", ""},
@@ -101,6 +140,93 @@ var forbidden = []struct {
 
 // sudoHint: what to do instead of writing sudoers.
 const sudoHint = "rules of sudo are not supported yet (NodeUser can add a user to group sudo, which lets it run anything as root); write them by hand on the node"
+
+// aptRepoHint: what to do instead of writing APT's sources and keys.
+const aptRepoHint = "declare the APT source with NodeAptRepo (the linux extension): it writes the source and its key, scoped to it"
+
+// The reasons and hint of the libraries' places.
+const (
+	libWhy    = "it holds the system's libraries and the modules programs load by name (NSS, PAM, gconv): a file there is loaded into what runs as root, mamelet's programs included"
+	moduleWhy = "the interpreters apt and dpkg run as root (debconf is Perl, APT's hooks are Python) load their modules from there"
+	libHint   = "install libraries as a package (NodePackage), or keep an application's own under /opt/<app>"
+)
+
+// pathDirs are the directories of the programs that run by name (each PATH, in order: root's and
+// systemd's services' from /usr/local, mamelet's children's, apt's and dpkg's from /usr/sbin).
+var pathDirs = []string{"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+
+// packageDirs are the directories of pathDirs that are the packages' (dpkg's): apt, dpkg and the
+// packages' scripts run their programs from there as root (PATH=/usr/sbin:/usr/bin:/sbin:/bin, which
+// mamelet gives them and APT gives dpkg), so a file there replaces a program they run, or shadows one
+// of the same name in a later directory (a new /usr/sbin/tar runs instead of /usr/bin/tar).
+var packageDirs = []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"}
+
+// rootRuns are, by name, the programs root runs that a program in /usr/local/sbin or /usr/local/bin
+// would shadow (those come first in the PATH of root's shells and of systemd's services): mamelet's
+// (mamelet.Programs, added by programNames), apt's and dpkg's and those dpkg needs on its PATH, the
+// shells and interpreters of the packages' scripts, and what those run to install services, make
+// users and become another user.
+var rootRuns = []string{
+	"addgroup", "adduser", "apt", "apt-cache", "apt-config", "apt-extracttemplates", "apt-get", "apt-key", "apt-mark",
+	"bash", "dash", "deb-systemd-helper", "deb-systemd-invoke", "debconf", "debconf-apt-progress", "debconf-communicate",
+	"debconf-copydb", "debconf-escape", "debconf-set-selections", "debconf-show", "diff", "dpkg", "dpkg-deb", "dpkg-divert",
+	"dpkg-maintscript-helper", "dpkg-preconfigure", "dpkg-query", "dpkg-realpath", "dpkg-reconfigure", "dpkg-split",
+	"dpkg-statoverride", "dpkg-trigger", "env", "groupadd", "invoke-rc.d", "ldconfig", "ldconfig.real", "nscd", "perl",
+	"python3", "rm", "service", "sh", "sss_cache", "start-stop-daemon", "su", "sudo", "systemctl", "systemd-sysusers",
+	"systemd-tmpfiles", "tar", "ucf", "ucfr", "update-alternatives", "update-rc.d", "useradd", "usermod",
+}
+
+// programNames are rootRuns and the names of mamelet's programs.
+func programNames() []string {
+	out := slices.Clone(rootRuns)
+	for _, p := range mamelet.Programs() {
+		out = append(out, path.Base(p))
+	}
+	return out
+}
+
+// pathProblem says why p, a program that would run by name, is not a file Mamela writes ("" when it
+// may be): it is in a directory of the packages' programs, or it shadows a program root runs.
+func pathProblem(p string) (why, hint string) {
+	dir, base := path.Dir(p), path.Base(p)
+	switch {
+	case slices.Contains(packageDirs, dir):
+		return fmt.Sprintf("%s holds the packages' programs, which apt, dpkg and the packages' scripts run as root by name: a file there replaces one of them, or runs instead of one of the same name in a later directory of their PATH (/usr/sbin:/usr/bin:/sbin:/bin)", dir),
+			"install a program of your own under /usr/local/bin or /opt/<app> (NodeArtifact), or as a package (NodePackage)"
+	case slices.Contains(pathDirs, dir) && slices.Contains(programNames(), base):
+		return fmt.Sprintf("%s comes first in the PATH of root's shells and of systemd's services: a %s there runs instead of the system's %s, which mamelet, apt, dpkg or the packages' scripts run as root", dir, base, base),
+			"give the program another name, or install it under /opt/<app>"
+	}
+	return "", ""
+}
+
+// libraryDirs are the directories the dynamic linker looks in (and the multiarch ones below them):
+// a shared object there can be loaded by what runs as root (/usr/local/lib is in Debian's and
+// Ubuntu's ld.so.conf, and comes first).
+var libraryDirs = []string{"/lib", "/usr/lib", "/usr/local/lib"}
+
+// multiarch is a directory of the libraries of one architecture ("x86_64-linux-gnu").
+var multiarch = regexp.MustCompile(`^[a-z0-9_]+-linux-gnu[a-z0-9_]*$`)
+
+// libraryProblem says why p, under the system's library directories, is not a file Mamela writes
+// ("" when it may be): a multiarch directory, whole (its libraries, the ELF interpreter's links, and
+// the modules programs load by name: security/ for PAM, gconv/, perl5/); a shared object anywhere
+// below them.
+func libraryProblem(p string) string {
+	for _, d := range libraryDirs {
+		if !strings.HasPrefix(p, d+"/") {
+			continue
+		}
+		rest := strings.Split(p[len(d)+1:], "/")
+		if len(rest) > 1 && multiarch.MatchString(rest[0]) {
+			return libWhy
+		}
+		if base := path.Base(p); strings.HasSuffix(base, ".so") || strings.Contains(base, ".so.") {
+			return "it is a shared object below " + d + ", where the dynamic linker (or a program loading a module by name) can find it for what runs as root, mamelet's programs included"
+		}
+	}
+	return ""
+}
 
 // selfUnits are the units of mamelet and of what an extension of it manages, whose files (the unit,
 // its drop-ins, the links that enable it) no file of linux is: a file there could stop mamelet, or
@@ -133,8 +259,14 @@ func unitDirProblem(p string) (why, hint string) {
 			continue
 		}
 		parts := strings.Split(p[len(d)+1:], "/")
-		if parts[0] == "service.d" {
+		switch parts[0] {
+		case "service.d":
 			return "it is a drop-in of every service, mamelet's too", "write a drop-in of the one service: " + d + "/<name>.service.d/<file>.conf"
+		case "slice.d", "-.slice", "-.slice.d", "system.slice", "system.slice.d":
+			// The slices every service runs in (system.slice, below the root slice -.slice): their
+			// limits (MemoryMax=, CPUQuota=, IPAddressDeny=) and the drop-ins of every slice.
+			return "it sets the slice every service runs in (system.slice, the root slice -.slice) or every slice, mamelet's too: its limits and its network access",
+				"set the limits in the unit of the one service (a drop-in <unit>.service.d/*.conf), or give it a slice of its own (Slice=)"
 		}
 		for _, c := range parts {
 			for _, u := range selfUnits {
@@ -158,9 +290,11 @@ func CheckRestart(svc string) string {
 
 // CheckPath says why Mamela does not write a file at p (nil when it may): p is absolute and clean,
 // of at most MaxPath bytes, its components of letters, digits and . _ + @ = : , - only, and it is in
-// none of the places that are not files to write (the kernel's, mamelet's, k3s's, the users', the
-// APT sources that NodeAptRepo declares, an authorized_keys that NodeUser declares). The graph checks
-// a declaration with it, and mamelet checks it again before it writes, whatever the revision says.
+// none of the places that are not files to write (the kernel's, mamelet's, k3s's, the users', APT's
+// sources and keys, which NodeAptRepo declares, an authorized_keys that NodeUser declares, what the
+// programs mamelet runs as root run or trust: forbidden, pathProblem, libraryProblem). The graph
+// checks a declaration with it, and mamelet checks it again before it writes, whatever the revision
+// says.
 func CheckPath(p string) *PathError {
 	bad := func(message, hint string) *PathError { return &PathError{Path: p, Message: message, Hint: hint} }
 	const shape = "write an absolute path of letters, digits and . _ + @ = : , - such as \"/etc/nginx/conf.d/app.conf\""
@@ -204,6 +338,12 @@ func CheckPath(p string) *PathError {
 	if slices.Contains(programs(), p) {
 		return bad(fmt.Sprintf("Mamela does not write %s: it is one of the programs mamelet runs as root (or that they run), whose code would then be what the file says", p),
 			"install it as a package (NodePackage)")
+	}
+	if why, hint := pathProblem(p); why != "" {
+		return bad(fmt.Sprintf("Mamela does not write %s: %s", p, why), hint)
+	}
+	if why := libraryProblem(p); why != "" {
+		return bad(fmt.Sprintf("Mamela does not write %s: %s", p, why), libHint)
 	}
 	if base := path.Base(p); (base == "authorized_keys" || base == "authorized_keys2") && path.Base(path.Dir(p)) == ".ssh" {
 		return bad(fmt.Sprintf("Mamela does not write %s: who may log in as a user is not a file to write", p),

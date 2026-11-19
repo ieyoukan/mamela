@@ -712,6 +712,83 @@ func TestGraphBoundsTheCountsPerNode(t *testing.T) {
 
 // M1: what changes what mamelet runs, or every service, is not a file to write; and every program
 // mamelet runs is refused, with its merged-/usr name.
+// What the programs mamelet runs as root (useradd, apt-get, dpkg and the packages' scripts) run or
+// trust without the approver seeing it in the file: each refused, saying why and what to do instead.
+func TestCheckPathProtectsWhatRootRunsAndTrusts(t *testing.T) {
+	for p, why := range map[string]string{
+		// A program that runs by name: in the packages' directories, any (it replaces one, or shadows
+		// one of a later directory of dpkg's PATH); in /usr/local, those root runs.
+		"/usr/sbin/systemctl":                "packages' programs",
+		"/usr/sbin/dpkg-deb":                 "packages' programs",
+		"/usr/sbin/tar":                      "packages' programs",
+		"/sbin/sed":                          "packages' programs",
+		"/usr/bin/newtool":                   "packages' programs",
+		"/usr/local/sbin/systemctl":          "first in the PATH",
+		"/usr/local/bin/dpkg":                "first in the PATH",
+		"/usr/local/sbin/start-stop-daemon":  "first in the PATH",
+		"/usr/local/bin/sh":                  "first in the PATH",
+		"/usr/local/bin/update-alternatives": "first in the PATH",
+		"/usr/local/sbin/useradd":            "first in the PATH",
+		"/usr/local/bin/sudo":                "first in the PATH",
+		// useradd and usermod (and adduser, which the packages' scripts run).
+		"/etc/shadow-maint/useradd-post.d/x": "useradd and usermod run",
+		"/etc/default/useradd":               "SKEL",
+		"/etc/login.defs":                    "uid ranges",
+		"/etc/adduser.conf":                  "adduser",
+		"/usr/local/sbin/adduser.local":      "adduser",
+		// The dynamic linker, the name service, the libraries and modules.
+		"/etc/ld.so.cache":                                 "dynamic linker",
+		"/etc/nsswitch.conf":                               "modules",
+		"/lib64/ld-linux-x86-64.so.2":                      "system's libraries",
+		"/usr/lib/x86_64-linux-gnu/libc.so.6":              "system's libraries",
+		"/lib/aarch64-linux-gnu/security/pam_unix.so":      "system's libraries",
+		"/usr/lib/x86_64-linux-gnu/gconv/gconv-modules":    "system's libraries",
+		"/usr/local/lib/x86_64-linux-gnu/perl/5.36.0/x.pm": "system's libraries",
+		"/usr/local/lib/libc.so.6":                         "shared object",
+		"/usr/lib/libfoo.so":                               "shared object",
+		"/usr/lib/python3/dist-packages/apt_pkg.so":        "interpreters apt and dpkg run",
+		"/usr/lib/python3/dist-packages/apt/x.py":          "interpreters apt and dpkg run",
+		"/usr/local/lib/python3.12/dist-packages/apt.py":   "interpreters apt and dpkg run",
+		"/usr/local/share/perl/5.36.0/Debconf/Db.pm":       "interpreters apt and dpkg run",
+		"/etc/perl/Debconf/Db.pm":                          "interpreters apt and dpkg run",
+		"/usr/share/perl5/Debconf/Db.pm":                   "interpreters apt and dpkg run",
+		"/usr/share/debconf/confmodule":                    "debconf",
+		"/usr/lib/dpkg/methods/x":                          "dpkg runs",
+		// What APT trusts: sources only through NodeAptRepo, keys, pinning.
+		"/etc/apt/sources.list":                          "Signed-By",
+		"/etc/apt/sources.list.d/docker.list":            "Signed-By",
+		"/etc/apt/sources.list.d/docker.sources":         "Signed-By",
+		"/etc/apt/trusted.gpg":                           "every source",
+		"/etc/apt/trusted.gpg.d/docker.gpg":              "every source",
+		"/etc/apt/keyrings/docker.asc":                   "keys APT trusts",
+		"/usr/share/keyrings/ubuntu-archive-keyring.gpg": "archive key",
+		"/etc/apt/preferences":                           "pinning",
+		"/etc/apt/preferences.d/pin":                     "pinning",
+		// The slices every service runs in.
+		"/etc/systemd/system/system.slice.d/limits.conf": "slice every service runs in",
+		"/etc/systemd/system/-.slice.d/x.conf":           "slice every service runs in",
+		"/usr/lib/systemd/system/slice.d/x.conf":         "slice every service runs in",
+		"/etc/systemd/system/system.slice":               "slice every service runs in",
+	} {
+		err := CheckPath(p)
+		if err == nil || !strings.Contains(err.Message, why) {
+			t.Errorf("%s: %v, want it to say %q", p, err, why)
+			continue
+		}
+		if err.Hint == "" && !strings.Contains(p, "shadow-maint") && !strings.Contains(p, "debconf") && !strings.Contains(p, "dpkg/") && !strings.Contains(p, "adduser.local") {
+			t.Errorf("%s: no hint", p)
+		}
+	}
+	// Every program mamelet runs, under any directory of a PATH.
+	for _, p := range mamelet.Programs() {
+		for _, d := range pathDirs {
+			if q := d + "/" + filepath.Base(p); CheckPath(q) == nil {
+				t.Errorf("%s may be written", q)
+			}
+		}
+	}
+}
+
 func TestCheckPathProtectsMamelet(t *testing.T) {
 	for p, why := range map[string]string{
 		"/etc/systemd/system/mamelet.service.d/override.conf":         "mamelet's own unit",
@@ -760,7 +837,7 @@ func TestCheckPathProtectsMamelet(t *testing.T) {
 	if e := CheckPath("/etc/sudoers.d/app"); !strings.Contains(e.Hint, "not supported yet") {
 		t.Errorf("sudoers hint: %q", e.Hint)
 	}
-	for _, p := range []string{"/etc/systemd/system/app.service.d/override.conf", "/etc/systemd/system/mameletx.service", "/usr/local/bin/app", "/etc/apt/preferences.d/pin", "/srv/tmp/x"} {
+	for _, p := range []string{"/etc/systemd/system/app.service.d/override.conf", "/etc/systemd/system/mameletx.service", "/usr/local/bin/app", "/srv/tmp/x"} {
 		if err := CheckPath(p); err != nil {
 			t.Errorf("%s refused: %s", p, err.Message)
 		}
