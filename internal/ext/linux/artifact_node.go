@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -44,7 +45,8 @@ var artifactManifest = spec.Kind{Kind: KindArtifact, Operations: []spec.Operatio
 
 // publishArtifacts adds to the part the artifacts g declares on the node that it does not have yet
 // (with no permission, not InForce), and adds to each the owner and group the declaration names (what
-// mamelet reports the existence of: they allow nothing). It takes nothing away (publishFiles).
+// mamelet reports the existence of: they allow nothing). It takes nothing away that the declaration
+// in force has (publishFiles).
 func publishArtifacts(g *graph.Graph, name string, p *Part) {
 	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
@@ -60,12 +62,12 @@ func publishArtifacts(g *graph.Graph, name string, p *Part) {
 		}
 		cur.Owners, cur.Groups = union(cur.Owners, []string{a.Owner}), union(cur.Groups, []string{a.Group})
 	}
-	p.Artifacts = boundCandidates(p.Artifacts, func(a Artifact) bool { return !a.InForce && a.Install == nil }, func(a Artifact) bool { return declared[a.Path] })
+	p.Artifacts = bound(p.Artifacts, func(a Artifact) string { return a.Path }, func(a Artifact) bool { return a.InForce || a.Install != nil }, declared, MaxNodeArtifacts)
 }
 
 // pruneArtifacts makes the part the artifacts g, an approved declaration being applied, declares on
-// the node (pruneFiles): an installation of another download, mode, owner or services is withdrawn.
-// The files stay on the node.
+// the node (pruneFiles, all of them): an installation of another download, mode, owner or services is
+// withdrawn. The files stay on the node.
 func pruneArtifacts(g *graph.Graph, name string, p *Part) {
 	declared := map[string]*ArtifactSpec{}
 	for _, r := range g.Resources {
@@ -74,6 +76,11 @@ func pruneArtifacts(g *graph.Graph, name string, p *Part) {
 		}
 	}
 	p.Artifacts = slices.DeleteFunc(p.Artifacts, func(a Artifact) bool { return declared[a.Path] == nil })
+	for _, path := range slices.Sorted(maps.Keys(declared)) {
+		if p.artifact(path) == nil {
+			p.Artifacts = append(p.Artifacts, Artifact{Path: path})
+		}
+	}
 	for i := range p.Artifacts {
 		a, want := &p.Artifacts[i], declared[p.Artifacts[i].Path]
 		a.InForce, a.Owners, a.Groups = true, []string{want.Owner}, []string{want.Group}

@@ -65,8 +65,9 @@
 //
 // NodeFile and NodeArtifact share two notes (pending.go, file_plan.go): MAM-PLAN-0144, the warning of
 // a file written below a directory a user other than root can change, and MAM-PLAN-0218, a file that
-// is as declared but whose daemon-reload or restart did not finish after it was written. MAM-PLAN-0219
-// is left (codes.go reserves 0144 and 0218 for both).
+// is as declared but whose daemon-reload or restart did not finish after it was written (codes.go
+// reserves 0144 and 0218 for both). MAM-PLAN-0219 is every kind's (targets.go): an entry the node's part
+// has no room for.
 //
 // # What mamelet opens
 //

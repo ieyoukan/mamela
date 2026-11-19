@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,8 +75,8 @@ func addTargets(u *User, s *UserSpec) {
 
 // publishUsers adds to the part the users g declares on the node that it does not have yet (with no
 // permission, not InForce), and adds to each what the declaration asks mamelet to observe. It takes
-// nothing away: an approved change stays as it is, whatever g declares (g may be a declaration nobody
-// approved, and the change carries every value it needs).
+// nothing away that the declaration in force has: an approved change stays as it is, whatever g
+// declares (g may be a declaration nobody approved, and the change carries every value it needs).
 func publishUsers(g *graph.Graph, name string, p *Part) {
 	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
@@ -91,13 +92,13 @@ func publishUsers(g *graph.Graph, name string, p *Part) {
 		}
 		addTargets(cur, u)
 	}
-	p.Users = boundCandidates(p.Users, func(u User) bool { return !u.InForce && u.Change == nil }, func(u User) bool { return declared[u.Name] })
+	p.Users = bound(p.Users, func(u User) string { return u.Name }, func(u User) bool { return u.InForce || u.Change != nil }, declared, MaxNodeUsers)
 }
 
 // pruneUsers makes the part the users g, an approved declaration being applied, declares on the node
 // (pruneFiles): the others go, with their changes (the users stay on the node); those it declares are
-// InForce, with its targets only, and keep a change only if g would make the same one (a change
-// approved for another declaration of the user is withdrawn).
+// InForce (all of them), with its targets only, and keep a change only if g would make the same one (a
+// change approved for another declaration of the user is withdrawn).
 func pruneUsers(g *graph.Graph, name string, p *Part) {
 	declared := map[string]*UserSpec{}
 	for _, r := range g.Resources {
@@ -106,6 +107,11 @@ func pruneUsers(g *graph.Graph, name string, p *Part) {
 		}
 	}
 	p.Users = slices.DeleteFunc(p.Users, func(u User) bool { return declared[u.Name] == nil })
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		if p.user(name) == nil {
+			p.Users = append(p.Users, User{Name: name})
+		}
+	}
 	for i := range p.Users {
 		u, want := &p.Users[i], declared[p.Users[i].Name]
 		change := u.Change

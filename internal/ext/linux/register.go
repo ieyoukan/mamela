@@ -90,6 +90,7 @@ func init() {
 		}
 		wcodes, codes, programs = append(wcodes, k.warningCodes...), append(codes, k.codes...), append(programs, k.programs...)
 	}
+	codes = append(codes, codeNoRoom) // every kind's (targets.go)
 	graph.Register(graph.Extension{Name: Name, Kinds: defs, Check: checkGraph, Warnings: graphWarnings, WarningCodes: wcodes})
 
 	plan.Register(plan.Extension{
@@ -182,10 +183,12 @@ func init() {
 			if decodeStrict(raw, &p) != nil {
 				return // Check refused it already
 			}
+			left := p.fit()
 			var o Observed
 			for _, k := range kinds {
 				k.observe(ctx, s, p, &o)
 			}
+			left.add(&o)
 			observePending(s, &o)
 			cleanStateDir(s)
 			o.SetAside = setAsideRecords(stateDir(s))

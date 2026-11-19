@@ -3,6 +3,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -63,8 +64,8 @@ func addWhere(cur []AptWhere, w AptWhere) []AptWhere {
 
 // publishAptRepos adds to the part the sources g declares on the node that it does not have yet (with
 // no permission, not InForce), and adds to each the URIs and suites the declaration has (what mamelet
-// reports of apt's lists and of other source files: they allow nothing). It takes nothing away
-// (publishFiles).
+// reports of apt's lists and of other source files: they allow nothing). It takes nothing away that
+// the declaration in force has (publishFiles).
 func publishAptRepos(g *graph.Graph, name string, p *Part) {
 	declared := map[string]bool{}
 	for _, r := range g.Sorted() {
@@ -80,11 +81,12 @@ func publishAptRepos(g *graph.Graph, name string, p *Part) {
 		}
 		cur.Where = addWhere(cur.Where, whereOf(a))
 	}
-	p.AptRepos = boundCandidates(p.AptRepos, func(r AptRepo) bool { return !r.InForce && r.Add == nil }, func(r AptRepo) bool { return declared[r.Name] })
+	p.AptRepos = bound(p.AptRepos, func(r AptRepo) string { return r.Name }, func(r AptRepo) bool { return r.InForce || r.Add != nil }, declared, MaxNodeAptRepos)
 }
 
 // pruneAptRepos makes the part the sources g, an approved declaration being applied, declares on the
-// node (pruneFiles): an addition of another source or key is withdrawn. The sources stay on the node.
+// node (pruneFiles, all of them): an addition of another source or key is withdrawn. The sources stay
+// on the node.
 func pruneAptRepos(g *graph.Graph, name string, p *Part) {
 	declared := map[string]*AptRepoSpec{}
 	for _, r := range g.Resources {
@@ -93,6 +95,11 @@ func pruneAptRepos(g *graph.Graph, name string, p *Part) {
 		}
 	}
 	p.AptRepos = slices.DeleteFunc(p.AptRepos, func(r AptRepo) bool { return declared[r.Name] == nil })
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		if p.aptRepo(name) == nil {
+			p.AptRepos = append(p.AptRepos, AptRepo{Name: name})
+		}
+	}
 	for i := range p.AptRepos {
 		r, want := &p.AptRepos[i], declared[p.AptRepos[i].Name]
 		r.InForce, r.Where = true, []AptWhere{whereOf(want)}

@@ -101,6 +101,21 @@ func TestExtNotTaken(t *testing.T) {
 	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, "cannot read it") {
 		t.Errorf("refused: %s %+v", st, n)
 	}
+	// The hint follows the reason: a part mamelet could not read asks for its update; a part it read
+	// and refused for what it says does not send the operator to update a mamelet new enough.
+	for reason, hint := range map[string]string{
+		"the linux part of the revision cannot be read: unknown member \"x\"": "it is older than this Control Plane",
+		"this mamelet does not know the extension linux; it went on":          "it is older than this Control Plane",
+		"invalid linux part: it grants changes of 300 files":                  "change what the reason names",
+	} {
+		s.Ext["app-server"]["linux"] = state.ExtObservation{Accepts: 1, Refused: reason, ObservedAt: t0}
+		k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
+		if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, reason) || !strings.Contains(n.Hint, hint) {
+			t.Errorf("refused (%s): %s %+v", reason, st, n)
+		}
+	}
+	s.Ext["app-server"]["linux"] = state.ExtObservation{Accepts: 1, Refused: "cannot read it", ObservedAt: t0}
+	k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
 	// The kit's copy is the planner's own.
 	o, _ := k.Ext("app-server", "linux")
 	o.Refused = "changed"
@@ -167,6 +182,35 @@ func TestExtNotTakenWaitsForTheMameletUpdate(t *testing.T) {
 	k = newKit(builder{snap: s, pol: policy.Default, g: g})
 	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusWaiting || n.Code != "MAM-PLAN-0123" {
 		t.Errorf("after another node: %s %+v", st, n)
+	}
+}
+
+// A node whose mamelet takes the extension, and whose declaration puts an older release on it (a
+// downgrade): the extension's resources are blocked at plan time, not at apply (MAM-NODE-0104).
+func TestExtNotTakenBlocksADowngradeBelowTheExtension(t *testing.T) {
+	const cur, older = "1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"
+	decl := func(version, sha string) *graph.Graph {
+		g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("app-server", `{"mode":"dhcp"}`) + `,` +
+			`{"kind":"NodeMamelet","name":"app-server/mamelet","spec":{"node":"app-server","sha256":"` + sha + `","version":"` + version + `"}}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	s := state.Empty(t0)
+	machineObserved(&s, decl("0.10.0", cur), "app-server", true, true, true, 600)
+	s.Mamelets = map[string]state.Mamelet{"app-server/mamelet": {SHA256: cur, Version: "0.10.0", ObservedAt: t0}}
+	s.Ext = map[string]map[string]state.ExtObservation{"app-server": {"linux": {Accepts: 1, ObservedAt: t0}}}
+	for _, tc := range []struct {
+		version, sha string
+		blocked      bool
+	}{{"0.9.3", older, true}, {"0.10.0", cur, false}, {"0.11.0", older, false}, {"", older, false}} {
+		k := newKit(builder{snap: s, pol: policy.Default, g: decl(tc.version, tc.sha)})
+		st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0")
+		if tc.blocked != (st == StatusBlocked && n != nil && n.Code == "MAM-PLAN-0122" && strings.Contains(n.Message, "puts mamelet 0.9.3 on node app-server") &&
+			strings.Contains(n.Hint, "declare mamelet 0.10.0 or later")) || !tc.blocked && n != nil {
+			t.Errorf("%q: %s %+v", tc.version, st, n)
+		}
 	}
 }
 

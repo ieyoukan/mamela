@@ -164,10 +164,8 @@ func aptRepoPartProblems(p Part) []string {
 			out = append(out, fmt.Sprintf("APT source %q appears twice", r.Name))
 		}
 		seen[r.Name] = true
-		// What mamelet observes is checked as a declaration is.
-		if len(r.Where) > maxTargets {
-			out = append(out, fmt.Sprintf("APT source %q: %d URIs and suites; at most %d", r.Name, len(r.Where), maxTargets))
-		}
+		// What mamelet observes is checked as a declaration is (past maxTargets, mamelet observes the
+		// first ones only: fit).
 		for i, w := range r.Where {
 			if i > 0 && compareWhere(r.Where[i-1], w) >= 0 {
 				out = append(out, fmt.Sprintf("APT source %q: its URIs and suites are not sorted, or one is there twice", r.Name))

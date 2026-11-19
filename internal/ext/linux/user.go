@@ -242,6 +242,10 @@ func validateUser(v *graph.Validator, r graph.Resource) {
 			v.Problem(r, graph.CodeInvalidValue, "spec.home", e.Message, e.Hint)
 		}
 	}
+	if len(s.Groups) > maxTargets {
+		// mamelet observes at most that many of one user (the observation targets of its revision).
+		v.Problem(r, graph.CodeInvalidValue, "spec.groups", fmt.Sprintf("%d groups; at most %d", len(s.Groups), maxTargets), "")
+	}
 	seen := map[string]bool{}
 	for _, g := range s.Groups {
 		switch {

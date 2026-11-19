@@ -141,3 +141,35 @@ func TestAPartOnlyForAMameletThatTakesIt(t *testing.T) {
 		t.Errorf("a node that went back got %s", ext)
 	}
 }
+
+// While an update of mamelet is handed out and its binary has not reported, no part is handed out:
+// the mamelet that fetches may be the new one, of a release that may not take the extension (a
+// downgrade), and would refuse the whole revision for it. Once the new binary reports, its report
+// decides; so does the old one's once the update has ended.
+func TestNoPartWhileAMameletUpdateIsUnderWay(t *testing.T) {
+	const cur, next = "1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"
+	e := newEnv(t)
+	cfg := e.enroll("web", 7001)
+	if _, err := e.st.PublishNodeRevision(e.ctx, "web", func(*noderev.Revision) (noderev.Revision, error) {
+		return noderev.Revision{VMID: 7001, Ext: map[string]jsontext.Value{"cp-test": jsontext.Value(`{"x":1}`)},
+			Mamelet: &noderev.MameletUpdate{SHA256: next, Once: noderev.Once{Operation: "op-aaaaaaaaaaaaaaaaaaaaaaaa", Attempt: 1, Action: noderev.ActionUpdate,
+				Expires: e.now.Add(10 * time.Minute)}}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	e.report(cfg, noderev.Report{Node: "web", VMID: 7001, MameletSHA256: cur, Extensions: map[string]int{"cp-test": 1}})
+	if ext := e.fetchExt(cfg); len(ext) != 0 {
+		t.Errorf("during the update: %s", ext)
+	}
+	// The new binary reports, and takes the extension.
+	e.report(cfg, noderev.Report{Node: "web", VMID: 7001, MameletSHA256: next, Extensions: map[string]int{"cp-test": 1}})
+	if ext := e.fetchExt(cfg); ext["cp-test"] == nil {
+		t.Errorf("the new binary that takes it: %s", ext)
+	}
+	// The update did not happen, and its grant has ended: the old binary's report decides again.
+	e.report(cfg, noderev.Report{Node: "web", VMID: 7001, MameletSHA256: cur, Extensions: map[string]int{"cp-test": 1}})
+	e.now = e.now.Add(11 * time.Minute)
+	if ext := e.fetchExt(cfg); ext["cp-test"] == nil {
+		t.Errorf("after the update's grant ended: %s", ext)
+	}
+}

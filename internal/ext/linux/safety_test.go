@@ -630,18 +630,63 @@ func runtimeStamps() bool {
 	return s.OK
 }
 
-// M3: a part with more of a kind than mamelet observes on one node is refused, and says how many.
+// M3: a part that names more of a kind than mamelet observes on one node is not refused (the grants in
+// it are carried out): mamelet observes the entries with a grant, then those in force, then the rest by
+// path, up to the bound, and reports the others as left out. Only grants past the bound refuse it; and a
+// list of observation targets past maxTargets is cut, not refused.
 func TestCheckPartBoundsTheCounts(t *testing.T) {
 	var p Part
 	for i := range MaxNodeFiles + 1 {
-		p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/app/%d.conf", i), Owners: []string{"root"}, Groups: []string{"root"}})
+		p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/app/%03d.conf", i), Owners: []string{"root"}, Groups: []string{"root"}})
 	}
-	if err := checkPart(encode(p)); err == nil || !strings.Contains(err.Error(), "it names 257 files; mamelet observes at most 256") {
-		t.Errorf("%v", err)
-	}
-	p.Files = p.Files[:MaxNodeFiles]
 	if err := checkPart(encode(p)); err != nil {
-		t.Error(err)
+		t.Errorf("more than it observes, no grant: %v", err)
+	}
+	granted := p
+	granted.Files = nil
+	for i := range MaxNodeFiles + 1 {
+		granted.Files = append(granted.Files, grant(fmt.Sprintf("/etc/app/%03d.conf", i), "x\n", fmt.Sprintf("op-%024d", i), 1))
+	}
+	if err := checkPart(encode(granted)); err == nil || !strings.Contains(err.Error(), "it grants changes of 257 files; mamelet observes at most 256") {
+		t.Errorf("more grants than it observes: %v", err)
+	}
+	var owners []string
+	for i := range maxTargets + 1 {
+		owners = append(owners, fmt.Sprintf("u%02d", i))
+	}
+	p.Files[0].Owners = owners
+	if err := checkPart(encode(p)); err != nil {
+		t.Errorf("more owners than it observes: %v", err)
+	}
+
+	// On a node: the last file by path has the grant and is written; the first one in force is observed.
+	n := newNode(t)
+	p.Files[MaxNodeFiles] = grant(p.Files[MaxNodeFiles].Path, "granted\n", opA, 1)
+	p.Files[1].InForce = true
+	n.offer(p, nil)
+	rep := n.round()
+	if len(rep.ExtRefused) != 0 {
+		t.Fatalf("refused: %v", rep.ExtRefused)
+	}
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone || n.read("/etc/app/256.conf") != "granted\n" {
+		t.Errorf("the grant: %+v", r)
+	}
+	o := observedOf(t, rep)
+	if len(o.Files) != MaxNodeFiles+1 {
+		t.Fatalf("%d files reported", len(o.Files))
+	}
+	var left []string
+	for _, f := range o.Files {
+		if f.Error != "" {
+			left = append(left, f.Path)
+		}
+	}
+	// 256 observed: the granted one, the one in force, and 254 more by path (000, 002...255).
+	if !slices.Equal(left, []string{"/etc/app/255.conf"}) || !strings.Contains(o.file("/etc/app/255.conf").Error, "at most 256 files") {
+		t.Errorf("left out %q: %+v", left, o.file("/etc/app/255.conf"))
+	}
+	if f := o.file("/etc/app/000.conf"); f == nil || f.Error != "" || len(o.Users) == 0 {
+		t.Errorf("the first file %+v, owners %v", f, o.Users)
 	}
 }
 

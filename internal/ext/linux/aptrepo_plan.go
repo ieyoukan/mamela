@@ -73,6 +73,7 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 	if readable {
 		got = o.aptRepo(want.Name)
 	}
+	noRoom := roomNote(k, r)
 	blocked := func(code, message, hint string) plan.Change {
 		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: code, Message: message, Hint: hint}
 		return c
@@ -81,6 +82,9 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 	case reported && len(e.Payload) > 0 && !readable:
 		return blocked(codeAptRepoUnobserved, fmt.Sprintf("the report of mamelet on %s about its APT sources cannot be read", want.Node),
 			"the node's mamelet and this Control Plane do not agree on the report's form: update mamelet (docs/mamelet-update.md)")
+	case noRoom != nil:
+		c.Status, c.Note = plan.StatusWaiting, noRoom
+		return c
 	case got == nil:
 		c.Status, c.Note = k.AwaitAgent(want.Node, &plan.Note{Code: codeAptRepoAwait,
 			Message: fmt.Sprintf("waits for the agent on %s to report APT source %s", want.Node, want.Name)})
@@ -198,22 +202,39 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 
 // aptRepoPackageGate: the installation of any package on a node waits while an APT source of that
 // node is about to be written: its plan writes its files (a change other than running apt-get update
-// again), or waits (for its first report, for mamelet's update). The package may come from it (Mamela
-// cannot tell which source a package comes from before apt has read them all), and its change set is
-// worked out only once apt has read it. A source that is blocked (a conflict, a link, a report that
-// cannot be read), or whose files are in place but which apt does not read (apt-get update failed: a
-// suite that does not exist, an https source whose certificates are not installed yet) does not hold
-// the packages: it shows its own problem, and a package such as ca-certificates that would make it
-// readable can still be installed. A package that is installed is not affected.
+// again), or waits (for its first report, for mamelet's update, for room). The package may come from it
+// (Mamela cannot tell which source a package comes from before apt has read them all), and its change
+// set is worked out only once apt has read it. A source that is blocked (a conflict, a link, a report
+// that cannot be read) does not hold the packages: it shows its own problem. Nor does a source whose
+// files are in place but which apt does not read (apt-get update failed: a suite that does not exist, a
+// network that failed once, an https source whose certificates are not installed yet), except a
+// package apt cannot find (not found, no installation candidate, a dependency not installable): it may
+// be in that source, and waits until apt has read it (the source's plan runs apt-get update again;
+// mamelacd's sync = "push" applies it, which a blocked package would stop). A package that fails so
+// while every source is read is blocked (MAM-PLAN-0202). A package that is installed is not affected,
+// nor ca-certificates: mamelet downloads a source's key over https with the node's certificates, so a
+// node without them could add no source before it is installed.
 func aptRepoPackageGate(k *plan.Kit, node, pkg string) *plan.Note {
+	if gateFree[pkg] {
+		return nil
+	}
 	for _, r := range k.Resources() {
 		a := AptRepoOf(r)
 		if a == nil || a.Node != node {
 			continue
 		}
 		c := aptRepoChange(k, r)
-		writes := c.Status == plan.StatusChange && (c.Note == nil || c.Note.Code != codeAptRepoUnread)
-		if writes || c.Status == plan.StatusWaiting {
+		unread := c.Status == plan.StatusChange && c.Note != nil && c.Note.Code == codeAptRepoUnread
+		if unread {
+			if why := aptNotFound(k.Snapshot().Packages[node+"/"+pkg].Error); why != "" {
+				return &plan.Note{Code: codeAptRepoPackageGate,
+					Message: fmt.Sprintf("waits for apt to read APT source %s on %s: apt cannot find %s (%s), which may come from it", a.Name, node, pkg, why),
+					Hint: "apply the plan that runs apt-get update again for the source (MAM-PLAN-0152; mamelacd with sync = \"push\" applies it at its next poll); " +
+						"the next plan installs the package, or blocks it if apt still cannot find it once the source is read (check the package's name and the source's suites and components)"}
+			}
+			continue
+		}
+		if c.Status == plan.StatusChange || c.Status == plan.StatusWaiting {
 			return &plan.Note{Code: codeAptRepoPackageGate,
 				Message: fmt.Sprintf("waits for APT source %s on %s to be in place and read by apt before %s is installed: the package may come from it", a.Name, node, pkg),
 				Hint: "apply the plan that adds the source; the next plan installs the package, with what apt would change " +
@@ -221,6 +242,21 @@ func aptRepoPackageGate(k *plan.Kit, node, pkg string) *plan.Note {
 		}
 	}
 	return nil
+}
+
+// gateFree are the packages no APT source holds (aptRepoPackageGate).
+var gateFree = map[string]bool{"ca-certificates": true}
+
+// aptNotFound says, of a package's observation error, how apt could not find it ("" when that is not
+// why it failed): what a source apt has not read yet would make it find. mamelet runs apt-get in the C
+// locale.
+func aptNotFound(err string) string {
+	for _, s := range []string{"Unable to locate package", "has no installation candidate", "is not installable", "Couldn't find any package"} {
+		if strings.Contains(err, s) {
+			return strings.ToLower(s[:1]) + s[1:]
+		}
+	}
+	return ""
 }
 
 // undeclaredAptRepos are the sources the declaration in force has on a machine of this declaration

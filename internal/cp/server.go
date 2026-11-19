@@ -388,6 +388,12 @@ func (s *Server) revision(w http.ResponseWriter, r *http.Request) {
 		if reported {
 			report = &nr.Report
 		}
+		if u := rev.Mamelet; u != nil && noderev.HandOut(&u.Once, now) != nil && (report == nil || report.MameletSHA256 != u.SHA256) {
+			// An update of mamelet is under way: the mamelet that fetches may be the new binary, which has
+			// not reported yet, and what it takes is not known (a release older than an extension would
+			// refuse the whole revision for it). No part until it reports; the update needs none.
+			report = nil
+		}
 		rev.KeepTaken(report)
 	}
 	// The validity period is renewed on every fetch, so it cannot end a grant: each grant has its own

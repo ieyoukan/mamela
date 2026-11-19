@@ -2,8 +2,8 @@ package linux
 
 import "github.com/ieyoukan/mamela/internal/graph"
 
-// reservation is a range of codes of one kind of the extension (Kind "": the extension's, for the
-// kinds that follow).
+// reservation is a range of codes of one kind of the extension (Kind "": the extension's, for every
+// kind, such as MAM-PLAN-0219 of targets.go, and kept for the kinds that follow).
 type reservation struct {
 	Kind     graph.Kind
 	Prefix   string // "MAM-PLAN", "MAM-GRAPH", "MAM-POL"
