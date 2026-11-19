@@ -159,7 +159,7 @@ func TestWritingRefusesWhatIsPutInPlaceOfADirectory(t *testing.T) {
 			content := "x\n"
 			var werr error
 			within(t, filepath.Join(n.root, "srv/app"), func() {
-				werr = writeTo(tree, "/srv/app/app.conf", Write{Content: content, SHA256: ContentSHA256(content), Mode: "0644"}, os.Getuid(), os.Getgid(), os.Getuid(), os.Getgid())
+				werr = writeTo(tree, "/srv/app/app.conf", Write{Content: content, SHA256: ContentSHA256(content), Mode: "0644"}, rootID, rootID, rootID, rootID)
 			})
 			if werr == nil || !strings.Contains(werr.Error(), "/srv/app changed while mamelet opened it") {
 				t.Errorf("write: %v", werr)
@@ -188,7 +188,7 @@ func TestWritingKeysRefusesWhatIsPutInPlaceOfSSH(t *testing.T) {
 			swapDir(t, n.root, "/home/app/.ssh", r)
 			var werr error
 			within(t, filepath.Join(n.root, "home/app/.ssh"), func() {
-				_, werr = writeKeys(tree, a, "app", "/home/app", KeysContent([]string{keyAlice}), os.Getuid(), os.Getgid())
+				_, werr = writeKeys(tree, a, "app", "/home/app", KeysContent([]string{keyAlice}), appID, appID)
 			})
 			if werr == nil || !strings.Contains(werr.Error(), "/home/app/.ssh changed while mamelet opened it") {
 				t.Errorf("write: %v", werr)

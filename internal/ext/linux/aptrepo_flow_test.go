@@ -140,6 +140,32 @@ func TestAFailedAptUpdateIsRetriedByApply(t *testing.T) {
 	}
 }
 
+// apt-get update cannot fetch the source and exits 0 (as apt does): the apply stops there, saying
+// apt's words (it said "ran apt-get update" and Done before), and the next plan says them too, where
+// it asks to run the update again (MAM-PLAN-0152); mamelacd's push, which retries the apply, then
+// stops with a reason a person can act on.
+func TestAnAptUpdateThatCouldNotFetchTheSourceStopsTheApply(t *testing.T) {
+	f, apt, _ := aptFlow(t)
+	f.publish()
+	f.node.round()
+	f.publish()
+	f.node.round()
+	p, _ := f.plan()
+	apt.unreachable = map[string]bool{"https://download.docker.com/linux/ubuntu": true}
+	rep := f.apply(p)
+	if rep.Stopped == nil || rep.Stopped.Code != "MAM-REC-0004" || !strings.Contains(rep.Stopped.Message, "did not read https://download.docker.com/linux/ubuntu noble") ||
+		!strings.Contains(rep.Stopped.Message, "Temporary failure resolving") {
+		t.Fatalf("apply %+v", rep.Stopped)
+	}
+	f.node.round()
+	p, _ = f.plan()
+	c := change(t, p, repoID)
+	if c.Status != plan.StatusChange || c.Note == nil || c.Note.Code != codeAptRepoUnread || !strings.Contains(c.Note.Message, "the last attempt failed") ||
+		!strings.Contains(c.Note.Message, "Temporary failure resolving 'download.docker.com'") {
+		t.Fatalf("the next plan: %+v %+v", c, c.Note)
+	}
+}
+
 // apt-get update fails once (the network) after the source's files were written, and docker-ce comes
 // only from that source: apt cannot find it. The next plan does not block it (which would stop
 // mamelacd's sync = "push" from approving the plan): it waits for the source, whose plan runs the update

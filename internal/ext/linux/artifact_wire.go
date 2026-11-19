@@ -23,6 +23,8 @@ type Artifact struct {
 	Groups []string `json:"groups,omitempty"`
 	// InForce: the declaration in force has the artifact (File.InForce).
 	InForce bool `json:"inForce,omitzero"`
+	// Held are the owner and group the declaration in force names (File.Held: never sent to mamelet).
+	Held *OwnerTargets `json:"held,omitempty"`
 	// Install is an approved, one-time installation of exactly this download.
 	Install *Install `json:"install,omitempty"`
 }

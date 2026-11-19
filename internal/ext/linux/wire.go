@@ -68,8 +68,33 @@ type File struct {
 	// what only another declaration planned is not shown at all. Mamelet reads it only to choose what to
 	// observe first of a part that names more than it observes (fit).
 	InForce bool `json:"inForce,omitzero"`
+	// Held are the owner and group the declaration in force names (set when an approved plan is
+	// applied, Prune): a union of the targets past maxTargets keeps them first. The Control Plane's
+	// own bookkeeping: never sent to mamelet (partForMamelet).
+	Held *OwnerTargets `json:"held,omitempty"`
 	// Write is an approved, one-time write of exactly this content, mode and owner.
 	Write *Write `json:"write,omitempty"`
+}
+
+// OwnerTargets are the owners and groups of a file or an artifact that the declaration in force names.
+type OwnerTargets struct {
+	Owners []string `json:"owners,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+}
+
+// heldOwners and heldGroups are what h holds (nil: nothing).
+func (h *OwnerTargets) heldOwners() []string {
+	if h == nil {
+		return nil
+	}
+	return h.Owners
+}
+
+func (h *OwnerTargets) heldGroups() []string {
+	if h == nil {
+		return nil
+	}
+	return h.Groups
 }
 
 // Write is an approved, one-time write of a file: mamelet writes exactly Content (whose sha256 is
@@ -198,8 +223,8 @@ type Observed struct {
 	// MaxObserved): each entry then has only its path or name, and its own Error.
 	Error string `json:"error,omitempty"`
 
-	// SetAside are the records of mamelet's state directory it could not read and set aside, while
-	// they are there ("linux-artifacts.json.corrupt"): what they said is lost (the artifacts mamelet
+	// SetAside are the records of mamelet's state directory whose content it could not decode and set
+	// aside, while they are there ("linux-artifacts.json.corrupt"): what they said is lost (the artifacts mamelet
 	// installed are reported as ones it did not install, until they are installed again; what was
 	// pending after a write, as not known).
 	SetAside []string `json:"setAside,omitempty"`
@@ -241,6 +266,10 @@ type FileState struct {
 	// Unsafe says why mamelet does not write there: the path is a symbolic link, a directory or a
 	// device, or a directory above it is a link or not a directory. Mamela never follows a link.
 	Unsafe string `json:"unsafe,omitempty"`
+	// Shadows is the program of the node's packages a file at the path would run instead of, for a
+	// path in /usr/local/sbin or /usr/local/bin whose name the node has in /usr/sbin, /usr/bin, /sbin
+	// or /bin ("/usr/bin/sed" for /usr/local/bin/sed): mamelet does not write it (shadowed).
+	Shadows string `json:"shadows,omitempty"`
 	// Exposed are the directories above the path that a user other than root can change (one it
 	// owns, or one its group or everyone may write): that user can replace what is at the path, so
 	// a file root puts there is in its hands (the plan warns: MAM-PLAN-0144).
@@ -411,6 +440,7 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	if err := decodeStrict(raw, &p); err != nil {
 		return nil, err
 	}
+	stripHeld(&p)
 	for i := range p.Files {
 		if w := p.Files[i].Write; w != nil {
 			if g := noderev.HandOut(&w.Grant, now); g != nil {
@@ -426,6 +456,22 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	handOutArtifacts(&p, now)
 	handOutAptRepos(&p, now) // NodeAptRepo
 	return encode(p), nil
+}
+
+// stripHeld takes the Control Plane's own bookkeeping (Held) out of a part, as mamelet gets it.
+func stripHeld(p *Part) {
+	for i := range p.Files {
+		p.Files[i].Held = nil
+	}
+	for i := range p.Users {
+		p.Users[i].Held = nil
+	}
+	for i := range p.Artifacts {
+		p.Artifacts[i].Held = nil
+	}
+	for i := range p.AptRepos {
+		p.AptRepos[i].Held = nil
+	}
 }
 
 // checkPart is what mamelet checks of the part of a verified revision before it uses it

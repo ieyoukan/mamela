@@ -94,6 +94,11 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 			Message: fmt.Sprintf("mamelet does not install %s on %s: %s", want.Path, want.Node, got.Unsafe),
 			Hint:    "Mamela never follows a symbolic link: declare the real path, or replace what is there by hand"}
 		return c
+	case got.Shadows != "":
+		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: codeArtifactUnsafe,
+			Message: fmt.Sprintf("mamelet does not install %s on %s: %s", want.Path, want.Node, shadowsWhy(want.Path, got.Shadows)),
+			Hint:    "give the program a name the node's packages do not use, or install it under /opt/<app>"}
+		return c
 	}
 	from := got.From
 	installed := got.Exists && !got.Large && from != nil && from.SHA256 == want.SHA256 && from.Extract == want.Extract

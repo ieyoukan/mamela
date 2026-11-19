@@ -119,6 +119,7 @@ mamelet 側
 - **順序:** CP を先に、mamelet をあとに更新する。新しい CP は旧い報告（`extensions` なし）も新しい報告も読む。旧い CP は新しい mamelet の報告を読めない（報告を未知のメンバーを拒んで読む）。mamelet の版は `internal/mamelet/release.go` の `Release`（0.10.0）と commit（`scripts/build-mamelet.sh` が `0.10.0+<commit>` にする）。
 - **ダウンロード:** linux の `download.go`（`HTTPSClient`、`Fetch`、`ExtractMember`）は、拡張の型を使わない、sha256 で固定したダウンロードの部品である。https だけ（リダイレクトも）、大きさと時間の上限、`Accept-Encoding: identity`（ダウンロードしたバイト列そのものの sha256 を見る）、失敗したら一時ファイルを残さない、`.tar.gz` から 1 つの通常のファイルだけを取り出す。k3s のバイナリのダウンロード（`internal/ext/k3s/mamelet.go` の `downloadK3s`）は、あとでこれに載せ替えられる（いまは変えない。k3s の wire と golden を変えないため）。拡張が別のパッケージに分かれる段 6 では、どちらからも使える場所に移す。
 - **残り:** k3s を `Ext` に載せ替える（wire と digest が変わるので、旧い形も読める CP を 1 つ挟む）、k3s のダウンロードを linux の `Fetch` に載せ替える、拡張の名前と版を node provider の manifest に入れる（全 plan の digest が変わる。linux の kind はすでに manifest に入っている。kind を足すと、node provider の manifest の digest も変わる。linux の golden は、それを固定した値で作る）。
+- **TODO（0.4.0 では入れない）:** plan の `Kit.ExtNotTaken` は、mamelet が拡張の部分を断った理由の文（報告の `extRefused` の「does not know the extension」「cannot be read」）で、hint を「mamelet を更新する」と「理由が言うものを直す」に分けている。文は mamelet と拡張のもので、言い回しが変わると hint が誤る。報告に、断った種類（読めない／読んだうえで断った）を構造で持たせる（たとえば `extUnread: ["linux"]`、拡張の `Check` は読めないことを型のある error で返す）。核の wire（`noderev.Report`）と snapshot に足すことになるので、CP を先に更新する順序の中で、足すだけの変更として入れる（旧い mamelet の報告にはないので、そのときは今の文での判断に戻る）。
 
 ## 先にやること
 

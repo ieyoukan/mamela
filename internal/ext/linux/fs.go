@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,8 +97,9 @@ func openDir(r *os.Root, dir string) (*dirFD, error) {
 }
 
 // Tests put something else in place of a file (testHookOpenLeaf) or a directory (testHookOpenSubdir)
-// between mamelet's look at it and its opening (p: its path), as a user racing mamelet would.
-var testHookOpenLeaf, testHookOpenSubdir func(p string)
+// between mamelet's look at it and its opening, or of a directory mamelet made between its making and
+// its opening (testHookMadeDir) (p: its path), as a user racing mamelet would.
+var testHookOpenLeaf, testHookOpenSubdir, testHookMadeDir func(p string)
 
 // openRegular opens the regular file at p (absolute) for reading, following no link on the way
 // (openDir, openLeaf). The FileInfo and the stamp are the opened descriptor's.
@@ -184,17 +186,29 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 		st.SHA256 = sum
 		return st
 	}
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, max+1)); err != nil {
+	// When the stamp was taken, not when the hashing ended: a file changed in the same tick as its
+	// stamp, while a long hashing ran, must still count as racy (hashCache.put).
+	at := hashedNow()
+	sum, err := hashContent(io.LimitReader(f, max+1))
+	if err != nil {
 		st.Error = err.Error()
 		return st
 	}
-	st.SHA256 = hex.EncodeToString(h.Sum(nil))
+	st.SHA256 = sum
 	if fi.Size() > MaxContent {
-		hashes.put(key, stamp, st.SHA256, hashedNow())
+		hashes.put(key, stamp, st.SHA256, at)
 		largeHashed.Add(1)
 	}
 	return st
+}
+
+// hashContent is the sha256 (hex) of what r reads (tests wrap it: a hashing that takes long).
+var hashContent = func(r io.Reader) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // racyWindow: a file whose content or status changed this close to when it was hashed may change
@@ -203,8 +217,8 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 // rule). A file left alone that long gets a new stamp with any change.
 const racyWindow = 2 * time.Second
 
-// hashedNow is when a file was hashed: mamelet's clock (tests move it). It decides only whether a
-// hash is kept, never what is reported.
+// hashedNow is when a file was hashed (taken right after its stamp, before it is read): mamelet's
+// clock (tests move it). It decides only whether a hash is kept, never what is reported.
 var hashedNow = time.Now
 
 // largeHashed counts the large files hashed (tests: the cache spares the hashing).
@@ -251,6 +265,39 @@ func (c *hashCache) put(key string, s fileStamp, sum string, at time.Time) {
 	c.m[key] = cachedSum{s, sum}
 }
 
+// testIDs is, in tests only, a swap of the test's own user and group (whose ids the files it makes
+// have) with a user and a group of the node the test stands up (fixed ids of its /etc/passwd): a
+// file of the test's is seen as theirs (ownerOf), and a chown to them gives it the test's own, which
+// a test that does not run as root can give. So a test sees the same node whoever runs it, root
+// included. Its zero value, mamelet's, changes nothing.
+var testIDs idSwap
+
+// idSwap swaps the user id realUID with uid and the group id realGID with gid, both ways (an
+// involution), when on.
+type idSwap struct {
+	on                         bool
+	realUID, realGID, uid, gid int
+}
+
+func (s idSwap) swap(uid, gid int) (int, int) {
+	if !s.on {
+		return uid, gid
+	}
+	switch uid {
+	case s.realUID:
+		uid = s.uid
+	case s.uid:
+		uid = s.realUID
+	}
+	switch gid {
+	case s.realGID:
+		gid = s.gid
+	case s.gid:
+		gid = s.realGID
+	}
+	return uid, gid
+}
+
 // rootIDs are the ids of root and of its group on the node (0 when the files do not name them).
 func (a accounts) rootIDs() (uid, gid int) {
 	return a.users["root"], a.groups["root"]
@@ -295,6 +342,58 @@ func resolve(r *os.Root, p string) (string, error) {
 		todo = append(strings.Split(strings.TrimPrefix(t, "/"), "/"), todo...)
 	}
 	return cur, nil
+}
+
+// shadowed says, of a path in /usr/local/sbin or /usr/local/bin (localDirs), which program of the
+// node's packages a file there would run instead of ("" none): the first of the directories of the
+// packages' programs (packageDirs) that has one of its name. The /usr/local ones come first in the
+// PATH of root's shells and of systemd's services (apt-daily-upgrade.service runs dpkg, and so the
+// packages' scripts, with it), so a file there runs as root instead of the system's program of that
+// name, whichever it is: the graph knows only some names (rootRuns), mamelet the node's. The links
+// of the node are followed by looking only (resolve: a merged /usr's /bin, a link of the
+// alternatives); a name that leads nowhere is no program. An error says that it cannot be told
+// (mamelet then refuses the path: fail closed).
+func shadowed(r *os.Root, p string) (string, error) {
+	dir, base := path.Dir(p), path.Base(p)
+	if !slices.Contains(localDirs, dir) {
+		return "", nil
+	}
+	for _, d := range packageDirs {
+		q := d + "/" + base
+		_, err := resolve(r, q)
+		switch {
+		case err == nil:
+			return q, nil
+		case errors.Is(err, fs.ErrNotExist):
+		default:
+			return "", fmt.Errorf("mamelet cannot tell whether the node has %s, which a file at %s would run instead of: %w", q, p, err)
+		}
+	}
+	return "", nil
+}
+
+// withShadows is st with what a file there would run instead of (Shadows), or why that cannot be
+// told (Error), when it was observed.
+func withShadows(r *os.Root, st FileState) FileState {
+	if st.Error != "" || st.Unsafe != "" {
+		return st
+	}
+	switch prog, err := shadowed(r, st.Path); {
+	case err != nil:
+		st.Error = err.Error()
+	case prog != "":
+		st.Shadows = prog
+	}
+	return st
+}
+
+// localDirs are the directories of pathDirs that are not the packages': a program there comes first.
+var localDirs = []string{"/usr/local/sbin", "/usr/local/bin"}
+
+// shadowsWhy says why mamelet does not write p, a file that would run instead of prog.
+func shadowsWhy(p, prog string) string {
+	return fmt.Sprintf("the node has %s, and %s comes first in the PATH of root's shells and of systemd's services (apt-daily-upgrade runs dpkg and the packages' scripts with it): a file at %s would run as root instead of it",
+		prog, path.Dir(p), p)
 }
 
 // modeString is a file's mode as four octal digits, with the setuid, setgid and sticky bits.
@@ -419,7 +518,7 @@ func replaceIn(dir *dirFD, where, base string, src io.Reader, size int64, sum st
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	if err := f.Chown(uid, gid); err != nil {
+	if err := f.Chown(testIDs.swap(uid, gid)); err != nil {
 		return err
 	}
 	if err := f.Chmod(mode); err != nil {

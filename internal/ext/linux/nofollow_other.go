@@ -64,7 +64,10 @@ func (d *dirFD) rename(oldname, newname string) error { return d.root.Rename(old
 func (d *dirFD) create(name string, perm fs.FileMode) (*os.File, error) {
 	return d.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 }
-func (d *dirFD) chown(uid, gid int) error            { return d.root.Chown(".", uid, gid) }
+func (d *dirFD) chown(uid, gid int) error {
+	uid, gid = testIDs.swap(uid, gid)
+	return d.root.Chown(".", uid, gid)
+}
 func (d *dirFD) chmod(mode fs.FileMode) error        { return d.root.Chmod(".", mode) }
 func (d *dirFD) free() int64                         { return -1 }
 func (d *dirFD) madeDir(name string) (*dirFD, error) { return d.subdir(name) }

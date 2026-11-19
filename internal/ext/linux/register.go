@@ -189,6 +189,7 @@ func init() {
 				k.observe(ctx, s, p, &o)
 			}
 			left.add(&o)
+			noteAptFailures(p, rep.Results, &o)
 			observePending(s, &o)
 			cleanStateDir(s)
 			o.SetAside = setAsideRecords(stateDir(s))

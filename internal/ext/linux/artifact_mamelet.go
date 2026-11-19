@@ -45,27 +45,30 @@ func stateDir(s *mamelet.System) string {
 	return s.Path(s.StateDir)
 }
 
-// loadRecord reads the record (empty when there is none yet). One that cannot be read is set aside
-// (recordName + corruptSuffix, for a person to look at: the report says so) and taken as empty: the
-// artifacts mamelet installed are then reported as ones it did not install, until they are installed
-// again, and the record is never written over with only what is installed next. The error says why
-// it could not be read nor set aside (nothing may then be written over it).
+// loadRecord reads the record (empty when there is none yet). One whose content cannot be decoded
+// (cut short, written over by hand) is set aside (recordName + corruptSuffix, for a person to look at:
+// the report says so) and taken as empty: the artifacts mamelet installed are then reported as ones it
+// did not install, until they are installed again, and the record is never written over with only
+// what is installed next. One that cannot be read (an I/O error, too many open files) is left where it
+// is: the error says so, and this round does not use it (readRecord). Members it does not know are
+// ignored (decodeRecord). The error also says why a record could not be set aside (nothing may then be
+// written over it).
 func loadRecord(dir string) (artifactRecord, error) {
 	rec := artifactRecord{Artifacts: map[string]installed{}}
 	if dir == "" {
 		return rec, errors.New("mamelet has no state directory")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, recordName))
-	if errors.Is(err, fs.ErrNotExist) {
+	data, err := readRecord(dir, recordName)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return rec, nil
+	case err != nil:
+		return rec, fmt.Errorf("the record of the artifacts mamelet installed (%s) cannot be read: %w", recordName, err)
 	}
-	if err == nil {
-		err = json.Unmarshal(data, &rec, json.RejectUnknownMembers(true))
-	}
-	if err != nil {
+	if err := decodeRecord(data, &rec); err != nil {
 		empty := artifactRecord{Artifacts: map[string]installed{}}
 		if aerr := setAside(dir, recordName); aerr != nil {
-			return empty, fmt.Errorf("the record of the artifacts mamelet installed (%s) cannot be read (%v), nor set aside: %w", recordName, err, aerr)
+			return empty, fmt.Errorf("the record of the artifacts mamelet installed (%s) cannot be decoded (%v), nor set aside: %w", recordName, err, aerr)
 		}
 		return empty, nil
 	}
@@ -73,6 +76,20 @@ func loadRecord(dir string) (artifactRecord, error) {
 		rec.Artifacts = map[string]installed{}
 	}
 	return rec, nil
+}
+
+// readRecord reads the record name of mamelet's state directory dir. An error is one of reading, never
+// of what the record says: the record is then left where it is (it may be read the next time).
+func readRecord(dir, name string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(dir, name))
+}
+
+// decodeRecord decodes a record of mamelet's state directory, ignoring the members it does not know:
+// a mamelet that is gone back to an older release reads what a newer one wrote (and drops those
+// members when it writes the record again), as the Control Plane reads its database. Only content
+// that is not such a record (not JSON, cut short, a member of another type) is an error.
+func decodeRecord(data []byte, v any) error {
+	return json.Unmarshal(data, v)
 }
 
 // saveRecord replaces the record (saveJSON).
@@ -129,17 +146,20 @@ func observeArtifacts(_ context.Context, s *mamelet.System, p Part, o *Observed)
 	}
 	defer r.Close()
 	acc := readAccounts(r)
-	// A record that cannot be read is set aside and taken as empty: every artifact is then reported as
-	// one mamelet did not install (and the report says the record was set aside: SetAside), and the
-	// plan asks to install it again (which writes a new record).
-	rec, _ := loadRecord(stateDir(s))
+	// A record that cannot be decoded is set aside and taken as empty: every artifact is then reported
+	// as one mamelet did not install (and the report says the record was set aside: SetAside), and the
+	// plan asks to install it again (which writes a new record). One that cannot be read this time is
+	// not used: what each artifact is cannot be told, which the report says (the plan blocks it).
+	rec, recErr := loadRecord(stateDir(s))
 	for _, a := range p.Artifacts {
 		st := ArtifactState{FileState: FileState{Path: a.Path}}
 		if e := CheckPath(a.Path); e != nil {
 			st.Error = "mamelet refuses the path: " + e.Message
+		} else if recErr != nil {
+			st.Error = recErr.Error() + ": whether the file at the path is the one mamelet installed cannot be told; the record is left as it is and read again the next time"
 		} else {
 			removeStaleTemp(r, a.Path)
-			st.FileState = inspectUpTo(r, a.Path, acc, MaxArtifact)
+			st.FileState = withShadows(r, inspectUpTo(r, a.Path, acc, MaxArtifact))
 			if in, ok := rec.Artifacts[a.Path]; ok && st.Exists && st.Unsafe == "" && st.Error == "" && !st.Large && st.SHA256 == in.Installed {
 				from := in.Source
 				st.From = &from
@@ -223,6 +243,12 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 		return noderev.OutcomeFailed, err.Error(), false
 	}
 	defer r.Close()
+	switch prog, err := shadowed(r, p); {
+	case err != nil:
+		return noderev.OutcomeFailed, err.Error() + "; nothing was installed", false
+	case prog != "":
+		return refused("mamelet does not install " + p + ": " + shadowsWhy(p, prog) + "; nothing was installed")
+	}
 	acc := readAccounts(r)
 	uid, okU := acc.users[in.Owner]
 	gid, okG := acc.groups[in.Group]
@@ -242,7 +268,7 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 	rec, recErr := loadRecord(dir)
 	if recErr != nil {
 		// What is installed could not be recorded without losing what the record says of the others.
-		return noderev.OutcomeFailed, recErr.Error() + "; nothing was installed (move it away by hand, then apply again)", false
+		return noderev.OutcomeFailed, recErr.Error() + "; nothing was installed (if it stays so, move it away by hand, then apply again)", false
 	}
 	prev, recorded := rec.Artifacts[p]
 	same := recorded && prev.SHA256 == in.SHA256 && prev.Extract == in.Extract &&

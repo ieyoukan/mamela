@@ -204,24 +204,18 @@ func TestAptRepoConflicts(t *testing.T) {
 	if err != nil || len(g.Resources) != 4 {
 		t.Errorf("two nodes: %v", err)
 	}
-	// A file of the declaration that apt reads as a source and names the same URI and suite: mamelet
-	// would find it only once the file is written. Any other file, or another suite, is no conflict.
-	for name, c := range map[string]struct {
-		path, content string
-		conflict      bool
-	}{
-		"a .list":           {"/etc/apt/sources.list.d/docker.list", "deb [arch=amd64] https://download.docker.com/linux/ubuntu/ noble stable\n", true},
-		"a .sources":        {"/etc/apt/sources.list.d/docker.sources", "Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\n", true},
-		"sources.list":      {"/etc/apt/sources.list", "# Docker\ndeb https://download.docker.com/linux/ubuntu noble stable\n", true},
-		"another suite":     {"/etc/apt/sources.list.d/docker.list", "deb https://download.docker.com/linux/ubuntu jammy stable\n", false},
-		"not apt's":         {"/etc/apt/docker.list.bak", "deb https://download.docker.com/linux/ubuntu noble stable\n", false},
-		"a commented entry": {"/etc/apt/sources.list.d/docker.list", "# deb https://download.docker.com/linux/ubuntu noble stable\n", false},
-	} {
-		file := fileRes("web/file"+c.path, fmt.Sprintf(`{"node":"web","path":%q,"content":%q}`, c.path, c.content))
+	// A file of the declaration cannot be an apt source file (NodeFile does not write them), and the
+	// hint says what to do instead: NodeAptRepo for a vendor's source, by hand for the distribution's.
+	for _, p := range []string{"/etc/apt/sources.list.d/docker.list", "/etc/apt/sources.list.d/debian.sources", "/etc/apt/sources.list"} {
+		file := fileRes("web/file"+p, fmt.Sprintf(`{"node":"web","path":%q,"content":"deb https://deb.debian.org/debian bookworm main non-free-firmware\n"}`, p))
 		_, err := decodeGraph(dockerRepo, file)
-		if got := err != nil && strings.Contains(err.Error(), "a source of NodeAptRepo web/apt-repo/docker on web too"); got != c.conflict {
-			t.Errorf("%s: %v", name, err)
+		if err == nil || !strings.Contains(err.Error(), "Signed-By") || !strings.Contains(err.Error(), "NodeAptRepo") || !strings.Contains(err.Error(), "distribution's own sources") ||
+			!strings.Contains(err.Error(), "by hand") || strings.Contains(err.Error(), "in this file") {
+			t.Errorf("%s: %v", p, err)
 		}
+	}
+	if _, err := decodeGraph(dockerRepo, fileRes("web/file/etc/apt/docker.list.bak", `{"node":"web","path":"/etc/apt/docker.list.bak","content":"deb https://download.docker.com/linux/ubuntu noble stable\n"}`)); err != nil {
+		t.Errorf("a file apt does not read: %v", err)
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/ieyoukan/mamela/internal/noderev"
+	"github.com/ieyoukan/mamela/internal/plan"
+	"github.com/ieyoukan/mamela/internal/policy"
 )
 
 // The test's keys: not real keys, only their first bytes are those of an OpenPGP public key.
@@ -70,6 +72,11 @@ type fakeApt struct {
 	locked int
 	// simulate answers apt-get -s install <package> once apt has read a source of these URIs.
 	simulate map[string]string
+	// unreachable are the URIs an update cannot fetch: as apt does, it says so (Err:, W: Failed to
+	// fetch), writes no release file of them, and exits 0.
+	unreachable map[string]bool
+	// warn is what an update says besides on its errors (and still exits 0).
+	warn string
 }
 
 func (f *fakeApt) Run(_ context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
@@ -108,15 +115,25 @@ func (f *fakeApt) Run(_ context.Context, program string, args []string, env []st
 		return []byte("Hit:1 http://archive.ubuntu.com/ubuntu noble InRelease\n"), []byte(f.updateFail), 100, nil
 	}
 	files, _ := filepath.Glob(filepath.Join(f.root, "etc/apt/sources.list.d/mamela-*.sources"))
+	out, errOut := "", f.warn
 	for _, p := range files {
 		b, _ := os.ReadFile(p)
-		for _, e := range deb822Entries(p, string(b)) {
+		for i, e := range deb822Entries(p, string(b)) {
+			if f.unreachable[e.uri] {
+				host := strings.Split(strings.TrimPrefix(strings.TrimPrefix(e.uri, "https://"), "http://"), "/")[0]
+				out += fmt.Sprintf("Ign:%d %s %s InRelease\nErr:%d %s %s InRelease\n  Temporary failure resolving '%s'\n", i+1, e.uri, e.suite, i+1, e.uri, e.suite, host)
+				errOut += fmt.Sprintf("W: Failed to fetch %s/dists/%s/InRelease  Temporary failure resolving '%s'\n", e.uri, e.suite, host)
+				continue
+			}
 			l := filepath.Join(f.root, aptListsDir, aptListsName(e.uri, e.suite, "InRelease"))
 			os.MkdirAll(filepath.Dir(l), 0o755)
 			os.WriteFile(l, []byte("signed"), 0o644)
 		}
 	}
-	return []byte("Reading package lists...\n"), nil, 0, nil
+	if len(f.unreachable) > 0 {
+		errOut += "W: Some index files failed to download. They have been ignored, or old ones used instead.\n"
+	}
+	return []byte(out + "Reading package lists...\n"), []byte(errOut), 0, nil
 }
 
 // aptNode is a mamelet whose node has apt (fakeApt) and reaches the key server.
@@ -281,6 +298,104 @@ func TestMameletRetriesAFailedAptUpdate(t *testing.T) {
 	}
 	if s := aptState(t, rep); len(s.Where[0].Unread) != 0 {
 		t.Errorf("observed %+v", s)
+	}
+}
+
+// apt-get update exits 0 when it could not fetch a source (it only warns, as apt does on Debian 12
+// and 13 without network): the attempt is not Done. mamelet looks at what apt read of this source
+// and said of it: the attempt fails with apt's words about it, the report says so while the grant is
+// in the revision, and the plan of the source says it (MAM-PLAN-0152).
+func TestMameletSeesAnAptUpdateThatFailedForTheSource(t *testing.T) {
+	n, apt, k := aptNode(t)
+	apt.unreachable = map[string]bool{"https://download.docker.com/linux/ubuntu": true}
+	g := addGrant(k, "/armored", testKeyArmored, opA, 1)
+	n.offer(Part{AptRepos: []AptRepo{g}}, nil)
+	rep := n.round()
+	r := result(t, rep, opA)
+	if r.Outcome != noderev.OutcomeFailed || !strings.Contains(r.Detail, "did not read https://download.docker.com/linux/ubuntu noble") ||
+		!strings.Contains(r.Detail, "Temporary failure resolving 'download.docker.com'") || !strings.Contains(r.Detail, "the files stay") {
+		t.Fatalf("result %+v", r)
+	}
+	s := aptState(t, rep)
+	if !strings.Contains(s.Failed, "Temporary failure resolving") || !s.Sources.Exists {
+		t.Errorf("observed %+v", s)
+	}
+	// The plan says why, and the hint what to fix.
+	g2, err := decodeGraph(aptRes("web/apt-repo/docker", strings.Replace(dockerSpec(""), "https://download.docker.com/linux/ubuntu/gpg", k.URL+"/armored", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := observedOf(t, rep)
+	p := plan.Build(g2, world{mamelet: Release, accepts: Version, observed: &o}.snapshot(g2), policy.Default)
+	if c := findChange(t, p, "NodeAptRepo web/apt-repo/docker"); c.Note == nil || c.Note.Code != codeAptRepoUnread ||
+		!strings.Contains(c.Note.Message, "the last attempt failed") || !strings.Contains(c.Note.Message, "Temporary failure resolving") || !strings.Contains(c.Note.Hint, "fix what the last attempt says") {
+		t.Errorf("plan %+v %+v", c, c.Note)
+	}
+	// Reached once more (a new attempt): done, and the report says nothing of a failure any more.
+	apt.unreachable = nil
+	g.Add.Grant.Attempt = 2
+	n.offer(Part{AptRepos: []AptRepo{g}}, nil)
+	rep = n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone {
+		t.Fatalf("attempt 2: %+v", r)
+	}
+	if s := aptState(t, rep); s.Failed != "" || len(s.Where[0].Unread) != 0 {
+		t.Errorf("observed %+v", s)
+	}
+}
+
+// What apt says decides only for this source: a failure it names (a key that does not sign it, read
+// before and kept as it was) fails the attempt; a failure of another source, a warning that is no
+// failure (a weak signature's algorithm) and a notice do not.
+func TestMameletReadsWhatAptSaidOfTheSource(t *testing.T) {
+	for _, c := range []struct {
+		name, warn string
+		read       bool // apt read a release file of it before
+		fails      string
+	}{
+		{"a key that does not sign it", "W: GPG error: https://download.docker.com/linux/ubuntu noble InRelease: The following signatures couldn't be verified because the public key is not available: NO_PUBKEY 7EA0A9C3F273FCD8\n" +
+			"E: The repository 'https://download.docker.com/linux/ubuntu noble InRelease' is not signed.\n", true, "could not read this source again"},
+		{"another source", "W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/noble/InRelease  Temporary failure resolving 'archive.ubuntu.com'\n" +
+			"W: Some index files failed to download. They have been ignored, or old ones used instead.\n", false, ""},
+		{"a source whose URI starts like it", "W: Failed to fetch https://download.docker.com/linux/ubuntu-old/dists/noble/InRelease  404  Not Found\n", false, ""},
+		{"a weak signature", "W: https://download.docker.com/linux/ubuntu/dists/noble/InRelease: Signature by key 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 uses weak algorithm (rsa1024)\n" +
+			"N: Skipping acquire of configured file 'stable/binary-i386/Packages' as repository 'https://download.docker.com/linux/ubuntu noble InRelease' doesn't support architecture 'i386'\n", false, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, apt, k := aptNode(t)
+			apt.warn = c.warn
+			if c.read {
+				write(t, filepath.Join(n.root, aptListsDir, aptListsName("https://download.docker.com/linux/ubuntu", "noble", "InRelease")), "signed")
+			}
+			n.offer(Part{AptRepos: []AptRepo{addGrant(k, "/armored", testKeyArmored, opA, 1)}}, nil)
+			r := result(t, n.round(), opA)
+			switch {
+			case c.fails == "" && r.Outcome != noderev.OutcomeDone:
+				t.Errorf("failed: %+v", r)
+			case c.fails != "" && (r.Outcome != noderev.OutcomeFailed || !strings.Contains(r.Detail, c.fails) || !strings.Contains(r.Detail, "NO_PUBKEY")):
+				t.Errorf("result %+v, want it to say %q", r, c.fails)
+			}
+		})
+	}
+	// What apt said is cut between two characters, and made valid UTF-8 (the report is JSON).
+	if got := bounded("ab\xffcdé", 7); got != "ab\uFFFDcd..." {
+		t.Errorf("bounded: %q", got)
+	}
+	if got := bounded(strings.Repeat("é", 10), 5); got != "éé..." {
+		t.Errorf("bounded: %q", got)
+	}
+	for line, want := range map[string]bool{
+		"Err:1 https://example.com/apt stable InRelease":         true,
+		"W: Failed to fetch https://example.com/apt/dists/x":     true,
+		"E: The repository 'https://example.com/apt stable' x":   true,
+		"https://example.com/apt":                                true,
+		"W: Failed to fetch https://example.com/apt2/dists/x":    false,
+		"W: Failed to fetch https://example.com/apt.old/dists/x": false,
+		"Err:1 https://example.com/ap stable InRelease":          false,
+	} {
+		if got := mentionsURI(line, "https://example.com/apt/"); got != want {
+			t.Errorf("%q names the URI: %v", line, got)
+		}
 	}
 }
 

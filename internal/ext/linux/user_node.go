@@ -63,12 +63,16 @@ var userManifest = spec.Kind{Kind: KindUser, Operations: []spec.Operation{
 // is made with or set to, its groups, its uid and the home useradd would make (only used to make it),
 // and its keys.
 func addTargets(u *User, s *UserSpec) {
-	u.Shells, u.Groups = union(u.Shells, []string{s.CreateShell()}), union(u.Groups, s.Groups)
+	h := u.Held
+	if h == nil {
+		h = &UserTargets{}
+	}
+	u.Shells, u.Groups = union(h.Shells, u.Shells, []string{s.CreateShell()}), union(h.Groups, u.Groups, s.Groups)
 	if s.UID != 0 {
-		u.UIDs = union(u.UIDs, []int{s.UID})
+		u.UIDs = union(h.UIDs, u.UIDs, []int{s.UID})
 	}
 	if home, made := s.CreateHome(); made && home != "" {
-		u.Homes = union(u.Homes, []string{home})
+		u.Homes = union(h.Homes, u.Homes, []string{home})
 	}
 	u.Keys = u.Keys || s.AuthorizedKeys != nil
 }
@@ -117,6 +121,7 @@ func pruneUsers(g *graph.Graph, name string, p *Part) {
 		change := u.Change
 		*u = User{Name: u.Name, InForce: true}
 		addTargets(u, want)
+		u.Held = &UserTargets{Shells: slices.Clone(u.Shells), Groups: slices.Clone(u.Groups), UIDs: slices.Clone(u.UIDs), Homes: slices.Clone(u.Homes)}
 		if change != nil && changesAs(*change, want) {
 			u.Change = change
 		}

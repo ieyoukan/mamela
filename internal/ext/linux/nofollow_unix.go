@@ -152,6 +152,7 @@ func (d *dirFD) create(name string, perm fs.FileMode) (*os.File, error) {
 }
 
 func (d *dirFD) chown(uid, gid int) error {
+	uid, gid = testIDs.swap(uid, gid)
 	if err := ignoringEINTR(func() error { return unix.Fchown(d.fd, uid, gid) }); err != nil {
 		return &fs.PathError{Op: "chown", Path: d.path, Err: err}
 	}
@@ -177,9 +178,17 @@ func (d *dirFD) free() int64 {
 	return int64(st.Bavail) * int64(st.Bsize)
 }
 
-// madeDir opens the directory name of d that mamelet just made (O_DIRECTORY, O_NOFOLLOW): what
-// mamelet changes of it (its owner, its mode) is changed through it, never through the name.
+// madeDir opens the directory name of d that mamelet just made (with mode 0700: makeDir), as a
+// directory only and without following a link (O_DIRECTORY, O_NOFOLLOW): what mamelet changes of it
+// (its owner, its mode) is changed through it, never through the name. What it opened must be the
+// directory it made: a directory of mamelet's own user (root), which nobody else can make, that no
+// one but its owner may read, write or enter yet (mode 0700, less the umask). One that another put in
+// its place between the making and the opening (a user who may write the directory above it: a home)
+// is refused, never given mamelet's owner and mode.
 func (d *dirFD) madeDir(name string) (*dirFD, error) {
+	if testHookMadeDir != nil {
+		testHookMadeDir(d.child(name))
+	}
 	var fd int
 	err := ignoringEINTR(func() (err error) {
 		fd, err = unix.Openat(d.fd, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
@@ -190,6 +199,15 @@ func (d *dirFD) madeDir(name string) (*dirFD, error) {
 			return nil, &unsafeError{msg: d.child(name) + " is a symbolic link or not a directory"}
 		}
 		return nil, &fs.PathError{Op: "open", Path: d.child(name), Err: err}
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		unix.Close(fd)
+		return nil, &fs.PathError{Op: "fstat", Path: d.child(name), Err: err}
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFDIR || int(st.Uid) != os.Geteuid() || st.Mode&0o077 != 0 {
+		unix.Close(fd)
+		return nil, &unsafeError{msg: d.child(name) + " changed while mamelet made it (it is not the directory mamelet made: another was put in its place?)"}
 	}
 	return &dirFD{fd: fd, path: d.child(name)}, nil
 }

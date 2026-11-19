@@ -203,12 +203,13 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 			pkgs, svcs = a.observe(ctx, rev)
 		}
 		rep.Packages, rep.Services = pkgs, svcs
+		// The recorded outcomes first: an extension's observation may say why an attempt failed.
+		rep.Results = append(rep.Results, a.knownResults(rev, st)...)
 		for _, e := range extensions {
 			if e.Observe != nil {
 				e.Observe(ctx, a.System, rev, &rep)
 			}
 		}
-		rep.Results = append(rep.Results, a.knownResults(rev, st)...)
 	}
 	if err := a.State.Save(st); err != nil {
 		return rep, fmt.Errorf("save state: %w", err)

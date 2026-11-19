@@ -33,7 +33,7 @@ func observeFiles(_ context.Context, s *mamelet.System, p Part, o *Observed) {
 			o.Files = append(o.Files, FileState{Path: f.Path, Error: "mamelet refuses the path: " + e.Message})
 		} else {
 			removeStaleTemp(r, f.Path)
-			o.Files = append(o.Files, inspect(r, f.Path, a))
+			o.Files = append(o.Files, withShadows(r, inspect(r, f.Path, a)))
 		}
 		owners, groups := slices.Clone(f.Owners), slices.Clone(f.Groups)
 		if w := f.Write; w != nil {
@@ -96,6 +96,12 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 		return noderev.OutcomeFailed, err.Error(), false
 	}
 	defer r.Close()
+	switch prog, err := shadowed(r, p); {
+	case err != nil:
+		return noderev.OutcomeFailed, err.Error() + "; nothing was written", false
+	case prog != "":
+		return refused("mamelet does not write " + p + ": " + shadowsWhy(p, prog) + "; nothing was written")
+	}
 	a := readAccounts(r)
 	uid, okU := a.users[w.Owner]
 	gid, okG := a.groups[w.Group]

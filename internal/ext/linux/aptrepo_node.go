@@ -48,15 +48,27 @@ func whereOf(a *AptRepoSpec) AptWhere {
 	return AptWhere{URIs: slices.Clone(a.URIs), Suites: slices.Clone(a.Suites)}
 }
 
-// addWhere adds w to the URIs and suites of a source's entry (sorted, each once; only w past
-// maxTargets).
-func addWhere(cur []AptWhere, w AptWhere) []AptWhere {
+// addWhere adds w to the URIs and suites of a source's entry (sorted, each once). Past maxTargets, it
+// keeps held (the declaration in force's), then w (the planned declaration's), then the others, as
+// many as fit (union).
+func addWhere(held *AptWhere, cur []AptWhere, w AptWhere) []AptWhere {
 	if slices.ContainsFunc(cur, w.same) {
 		return cur
 	}
 	out := append(slices.Clone(cur), w)
 	if len(out) > maxTargets {
-		out = []AptWhere{w}
+		others := slices.Clone(cur)
+		slices.SortFunc(others, compareWhere)
+		var first []AptWhere
+		if held != nil {
+			first = append(first, *held)
+		}
+		out = nil
+		for _, x := range slices.Concat(first, []AptWhere{w}, others) {
+			if len(out) < maxTargets && !slices.ContainsFunc(out, x.same) {
+				out = append(out, x)
+			}
+		}
 	}
 	slices.SortFunc(out, compareWhere)
 	return out
@@ -79,7 +91,7 @@ func publishAptRepos(g *graph.Graph, name string, p *Part) {
 			p.AptRepos = append(p.AptRepos, AptRepo{Name: a.Name})
 			cur = &p.AptRepos[len(p.AptRepos)-1]
 		}
-		cur.Where = addWhere(cur.Where, whereOf(a))
+		cur.Where = addWhere(cur.Held, cur.Where, whereOf(a))
 	}
 	p.AptRepos = bound(p.AptRepos, func(r AptRepo) string { return r.Name }, func(r AptRepo) bool { return r.InForce || r.Add != nil }, declared, MaxNodeAptRepos)
 }
@@ -102,7 +114,8 @@ func pruneAptRepos(g *graph.Graph, name string, p *Part) {
 	}
 	for i := range p.AptRepos {
 		r, want := &p.AptRepos[i], declared[p.AptRepos[i].Name]
-		r.InForce, r.Where = true, []AptWhere{whereOf(want)}
+		held := whereOf(want)
+		r.InForce, r.Where, r.Held = true, []AptWhere{whereOf(want)}, &held
 		if a := r.Add; a != nil && !adds(*a, want) {
 			r.Add = nil
 		}
@@ -163,7 +176,7 @@ func grantAddAptRepo(_ context.Context, q node.GrantRequest) (node.Grant, bool, 
 			p.AptRepos = append(p.AptRepos, AptRepo{Name: s.Name})
 			cur = &p.AptRepos[len(p.AptRepos)-1]
 		}
-		cur.Where = addWhere(cur.Where, whereOf(&s))
+		cur.Where = addWhere(cur.Held, cur.Where, whereOf(&s))
 		cur.InForce, cur.Add = true, add
 		setPart(rev, p)
 		return nil

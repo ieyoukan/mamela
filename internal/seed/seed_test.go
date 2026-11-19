@@ -6,10 +6,13 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/json/v2"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/ext/linux"
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/mamelet"
 )
@@ -281,5 +284,22 @@ func TestPlainSeedHasNoMamelet(t *testing.T) {
 	m.SSHPublicKeys = []string{"ssh-ed25519 AAAA\nssh-ed25519 BBBB"}
 	if _, _, err := m.New(context.Background(), "web", 7001, static); err == nil {
 		t.Error("a key over two lines")
+	}
+}
+
+// A stop of mamelet (systemctl stop or restart) does not kill a useradd or usermod it runs: SIGTERM
+// goes to mamelet alone (the default, control-group, sends it to every process of the unit), and
+// systemd waits for mamelet longer than mamelet waits for them (linux.AccountsTimeout), with a margin.
+func TestMameletsUnitLetsAccountsFinishOnStop(t *testing.T) {
+	if !strings.Contains(unit, "\nKillMode=mixed\n") {
+		t.Errorf("the unit does not send SIGTERM to mamelet alone:\n%s", unit)
+	}
+	m := regexp.MustCompile(`\nTimeoutStopSec=([0-9]+)\n`).FindStringSubmatch(unit)
+	if m == nil {
+		t.Fatalf("the unit has no TimeoutStopSec:\n%s", unit)
+	}
+	secs, _ := strconv.Atoi(m[1])
+	if got := time.Duration(secs) * time.Second; got < linux.AccountsTimeout+30*time.Second {
+		t.Errorf("TimeoutStopSec %s: systemd would kill a useradd mamelet waits for (at most %s)", got, linux.AccountsTimeout)
 	}
 }

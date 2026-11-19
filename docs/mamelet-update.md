@@ -16,6 +16,19 @@ mamelet 0.10.0（Mamela 0.4.0）から、報告が受け取る拡張を挙げる
 
 0.3.2 から、許可（承認した操作を mamelet に許す印）には期限がある。Control Plane を更新する時点で進行中だった apply の許可（期限を持たない）は配られなくなるので、その apply は結果不明で止まる。更新のあとにもう一度 apply する。revision の形は変わらない（期限は Control Plane の中だけにあり、署名する内容に入らない）ので、古い mamelet はそのまま revision を読める。
 
+## mamelet の unit の止め方（0.4.0 から。前に作ったノードは手で足す）
+
+Mamela 0.4.0 の seed が書く mamelet の unit（`/etc/systemd/system/mamelet.service`）は、`KillMode=mixed` と `TimeoutStopSec=180` を持つ。`systemctl stop`・`restart mamelet` の SIGTERM は mamelet だけに届き、mamelet は動かしている `useradd`・`usermod` が終わるのを待ってから止まる（最大 2 分。途中で止めると `/etc/passwd` と `/etc/shadow` が食い違うか、ロックが残りうる。ADR 0016 §8）。systemd の既定（`KillMode=control-group`）では、SIGTERM が `useradd` にも届く。
+
+mamelet の更新（上の手順）は unit を書き換えない。0.4.0 より前に作ったノードで `NodeUser` を使うなら、drop-in を手で足す（`NodeFile` は mamelet の unit とその drop-in を書かない）:
+
+```sh
+sudo mkdir -p /etc/systemd/system/mamelet.service.d
+printf '[Service]\nKillMode=mixed\nTimeoutStopSec=180\n' | sudo tee /etc/systemd/system/mamelet.service.d/50-stop.conf
+sudo systemctl daemon-reload   # 次に止めるときから効く。mamelet の再起動は要らない
+systemctl show mamelet -p KillMode -p TimeoutStopUSec   # KillMode=mixed、TimeoutStopUSec=3min
+```
+
 ## 更新の中身（mamelet が一度だけ行う）
 
 1. Control Plane から binary を取る（mamelet がもともと信頼している CA の TLS）。承認した sha256 と違えば、何も変えずに失敗する。

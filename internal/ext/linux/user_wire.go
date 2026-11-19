@@ -30,8 +30,18 @@ type User struct {
 	Homes []string `json:"homes,omitempty"`
 	Keys  bool     `json:"keys,omitzero"`
 	// InForce: the declaration in force has the user (File.InForce).
-	InForce bool        `json:"inForce,omitzero"`
-	Change  *UserChange `json:"change,omitempty"`
+	InForce bool `json:"inForce,omitzero"`
+	// Held are the targets of the declaration in force (File.Held: never sent to mamelet).
+	Held   *UserTargets `json:"held,omitempty"`
+	Change *UserChange  `json:"change,omitempty"`
+}
+
+// UserTargets are the observation targets of a user that the declaration in force has (User.Held).
+type UserTargets struct {
+	Shells []string `json:"shells,omitempty"`
+	Groups []string `json:"groups,omitempty"`
+	UIDs   []int    `json:"uids,omitempty"`
+	Homes  []string `json:"homes,omitempty"`
 }
 
 // UserChange is an approved, one-time change of a user: mamelet makes it (Create), adds it to the

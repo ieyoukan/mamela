@@ -55,7 +55,7 @@ func (f *fakeAccounts) Run(_ context.Context, program string, args []string, _ [
 	}
 	switch program {
 	case progUseradd:
-		uid := os.Getuid()
+		uid := appID
 		if v, ok := flag("--uid"); ok {
 			uid, _ = strconv.Atoi(v)
 		}
@@ -64,8 +64,8 @@ func (f *fakeAccounts) Run(_ context.Context, program string, args []string, _ [
 		if !ok {
 			home = "/home/" + name
 		}
-		passwd += fmt.Sprintf("%s:x:%d:%d::%s:%s\n", name, uid, os.Getgid(), home, shell)
-		group += fmt.Sprintf("%s:x:%d:\n", name, os.Getgid())
+		passwd += fmt.Sprintf("%s:x:%d:%d::%s:%s\n", name, uid, appID, home, shell)
+		group += fmt.Sprintf("%s:x:%d:\n", name, appID)
 		if _, ok := flag("--create-home"); ok {
 			if err := os.MkdirAll(filepath.Join(f.root, home), 0o755); err != nil {
 				return nil, nil, -1, err
@@ -113,13 +113,15 @@ func (f *fakeAccounts) read(p string) string {
 }
 
 // newUserNode is a mamelet on a node with root (uid 0), the groups docker and www-data, and the
-// shells /bin/bash and /usr/sbin/nologin; useradd and usermod are fakeAccounts.
+// shells /bin/bash and /usr/sbin/nologin; useradd and usermod are fakeAccounts. The test's own files
+// are app's (appID: actAs), the user fakeAccounts makes and addUser puts there.
 func newUserNode(t *testing.T) (*mnode, *fakeAccounts) {
 	n := newNode(t)
+	actAs(t, appID, appID)
 	write(t, filepath.Join(n.root, "etc/passwd"), "root:x:0:0:root:/root:/bin/bash\n")
 	write(t, filepath.Join(n.root, "etc/group"), "root:x:0:\ndocker:x:998:\nwww-data:x:33:\n")
-	// The users fakeAccounts makes have the test's own uid, which is not a system user's here.
-	write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("# login.defs\nUID_MIN\t\t%d\n", os.Getuid()))
+	// The users fakeAccounts makes have appID, which is not a system user's here.
+	write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("# login.defs\nUID_MIN\t\t%d\n", appID))
 	for _, sh := range []string{"bin/bash", "usr/sbin/nologin"} {
 		write(t, filepath.Join(n.root, sh), "#!\n")
 		if err := os.Chmod(filepath.Join(n.root, sh), 0o755); err != nil {
@@ -131,13 +133,14 @@ func newUserNode(t *testing.T) (*mnode, *fakeAccounts) {
 	return n, f
 }
 
-// addUser puts app on the node as useradd would have made it (the test's own ids), with its home.
+// addUser puts app on the node as useradd would have made it (appID, whose the test's files are), with
+// its home.
 func addUser(t *testing.T, n *mnode, line string) {
 	t.Helper()
 	b, _ := os.ReadFile(filepath.Join(n.root, "etc/passwd"))
-	write(t, filepath.Join(n.root, "etc/passwd"), string(b)+fmt.Sprintf(line, os.Getuid(), os.Getgid())+"\n")
+	write(t, filepath.Join(n.root, "etc/passwd"), string(b)+fmt.Sprintf(line, appID, appID)+"\n")
 	g, _ := os.ReadFile(filepath.Join(n.root, "etc/group"))
-	write(t, filepath.Join(n.root, "etc/group"), string(g)+fmt.Sprintf("app:x:%d:\n", os.Getgid()))
+	write(t, filepath.Join(n.root, "etc/group"), string(g)+fmt.Sprintf("app:x:%d:\n", appID))
 	if err := os.MkdirAll(filepath.Join(n.root, "home/app"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -525,19 +528,18 @@ func TestMameletDoesNotTakeOverAUserMadeSinceThePlan(t *testing.T) {
 			appendTo(t, n, "etc/group", "sudo:x:27:app\n")
 		}, "it is in sudo, which this change does not add"},
 		{"with another primary group", func(t *testing.T, n *mnode) {
-			appendTo(t, n, "etc/passwd", fmt.Sprintf("app:x:%d:33::/home/app:/bin/bash\n", os.Getuid()))
+			appendTo(t, n, "etc/passwd", fmt.Sprintf("app:x:%d:33::/home/app:/bin/bash\n", appID))
 			os.MkdirAll(filepath.Join(n.root, "home/app"), 0o755)
 		}, "its primary group is www-data"},
 		{"as a system user", func(t *testing.T, n *mnode) {
 			addUser(t, n, appLine)
-			write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("UID_MIN %d\n", os.Getuid()+1))
+			write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("UID_MIN %d\n", appID+1))
 		}, "it is a system user"},
 		{"without its home", func(t *testing.T, n *mnode) {
 			addUser(t, n, appLine)
 			os.Remove(filepath.Join(n.root, "home/app"))
 		}, "its home /home/app cannot be looked at"},
 		{"with a home that is not its own", func(t *testing.T, n *mnode) {
-			notRoot(t)
 			appendTo(t, n, "etc/passwd", "app:x:5000:5000::/home/app:/bin/bash\n")
 			appendTo(t, n, "etc/group", "app:x:5000:\n")
 			os.MkdirAll(filepath.Join(n.root, "home/app"), 0o755)
@@ -579,6 +581,48 @@ func TestMameletComparesTheKeysBeforeItChangesAnything(t *testing.T) {
 	}
 	if len(f.commands) != 0 || n.read("/home/app/.ssh/authorized_keys") != keyBob+"\n" {
 		t.Errorf("ran %q", f.commands)
+	}
+}
+
+// What would refuse the keys refuses the whole change before its groups and shell are changed (check,
+// then act): a home mamelet does not write into, ~/.ssh a link, a home that does not exist, a home
+// that is not the user's. Nothing runs, and the user is as it was.
+func TestMameletChecksTheHomeBeforeItChangesAnything(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		line  string
+		setup func(n *mnode)
+		says  string
+	}{
+		{"a home in /etc", "app:x:%d:%d::/etc/app:/bin/bash", nil, "the system's"},
+		{"~/.ssh is a link", appLine, func(n *mnode) {
+			if err := os.Symlink("../../etc", filepath.Join(n.root, "home/app/.ssh")); err != nil {
+				t.Fatal(err)
+			}
+		}, "symbolic link"},
+		{"no home", appLine, func(n *mnode) { os.Remove(filepath.Join(n.root, "home/app")) }, "does not exist"},
+		{"another's home", "app:x:5000:%[2]d::/home/app:/bin/bash", nil, "not app's"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, f := newUserNode(t)
+			addUser(t, n, c.line)
+			if c.setup != nil {
+				c.setup(n)
+			}
+			passwd, group := n.read("/etc/passwd"), n.read("/etc/group")
+			keys := KeysContent([]string{keyAlice})
+			n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell, "/usr/sbin/nologin"}, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+				Groups: []string{"docker"}, Shell: "/usr/sbin/nologin", Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)},
+				Before: UserBefore{Exists: true, Shell: DefaultShell, Keys: &Before{}},
+				Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}}}, nil)
+			r := result(t, n.round(), opA)
+			if r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, c.says) || !strings.Contains(r.Detail, "nothing was changed") {
+				t.Errorf("result %+v, want it to say %q", r, c.says)
+			}
+			if len(f.commands) != 0 || n.read("/etc/passwd") != passwd || n.read("/etc/group") != group {
+				t.Errorf("ran %q", f.commands)
+			}
+		})
 	}
 }
 

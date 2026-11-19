@@ -59,7 +59,7 @@ func publishFiles(g *graph.Graph, name string, p *Part) {
 			p.Files = append(p.Files, File{Path: f.Path})
 			cur = &p.Files[len(p.Files)-1]
 		}
-		cur.Owners, cur.Groups = union(cur.Owners, []string{f.Owner}), union(cur.Groups, []string{f.Group})
+		cur.Owners, cur.Groups = union(cur.Held.heldOwners(), cur.Owners, []string{f.Owner}), union(cur.Held.heldGroups(), cur.Groups, []string{f.Group})
 	}
 	p.Files = bound(p.Files, func(f File) string { return f.Path }, func(f File) bool { return f.InForce || f.Write != nil }, declared, MaxNodeFiles)
 }
@@ -85,6 +85,7 @@ func pruneFiles(g *graph.Graph, name string, p *Part) {
 	for i := range p.Files {
 		f, want := &p.Files[i], declared[p.Files[i].Path]
 		f.InForce, f.Owners, f.Groups = true, []string{want.Owner}, []string{want.Group}
+		f.Held = &OwnerTargets{Owners: []string{want.Owner}, Groups: []string{want.Group}}
 		if w := f.Write; w != nil && !writes(*w, want) {
 			f.Write = nil
 		}
@@ -140,7 +141,7 @@ func grantWrite(_ context.Context, q node.GrantRequest) (node.Grant, bool, error
 			p.Files = append(p.Files, File{Path: f.Path})
 			cur = &p.Files[len(p.Files)-1]
 		}
-		cur.Owners, cur.Groups = union(cur.Owners, []string{f.Owner}), union(cur.Groups, []string{f.Group})
+		cur.Owners, cur.Groups = union(cur.Held.heldOwners(), cur.Owners, []string{f.Owner}), union(cur.Held.heldGroups(), cur.Groups, []string{f.Group})
 		cur.InForce, cur.Write = true, w
 		setPart(rev, p)
 		return nil

@@ -20,6 +20,8 @@ type AptRepo struct {
 	Where []AptWhere `json:"where,omitempty"`
 	// InForce: the declaration in force has the source (File.InForce).
 	InForce bool `json:"inForce,omitzero"`
+	// Held are the URIs and suites of the declaration in force (File.Held: never sent to mamelet).
+	Held *AptWhere `json:"held,omitempty"`
 	// Add is an approved, one-time addition (or change) of exactly this source and key.
 	Add *AptRepoAdd `json:"add,omitempty"`
 }
@@ -84,6 +86,10 @@ type AptRepoState struct {
 	// Where are what mamelet found of each URIs and suites of the part's entry (AptRepo.Where): each
 	// says which it was computed for, so a plan uses only the one of its own declaration.
 	Where []AptWhereState `json:"where,omitempty"`
+	// Failed is why the last attempt of the addition the revision grants did not succeed (its
+	// recorded detail: what apt-get update said of the source, a key that could not be downloaded),
+	// while the grant is in the revision; the plan says it where apt has not read the source.
+	Failed string `json:"failed,omitempty"`
 	// Error says why it could not be observed (a name mamelet refuses included).
 	Error string `json:"error,omitempty"`
 }

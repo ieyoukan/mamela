@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -224,14 +225,108 @@ func addAptRepo(ctx context.Context, x *mamelet.Act, name string, a AptRepoAdd) 
 		did = append(did, "the source and its key were already as approved")
 	}
 	ran = true
-	if err := aptGetUpdate(ctx, x.System); err != nil {
-		msg := err.Error()
-		if len(msg) > maxAptDetail {
-			msg = msg[:maxAptDetail] + "..."
+	said, err := aptGetUpdate(ctx, x.System)
+	if err != nil {
+		msg := bounded(err.Error(), maxAptDetail)
+		if about := aptFailures(said, a.URIs); about != "" {
+			msg += "; of this source it said: " + about
 		}
 		return failed(strings.Join(did, "; ") + "; apt-get update failed, the files stay (applying again runs it again): " + msg)
 	}
+	// apt-get update exits 0 when a source could not be fetched (it only warns: W: Failed to fetch),
+	// so what decides is whether apt read this source's URIs and suites, and what it said of them.
+	if unread := aptUnread(r, a.URIs, a.Suites); len(unread) > 0 {
+		why := aptFailures(said, a.URIs)
+		if why == "" {
+			why = "it said nothing of them; what it warned of: " + orNothing(aptWarnings(said))
+		}
+		return failed(strings.Join(did, "; ") + "; apt-get update did not read " + strings.Join(unread, ", ") + ": " + why +
+			"; the files stay (applying again runs it again)")
+	}
+	if why := aptFailures(said, a.URIs); why != "" {
+		// apt read a release file of it before, and could not read it again now: it keeps what it read
+		// before (a key that does not sign the source, a network that failed).
+		return failed(strings.Join(did, "; ") + "; apt-get update could not read this source again, and keeps what it read before: " + why +
+			"; the files stay (applying again runs it again)")
+	}
 	return noderev.OutcomeDone, strings.Join(append(did, "ran apt-get update"), "; "), ran
+}
+
+// aptFailures are the lines of what apt-get update said (said) that say it failed to read one of
+// uris: an Err: line that names one, with the lines indented below it, and an E:, W: Failed to fetch
+// or W: GPG error line that names one ("" none), joined with " | ", bounded. A warning that is not a
+// failure (a weak signature's algorithm, a notice N:) and an Ign: line (an optional file) are not.
+func aptFailures(said string, uris []string) string {
+	var out []string
+	inErr := false
+	for _, line := range strings.Split(said, "\n") {
+		if inErr && (strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")) {
+			out = append(out, strings.TrimSpace(line))
+			continue
+		}
+		inErr = false
+		names := slices.ContainsFunc(uris, func(u string) bool { return mentionsURI(line, u) })
+		switch {
+		case !names:
+		case strings.HasPrefix(line, "Err:"):
+			inErr = true
+			out = append(out, line)
+		case strings.HasPrefix(line, "E: "), strings.HasPrefix(line, "W: Failed to fetch"), strings.HasPrefix(line, "W: GPG error"):
+			out = append(out, line)
+		}
+	}
+	return bounded(strings.Join(out, " | "), maxAptDetail)
+}
+
+// aptWarnings are the W: and E: lines of what apt-get update said, joined with " | ", bounded.
+func aptWarnings(said string) string {
+	var out []string
+	for _, line := range strings.Split(said, "\n") {
+		if strings.HasPrefix(line, "W: ") || strings.HasPrefix(line, "E: ") {
+			out = append(out, line)
+		}
+	}
+	return bounded(strings.Join(out, " | "), maxAptDetail)
+}
+
+// mentionsURI reports whether line names uri (with or without its last "/"), as apt writes it: at the
+// end of the line, or before a "/", a space or a quote ("https://example.com/apt stable InRelease",
+// "https://example.com/apt/dists/stable/InRelease"), not as the start of a longer one.
+func mentionsURI(line, uri string) bool {
+	u := strings.TrimSuffix(uri, "/")
+	for i := strings.Index(line, u); i >= 0; {
+		end := i + len(u)
+		if end == len(line) || strings.ContainsRune("/ '\"\t", rune(line[end])) {
+			return true
+		}
+		next := strings.Index(line[end:], u)
+		if next < 0 {
+			break
+		}
+		i = end + next
+	}
+	return false
+}
+
+// bounded is s of at most n bytes ("..." past them), cut between two characters, and valid UTF-8
+// (what a program wrote may not be: the report is JSON, which must be).
+func bounded(s string, n int) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
+}
+
+// orNothing is s, or "nothing" when it is empty.
+func orNothing(s string) string {
+	if s == "" {
+		return "nothing"
+	}
+	return s
 }
 
 // downloadAptKey downloads a source's key with the extension's downloader (download.go: https only,
@@ -314,27 +409,53 @@ const aptListsLock = aptListsDir + "/lock"
 
 // aptGetUpdate runs apt-get update as the core runs apt-get (its environment and lock timeout), within
 // AptUpdateTimeout, waiting for the lock of apt's lists while another apt holds it (within
-// AptListsLockWait).
-func aptGetUpdate(ctx context.Context, s *mamelet.System) error {
+// AptListsLockWait). said is everything the last run wrote (its output, then its errors), which the
+// caller reads for what apt said of a source: apt-get update exits 0 when it could not fetch one.
+//
+// -o APT::Update::Error-Mode=any (apt 2.1.16 and later; an older apt ignores an option it does not
+// know) would make it exit 100 then, but for any source, the node's own mirror too: an addition would
+// then fail for what is not its own. What this source's addition did is told by what apt read of it,
+// and said of it (addAptRepo).
+func aptGetUpdate(ctx context.Context, s *mamelet.System) (said string, err error) {
 	uctx, cancel := context.WithTimeout(ctx, AptUpdateTimeout)
 	defer cancel()
 	deadline := time.Now().Add(AptListsLockWait)
 	for {
-		_, err := s.Run(uctx, progAptGet, []string{"-o", "DPkg::Lock::Timeout=300", "update"}, "DEBIAN_FRONTEND=noninteractive")
+		said, err = runSaid(uctx, s, progAptGet, []string{"-o", "DPkg::Lock::Timeout=300", "update"}, "DEBIAN_FRONTEND=noninteractive")
 		switch {
 		case err != nil && uctx.Err() != nil && ctx.Err() == nil:
-			return fmt.Errorf("apt-get update did not finish within %s", AptUpdateTimeout)
+			return said, fmt.Errorf("apt-get update did not finish within %s", AptUpdateTimeout)
 		case err == nil || !strings.Contains(err.Error(), aptListsLock):
-			return err
+			return said, err
 		case time.Now().After(deadline):
-			return fmt.Errorf("another apt held %s for more than %s (apt-daily, or an apt-get run by hand): %w", aptListsLock, AptListsLockWait, err)
+			return said, fmt.Errorf("another apt held %s for more than %s (apt-daily, or an apt-get run by hand): %w", aptListsLock, AptListsLockWait, err)
 		}
 		select {
 		case <-uctx.Done():
-			return fmt.Errorf("while waiting for %s: %w", aptListsLock, uctx.Err())
+			return said, fmt.Errorf("while waiting for %s: %w", aptListsLock, uctx.Err())
 		case <-time.After(AptListsLockRetry):
 		}
 	}
+}
+
+// runSaid runs program as System.Run does (an exit code other than 0 is an error that says the last
+// lines it wrote), and returns everything it wrote: its output, then its errors.
+func runSaid(ctx context.Context, s *mamelet.System, program string, args []string, env ...string) (string, error) {
+	out, errOut, code, err := s.Runner.Run(ctx, program, args, env)
+	said := string(out) + string(errOut)
+	switch {
+	case err != nil:
+		return said, err
+	case code != 0:
+		msg := strings.TrimSpace(string(errOut))
+		if msg == "" {
+			msg = strings.TrimSpace(string(out))
+		}
+		lines := strings.Split(msg, "\n")
+		lines = lines[max(len(lines)-5, 0):]
+		return said, fmt.Errorf("%s %s: exit %d: %s", program, strings.Join(args, " "), code, strings.Join(lines, " | "))
+	}
+	return said, nil
 }
 
 // removeFile removes the regular file at p, walking to its directory one directory at a time (no
@@ -350,6 +471,33 @@ func removeFile(r *os.Root, p string, dirUID, dirGID int) error {
 	}
 	return nil
 }
+
+// noteAptFailures adds to each source of the observation why the last attempt of the addition the
+// revision grants it did not succeed (AptRepoState.Failed), from the recorded outcomes of the
+// revision's grants (results: Agent.Round puts them in the report before the extensions observe).
+// The plan says it where it says that apt has not read the source (MAM-PLAN-0152).
+func noteAptFailures(p Part, results []noderev.Result, o *Observed) {
+	for _, r := range p.AptRepos {
+		a := r.Add
+		if a == nil {
+			continue
+		}
+		i := slices.IndexFunc(results, func(res noderev.Result) bool {
+			return res.Operation == a.Grant.Operation && res.Attempt == a.Grant.Attempt
+		})
+		if i < 0 || results[i].Outcome == noderev.OutcomeDone {
+			continue
+		}
+		for j := range o.AptRepos {
+			if o.AptRepos[j].Name == r.Name && o.AptRepos[j].Error == "" {
+				o.AptRepos[j].Failed = bounded(results[i].Detail, maxAptFailed)
+			}
+		}
+	}
+}
+
+// maxAptFailed bounds what the observation of a source says of its last attempt.
+const maxAptFailed = 2 * maxAptDetail
 
 // aptResults are the recorded outcomes of the part's additions.
 func aptRepoResults(p Part, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result {

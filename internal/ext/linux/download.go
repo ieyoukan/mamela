@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,9 +42,9 @@ func (r *Refusal) Error() string { return r.Reason }
 func refusal(format string, args ...any) error { return &Refusal{Reason: fmt.Sprintf(format, args...)} }
 
 // HTTPSClient is the client downloads are made with: base's transport and timeout (when base is
-// nil: Go's default transport, with a minute to wait for the response's header), DownloadTimeout
-// when base has none, and redirects followed only to https (ten at most). base itself is not
-// changed.
+// nil: Go's default transport, with a minute to wait for the response's header, and the node's
+// certificates as they are now: systemRoots), DownloadTimeout when base has none, and redirects
+// followed only to https (ten at most). base itself is not changed.
 func HTTPSClient(base *http.Client) *http.Client {
 	c := &http.Client{}
 	if base != nil {
@@ -50,6 +52,7 @@ func HTTPSClient(base *http.Client) *http.Client {
 	} else {
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.ResponseHeaderTimeout = time.Minute
+		t.TLSClientConfig = &tls.Config{RootCAs: systemRoots(), MinVersion: tls.VersionTLS12}
 		c.Transport = t
 	}
 	if c.Timeout == 0 {
@@ -65,6 +68,101 @@ func HTTPSClient(base *http.Client) *http.Client {
 		return nil
 	}
 	return c
+}
+
+// The node's certificates, where Go looks for them on Linux (crypto/x509): the first bundle of
+// caBundles that is there (SSL_CERT_FILE instead, when it is set), or else the certificates of the
+// files of caDirs (SSL_CERT_DIR, when it is set).
+var (
+	caBundles = []string{
+		"/etc/ssl/certs/ca-certificates.crt",                // Debian, Ubuntu (ca-certificates)
+		"/etc/pki/tls/certs/ca-bundle.crt",                  // Fedora, RHEL 6
+		"/etc/ssl/ca-bundle.pem",                            // openSUSE
+		"/etc/pki/tls/cacert.pem",                           // OpenELEC
+		"/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", // CentOS, RHEL 7
+		"/etc/ssl/cert.pem",                                 // Alpine
+	}
+	caDirs = []string{"/etc/ssl/certs", "/etc/pki/tls/certs"}
+)
+
+// Bounds of what systemRoots reads: a bundle, each file of a directory, and how many of them.
+const (
+	maxCABundle   = 16 << 20
+	maxCAFile     = 1 << 20
+	maxCADirFiles = 4096
+)
+
+// systemRoots are the node's certificates, read now: Go reads them once per process (crypto/x509's
+// SystemCertPool), so a node whose download failed for want of them (ca-certificates not installed
+// yet) would keep failing after they are installed, until mamelet restarts. A bundle is read, each
+// time a client is made (a download, a source's key), of at most maxCABundle bytes; only when none
+// is there are the directories read (Go reads them too; on Debian and Ubuntu the bundle has them).
+// When none of them gives a certificate, Go's own: SystemCertPool, or nil (Go's default).
+func systemRoots() *x509.CertPool {
+	pool := x509.NewCertPool()
+	files := caBundles
+	if f := os.Getenv("SSL_CERT_FILE"); f != "" {
+		files = []string{f}
+	}
+	found := false
+	for _, f := range files {
+		if b, err := readBounded(f, maxCABundle); err == nil {
+			found = pool.AppendCertsFromPEM(b)
+			break
+		}
+	}
+	if !found {
+		dirs := caDirs
+		if d := os.Getenv("SSL_CERT_DIR"); d != "" {
+			dirs = filepath.SplitList(d)
+		}
+		n := 0
+		for _, d := range dirs {
+			entries, err := os.ReadDir(d)
+			if err != nil {
+				continue
+			}
+			for _, e := range entries {
+				if n++; n > maxCADirFiles {
+					break
+				}
+				if b, err := readBounded(filepath.Join(d, e.Name()), maxCAFile); err == nil && pool.AppendCertsFromPEM(b) {
+					found = true
+				}
+			}
+		}
+	}
+	if found {
+		return pool
+	}
+	if sys, err := x509.SystemCertPool(); err == nil {
+		return sys
+	}
+	return nil
+}
+
+// readBounded reads the regular file p (a link is followed: the certificates' files are links), of
+// at most max bytes.
+func readBounded(p string, max int64) ([]byte, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	switch {
+	case err != nil:
+		return nil, err
+	case !fi.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is not a regular file", p)
+	case fi.Size() > max:
+		return nil, fmt.Errorf("%s is larger than %d bytes", p, max)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err == nil && int64(len(b)) > max {
+		err = fmt.Errorf("%s is larger than %d bytes", p, max)
+	}
+	return b, err
 }
 
 // Fetch downloads rawURL (https: CheckURL) with client (HTTPSClient) into a new file at dest
