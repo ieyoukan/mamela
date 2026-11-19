@@ -43,9 +43,10 @@ type UserChange struct {
 	Shell  string      `json:"shell,omitempty"`
 	Keys   *KeysWrite  `json:"keys,omitempty"`
 	// Before is the user as the approved plan saw it: mamelet changes the shell and authorized_keys
-	// only while they are still so, or once they are already as approved (compare and swap). A new user
-	// is made only while there is none of its name (or one exactly as approved, made by an attempt that
-	// was interrupted).
+	// only while they are still so, or once they are already as approved (compare and swap; a user the
+	// change makes had none: Keys is then absent). A new user is made only while there is none of its
+	// name, or goes on with one that is exactly what the change makes (made by an attempt that was
+	// interrupted): its uid, primary group, shell, home and groups, and no keys but the approved ones.
 	Before UserBefore `json:"before"`
 	// Grant is the core's one-time permission (ActionCreateUser with Create, ActionChangeUser without).
 	Grant noderev.Once `json:"grant"`
@@ -289,9 +290,12 @@ func checkUserChange(c UserChange) error {
 		if _, err := parseKeysContent(k.Content); err != nil {
 			return fmt.Errorf("authorized_keys: %v", err)
 		}
-		if c.Create == nil && c.Before.Keys == nil {
+		if c.Before.Keys == nil {
 			return fmt.Errorf("it writes the authorized_keys of a user without what the plan saw of them")
 		}
+	}
+	if b := c.Before.Keys; b != nil && c.Create != nil && b.Exists {
+		return fmt.Errorf("it makes a user whose authorized_keys the plan saw")
 	}
 	if b := c.Before.Keys; b != nil {
 		if why := b.check(); why != "" {

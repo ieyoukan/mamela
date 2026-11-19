@@ -56,7 +56,7 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 	}
 	u := entry
 	u.Change = &UserChange{Create: &UserCreate{UID: 5000, Shell: DefaultShell, Home: "/home/bob", CreateHome: true},
-		Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}
+		Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
 	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "/home/bob of user app exists already") {
@@ -80,7 +80,7 @@ func TestMameletRefusesAHomeUseraddTookAsItIs(t *testing.T) {
 	keys := KeysContent([]string{keyAlice})
 	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Keys: true, Change: &UserChange{
 		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, CreateHome: true},
-		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
+		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
 	r := result(t, rep, opA)

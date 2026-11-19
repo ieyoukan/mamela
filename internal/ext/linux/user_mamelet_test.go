@@ -118,6 +118,8 @@ func newUserNode(t *testing.T) (*mnode, *fakeAccounts) {
 	n := newNode(t)
 	write(t, filepath.Join(n.root, "etc/passwd"), "root:x:0:0:root:/root:/bin/bash\n")
 	write(t, filepath.Join(n.root, "etc/group"), "root:x:0:\ndocker:x:998:\nwww-data:x:33:\n")
+	// The users fakeAccounts makes have the test's own uid, which is not a system user's here.
+	write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("# login.defs\nUID_MIN\t\t%d\n", os.Getuid()))
 	for _, sh := range []string{"bin/bash", "usr/sbin/nologin"} {
 		write(t, filepath.Join(n.root, sh), "#!\n")
 		if err := os.Chmod(filepath.Join(n.root, sh), 0o755); err != nil {
@@ -157,6 +159,7 @@ func createApp(op string, attempt int) User {
 		Create: &UserCreate{Shell: DefaultShell, Home: "/home/app", CreateHome: true},
 		Groups: []string{"docker"},
 		Keys:   &KeysWrite{Content: content, SHA256: ContentSHA256(content)},
+		Before: UserBefore{Keys: &Before{}},
 		Grant:  noderev.Once{Operation: op, Attempt: attempt, Action: ActionCreateUser}}}
 }
 
@@ -463,6 +466,9 @@ func TestCheckPartUsers(t *testing.T) {
 		},
 		"keys empty":  func(u *User) { u.Change.Keys = &KeysWrite{Content: "", SHA256: ContentSHA256("")} },
 		"keys no eol": func(u *User) { u.Change.Keys = &KeysWrite{Content: keyAlice, SHA256: ContentSHA256(keyAlice)} },
+		// A creation's keys are written only against what the plan saw: none.
+		"keys of a create without what the plan saw": func(u *User) { u.Change.Before.Keys = nil },
+		"keys of a create the plan saw":              func(u *User) { u.Change.Before.Keys = &Before{Exists: true, SHA256: ContentSHA256("x")} },
 	} {
 		u := createApp(opA, 1)
 		f(&u)
@@ -499,5 +505,79 @@ func TestUserGrantsAsMameletGetsThem(t *testing.T) {
 	protectUsers(&p)
 	if p.Users[0].Change != nil {
 		t.Error("a change on a protected node")
+	}
+}
+
+// A creation finds a user of its name that is not exactly what it makes (made by someone since the
+// plan, not by an attempt of the creation): it changes nothing, and says what differs.
+func TestMameletDoesNotTakeOverAUserMadeSinceThePlan(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(t *testing.T, n *mnode)
+		says  string
+	}{
+		{"with keys of its own", func(t *testing.T, n *mnode) {
+			addUser(t, n, appLine)
+			write(t, filepath.Join(n.root, "home/app/.ssh/authorized_keys"), keyBob+"\n")
+		}, "it has an authorized_keys (sha256 " + ContentSHA256(keyBob + "\n")[:12] + ") this change did not write"},
+		{"in another group", func(t *testing.T, n *mnode) {
+			addUser(t, n, appLine)
+			appendTo(t, n, "etc/group", "sudo:x:27:app\n")
+		}, "it is in sudo, which this change does not add"},
+		{"with another primary group", func(t *testing.T, n *mnode) {
+			appendTo(t, n, "etc/passwd", fmt.Sprintf("app:x:%d:33::/home/app:/bin/bash\n", os.Getuid()))
+			os.MkdirAll(filepath.Join(n.root, "home/app"), 0o755)
+		}, "its primary group is www-data"},
+		{"as a system user", func(t *testing.T, n *mnode) {
+			addUser(t, n, appLine)
+			write(t, filepath.Join(n.root, "etc/login.defs"), fmt.Sprintf("UID_MIN %d\n", os.Getuid()+1))
+		}, "it is a system user"},
+		{"without its home", func(t *testing.T, n *mnode) {
+			addUser(t, n, appLine)
+			os.Remove(filepath.Join(n.root, "home/app"))
+		}, "its home /home/app cannot be looked at"},
+		{"with a home that is not its own", func(t *testing.T, n *mnode) {
+			notRoot(t)
+			appendTo(t, n, "etc/passwd", "app:x:5000:5000::/home/app:/bin/bash\n")
+			appendTo(t, n, "etc/group", "app:x:5000:\n")
+			os.MkdirAll(filepath.Join(n.root, "home/app"), 0o755)
+		}, "its home /home/app is"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, f := newUserNode(t)
+			c.setup(t, n)
+			passwd, group := n.read("/etc/passwd"), n.read("/etc/group")
+			n.offer(Part{Users: []User{createApp(opA, 1)}}, nil)
+			rep := n.round()
+			if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "user app changed since the plan") || !strings.Contains(r.Detail, c.says) {
+				t.Errorf("result %+v, want it to say %q", r, c.says)
+			}
+			if len(f.commands) != 0 || n.read("/etc/passwd") != passwd || n.read("/etc/group") != group {
+				t.Errorf("ran %q", f.commands)
+			}
+			if b, err := os.ReadFile(filepath.Join(n.root, "home/app/.ssh/authorized_keys")); err == nil && string(b) == keyAlice+"\n" {
+				t.Error("the keys were written")
+			}
+		})
+	}
+}
+
+// A change of a user whose authorized_keys changed since the plan changes nothing at all: the
+// compare and swap of the keys comes before the groups and the shell.
+func TestMameletComparesTheKeysBeforeItChangesAnything(t *testing.T) {
+	n, f := newUserNode(t)
+	addUser(t, n, appLine)
+	write(t, filepath.Join(n.root, "home/app/.ssh/authorized_keys"), keyBob+"\n")
+	keys := KeysContent([]string{keyAlice})
+	n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell}, Groups: []string{"docker"}, Keys: true, Change: &UserChange{
+		Groups: []string{"docker"}, Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)},
+		Before: UserBefore{Exists: true, Shell: DefaultShell, Keys: &Before{}},
+		Grant:  noderev.Once{Operation: opA, Attempt: 1, Action: ActionChangeUser}}}}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "authorized_keys changed since the plan (it was absent") {
+		t.Errorf("result %+v", r)
+	}
+	if len(f.commands) != 0 || n.read("/home/app/.ssh/authorized_keys") != keyBob+"\n" {
+		t.Errorf("ran %q", f.commands)
 	}
 }

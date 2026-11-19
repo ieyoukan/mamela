@@ -170,6 +170,11 @@ func grantUser(_ context.Context, q node.GrantRequest) (node.Grant, bool, error)
 		return node.Grant{}, true, fmt.Errorf("user %s on %s: the approved plan was made without a report of it (plan again)", s.Name, s.Node)
 	}
 	c.Before = UserBefore{Exists: got.Exists}
+	if !got.Exists && c.Keys != nil {
+		// The plan saw no user, so no authorized_keys: mamelet writes them only while there are none
+		// (or the approved ones), never over the keys of a user someone made since.
+		c.Before.Keys = &Before{}
+	}
 	if got.Exists {
 		c.Before.Shell = got.Shell
 		if c.Keys != nil {
