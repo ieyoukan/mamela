@@ -21,6 +21,7 @@ import (
 type fakeSystemd struct {
 	commands []string
 	fail     string // a verb that exits 1
+	missing  string // a unit that is not loaded (systemctl exits 5 for it)
 }
 
 func (f *fakeSystemd) Run(_ context.Context, program string, args []string, _ []string) ([]byte, []byte, int, error) {
@@ -33,6 +34,9 @@ func (f *fakeSystemd) Run(_ context.Context, program string, args []string, _ []
 	f.commands = append(f.commands, strings.Join(args, " "))
 	if args[0] == f.fail {
 		return nil, []byte("Job failed"), 1, nil
+	}
+	if f.missing != "" && args[len(args)-1] == f.missing {
+		return nil, []byte("Failed to " + args[0] + " " + f.missing + ".service: Unit " + f.missing + ".service not found."), 5, nil
 	}
 	return nil, nil, 0, nil
 }

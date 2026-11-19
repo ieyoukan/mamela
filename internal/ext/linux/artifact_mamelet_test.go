@@ -511,3 +511,23 @@ func TestMameletReportsAFailedRestartOfAnArtifact(t *testing.T) {
 		t.Errorf("not recorded: %+v", st)
 	}
 }
+
+// A service whose unit does not exist yet does not run: restarting it "if it runs" is nothing to do,
+// not a failure. This is the order of one round when the unit comes with the binary it runs: the
+// artifact (order 8) is installed before the file of its unit (order 9), whose service it names.
+func TestMameletRestartsNothingWhenTheUnitDoesNotExistYet(t *testing.T) {
+	rel := newReleases(t)
+	sum := rel.put("/tool", []byte("tool"))
+	n := artifactNode(t, rel)
+	n.sys.missing = "tool"
+	a := install("/usr/local/bin/tool", rel.url("/tool"), sum, "", opA, 1)
+	a.Install.Restart = []string{"tool"}
+	n.offer(Part{Artifacts: []Artifact{a}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone {
+		t.Errorf("result %+v", r)
+	}
+	if st := artifactOf(t, rep, "/usr/local/bin/tool"); st.From == nil || st.Pending != nil {
+		t.Errorf("observed %+v", st)
+	}
+}
