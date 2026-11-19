@@ -198,8 +198,8 @@ type Observed struct {
 	// MaxObserved): each entry then has only its path or name, and its own Error.
 	Error string `json:"error,omitempty"`
 
-	// SetAside are the records of mamelet's state directory it could not read and set aside, while
-	// they are there ("linux-artifacts.json.corrupt"): what they said is lost (the artifacts mamelet
+	// SetAside are the records of mamelet's state directory whose content it could not decode and set
+	// aside, while they are there ("linux-artifacts.json.corrupt"): what they said is lost (the artifacts mamelet
 	// installed are reported as ones it did not install, until they are installed again; what was
 	// pending after a write, as not known).
 	SetAside []string `json:"setAside,omitempty"`

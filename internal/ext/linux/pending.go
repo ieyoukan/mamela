@@ -2,7 +2,6 @@ package linux
 
 import (
 	"context"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -36,27 +35,29 @@ type pendingRecord struct {
 	Lost bool `json:"lost,omitzero"`
 }
 
-// loadPending reads the record (empty when there is none). One that cannot be read is set aside
-// (pendingName + corruptSuffix, for a person to look at) and replaced by one that says it was lost:
-// whether the restarts after the writes it named finished is then not known, which is reported (the
-// plan asks to approve them again), never forgotten. The error says why it could not be read nor set
-// aside (nothing is then written over it).
+// loadPending reads the record (empty when there is none). One whose content cannot be decoded is
+// set aside (pendingName + corruptSuffix, for a person to look at) and replaced by one that says it was
+// lost: whether the restarts after the writes it named finished is then not known, which is reported
+// (the plan asks to approve them again), never forgotten. One that cannot be read (an I/O error) is
+// left where it is, and the error says so (this round does not use it). Members it does not know are
+// ignored (decodeRecord). The error also says why a record could not be set aside (nothing is then
+// written over it). The record returned always has its map.
 func loadPending(dir string) (pendingRecord, error) {
 	rec := pendingRecord{Pending: map[string]Pending{}}
 	if dir == "" {
 		return rec, nil
 	}
-	data, err := os.ReadFile(filepath.Join(dir, pendingName))
-	if errors.Is(err, fs.ErrNotExist) {
+	data, err := readRecord(dir, pendingName)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		return rec, nil
+	case err != nil:
+		return rec, fmt.Errorf("mamelet's record of what is pending after its writes (%s) cannot be read: %w", pendingName, err)
 	}
-	if err == nil {
-		err = json.Unmarshal(data, &rec, json.RejectUnknownMembers(true))
-	}
-	if err != nil {
+	if err := decodeRecord(data, &rec); err != nil {
 		lost := pendingRecord{Pending: map[string]Pending{}, Lost: true}
 		if aerr := setAside(dir, pendingName); aerr != nil {
-			return lost, fmt.Errorf("mamelet's record of what is pending after its writes (%s) cannot be read (%v), nor set aside: %w", pendingName, err, aerr)
+			return lost, fmt.Errorf("mamelet's record of what is pending after its writes (%s) cannot be decoded (%v), nor set aside: %w", pendingName, err, aerr)
 		}
 		return lost, savePending(dir, lost)
 	}
@@ -208,7 +209,8 @@ func observePending(s *mamelet.System, o *Observed) {
 	dir := stateDir(s)
 	rec, err := loadPending(dir)
 	if err != nil {
-		// Neither read nor set aside: whether what follows each write finished is not known.
+		// Not read this time (or neither decoded nor set aside): whether what follows each write
+		// finished is not known this round. Nothing is written over the record.
 		rec.Lost = true
 	}
 	if rec.Lost {

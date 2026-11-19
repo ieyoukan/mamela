@@ -1079,6 +1079,82 @@ func TestAnUnreadableRecordOfWhatIsPendingIsNotForgotten(t *testing.T) {
 	}
 }
 
+// A record that cannot be read this time (an I/O error, here a directory in its place, which no
+// user but root can make there) is neither set aside nor taken as empty: what it says is not lost
+// for a failure that may be over at the next round. The round does not use it: the artifacts are not
+// told installed or not (the plan blocks them, saying why), nothing is installed or written (that
+// would write a new record over it), and what is pending is reported as not known, without writing.
+func TestARecordThatCannotBeReadIsLeftAsItIs(t *testing.T) {
+	rel := newReleases(t)
+	sum := rel.put("/tool", []byte("tool"))
+	n := artifactNode(t, rel)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	if err := os.MkdirAll(filepath.Join(state, recordName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	n.offer(Part{Artifacts: []Artifact{install("/usr/local/bin/tool", rel.url("/tool"), sum, "", opA, 1)}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeFailed || !strings.Contains(r.Detail, "cannot be read") || !strings.Contains(r.Detail, "nothing was installed") {
+		t.Errorf("result %+v", r)
+	}
+	o := observedOf(t, rep)
+	if st := o.artifact("/usr/local/bin/tool"); !strings.Contains(st.Error, "cannot be read") || len(o.SetAside) != 0 {
+		t.Errorf("observed %+v, set aside %q", st, o.SetAside)
+	}
+	if fi, err := os.Stat(filepath.Join(state, recordName)); err != nil || !fi.IsDir() || n.exists("/var/lib/mamelet/"+recordName+corruptSuffix) || n.exists("/usr/local/bin/tool") {
+		t.Errorf("the record was moved or written over, or the artifact installed: %v", err)
+	}
+
+	m := newNode(t)
+	unit := "[Service]\nExecStart=/bin/true\n"
+	write(t, filepath.Join(m.root, "etc/systemd/system/app.service"), unit)
+	mstate := filepath.Join(m.root, "var/lib/mamelet")
+	if err := os.MkdirAll(filepath.Join(mstate, pendingName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f := grant("/etc/app.conf", "x\n", opB, 1)
+	f.Write.Restart = []string{"app"}
+	m.offer(Part{Files: []File{f, {Path: "/etc/systemd/system/app.service", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	rep = m.round()
+	if r := result(t, rep, opB); r.Outcome != noderev.OutcomeFailed || !strings.Contains(r.Detail, "nothing was written") || m.exists("/etc/app.conf") {
+		t.Errorf("result %+v", r)
+	}
+	o = observedOf(t, rep)
+	if got := o.file("/etc/systemd/system/app.service").Pending; got == nil || !got.Unknown || len(o.SetAside) != 0 {
+		t.Errorf("pending %+v, set aside %q", got, o.SetAside)
+	}
+	if fi, err := os.Stat(filepath.Join(mstate, pendingName)); err != nil || !fi.IsDir() || m.exists("/var/lib/mamelet/"+pendingName+corruptSuffix) {
+		t.Errorf("the record was moved or written over: %v", err)
+	}
+}
+
+// mamelet's records are read leniently, as the Control Plane reads its database: a member a newer
+// release added (mamelet gone back to an older one) is ignored, and the record is used, not set
+// aside as if it could not be read.
+func TestRecordsWithMembersMameletDoesNotKnowAreRead(t *testing.T) {
+	rel := newReleases(t)
+	n := artifactNode(t, rel)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	write(t, filepath.Join(n.root, "usr/local/bin/tool"), "tool")
+	sum := ContentSHA256("tool")
+	write(t, filepath.Join(state, recordName), `{"artifacts":{"/usr/local/bin/tool":{"url":"https://example.com/tool","sha256":"`+sum+`","installed":"`+sum+`","signature":"x"}},"version":2}`)
+	unit := "[Service]\nExecStart=/bin/true\n"
+	write(t, filepath.Join(n.root, "etc/systemd/system/app.service"), unit)
+	write(t, filepath.Join(state, pendingName), `{"pending":{"/etc/systemd/system/app.service":{"sha256":"`+ContentSHA256(unit)+`","reload":true,"since":"2027-01-01"}},"next":1}`)
+	n.offer(Part{Artifacts: []Artifact{{Path: "/usr/local/bin/tool", Owners: []string{"root"}, Groups: []string{"root"}}},
+		Files: []File{{Path: "/etc/systemd/system/app.service", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	o := observedOf(t, n.round())
+	if st := o.artifact("/usr/local/bin/tool"); st.Error != "" || st.From == nil || st.From.URL != "https://example.com/tool" {
+		t.Errorf("artifact %+v", st)
+	}
+	if got := o.file("/etc/systemd/system/app.service").Pending; got == nil || got.Unknown || !got.Reload {
+		t.Errorf("pending %+v", got)
+	}
+	if len(o.SetAside) != 0 || n.exists("/var/lib/mamelet/"+recordName+corruptSuffix) || n.exists("/var/lib/mamelet/"+pendingName+corruptSuffix) {
+		t.Errorf("set aside %q", o.SetAside)
+	}
+}
+
 // What follows a write is recorded before the file is replaced (mamelet killed, or the power lost,
 // between the two would forget it otherwise), and put back as it was when the write fails.
 func TestWhatFollowsAWriteIsRecordedBeforeIt(t *testing.T) {
