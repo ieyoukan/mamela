@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -186,5 +188,50 @@ func TestFetchStopsWhenTheFileSystemFills(t *testing.T) {
 	downloadFree = func(*os.File) int64 { return DiskMargin + 1<<30 }
 	if err := Fetch(context.Background(), HTTPSClient(rel.srv.Client()), rel.url("/big"), sha(whole), dest, MaxArtifact); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The node's certificates are read for each download, not once per process: a download that failed
+// for want of them (ca-certificates not installed yet) works once they are there, without a restart
+// of mamelet.
+func TestHTTPSClientReadsTheCertificatesForEachDownload(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("x")) }))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	bundle := filepath.Join(dir, "ca-certificates.crt")
+	oldB, oldD := caBundles, caDirs
+	caBundles, caDirs = []string{bundle}, []string{filepath.Join(dir, "certs")}
+	t.Cleanup(func() { caBundles, caDirs = oldB, oldD })
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("SSL_CERT_DIR", "")
+	get := func() error {
+		c := HTTPSClient(nil)
+		defer c.CloseIdleConnections()
+		resp, err := c.Get(srv.URL)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}
+	if err := get(); err == nil {
+		t.Fatal("a server whose certificate the node does not have was trusted")
+	}
+	// ca-certificates is installed (here, the bundle has the server's certificate).
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	write(t, bundle, string(cert))
+	if err := get(); err != nil {
+		t.Fatalf("the certificate installed since is not used: %v", err)
+	}
+	// Only in a directory of certificates (no bundle): read too.
+	os.Remove(bundle)
+	write(t, filepath.Join(dir, "certs", "server.pem"), string(cert))
+	if err := get(); err != nil {
+		t.Fatalf("the directory's certificate is not used: %v", err)
+	}
+	// A bundle larger than its bound is not read.
+	write(t, bundle, string(cert)+strings.Repeat("#", maxCABundle))
+	os.Remove(filepath.Join(dir, "certs", "server.pem"))
+	if err := get(); err == nil {
+		t.Error("a bundle larger than its bound was read")
 	}
 }
