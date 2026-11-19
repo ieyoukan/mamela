@@ -203,8 +203,11 @@ func pendingText(left Pending) string {
 }
 
 // observePending reports what is pending after the last write of each file and artifact of the
-// observation, while it is still the file written; the record forgets a path the part no longer
-// names, and one whose file changed since (a new write follows, with its own restarts).
+// observation, while it is still the file written; the record forgets one whose file changed since (a
+// new write follows, with its own restarts). A path the part no longer names is kept (up to
+// maxPendingKept, by path), not reported: a file taken out of the declaration and put back is still
+// the one written, and what was to follow its write (the restart of a running service) still has not
+// happened, so the plan asks to approve it again then.
 func observePending(s *mamelet.System, o *Observed) {
 	dir := stateDir(s)
 	rec, err := loadPending(dir)
@@ -236,7 +239,9 @@ func observePending(s *mamelet.System, o *Observed) {
 		return
 	}
 	keep := map[string]Pending{}
+	seen := map[string]bool{}
 	visit := func(st *FileState) {
+		seen[st.Path] = true
 		left, ok := rec.Pending[st.Path]
 		if !ok {
 			return
@@ -256,10 +261,28 @@ func observePending(s *mamelet.System, o *Observed) {
 	for i := range o.Artifacts {
 		visit(&o.Artifacts[i].FileState)
 	}
+	// What the part does not name now is kept as it is, the first maxPendingKept by path.
+	var unnamed []string
+	for path := range rec.Pending {
+		if !seen[path] {
+			unnamed = append(unnamed, path)
+		}
+	}
+	slices.Sort(unnamed)
+	for _, path := range unnamed {
+		if len(keep) >= maxPendingKept {
+			break
+		}
+		keep[path] = rec.Pending[path]
+	}
 	if len(keep) != len(rec.Pending) && err == nil {
 		savePending(dir, pendingRecord{Pending: keep})
 	}
 }
+
+// maxPendingKept bounds the record of what is pending (files and artifacts a node has at most, with
+// room for those taken out of the declaration).
+const maxPendingKept = 2 * (MaxNodeFiles + MaxNodeArtifacts)
 
 // cleanStateDir removes the temporary files of the extension that an interrupted attempt left in
 // mamelet's state directory (a download, a member taken out of one, a record being replaced): only
