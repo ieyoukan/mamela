@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -307,12 +308,17 @@ func mentionsURI(line, uri string) bool {
 	return false
 }
 
-// bounded is s of at most n bytes ("..." past them).
+// bounded is s of at most n bytes ("..." past them), cut between two characters, and valid UTF-8
+// (what a program wrote may not be: the report is JSON, which must be).
 func bounded(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "..."
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }
 
 // orNothing is s, or "nothing" when it is empty.

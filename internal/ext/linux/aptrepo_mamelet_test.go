@@ -377,6 +377,13 @@ func TestMameletReadsWhatAptSaidOfTheSource(t *testing.T) {
 			}
 		})
 	}
+	// What apt said is cut between two characters, and made valid UTF-8 (the report is JSON).
+	if got := bounded("ab\xffcdé", 7); got != "ab\uFFFDcd..." {
+		t.Errorf("bounded: %q", got)
+	}
+	if got := bounded(strings.Repeat("é", 10), 5); got != "éé..." {
+		t.Errorf("bounded: %q", got)
+	}
 	for line, want := range map[string]bool{
 		"Err:1 https://example.com/apt stable InRelease":         true,
 		"W: Failed to fetch https://example.com/apt/dists/x":     true,
