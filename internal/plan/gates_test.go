@@ -101,6 +101,21 @@ func TestExtNotTaken(t *testing.T) {
 	if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, "cannot read it") {
 		t.Errorf("refused: %s %+v", st, n)
 	}
+	// The hint follows the reason: a part mamelet could not read asks for its update; a part it read
+	// and refused for what it says does not send the operator to update a mamelet new enough.
+	for reason, hint := range map[string]string{
+		"the linux part of the revision cannot be read: unknown member \"x\"": "it is older than this Control Plane",
+		"this mamelet does not know the extension linux; it went on":          "it is older than this Control Plane",
+		"invalid linux part: it grants changes of 300 files":                  "change what the reason names",
+	} {
+		s.Ext["app-server"]["linux"] = state.ExtObservation{Accepts: 1, Refused: reason, ObservedAt: t0}
+		k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
+		if st, n := k.ExtNotTaken("app-server", "linux", 1, "0.10.0"); st != StatusBlocked || n == nil || !strings.Contains(n.Message, reason) || !strings.Contains(n.Hint, hint) {
+			t.Errorf("refused (%s): %s %+v", reason, st, n)
+		}
+	}
+	s.Ext["app-server"]["linux"] = state.ExtObservation{Accepts: 1, Refused: "cannot read it", ObservedAt: t0}
+	k = newKit(builder{snap: s, pol: policy.Default, g: desired(t)})
 	// The kit's copy is the planner's own.
 	o, _ := k.Ext("app-server", "linux")
 	o.Refused = "changed"

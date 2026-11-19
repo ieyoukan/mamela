@@ -93,9 +93,14 @@ func (k *Kit) Ext(node, ext string) (state.ExtObservation, bool) {
 func (k *Kit) ExtNotTaken(node, ext string, version int, release string) (Status, *Note) {
 	o, listed := k.snap.Ext[node][ext]
 	if listed && o.Refused != "" {
+		hint := fmt.Sprintf("mamelet read the part and refused what it says (the reason above; journalctl -u mamelet on the node logs it too), and goes on with the rest of the revision: "+
+			"change what the reason names (a value, how many) and plan again; if it names nothing the declaration has, this Control Plane and the mamelet on %s are of different releases: update them (the Control Plane first, docs/mamelet-update.md)", node)
+		if strings.Contains(o.Refused, "does not know the extension") || strings.Contains(o.Refused, "cannot be read") {
+			hint = "mamelet could not read the part (an extension or a member it does not know): it is older than this Control Plane, so update it (docs/mamelet-update.md); it goes on with the rest of the revision meanwhile"
+		}
 		return StatusBlocked, &Note{Code: "MAM-PLAN-0122",
 			Message: fmt.Sprintf("mamelet on node %s refused the part of the %s extension in its revision: %s", node, ext, o.Refused),
-			Hint:    "see the reason (mamelet logs it too: journalctl -u mamelet on the node); a mamelet refuses a part it cannot read, so a mamelet older than this Control Plane is updated first (docs/mamelet-update.md)"}
+			Hint:    hint}
 	}
 	if listed && o.Accepts >= version {
 		return "", nil

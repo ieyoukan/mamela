@@ -86,11 +86,15 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 	if readable {
 		got = o.file(want.Path)
 	}
+	noRoom := roomNote(k, r)
 	switch {
 	case reported && len(e.Payload) > 0 && !readable:
 		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: codeFileUnobserved,
 			Message: fmt.Sprintf("the report of mamelet on %s about its files cannot be read", want.Node),
 			Hint:    "the node's mamelet and this Control Plane do not agree on the report's form: update mamelet (docs/mamelet-update.md)"}
+		return c
+	case noRoom != nil:
+		c.Status, c.Note = plan.StatusWaiting, noRoom
 		return c
 	case got == nil:
 		c.Status, c.Note = k.AwaitAgent(want.Node, &plan.Note{Code: codeFileAwait,

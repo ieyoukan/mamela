@@ -2,6 +2,7 @@ package linux
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -320,7 +321,8 @@ func TestMameletComparesBeforeTheOtherKinds(t *testing.T) {
 }
 
 // A plan's observation targets are bounded: a list past maxTargets keeps only the planned
-// declaration's, and entries no approved declaration has past maxCandidates go.
+// declaration's, and a kind's entries are never more than mamelet observes on a node: those in force
+// or granted first, then the planned declaration's, then what other plans added, each by name.
 func TestObservationTargetsAreBounded(t *testing.T) {
 	var many []string
 	for i := range maxTargets {
@@ -332,22 +334,57 @@ func TestObservationTargetsAreBounded(t *testing.T) {
 	if got := union(many[:3], []string{"root", many[0]}); len(got) != 4 {
 		t.Errorf("within it: %q", got)
 	}
-	p := Part{}
-	for i := range maxCandidates + 1 {
-		p.Files = append(p.Files, File{Path: "/etc/c" + strings.Repeat("x", i)})
+	full := func() Part {
+		p := Part{}
+		for i := range MaxNodeFiles - 6 {
+			p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/f%03d", i), InForce: true})
+		}
+		p.Files = append(p.Files, File{Path: "/etc/granted", Write: &Write{}})
+		for i := range 10 {
+			p.Files = append(p.Files, File{Path: fmt.Sprintf("/etc/left%02d", i)})
+		}
+		return p
 	}
-	p.Files = append(p.Files, File{Path: "/etc/in-force", InForce: true}, File{Path: "/etc/granted", Write: &Write{}})
-	g, err := decodeGraph(fileRes("web/file/etc/mine", `{"node":"web","path":"/etc/mine","content":"x\n"}`))
-	if err != nil {
-		t.Fatal(err)
+	declare := func(n int) []string {
+		var rs []string
+		for i := range n {
+			rs = append(rs, fileRes(fmt.Sprintf("web/file/etc/mine%d", i), fmt.Sprintf(`{"node":"web","path":"/etc/mine%d","content":"x\n"}`, i)))
+		}
+		return rs
 	}
-	publishFiles(g, "web", &p)
-	var paths []string
-	for _, f := range p.Files {
-		paths = append(paths, f.Path)
+	kept := func(p Part, prefix string) []string {
+		var out []string
+		for _, f := range p.Files {
+			if strings.HasPrefix(f.Path, prefix) {
+				out = append(out, f.Path)
+			}
+		}
+		slices.Sort(out)
+		return out
 	}
-	if !slices.Equal(paths, []string{"/etc/in-force", "/etc/granted", "/etc/mine"}) {
-		t.Errorf("kept %q", paths)
+	for _, c := range []struct {
+		mine       int
+		wantMine   []string
+		wantOthers []string
+	}{
+		{8, []string{"/etc/mine0", "/etc/mine1", "/etc/mine2", "/etc/mine3", "/etc/mine4"}, nil},
+		{2, []string{"/etc/mine0", "/etc/mine1"}, []string{"/etc/left00", "/etc/left01", "/etc/left02"}},
+	} {
+		g, err := decodeGraph(declare(c.mine)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p := full()
+		publishFiles(g, "web", &p)
+		if len(p.Files) != MaxNodeFiles || len(kept(p, "/etc/f")) != MaxNodeFiles-6 || p.file("/etc/granted") == nil {
+			t.Errorf("%d declared: %d files, those in force and granted are not all kept", c.mine, len(p.Files))
+		}
+		if got := kept(p, "/etc/mine"); !slices.Equal(got, c.wantMine) {
+			t.Errorf("%d declared: kept %q of them, want %q", c.mine, got, c.wantMine)
+		}
+		if got := kept(p, "/etc/left"); !slices.Equal(got, c.wantOthers) {
+			t.Errorf("%d declared: kept %q of other plans, want %q", c.mine, got, c.wantOthers)
+		}
 	}
 }
 

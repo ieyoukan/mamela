@@ -189,6 +189,9 @@ func TestUserRejections(t *testing.T) {
 		{"home dot dot", userRes("web/user/app", `{"node":"web","name":"app","home":"/home/../etc"}`), graph.CodeInvalidValue, "not a clean path"},
 		{"group name", userRes("web/user/app", `{"node":"web","name":"app","groups":["Docker"]}`), graph.CodeInvalidValue, "group's name"},
 		{"group twice", userRes("web/user/app", `{"node":"web","name":"app","groups":["docker","docker"]}`), graph.CodeInvalidValue, "twice"},
+		// mamelet observes at most maxTargets groups of a user: more would never be observed.
+		{"too many groups", userRes("web/user/app", `{"node":"web","name":"app","groups":["g00","g01","g02","g03","g04","g05","g06","g07","g08","g09","g10","g11","g12","g13","g14","g15","g16"]}`),
+			graph.CodeInvalidValue, "17 groups; at most 16"},
 		// useradd makes the user's own group, and refuses to make the user while one of its name exists:
 		// the user would never be made.
 		{"its own group", userRes("web/user/app", `{"node":"web","name":"app","groups":["docker","app"]}`), graph.CodeInvalidValue, "the user's own group"},

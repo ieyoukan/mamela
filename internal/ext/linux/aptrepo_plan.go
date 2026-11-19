@@ -73,6 +73,7 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 	if readable {
 		got = o.aptRepo(want.Name)
 	}
+	noRoom := roomNote(k, r)
 	blocked := func(code, message, hint string) plan.Change {
 		c.Status, c.Note = plan.StatusBlocked, &plan.Note{Code: code, Message: message, Hint: hint}
 		return c
@@ -81,6 +82,9 @@ func aptRepoChange(k *plan.Kit, r graph.Resource) plan.Change {
 	case reported && len(e.Payload) > 0 && !readable:
 		return blocked(codeAptRepoUnobserved, fmt.Sprintf("the report of mamelet on %s about its APT sources cannot be read", want.Node),
 			"the node's mamelet and this Control Plane do not agree on the report's form: update mamelet (docs/mamelet-update.md)")
+	case noRoom != nil:
+		c.Status, c.Note = plan.StatusWaiting, noRoom
+		return c
 	case got == nil:
 		c.Status, c.Note = k.AwaitAgent(want.Node, &plan.Note{Code: codeAptRepoAwait,
 			Message: fmt.Sprintf("waits for the agent on %s to report APT source %s", want.Node, want.Name)})
