@@ -542,6 +542,9 @@ func TestEncodeObservedDegrades(t *testing.T) {
 // M3: an artifact is hashed again only when it changed (its inode, size, times), not every round; a
 // change that keeps its size and mtime is still seen (ctime).
 func TestMameletHashesAnArtifactOnlyWhenItChanged(t *testing.T) {
+	// The files of the test were all changed just now: hashed a minute later, they are not racy.
+	hashedNow = func() time.Time { return time.Now().Add(time.Minute) }
+	t.Cleanup(func() { hashedNow = time.Now })
 	rel := newReleases(t)
 	body := []byte(strings.Repeat("a", MaxContent+1024))
 	sum := rel.put("/big", body)
@@ -565,6 +568,43 @@ func TestMameletHashesAnArtifactOnlyWhenItChanged(t *testing.T) {
 	os.Chtimes(p, fi.ModTime(), fi.ModTime())
 	if st := artifactOf(t, n.round(), "/usr/local/bin/big"); st.SHA256 == sum || st.From != nil {
 		t.Errorf("the change was not seen: %+v", st)
+	}
+}
+
+// A large file that changed just before it was hashed is hashed again the next time (a rewrite of the
+// same size in the same tick of the file system's clock keeps its stamp): its hash is kept only once
+// it is racyWindow old.
+func TestTheHashOfAFileChangedJustBeforeIsNotKept(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	stamp := func(changed time.Time) fileStamp {
+		return fileStamp{Dev: 1, Ino: 2, Size: MaxContent + 1, Mtime: changed.Add(-time.Hour).UnixNano(), Ctime: changed.UnixNano(), OK: true}
+	}
+	var c hashCache
+	c.put("racy", stamp(at.Add(-time.Second)), sumA, at)
+	if _, ok := c.get("racy", stamp(at.Add(-time.Second))); ok {
+		t.Error("the hash of a file changed a second before is kept")
+	}
+	c.put("old", stamp(at.Add(-3*time.Second)), sumA, at)
+	if sum, ok := c.get("old", stamp(at.Add(-3*time.Second))); !ok || sum != sumA {
+		t.Error("the hash of a file left alone is not kept")
+	}
+	if !runtimeStamps() {
+		return
+	}
+	// Observed as it was just written: hashed every round, and a same-size rewrite is seen.
+	hashedNow = time.Now
+	n := newNode(t)
+	p := filepath.Join(n.root, "usr/local/bin/big")
+	write(t, p, strings.Repeat("a", MaxContent+1))
+	n.offer(Part{Artifacts: []Artifact{{Path: "/usr/local/bin/big", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	before := largeHashed.Load()
+	first := artifactOf(t, n.round(), "/usr/local/bin/big").SHA256
+	write(t, p, strings.Repeat("b", MaxContent+1))
+	if got := artifactOf(t, n.round(), "/usr/local/bin/big").SHA256; got == first || got != ContentSHA256(strings.Repeat("b", MaxContent+1)) {
+		t.Errorf("the rewrite was not seen: %s", got)
+	}
+	if got := largeHashed.Load() - before; got != 2 {
+		t.Errorf("hashed %d times in 2 rounds", got)
 	}
 }
 

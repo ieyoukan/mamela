@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 )
@@ -190,18 +191,29 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 	}
 	st.SHA256 = hex.EncodeToString(h.Sum(nil))
 	if fi.Size() > MaxContent {
-		hashes.put(key, stamp, st.SHA256)
+		hashes.put(key, stamp, st.SHA256, hashedNow())
 		largeHashed.Add(1)
 	}
 	return st
 }
 
+// racyWindow: a file whose content or status changed this close to when it was hashed may change
+// again within the same tick of the file system's clock with its stamp unchanged (the same size, the
+// same mtime and ctime), so its hash is not kept: it is hashed again the next time (git's "racy"
+// rule). A file left alone that long gets a new stamp with any change.
+const racyWindow = 2 * time.Second
+
+// hashedNow is when a file was hashed: mamelet's clock (tests move it). It decides only whether a
+// hash is kept, never what is reported.
+var hashedNow = time.Now
+
 // largeHashed counts the large files hashed (tests: the cache spares the hashing).
 var largeHashed atomic.Int64
 
 // hashCache keeps the sha256 of the large files mamelet observes (artifacts, up to MaxArtifact) by
-// their stamp, so that a file is hashed again only when it changed, not every round. It is mamelet's
-// memory only: after a restart, each is hashed once.
+// their stamp, so that a file is hashed again only when it changed, not every round; a file that
+// changed just before it was hashed is not kept (racyWindow). It is mamelet's memory only: after a
+// restart, each is hashed once.
 type hashCache struct {
 	mu sync.Mutex
 	m  map[string]cachedSum
@@ -227,8 +239,8 @@ func (c *hashCache) get(key string, s fileStamp) (string, bool) {
 	return e.sum, ok && e.stamp == s
 }
 
-func (c *hashCache) put(key string, s fileStamp, sum string) {
-	if !s.OK {
+func (c *hashCache) put(key string, s fileStamp, sum string, at time.Time) {
+	if !s.OK || at.UnixNano()-max(s.Mtime, s.Ctime) < int64(racyWindow) {
 		return
 	}
 	c.mu.Lock()
