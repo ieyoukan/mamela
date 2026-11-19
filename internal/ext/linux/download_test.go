@@ -150,3 +150,41 @@ func TestBoundedReader(t *testing.T) {
 		t.Errorf("%v", unpackError(err))
 	}
 }
+
+// A download whose size the server does not say is watched as it streams: once the file system has
+// less than DiskMargin left, it stops, and nothing of it stays.
+func TestFetchStopsWhenTheFileSystemFills(t *testing.T) {
+	rel := newReleases(t)
+	chunk := bytes.Repeat([]byte("x"), 1<<20)
+	whole := bytes.Repeat(chunk, 12)
+	rel.handle("/big", func(w http.ResponseWriter, _ *http.Request) {
+		for range 12 {
+			w.Write(chunk)
+			w.(http.Flusher).Flush()
+		}
+	})
+	old := downloadFree
+	t.Cleanup(func() { downloadFree = old })
+	written := int64(0)
+	downloadFree = func(f *os.File) int64 {
+		fi, _ := f.Stat()
+		written = fi.Size()
+		return DiskMargin + 6<<20 - written // the file system fills as the download grows
+	}
+	dest := filepath.Join(t.TempDir(), "big")
+	err := Fetch(context.Background(), HTTPSClient(rel.srv.Client()), rel.url("/big"), sha(whole), dest, MaxArtifact)
+	if err == nil || !strings.Contains(err.Error(), "the download was stopped") {
+		t.Fatalf("%v", err)
+	}
+	if written < freeCheckEvery || written >= int64(len(whole)) {
+		t.Errorf("stopped after %d bytes", written)
+	}
+	if _, err := os.Stat(dest); err == nil {
+		t.Error("what was downloaded stays")
+	}
+	// Room enough: kept.
+	downloadFree = func(*os.File) int64 { return DiskMargin + 1<<30 }
+	if err := Fetch(context.Background(), HTTPSClient(rel.srv.Client()), rel.url("/big"), sha(whole), dest, MaxArtifact); err != nil {
+		t.Fatal(err)
+	}
+}

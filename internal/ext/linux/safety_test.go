@@ -56,7 +56,7 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 	}
 	u := entry
 	u.Change = &UserChange{Create: &UserCreate{UID: 5000, Shell: DefaultShell, Home: "/home/bob", CreateHome: true},
-		Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}
+		Keys: &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
 	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "/home/bob of user app exists already") {
@@ -70,28 +70,90 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 	}
 }
 
-// H1: useradd's default home of a system user was there (bob's): useradd takes it as it is, and
-// mamelet refuses to go on into it.
-func TestMameletRefusesAHomeUseraddTookAsItIs(t *testing.T) {
+// H1: the home of a system user with keys (named by the Control Plane: /home/<name>, never
+// useradd's default) is there already (bob's): mamelet does not run useradd, which would take it as it
+// is. A grant that makes a home without naming it is refused whole.
+func TestMameletRefusesAHomeUseraddWouldTakeAsItIs(t *testing.T) {
 	notRoot(t)
 	n, f := newUserNode(t)
 	addBob(t, n)
 	write(t, filepath.Join(n.root, "home/svc/.ssh/authorized_keys"), keyBob+"\n")
 	keys := KeysContent([]string{keyAlice})
-	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Keys: true, Change: &UserChange{
-		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, CreateHome: true},
-		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
+	u := User{Name: "svc", Shells: []string{DefaultSystemShell}, UIDs: []int{990}, Homes: []string{"/home/svc"}, Keys: true, Change: &UserChange{
+		Create: &UserCreate{System: true, UID: 990, Shell: DefaultSystemShell, Home: "/home/svc", CreateHome: true},
+		Keys:   &KeysWrite{Content: keys, SHA256: ContentSHA256(keys)}, Before: UserBefore{Keys: &Before{}}, Grant: noderev.Once{Operation: opA, Attempt: 1, Action: ActionCreateUser}}}
 	n.offer(Part{Users: []User{u}}, nil)
 	rep := n.round()
-	r := result(t, rep, opA)
-	if r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "made user svc") || !strings.Contains(r.Detail, "/home/svc is bob's") {
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "the home /home/svc of user svc exists already") {
 		t.Errorf("result %+v", r)
 	}
-	if want := []string{"useradd --system --create-home --uid 990 --shell /usr/sbin/nologin --user-group -- svc"}; !slices.Equal(f.commands, want) {
+	if len(f.commands) != 0 {
 		t.Errorf("ran %q", f.commands)
 	}
 	if got := n.read("/home/svc/.ssh/authorized_keys"); got != keyBob+"\n" {
 		t.Errorf("the keys in the home are now %q", got)
+	}
+	u.Change.Create.Home = ""
+	if err := checkPart(encode(Part{Users: []User{u}})); err == nil || !strings.Contains(err.Error(), "makes a home without naming it") {
+		t.Errorf("a home made without a name: %v", err)
+	}
+}
+
+// rootIsTheTestsUser makes root of the node the test's own user (whose the test's directories are).
+func rootIsTheTestsUser(t *testing.T, n *mnode) {
+	t.Helper()
+	write(t, filepath.Join(n.root, "etc/passwd"), fmt.Sprintf("root:x:%d:%d:root:/root:/bin/bash\n", os.Getuid(), os.Getgid()))
+	write(t, filepath.Join(n.root, "etc/group"), fmt.Sprintf("root:x:%d:\ndocker:x:998:\nwww-data:x:33:\n", os.Getgid()))
+}
+
+// The home would be made below a directory a user other than root can change (everyone may write
+// /home here; or a link leads to one): that user could put a directory or a link of their own at the
+// home between mamelet's look and useradd's making it. mamelet reports it, and does not run useradd.
+func TestMameletDoesNotMakeAHomeBelowADirectoryOthersCanChange(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		setup   func(t *testing.T, root string)
+		exposed string
+	}{
+		{"everyone may write /home", func(t *testing.T, root string) {
+			os.MkdirAll(filepath.Join(root, "home"), 0o755)
+			os.Chmod(filepath.Join(root, "home"), 0o777)
+		}, "/home"},
+		{"/home is a link to a directory everyone may write", func(t *testing.T, root string) {
+			os.MkdirAll(filepath.Join(root, "var/home"), 0o755)
+			os.Chmod(filepath.Join(root, "var/home"), 0o777)
+			os.Symlink("var/home", filepath.Join(root, "home"))
+		}, "/var/home"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			n, f := newUserNode(t)
+			rootIsTheTestsUser(t, n)
+			c.setup(t, n.root)
+			entry := createApp(opA, 1)
+			change := entry.Change
+			entry.Change = nil
+			n.offer(Part{Users: []User{entry}}, nil)
+			h := userStateOf(t, observedOf(t, n.round()), "app").newHome("/home/app")
+			if h == nil || h.Exists || len(h.Exposed) != 1 || h.Exposed[0].Dir != c.exposed || h.Exposed[0].Mode != "0777" {
+				t.Fatalf("the home is reported as %+v", h)
+			}
+			entry.Change = change
+			n.offer(Part{Users: []User{entry}}, nil)
+			if r := result(t, n.round(), opA); r.Outcome != noderev.OutcomeRefused || !strings.Contains(r.Detail, "is below "+c.exposed+", which everyone may write") {
+				t.Errorf("result %+v", r)
+			}
+			if len(f.commands) != 0 {
+				t.Errorf("ran %q", f.commands)
+			}
+		})
+	}
+	// Only root can change /home: nothing to report.
+	n, _ := newUserNode(t)
+	rootIsTheTestsUser(t, n)
+	os.MkdirAll(filepath.Join(n.root, "home"), 0o755)
+	n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell}, Homes: []string{"/home/app"}}}}, nil)
+	if h := userStateOf(t, observedOf(t, n.round()), "app").newHome("/home/app"); h == nil || len(h.Exposed) != 0 || h.Error != "" {
+		t.Errorf("the home is reported as %+v", h)
 	}
 }
 
@@ -179,17 +241,22 @@ func TestMakeDirRefusesWhatAppeared(t *testing.T) {
 	dir := t.TempDir()
 	r, _ := os.OpenRoot(dir)
 	defer r.Close()
+	top, err := treeDir(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer top.Close()
 	os.Mkdir(filepath.Join(dir, "there"), 0o777)
 	os.Symlink("/etc", filepath.Join(dir, "link"))
 	for _, name := range []string{"there", "link"} {
-		if err := makeDir(r, name, "/"+name, os.Getuid(), os.Getgid()); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
+		if err := makeDir(top, name, "/"+name, os.Getuid(), os.Getgid()); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if fi, _ := os.Stat(filepath.Join(dir, "there")); fi.Mode().Perm() != 0o777&^umask() {
 		t.Errorf("the directory that was there became %v", fi.Mode())
 	}
-	if err := makeDir(r, "new", "/new", os.Getuid(), os.Getgid()); err != nil {
+	if err := makeDir(top, "new", "/new", os.Getuid(), os.Getgid()); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Lstat(filepath.Join(dir, "new")); !fi.IsDir() || fi.Mode().Perm() != 0o755 {
@@ -475,6 +542,9 @@ func TestEncodeObservedDegrades(t *testing.T) {
 // M3: an artifact is hashed again only when it changed (its inode, size, times), not every round; a
 // change that keeps its size and mtime is still seen (ctime).
 func TestMameletHashesAnArtifactOnlyWhenItChanged(t *testing.T) {
+	// The files of the test were all changed just now: hashed a minute later, they are not racy.
+	hashedNow = func() time.Time { return time.Now().Add(time.Minute) }
+	t.Cleanup(func() { hashedNow = time.Now })
 	rel := newReleases(t)
 	body := []byte(strings.Repeat("a", MaxContent+1024))
 	sum := rel.put("/big", body)
@@ -501,6 +571,43 @@ func TestMameletHashesAnArtifactOnlyWhenItChanged(t *testing.T) {
 	}
 }
 
+// A large file that changed just before it was hashed is hashed again the next time (a rewrite of the
+// same size in the same tick of the file system's clock keeps its stamp): its hash is kept only once
+// it is racyWindow old.
+func TestTheHashOfAFileChangedJustBeforeIsNotKept(t *testing.T) {
+	at := time.Unix(1_800_000_000, 0)
+	stamp := func(changed time.Time) fileStamp {
+		return fileStamp{Dev: 1, Ino: 2, Size: MaxContent + 1, Mtime: changed.Add(-time.Hour).UnixNano(), Ctime: changed.UnixNano(), OK: true}
+	}
+	var c hashCache
+	c.put("racy", stamp(at.Add(-time.Second)), sumA, at)
+	if _, ok := c.get("racy", stamp(at.Add(-time.Second))); ok {
+		t.Error("the hash of a file changed a second before is kept")
+	}
+	c.put("old", stamp(at.Add(-3*time.Second)), sumA, at)
+	if sum, ok := c.get("old", stamp(at.Add(-3*time.Second))); !ok || sum != sumA {
+		t.Error("the hash of a file left alone is not kept")
+	}
+	if !runtimeStamps() {
+		return
+	}
+	// Observed as it was just written: hashed every round, and a same-size rewrite is seen.
+	hashedNow = time.Now
+	n := newNode(t)
+	p := filepath.Join(n.root, "usr/local/bin/big")
+	write(t, p, strings.Repeat("a", MaxContent+1))
+	n.offer(Part{Artifacts: []Artifact{{Path: "/usr/local/bin/big", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	before := largeHashed.Load()
+	first := artifactOf(t, n.round(), "/usr/local/bin/big").SHA256
+	write(t, p, strings.Repeat("b", MaxContent+1))
+	if got := artifactOf(t, n.round(), "/usr/local/bin/big").SHA256; got == first || got != ContentSHA256(strings.Repeat("b", MaxContent+1)) {
+		t.Errorf("the rewrite was not seen: %s", got)
+	}
+	if got := largeHashed.Load() - before; got != 2 {
+		t.Errorf("hashed %d times in 2 rounds", got)
+	}
+}
+
 // runtimeStamps: this system gives files a stamp (nofollow_unix.go), so the cache is used.
 func runtimeStamps() bool {
 	f, err := os.CreateTemp("", "stamp")
@@ -511,7 +618,12 @@ func runtimeStamps() bool {
 	f.Close()
 	r, _ := os.OpenRoot(filepath.Dir(f.Name()))
 	defer r.Close()
-	g, _, s, err := openLeaf(r, filepath.Base(f.Name()), f.Name())
+	d, err := treeDir(r)
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	g, _, s, err := d.openLeaf(filepath.Base(f.Name()), f.Name())
 	if err == nil {
 		g.Close()
 	}
@@ -747,6 +859,83 @@ func TestGraphBoundsTheCountsPerNode(t *testing.T) {
 
 // M1: what changes what mamelet runs, or every service, is not a file to write; and every program
 // mamelet runs is refused, with its merged-/usr name.
+// What the programs mamelet runs as root (useradd, apt-get, dpkg and the packages' scripts) run or
+// trust without the approver seeing it in the file: each refused, saying why and what to do instead.
+func TestCheckPathProtectsWhatRootRunsAndTrusts(t *testing.T) {
+	for p, why := range map[string]string{
+		// A program that runs by name: in the packages' directories, any (it replaces one, or shadows
+		// one of a later directory of dpkg's PATH); in /usr/local, those root runs.
+		"/usr/sbin/systemctl":                "packages' programs",
+		"/usr/sbin/dpkg-deb":                 "packages' programs",
+		"/usr/sbin/tar":                      "packages' programs",
+		"/sbin/sed":                          "packages' programs",
+		"/usr/bin/newtool":                   "packages' programs",
+		"/usr/local/sbin/systemctl":          "first in the PATH",
+		"/usr/local/bin/dpkg":                "first in the PATH",
+		"/usr/local/sbin/start-stop-daemon":  "first in the PATH",
+		"/usr/local/bin/sh":                  "first in the PATH",
+		"/usr/local/bin/update-alternatives": "first in the PATH",
+		"/usr/local/sbin/useradd":            "first in the PATH",
+		"/usr/local/bin/sudo":                "first in the PATH",
+		// useradd and usermod (and adduser, which the packages' scripts run).
+		"/etc/shadow-maint/useradd-post.d/x": "useradd and usermod run",
+		"/etc/default/useradd":               "SKEL",
+		"/etc/login.defs":                    "uid ranges",
+		"/etc/adduser.conf":                  "adduser",
+		"/usr/local/sbin/adduser.local":      "adduser",
+		// The dynamic linker, the name service, the libraries and modules.
+		"/etc/ld.so.cache":                                 "dynamic linker",
+		"/etc/nsswitch.conf":                               "modules",
+		"/lib64/ld-linux-x86-64.so.2":                      "system's libraries",
+		"/usr/lib/x86_64-linux-gnu/libc.so.6":              "system's libraries",
+		"/lib/aarch64-linux-gnu/security/pam_unix.so":      "system's libraries",
+		"/usr/lib/x86_64-linux-gnu/gconv/gconv-modules":    "system's libraries",
+		"/usr/local/lib/x86_64-linux-gnu/perl/5.36.0/x.pm": "system's libraries",
+		"/usr/local/lib/libc.so.6":                         "shared object",
+		"/usr/lib/libfoo.so":                               "shared object",
+		"/usr/lib/python3/dist-packages/apt_pkg.so":        "interpreters apt and dpkg run",
+		"/usr/lib/python3/dist-packages/apt/x.py":          "interpreters apt and dpkg run",
+		"/usr/local/lib/python3.12/dist-packages/apt.py":   "interpreters apt and dpkg run",
+		"/usr/local/share/perl/5.36.0/Debconf/Db.pm":       "interpreters apt and dpkg run",
+		"/etc/perl/Debconf/Db.pm":                          "interpreters apt and dpkg run",
+		"/usr/share/perl5/Debconf/Db.pm":                   "interpreters apt and dpkg run",
+		"/usr/share/debconf/confmodule":                    "debconf",
+		"/usr/lib/dpkg/methods/x":                          "dpkg runs",
+		// What APT trusts: sources only through NodeAptRepo, keys, pinning.
+		"/etc/apt/sources.list":                          "Signed-By",
+		"/etc/apt/sources.list.d/docker.list":            "Signed-By",
+		"/etc/apt/sources.list.d/docker.sources":         "Signed-By",
+		"/etc/apt/trusted.gpg":                           "every source",
+		"/etc/apt/trusted.gpg.d/docker.gpg":              "every source",
+		"/etc/apt/keyrings/docker.asc":                   "keys APT trusts",
+		"/usr/share/keyrings/ubuntu-archive-keyring.gpg": "archive key",
+		"/etc/apt/preferences":                           "pinning",
+		"/etc/apt/preferences.d/pin":                     "pinning",
+		// The slices every service runs in.
+		"/etc/systemd/system/system.slice.d/limits.conf": "slice every service runs in",
+		"/etc/systemd/system/-.slice.d/x.conf":           "slice every service runs in",
+		"/usr/lib/systemd/system/slice.d/x.conf":         "slice every service runs in",
+		"/etc/systemd/system/system.slice":               "slice every service runs in",
+	} {
+		err := CheckPath(p)
+		if err == nil || !strings.Contains(err.Message, why) {
+			t.Errorf("%s: %v, want it to say %q", p, err, why)
+			continue
+		}
+		if err.Hint == "" && !strings.Contains(p, "shadow-maint") && !strings.Contains(p, "debconf") && !strings.Contains(p, "dpkg/") && !strings.Contains(p, "adduser.local") {
+			t.Errorf("%s: no hint", p)
+		}
+	}
+	// Every program mamelet runs, under any directory of a PATH.
+	for _, p := range mamelet.Programs() {
+		for _, d := range pathDirs {
+			if q := d + "/" + filepath.Base(p); CheckPath(q) == nil {
+				t.Errorf("%s may be written", q)
+			}
+		}
+	}
+}
+
 func TestCheckPathProtectsMamelet(t *testing.T) {
 	for p, why := range map[string]string{
 		"/etc/systemd/system/mamelet.service.d/override.conf":         "mamelet's own unit",
@@ -795,12 +984,141 @@ func TestCheckPathProtectsMamelet(t *testing.T) {
 	if e := CheckPath("/etc/sudoers.d/app"); !strings.Contains(e.Hint, "not supported yet") {
 		t.Errorf("sudoers hint: %q", e.Hint)
 	}
-	for _, p := range []string{"/etc/systemd/system/app.service.d/override.conf", "/etc/systemd/system/mameletx.service", "/usr/local/bin/app", "/etc/apt/preferences.d/pin", "/srv/tmp/x"} {
+	for _, p := range []string{"/etc/systemd/system/app.service.d/override.conf", "/etc/systemd/system/mameletx.service", "/usr/local/bin/app", "/srv/tmp/x"} {
 		if err := CheckPath(p); err != nil {
 			t.Errorf("%s refused: %s", p, err.Message)
 		}
 	}
 	if !IsUnitFile("/etc/systemd/system.control/app.service.d/50-x.conf") {
 		t.Error("a file of system.control is not taken as a unit")
+	}
+}
+
+// A record of the artifacts that cannot be read is set aside, not written over with the one artifact
+// installed next (which would lose what it said of the others); the report says so while it is there,
+// and the plan of an artifact it may have named says why it is taken as not installed by Mamela.
+func TestAnUnreadableRecordOfArtifactsIsSetAside(t *testing.T) {
+	rel := newReleases(t)
+	sum := rel.put("/tool", []byte("tool"))
+	n := artifactNode(t, rel)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	write(t, filepath.Join(state, recordName), `{"artifacts":{"/usr/local/bin/other":{"url":"https://x`)
+	write(t, filepath.Join(n.root, "usr/local/bin/other"), "other")
+	n.offer(Part{Artifacts: []Artifact{install("/usr/local/bin/tool", rel.url("/tool"), sum, "", opA, 1), {Path: "/usr/local/bin/other", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone {
+		t.Fatalf("result %+v", r)
+	}
+	if b, err := os.ReadFile(filepath.Join(state, recordName+corruptSuffix)); err != nil || !strings.Contains(string(b), "/usr/local/bin/other") {
+		t.Errorf("set aside: %q %v", b, err)
+	}
+	if rec := n.record(); len(rec.Artifacts) != 1 || rec.Artifacts["/usr/local/bin/tool"].Installed != sum {
+		t.Errorf("record %+v", rec)
+	}
+	o := observedOf(t, rep)
+	if !slices.Equal(o.SetAside, []string{recordName + corruptSuffix}) || o.artifact("/usr/local/bin/other").From != nil {
+		t.Errorf("observed %+v %+v", o.SetAside, o.artifact("/usr/local/bin/other"))
+	}
+	// Still said while it is there; no more once a person removed it.
+	if o := observedOf(t, n.round()); len(o.SetAside) != 1 {
+		t.Errorf("forgotten: %+v", o.SetAside)
+	}
+	os.Remove(filepath.Join(state, recordName+corruptSuffix))
+	if o := observedOf(t, n.round()); len(o.SetAside) != 0 {
+		t.Errorf("still said: %+v", o.SetAside)
+	}
+}
+
+// A record of what is pending that cannot be read is set aside, and what it may have said is not
+// forgotten: each file found is reported as not known whether what follows its write finished, and
+// the plan asks to approve that again (a unit's daemon-reload, the declared restarts); approving it
+// does it, without writing the file again.
+func TestAnUnreadableRecordOfWhatIsPendingIsNotForgotten(t *testing.T) {
+	n := newNode(t)
+	unit := "[Service]\nExecStart=/bin/true\n"
+	write(t, filepath.Join(n.root, "etc/systemd/system/app.service"), unit)
+	os.Chmod(filepath.Join(n.root, "etc/systemd/system/app.service"), 0o640)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	write(t, filepath.Join(state, pendingName), "{not json")
+	entry := File{Path: "/etc/systemd/system/app.service", Owners: []string{"root"}, Groups: []string{"root"}}
+	n.offer(Part{Files: []File{entry}}, nil)
+	o := observedOf(t, n.round())
+	got := o.file(entry.Path).Pending
+	if got == nil || !got.Unknown || !got.Reload || got.SHA256 != ContentSHA256(unit) || !slices.Equal(o.SetAside, []string{pendingName + corruptSuffix}) {
+		t.Fatalf("pending %+v, set aside %q", got, o.SetAside)
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, pendingName+corruptSuffix)); string(b) != "{not json" {
+		t.Errorf("set aside: %q", b)
+	}
+	// Reported again in the next round (the record says so now).
+	if got := observedOf(t, n.round()).file(entry.Path).Pending; got == nil || !got.Unknown {
+		t.Fatalf("forgotten: %+v", got)
+	}
+	// What the plan asks for: the declared restarts, and the unit's daemon-reload.
+	left := pendingFor(got, ContentSHA256(unit), entry.Path, []string{"app"})
+	if left == nil || !left.Unknown || !left.Reload || !slices.Equal(left.Restart, []string{"app"}) {
+		t.Errorf("asked for %+v", left)
+	}
+	if pendingFor(&Pending{SHA256: sumA, Unknown: true}, sumA, "/etc/app.conf", nil) != nil {
+		t.Error("a file nothing follows is asked for")
+	}
+	// The approval: the file is as approved, what follows it runs, and nothing is pending any more.
+	f := grant(entry.Path, unit, opA, 1)
+	f.Write.Restart = []string{"app"}
+	f.Write.Before = Before{Exists: true, SHA256: ContentSHA256(unit)}
+	n.offer(Part{Files: []File{f}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone || !strings.Contains(r.Detail, "already as approved") {
+		t.Errorf("result %+v", r)
+	}
+	if !slices.Equal(n.sys.commands, []string{"daemon-reload", "try-restart -- app"}) {
+		t.Errorf("ran %q", n.sys.commands)
+	}
+	if got := observedOf(t, rep).file(entry.Path).Pending; got != nil {
+		t.Errorf("still pending: %+v", got)
+	}
+}
+
+// What follows a write is recorded before the file is replaced (mamelet killed, or the power lost,
+// between the two would forget it otherwise), and put back as it was when the write fails.
+func TestWhatFollowsAWriteIsRecordedBeforeIt(t *testing.T) {
+	n := newNode(t)
+	f := grant("/etc/app.conf", "x\n", opA, 1)
+	f.Write.Restart = []string{"app"}
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	seen := false
+	testHookOpenLeaf = func(p string) {
+		// The look after the write: the file is replaced, and its restart is recorded already.
+		if p != f.Path || !n.exists("/etc/app.conf") || n.read("/etc/app.conf") != "x\n" || seen {
+			return
+		}
+		seen = true
+		rec, err := loadPending(state)
+		if left, ok := rec.Pending[f.Path]; err != nil || !ok || left.SHA256 != f.Write.SHA256 || !slices.Equal(left.Restart, []string{"app"}) {
+			t.Errorf("when the file was replaced, the record was %+v %v", rec, err)
+		}
+	}
+	t.Cleanup(func() { testHookOpenLeaf = nil })
+	n.offer(Part{Files: []File{f}}, nil)
+	if r := result(t, n.round(), opA); r.Outcome != noderev.OutcomeDone || !seen {
+		t.Fatalf("result %+v, seen %v", r, seen)
+	}
+	// A write that fails (no room) leaves the record as it was.
+	r, _ := os.OpenRoot(t.TempDir())
+	defer r.Close()
+	if freeBytes(must(r.Open("."))) < 0 {
+		t.Skip("this system does not say how much is free")
+	}
+	old := DiskMargin
+	DiskMargin = 1 << 62
+	t.Cleanup(func() { DiskMargin = old })
+	g := grant("/etc/other.conf", "y\n", opB, 1)
+	g.Write.Restart = []string{"other"}
+	n.offer(Part{Files: []File{g}}, nil)
+	if r := result(t, n.round(), opB); r.Outcome != noderev.OutcomeFailed {
+		t.Fatalf("result %+v", r)
+	}
+	if rec, err := loadPending(state); err != nil || len(rec.Pending) != 0 {
+		t.Errorf("the record is %+v %v", rec, err)
 	}
 }

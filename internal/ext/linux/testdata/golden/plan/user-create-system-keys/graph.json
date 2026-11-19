@@ -1,0 +1,1 @@
+{"resources":[{"kind":"TestVM","name":"web","provider":"test","spec":{"network":{"mode":"dhcp"}}},{"kind":"NodeUser","name":"web/user/svc","spec":{"authorizedKeys":["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOBGcoPBK3Riun0XLEh52zZlwGQmYj/pZrt1RXYeZ543 alice@laptop"],"name":"svc","node":"web","system":true}}],"schema":"mamela-graph/v2"}

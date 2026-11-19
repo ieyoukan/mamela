@@ -98,7 +98,10 @@ func Fetch(ctx context.Context, client *http.Client, rawURL, want, dest string, 
 	case resp.ContentLength > max:
 		return refusal("download %s: it is %d bytes; mamelet downloads at most %d MiB", rawURL, resp.ContentLength, max>>20)
 	}
-	// Room for it (as much as the server says it is, or nothing when it does not say), and the margin.
+	// Room for it (as much as the server says it is, or nothing when it does not say), and the margin;
+	// and, as it streams, the margin is watched (a server that does not say how large the download is,
+	// or another program filling the file system meanwhile). Checking for the largest download there
+	// may be (max) instead would refuse a small one on a small disk.
 	if err := enoughFree(freeBytesAt(filepath.Dir(dest)), "mamelet's state directory", max64(resp.ContentLength, 0)); err != nil {
 		return fmt.Errorf("download %s: %w", rawURL, err)
 	}
@@ -115,7 +118,8 @@ func Fetch(ctx context.Context, client *http.Client, rawURL, want, dest string, 
 		}
 	}()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, max+1))
+	w := &freeWatch{w: io.MultiWriter(f, h), free: func() int64 { return downloadFree(f) }, where: "mamelet's state directory"}
+	n, err := io.Copy(w, io.LimitReader(resp.Body, max+1))
 	switch {
 	case err != nil:
 		return fmt.Errorf("download %s: %w (after %d bytes)", rawURL, err, n)
@@ -251,6 +255,35 @@ func (b *boundedReader) Read(p []byte) (int, error) {
 	}
 	n, err := b.r.Read(p)
 	b.left -= int64(n)
+	return n, err
+}
+
+// freeCheckEvery is how many bytes a download writes between two looks at the free space.
+const freeCheckEvery = 4 << 20
+
+// downloadFree is how many bytes the file system of a download in progress has free (freeBytes;
+// tests replace it).
+var downloadFree = freeBytes
+
+// freeWatch writes to w, and stops once what free says the file system has left is below
+// DiskMargin: a download whose size was not known (or a file system that fills meanwhile) does not
+// fill it, which would stop the system's own services.
+type freeWatch struct {
+	w     io.Writer
+	free  func() int64
+	where string
+	since int64
+}
+
+func (f *freeWatch) Write(p []byte) (int, error) {
+	n, err := f.w.Write(p)
+	if f.since += int64(n); err == nil && f.since >= freeCheckEvery {
+		f.since = 0
+		if free := f.free(); free >= 0 && free < DiskMargin {
+			return n, fmt.Errorf("the file system of %s has %d MiB free, less than the %d MiB mamelet keeps free: the download was stopped and removed; free some space on the node, then apply again",
+				f.where, free>>20, DiskMargin>>20)
+		}
+	}
 	return n, err
 }
 

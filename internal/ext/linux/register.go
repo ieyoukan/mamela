@@ -191,6 +191,7 @@ func init() {
 			left.add(&o)
 			observePending(s, &o)
 			cleanStateDir(s)
+			o.SetAside = setAsideRecords(stateDir(s))
 			if rep.Ext == nil {
 				rep.Ext = map[string]jsontext.Value{}
 			}

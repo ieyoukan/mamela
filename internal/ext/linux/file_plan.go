@@ -163,6 +163,14 @@ func pendingFor(left *Pending, sum, path string, restart []string) *Pending {
 	if left == nil || left.SHA256 != sum {
 		return nil
 	}
+	if left.Unknown {
+		// mamelet lost its record: all that follows the write is asked for again.
+		out := Pending{SHA256: sum, Reload: IsUnitFile(path), Restart: slices.Clone(restart), Unknown: true}
+		if !out.Reload && len(out.Restart) == 0 {
+			return nil
+		}
+		return &out
+	}
 	out := Pending{SHA256: sum, Reload: left.Reload && IsUnitFile(path)}
 	for _, svc := range left.Restart {
 		unit := strings.TrimSuffix(svc, ".service")
@@ -181,7 +189,16 @@ func pendingFor(left *Pending, sum, path string, restart []string) *Pending {
 // approved already (its grant writes nothing then). change has its first diff (the path).
 func pendingChange(k *plan.Kit, c plan.Change, node, path string, left Pending, restart []string, op policy.Op) plan.Change {
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
-	c.Diffs = append(c.Diffs, diff("pending", "", "the file is as declared; after it was written, "+pendingText(left)+" did not finish"))
+	message := fmt.Sprintf("%s on %s was written as declared, but %s did not finish afterwards (it failed, or mamelet stopped meanwhile): what runs may not use it yet", path, node, pendingText(left))
+	hint := "approve this plan to have mamelet do it now (the file is not written again); the result of the last attempt says why it did not finish"
+	pending := "the file is as declared; after it was written, " + pendingText(left) + " did not finish"
+	if left.Unknown {
+		message = fmt.Sprintf("%s on %s is as declared, but whether %s finished after it was written is not known: mamelet lost its record of what was left after its writes (it could not be read, and was set aside as %s in mamelet's state directory)",
+			path, node, pendingText(left), pendingName+corruptSuffix)
+		hint = "approve this plan to have mamelet do it again (the file is not written again); once looked at, remove the file set aside"
+		pending = "the file is as declared; whether " + pendingText(left) + " finished after it was written is not known"
+	}
+	c.Diffs = append(c.Diffs, diff("pending", "", pending))
 	if IsUnitFile(path) {
 		c.Diffs = append(c.Diffs, diff("daemon-reload", "", "systemd reads its units again (the file is one of them)"))
 	}
@@ -189,9 +206,7 @@ func pendingChange(k *plan.Kit, c plan.Change, node, path string, left Pending, 
 		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(restart, ", ")+" (each only if it runs: systemctl try-restart)"))
 	}
 	c = k.WithOps(c, policy.Subject{Op: op})
-	c.Note = &plan.Note{Code: codePending,
-		Message: fmt.Sprintf("%s on %s was written as declared, but %s did not finish afterwards (it failed, or mamelet stopped meanwhile): what runs may not use it yet", path, node, pendingText(left)),
-		Hint:    "approve this plan to have mamelet do it now (the file is not written again); the result of the last attempt says why it did not finish"}
+	c.Note = &plan.Note{Code: codePending, Message: message, Hint: hint}
 	return c
 }
 

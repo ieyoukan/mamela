@@ -1,0 +1,14 @@
+Plan sha256:7bd660c08a45
+  revision  sha256:e93dd9b7bf53
+  observed  2026-11-17T12:01:00Z (snapshot sha256:a230904dfab5)
+  policy    sha256:b2ad900beffb
+
+= TestVM web  [in sync]  via test
+! NodeUser web/user/app  [blocked]
+    warning MAM-GRAPH-0206 user app is added to group docker on web: its members control the Docker daemon, which runs containers as root with the host's files, so the user can become root there
+      hint: declare the group only if the user is meant to administer the node; Mamela never removes a membership, so taking it out of the declaration later does not take it away
+    MAM-PLAN-0146 user app cannot be made on web with home /home/app: it is below /home, which everyone may write (0777 root:root), so a user other than root could put a directory or a link of their own at /home/app before useradd makes it, and useradd would take it as it is
+      hint: make /home root's and not writable by others by hand (chown root:root, chmod go-w), or declare a home below a directory only root can change
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

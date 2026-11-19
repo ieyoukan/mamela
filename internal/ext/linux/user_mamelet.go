@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -21,6 +22,21 @@ const (
 	progUseradd = "/usr/sbin/useradd"
 	progUsermod = "/usr/sbin/usermod"
 )
+
+// AccountsTimeout bounds one run of useradd or usermod (they take the locks of /etc/passwd and
+// /etc/shadow a moment only, and give up at once when another holds them).
+var AccountsTimeout = 2 * time.Minute
+
+// runAccounts runs useradd or usermod to its end: mamelet stopping (SIGTERM cancels ctx) does not
+// kill it, which could leave /etc/passwd, /etc/shadow, /etc/group and /etc/gshadow half changed, or
+// their locks behind. Only one that runs longer than AccountsTimeout is killed. The caller looks at
+// ctx afterwards, and stops there (the attempt goes on in a later round).
+func runAccounts(ctx context.Context, s *mamelet.System, program string, args []string) error {
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), AccountsTimeout)
+	defer cancel()
+	_, err := s.Run(actx, program, args)
+	return err
+}
 
 // observeUsers observes each user of the part: its line of /etc/passwd and its groups, what it
 // needs (the shell, the groups, the uid and the group it would be made with), and its authorized_keys
@@ -99,13 +115,21 @@ func observeUser(r *os.Root, a accounts, u User) UserState {
 
 // observeHome observes what is at the home a user would be made with: useradd --create-home takes a
 // directory that is there as it is (it only warns, and does not make it the user's), so one that is
-// there already, another user's above all, is not made the new user's home (the plan blocks).
+// there already, another user's above all, is not made the new user's home (the plan blocks); and so
+// are the directories above it that a user other than root can change, where that user could put one
+// there between mamelet's look and useradd's making it.
 func observeHome(r *os.Root, a accounts, home string) *HomeState {
 	hs := &HomeState{Path: home}
 	if e := CheckHome(home); e != nil {
 		hs.Error = "mamelet refuses the home: " + e.Message
 		return hs
 	}
+	exposed, err := exposedAbove(r, a, home)
+	if err != nil {
+		hs.Error = err.Error()
+		return hs
+	}
+	hs.Exposed = exposed
 	fi, err := r.Lstat(rel(home))
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -129,6 +153,64 @@ func observeHome(r *os.Root, a accounts, home string) *HomeState {
 		hs.Owner, hs.Group = a.userName(uid), a.groupName(gid)
 	}
 	return hs
+}
+
+// exposedAbove are the directories above p that exist and that a user other than root can change
+// (one it owns, or one its group, other than root's, or everyone may write), outermost first. A link
+// among them is followed as useradd would follow it (resolve), and the directories it leads to are
+// looked at too. A directory that is missing ends the walk (useradd makes it, root's); one that is not
+// a directory is an error.
+func exposedAbove(r *os.Root, a accounts, p string) ([]DirOwner, error) {
+	rootUID, rootGID := a.rootIDs()
+	var out []DirOwner
+	seen := map[string]bool{}
+	look := func(d string) (exists bool, err error) {
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return false, nil
+		case err != nil:
+			return false, err
+		case !fi.IsDir():
+			return false, fmt.Errorf("%s, above the home %s, is not a directory", d, p)
+		}
+		if seen[d] {
+			return true, nil
+		}
+		seen[d] = true
+		if uid, gid, ok := ownerOf(fi); ok && (uid != rootUID || (fi.Mode()&0o020 != 0 && gid != rootGID) || fi.Mode()&0o002 != 0) {
+			out = append(out, DirOwner{Dir: d, Mode: modeString(fi.Mode()), Owner: a.userName(uid), Group: a.groupName(gid)})
+		}
+		return true, nil
+	}
+	for _, d := range parents(p) {
+		fi, err := r.Lstat(rel(d))
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return out, nil
+		case err != nil:
+			return nil, err
+		case fi.Mode()&fs.ModeSymlink != 0:
+			t, err := resolve(r, d)
+			if errors.Is(err, fs.ErrNotExist) {
+				return out, nil
+			} else if err != nil {
+				return nil, err
+			}
+			for _, td := range append(parents(t), t) {
+				if exists, err := look(td); err != nil {
+					return nil, err
+				} else if !exists {
+					return out, nil
+				}
+			}
+			continue
+		}
+		if _, err := look(d); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // executable is whether p is an executable regular file. The links in it are followed (/bin is one
@@ -265,10 +347,12 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	case !exists && c.Create == nil:
 		return refused(fmt.Sprintf("user %s does not exist on this node (plan again)", u.Name))
 	case exists && c.Create != nil:
-		// Made already (by an attempt that was interrupted before it said so, or by hand): the rest
-		// goes on only if it is as approved.
-		if why := unlikeCreate(e, *c.Create); why != "" {
-			return refused(fmt.Sprintf("user %s exists already, but %s, unlike the approved one (plan again)", u.Name, why))
+		// Made already: by an attempt of this change that was interrupted before it said so, or by
+		// someone else since the plan (which saw no user). The rest goes on only if the user is exactly
+		// what this change makes, with nothing it does not make (another group, keys): otherwise this
+		// change would take over someone's user (their keys replaced, the user put in a group).
+		if why := unlikeCreate(r, a, u.Name, e, c); why != "" {
+			return refused(fmt.Sprintf("user %s changed since the plan: it exists now (the plan saw none), but %s, unlike the user this change makes; nothing was changed (plan again)", u.Name, why))
 		}
 		did = append(did, "user "+u.Name+" existed already as approved")
 	case shell != "" && !executable(r, shell):
@@ -282,6 +366,14 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			return refused(fmt.Sprintf("group %s does not exist on this node", g))
 		}
 	}
+	// Compare and swap of authorized_keys, before anything is changed (a refusal then leaves the user
+	// as it was), and again when it is written.
+	if k := c.Keys; k != nil && exists {
+		if why := keysChanged(r, a, e, c); why != "" {
+			return refused(why)
+		}
+	}
+	madeNow := false
 	if k := c.Create; k != nil && !exists {
 		if _, taken := a.groups[u.Name]; taken {
 			return refused(fmt.Sprintf("a group called %s exists already, and useradd makes one of the user's name", u.Name))
@@ -289,18 +381,27 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 		if who, taken := a.userOf[k.UID]; k.UID != 0 && taken {
 			return refused(fmt.Sprintf("uid %d is %s's", k.UID, who))
 		}
-		if k.CreateHome && k.Home != "" {
+		if k.CreateHome {
 			// useradd --create-home takes a directory that is there as it is (it only warns): the new
-			// user would get another's home, and its SSH keys would go into another's ~/.ssh.
-			if hs := observeHome(r, a, k.Home); hs.Exists || hs.Error != "" {
+			// user would get another's home, and its SSH keys would go into another's ~/.ssh. So the
+			// home must not be there, nor be where a user other than root can put it meanwhile.
+			switch hs := observeHome(r, a, k.Home); {
+			case hs.Exists || hs.Error != "":
 				return refused(fmt.Sprintf("the home %s of user %s %s: mamelet makes a user only with a home of its own (plan again)", k.Home, u.Name, homeThere(hs)))
+			case len(hs.Exposed) > 0:
+				return refused(fmt.Sprintf("the home %s of user %s is below %s, which %s: they could put a directory or a link of their own there before useradd makes it (plan again)",
+					k.Home, u.Name, hs.Exposed[0].Dir, exposedBy(hs.Exposed[0])))
 			}
 		}
 		ran = true
-		if _, err := x.System.Run(ctx, progUseradd, useraddArgs(u.Name, *k)); err != nil {
+		if err := runAccounts(ctx, x.System, progUseradd, useraddArgs(u.Name, *k)); err != nil {
 			return failed(err.Error())
 		}
+		madeNow = true
 		did = append(did, "made user "+u.Name)
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 		a = readAccounts(r)
 		if e, exists = a.entries[u.Name]; !exists || e.uid == 0 {
 			return failed("after useradd, user " + u.Name + " is not in /etc/passwd as made")
@@ -321,17 +422,23 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	}
 	if len(add) > 0 {
 		ran = true
-		if _, err := x.System.Run(ctx, progUsermod, []string{"--append", "--groups", strings.Join(add, ","), "--", u.Name}); err != nil {
+		if err := runAccounts(ctx, x.System, progUsermod, []string{"--append", "--groups", strings.Join(add, ","), "--", u.Name}); err != nil {
 			return failed(err.Error())
 		}
 		did = append(did, "added "+u.Name+" to "+strings.Join(add, ", "))
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 	}
 	if c.Shell != "" && e.shell != c.Shell {
 		ran = true
-		if _, err := x.System.Run(ctx, progUsermod, []string{"--shell", c.Shell, "--", u.Name}); err != nil {
+		if err := runAccounts(ctx, x.System, progUsermod, []string{"--shell", c.Shell, "--", u.Name}); err != nil {
 			return failed(err.Error())
 		}
 		did = append(did, "set the shell of "+u.Name+" to "+c.Shell)
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 	}
 	a = readAccounts(r)
 	e = a.entries[u.Name]
@@ -344,11 +451,13 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			return refused("mamelet does not write the SSH keys of " + u.Name + ": " + st.Unsafe + " (mamelet never follows a symbolic link)")
 		case len(st.Missing) > 1 || len(st.Missing) == 1 && st.Missing[0] != e.home+"/.ssh":
 			return refused("the home " + e.home + " of " + u.Name + " does not exist")
-		case c.Before.Keys != nil && !(st.Exists && !st.Large && st.SHA256 == k.SHA256) && !c.Before.Keys.Is(st):
-			// Compare and swap: authorized_keys is as the approved plan saw it, or already the approved
-			// one (a user that was made by this change has none the plan saw).
-			return refused(fmt.Sprintf("%s/.ssh/authorized_keys changed since the plan (it was %s, it is %s); it was not written (plan again)",
-				e.home, c.Before.Keys, beforeOf(st)))
+		case !madeNow:
+			// Compare and swap, again: authorized_keys is as the approved plan saw it (none, for a user
+			// it makes), or already the approved one. A user useradd made just now has what useradd put
+			// in its home (/etc/skel): what this change makes.
+			if why := keysCAS(e.home, c, st); why != "" {
+				return refused(why)
+			}
 		}
 		wrote, err := writeKeys(r, a, u.Name, e.home, k.Content, e.uid, e.gid)
 		ran = ran || wrote
@@ -383,6 +492,10 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	return noderev.OutcomeDone, strings.Join(did, "; "), ran
 }
 
+// stopping is why a change of a user stopped between two of its steps: mamelet is stopping (the
+// attempt is not recorded, and goes on from there in a later round).
+const stopping = "mamelet is stopping: the rest goes on in a later round"
+
 // userResults are the recorded outcomes of the part's changes of users.
 func userResults(p Part, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result {
 	var out []noderev.Result
@@ -416,17 +529,99 @@ func useraddArgs(name string, k UserCreate) []string {
 	return append(args, "--user-group", "--", name)
 }
 
-// unlikeCreate says how a user that exists is not as the approved creation makes it ("" when it is).
-func unlikeCreate(e passwdEntry, k UserCreate) string {
+// unlikeCreate says how user name, which exists (e), is not exactly the user the approved creation c
+// makes ("" when it is: one an attempt of c made before it was interrupted): its uid (the declared
+// one, or one of a system user or not as declared: below UID_MIN or not), its primary group (the user's own), its shell
+// and home, its supplementary groups (only those c adds), its home (the user's, when c makes it), and
+// its authorized_keys (none, or the approved content).
+func unlikeCreate(r *os.Root, a accounts, name string, e passwdEntry, c UserChange) string {
+	k := *c.Create
+	what := map[bool]string{true: "a system user", false: "not a system user"}
+	system := e.uid < uidMin(r)
 	switch {
 	case k.UID != 0 && e.uid != k.UID:
 		return fmt.Sprintf("its uid is %d", e.uid)
+	case k.UID == 0 && system != k.System:
+		return fmt.Sprintf("it is %s (uid %d; UID_MIN of /etc/login.defs is %d)", what[system], e.uid, uidMin(r))
+	case a.groupName(e.gid) != name:
+		return fmt.Sprintf("its primary group is %s, not its own", a.groupName(e.gid))
 	case e.shell != k.Shell:
 		return fmt.Sprintf("its shell is %s", e.shell)
 	case k.Home != "" && e.home != k.Home:
 		return fmt.Sprintf("its home is %s", e.home)
 	}
+	var other []string
+	for _, g := range a.memberOf(name) {
+		if !slices.Contains(c.Groups, g) {
+			other = append(other, g)
+		}
+	}
+	if len(other) > 0 {
+		return "it is in " + strings.Join(other, ", ") + ", which this change does not add"
+	}
+	if k.CreateHome {
+		fi, err := r.Lstat(rel(e.home))
+		switch {
+		case err != nil:
+			return fmt.Sprintf("its home %s cannot be looked at (%v)", e.home, err)
+		case fi.Mode()&fs.ModeSymlink != 0 || !fi.IsDir():
+			return fmt.Sprintf("its home %s is not a directory", e.home)
+		}
+		if uid, _, ok := ownerOf(fi); ok && uid != e.uid {
+			return fmt.Sprintf("its home %s is %s's", e.home, a.userName(uid))
+		}
+	}
+	if CheckHome(e.home) != nil {
+		return ""
+	}
+	switch st := inspect(r, e.home+"/.ssh/authorized_keys", a); {
+	case st.Error != "" || st.Unsafe != "":
+		return fmt.Sprintf("its authorized_keys cannot be looked at (%s%s)", st.Error, st.Unsafe)
+	case st.Exists && (c.Keys == nil || st.Large || st.SHA256 != c.Keys.SHA256):
+		return fmt.Sprintf("it has an authorized_keys (%s) this change did not write", beforeOf(st))
+	}
 	return ""
+}
+
+// keysChanged is keysCAS of the authorized_keys of the user that exists (e), before anything is
+// changed ("" when it may be written).
+func keysChanged(r *os.Root, a accounts, e passwdEntry, c UserChange) string {
+	if CheckHome(e.home) != nil {
+		return "" // refused when the keys are written, with why
+	}
+	st := inspect(r, e.home+"/.ssh/authorized_keys", a)
+	if st.Error != "" || st.Unsafe != "" {
+		return "" // likewise
+	}
+	return keysCAS(e.home, c, st)
+}
+
+// keysCAS says why the approved write of authorized_keys (c.Keys) is not done on what is there (st)
+// ("" when it may be): it is neither as the approved plan saw it (c.Before.Keys: none, for a user the
+// change makes) nor already the approved content.
+func keysCAS(home string, c UserChange, st FileState) string {
+	b := c.Before.Keys
+	if b == nil {
+		b = &Before{}
+	}
+	if st.Exists && !st.Large && st.SHA256 == c.Keys.SHA256 || b.Is(st) {
+		return ""
+	}
+	return fmt.Sprintf("%s/.ssh/authorized_keys changed since the plan (it was %s, it is %s); nothing was changed (plan again)", home, b, beforeOf(st))
+}
+
+// exposedBy says who other than root can change the directory d, for a message: "is app's (0755
+// app:app)", "its group staff may write (0775 root:staff)", "everyone may write (0777 root:root)".
+func exposedBy(d DirOwner) string {
+	mode, _ := strconv.ParseUint(d.Mode, 8, 32)
+	how := fmt.Sprintf("(%s %s:%s)", d.Mode, d.Owner, d.Group)
+	switch {
+	case mode&0o002 != 0:
+		return "everyone may write " + how
+	case d.Owner != "root":
+		return d.Owner + " owns " + how
+	}
+	return "its group " + d.Group + " may write " + how
 }
 
 // homeThere says what is at a home that is there already (HomeState), for a message.
@@ -454,20 +649,20 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 		return false, err
 	}
 	defer h.Close()
-	hfi, err := h.Stat(".")
+	hfi, err := h.stat()
 	if err != nil {
 		return false, err
 	}
 	if u, _, ok := ownerOf(hfi); ok && u != uid {
 		return false, &Refusal{Reason: fmt.Sprintf("the home %s is %s's (uid %d), not %s's: mamelet never writes into another's home", home, a.userName(u), u, name)}
 	}
-	if _, err := h.Lstat(".ssh"); errors.Is(err, fs.ErrNotExist) {
-		if err = h.Mkdir(".ssh", 0o700); err != nil {
+	if _, err := h.lstat(".ssh"); errors.Is(err, fs.ErrNotExist) {
+		if err = h.mkdir(".ssh", 0o700); err != nil {
 			return false, err
 		}
 		wrote = true
 	}
-	dir, err := openSubdir(h, ".ssh", home+"/.ssh")
+	dir, err := h.subdir(".ssh")
 	if err != nil {
 		var unsafe *unsafeError
 		if errors.As(err, &unsafe) {
@@ -478,12 +673,7 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 	defer dir.Close()
 	// ~/.ssh as sshd wants it, changed through the directory opened (not its name, which the user may
 	// have replaced meanwhile).
-	d, err := dir.Open(".")
-	if err != nil {
-		return wrote, err
-	}
-	defer d.Close()
-	dfi, err := d.Stat()
+	dfi, err := dir.stat()
 	if err != nil {
 		return wrote, err
 	}
@@ -492,18 +682,18 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 		return wrote, &Refusal{Reason: fmt.Sprintf("%s/.ssh is %s's (uid %d), not %s's: mamelet never takes another's ~/.ssh", home, a.userName(u), u, name)}
 	}
 	if !ok || u != uid || g != gid {
-		if err := d.Chown(uid, gid); err != nil {
+		if err := dir.chown(uid, gid); err != nil {
 			return wrote, err
 		}
 		wrote = true
 	}
 	if modeString(dfi.Mode()) != sshMode {
-		if err := d.Chmod(0o700); err != nil {
+		if err := dir.chmod(0o700); err != nil {
 			return wrote, err
 		}
 		wrote = true
 	}
-	if f, fi, _, err := openLeaf(dir, "authorized_keys", home+"/.ssh/authorized_keys"); err == nil {
+	if f, fi, _, err := dir.openLeaf("authorized_keys", home+"/.ssh/authorized_keys"); err == nil {
 		same := false
 		if u, g, ok := ownerOf(fi); ok && u == uid && g == gid && modeString(fi.Mode()) == keysMode && fi.Size() == int64(len(content)) {
 			b, err := io.ReadAll(io.LimitReader(f, MaxContent+1))

@@ -161,6 +161,10 @@ func artifactChange(k *plan.Kit, r graph.Resource) plan.Change {
 		c.Note = &plan.Note{Code: codeArtifactReplaces,
 			Message: fmt.Sprintf("%s on %s is not a file Mamela installed (it was put there otherwise, or changed since): installing the artifact replaces it", want.Path, want.Node),
 			Hint:    "check on the node what is there before approving: a package or a person may have put it there"}
+		if slices.Contains(o.SetAside, recordName+corruptSuffix) {
+			c.Note.Message += fmt.Sprintf("; mamelet lost its record of the artifacts it installed (it could not be read, and was set aside as %s in mamelet's state directory), so it may be one Mamela installed before", recordName+corruptSuffix)
+			c.Note.Hint += "; once looked at, remove the file set aside"
+		}
 	}
 	return k.WithOps(c, policy.Subject{Op: OpInstallArtifact})
 }

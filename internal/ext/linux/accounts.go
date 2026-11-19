@@ -2,6 +2,7 @@ package linux
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -140,4 +141,26 @@ func ParseMode(s string) (uint32, error) {
 		return 0, fmt.Errorf("mode %s lets every user of the node write the file", s)
 	}
 	return uint32(m), nil
+}
+
+// defaultUIDMin is the first uid of a user who is not a system user, when /etc/login.defs does not
+// say (Debian's and Ubuntu's).
+const defaultUIDMin = 1000
+
+// uidMin is the first uid useradd gives a user who is not a system user on the node (UID_MIN of
+// /etc/login.defs, read through the directories one at a time; defaultUIDMin when it does not say):
+// a smaller uid is a system user's.
+func uidMin(r *os.Root) int {
+	b, err := readRegular(r, "/etc/login.defs", MaxContent)
+	if err != nil {
+		return defaultUIDMin
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if f := strings.Fields(l); len(f) == 2 && f[0] == "UID_MIN" {
+			if n, err := strconv.Atoi(f[1]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return defaultUIDMin
 }

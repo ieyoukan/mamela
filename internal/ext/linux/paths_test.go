@@ -7,9 +7,14 @@ import (
 
 func TestCheckPath(t *testing.T) {
 	for _, p := range []string{"/etc/nginx/nginx.conf", "/etc/motd", "/opt/app/config.yaml", "/etc/systemd/system/app.service",
-		"/etc/systemd/system/app.service.d/override.conf", "/home/alice/.bashrc", "/srv/www/index.html", "/etc/apt/sources.list.d/docker.list",
-		"/etc/apt/keyrings/docker.asc", "/etc/rancher/rke2.yaml", "/etc/passwd.d/x", "/x", "/etc/app/a_b-c+d@e=f:g,h.conf",
-		"/etc/sudoers.dist", "/etc/groups.conf", "/" + strings.Repeat("a", 254)} {
+		"/etc/systemd/system/app.service.d/override.conf", "/home/alice/.bashrc", "/srv/www/index.html",
+		"/etc/rancher/rke2.yaml", "/etc/passwd.d/x", "/x", "/etc/app/a_b-c+d@e=f:g,h.conf",
+		"/etc/sudoers.dist", "/etc/groups.conf", "/" + strings.Repeat("a", 254),
+		// A program of one's own under /usr/local, an application's own libraries, the skeleton of new
+		// homes (copied as the new user's), a unit of a slice of one's own.
+		"/usr/local/bin/app", "/usr/local/sbin/appctl", "/opt/app/lib/libapp.so.1", "/usr/local/lib/app/config.yaml", "/usr/lib/app/app.jar",
+		"/etc/skel/.bashrc", "/etc/systemd/system/app.slice", "/etc/systemd/system/app.slice.d/limits.conf",
+		"/usr/local/share/app/x", "/etc/apt/apt.conf.dist"} {
 		if err := CheckPath(p); err != nil {
 			t.Errorf("%s refused: %s", p, err.Message)
 		}

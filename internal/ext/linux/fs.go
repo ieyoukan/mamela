@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 )
@@ -19,10 +20,12 @@ import (
 // mamelet's view of the node's file system for the linux kinds. It works under an os.Root (the
 // node's "/", or System.Root in tests), so that nothing it opens can lead out of it, and it never
 // follows a symbolic link of its own accord: every directory above a file is opened by itself from
-// the one above, checked to be a directory and not a link, and to be the one looked at (a link put
-// in its place meanwhile is refused); a file is read only through openLeaf (no link followed, no
-// terminal taken, nothing but a regular file); and a file is replaced by a rename in its directory,
-// which never follows a link either.
+// the one above (a dirFD: nofollow_unix.go), checked to be a directory and not a link, opened as a
+// directory only, and checked to be the one looked at (a link, a pipe or a device put in its place
+// meanwhile is refused, never followed or waited on); what is done in a directory is done through
+// its descriptor; a file is read only through openLeaf (no link followed, no terminal taken,
+// nothing but a regular file); and a file is replaced by a rename in its directory, which never
+// follows a link either.
 
 // openTree opens the node's file system as mamelet writes into it.
 func openTree(s *mamelet.System) (*os.Root, error) {
@@ -68,22 +71,21 @@ type fileStamp struct {
 	OK           bool
 }
 
-// openDir opens the directory dir (absolute) one component at a time from the root, each a
-// directory and not a link when it is looked at, and the one opened the one looked at (a link a user
-// put in its place meanwhile is refused, not followed); it makes nothing. A component that does not
-// exist is an error that is fs.ErrNotExist; one that is a link or not a directory, an *unsafeError.
-func openDir(r *os.Root, dir string) (*os.Root, error) {
-	cur, err := r.OpenRoot(".")
+// openDir opens the directory dir (absolute) one component at a time from the root (dirFD.subdir:
+// each a directory and not a link when it is looked at, opened as a directory only, and the one
+// opened the one looked at: a link, a pipe or a device a user put in its place meanwhile is refused,
+// not followed or waited on); it makes nothing. A component that does not exist is an error that is
+// fs.ErrNotExist; one that is a link or not a directory, an *unsafeError.
+func openDir(r *os.Root, dir string) (*dirFD, error) {
+	cur, err := treeDir(r)
 	if err != nil {
 		return nil, err
 	}
 	if dir == "/" {
 		return cur, nil
 	}
-	walked := ""
 	for _, name := range strings.Split(strings.TrimPrefix(dir, "/"), "/") {
-		walked += "/" + name
-		next, err := openSubdir(cur, name, walked)
+		next, err := cur.subdir(name)
 		cur.Close()
 		if err != nil {
 			return nil, err
@@ -91,32 +93,6 @@ func openDir(r *os.Root, dir string) (*os.Root, error) {
 		cur = next
 	}
 	return cur, nil
-}
-
-// openSubdir opens the directory name of cur (whose path is p): it must be a directory, not a link,
-// and what is opened the directory looked at.
-func openSubdir(cur *os.Root, name, p string) (*os.Root, error) {
-	fi, err := cur.Lstat(name)
-	switch {
-	case err != nil:
-		return nil, err
-	case fi.Mode()&fs.ModeSymlink != 0:
-		return nil, &unsafeError{msg: p + " is a symbolic link"}
-	case !fi.IsDir():
-		return nil, &unsafeError{msg: p + " is not a directory"}
-	}
-	if testHookOpenSubdir != nil {
-		testHookOpenSubdir(p)
-	}
-	next, err := cur.OpenRoot(name)
-	if err != nil {
-		return nil, err
-	}
-	if got, err := next.Stat("."); err != nil || !os.SameFile(fi, got) {
-		next.Close()
-		return nil, &unsafeError{msg: p + " changed while mamelet opened it (a link put in its place?)"}
-	}
-	return next, nil
 }
 
 // Tests put something else in place of a file (testHookOpenLeaf) or a directory (testHookOpenSubdir)
@@ -131,7 +107,7 @@ func openRegular(r *os.Root, p string) (*os.File, fs.FileInfo, fileStamp, error)
 		return nil, nil, fileStamp{}, err
 	}
 	defer dir.Close()
-	return openLeaf(dir, path.Base(p), p)
+	return dir.openLeaf(path.Base(p), p)
 }
 
 // readRegular reads the regular file at p (openRegular), refusing one larger than max bytes.
@@ -200,7 +176,7 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 		st.Owner, st.Group = a.userName(uid), a.groupName(gid)
 	}
 	if fi.Size() > max {
-		st.Large = true
+		st.Large, st.Stamp = true, stampText(stamp)
 		return st
 	}
 	key := r.Name() + "\x00" + p
@@ -215,18 +191,29 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 	}
 	st.SHA256 = hex.EncodeToString(h.Sum(nil))
 	if fi.Size() > MaxContent {
-		hashes.put(key, stamp, st.SHA256)
+		hashes.put(key, stamp, st.SHA256, hashedNow())
 		largeHashed.Add(1)
 	}
 	return st
 }
 
+// racyWindow: a file whose content or status changed this close to when it was hashed may change
+// again within the same tick of the file system's clock with its stamp unchanged (the same size, the
+// same mtime and ctime), so its hash is not kept: it is hashed again the next time (git's "racy"
+// rule). A file left alone that long gets a new stamp with any change.
+const racyWindow = 2 * time.Second
+
+// hashedNow is when a file was hashed: mamelet's clock (tests move it). It decides only whether a
+// hash is kept, never what is reported.
+var hashedNow = time.Now
+
 // largeHashed counts the large files hashed (tests: the cache spares the hashing).
 var largeHashed atomic.Int64
 
 // hashCache keeps the sha256 of the large files mamelet observes (artifacts, up to MaxArtifact) by
-// their stamp, so that a file is hashed again only when it changed, not every round. It is mamelet's
-// memory only: after a restart, each is hashed once.
+// their stamp, so that a file is hashed again only when it changed, not every round; a file that
+// changed just before it was hashed is not kept (racyWindow). It is mamelet's memory only: after a
+// restart, each is hashed once.
 type hashCache struct {
 	mu sync.Mutex
 	m  map[string]cachedSum
@@ -252,8 +239,8 @@ func (c *hashCache) get(key string, s fileStamp) (string, bool) {
 	return e.sum, ok && e.stamp == s
 }
 
-func (c *hashCache) put(key string, s fileStamp, sum string) {
-	if !s.OK {
+func (c *hashCache) put(key string, s fileStamp, sum string, at time.Time) {
+	if !s.OK || at.UnixNano()-max(s.Mtime, s.Ctime) < int64(racyWindow) {
 		return
 	}
 	c.mu.Lock()
@@ -350,8 +337,8 @@ func removeStaleTemp(r *os.Root, p string) {
 	}
 	defer dir.Close()
 	tmp := tempName(path.Base(p))
-	if fi, err := dir.Lstat(tmp); err == nil && fi.Mode().IsRegular() {
-		dir.Remove(tmp)
+	if fi, err := dir.lstat(tmp); err == nil && fi.Mode().IsRegular() {
+		dir.remove(tmp)
 	}
 }
 
@@ -362,13 +349,8 @@ var DiskMargin int64 = 64 << 20
 
 // checkFree says why a file of size bytes is not written into dir (nil when it may be): its file
 // system has less than size and DiskMargin free.
-func checkFree(dir *os.Root, where string, size int64) error {
-	d, err := dir.Open(".")
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return enoughFree(freeBytes(d), where, size)
+func checkFree(dir *dirFD, where string, size int64) error {
+	return enoughFree(dir.free(), where, size)
 }
 
 // enoughFree is checkFree of a file system with free bytes (-1: unknown, which is not checked).
@@ -406,17 +388,17 @@ func writeFrom(r *os.Root, p string, src io.Reader, size int64, sum, modeText st
 // replaceIn writes the content src reads (size bytes, whose sha256 must be sum) into a temporary file
 // in dir (whose path is where: synced, owned by uid:gid, with mode), renames it over base, and syncs
 // dir. It first checks that the file system has room for it (checkFree).
-func replaceIn(dir *os.Root, where, base string, src io.Reader, size int64, sum string, mode fs.FileMode, uid, gid int) error {
+func replaceIn(dir *dirFD, where, base string, src io.Reader, size int64, sum string, mode fs.FileMode, uid, gid int) error {
 	tmp := tempName(base)
 	p := base
-	if err := dir.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := dir.remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("remove the temporary file an earlier write left: %w", err)
 	}
 	if err := checkFree(dir, where, size); err != nil {
 		return err
 	}
 	// O_EXCL: the temporary file is a new file, never something put there (a link included).
-	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := dir.create(tmp, 0o600)
 	if err != nil {
 		return err
 	}
@@ -424,7 +406,7 @@ func replaceIn(dir *os.Root, where, base string, src io.Reader, size int64, sum 
 	defer func() {
 		if !done {
 			f.Close()
-			dir.Remove(tmp)
+			dir.remove(tmp)
 		}
 	}()
 	h := sha256.New()
@@ -447,38 +429,35 @@ func replaceIn(dir *os.Root, where, base string, src io.Reader, size int64, sum 
 		return err
 	}
 	// A rename replaces what is at base (a link too) and never follows it.
-	if err := dir.Rename(tmp, base); err != nil {
-		dir.Remove(tmp)
+	if err := dir.rename(tmp, base); err != nil {
+		dir.remove(tmp)
 		done = true
 		return err
 	}
 	done = true
-	if d, err := dir.Open("."); err == nil {
-		d.Sync()
-		d.Close()
-	}
+	dir.sync()
 	return nil
 }
 
-// walkDirs opens the directory of p one component at a time from the root (openSubdir: each a
+// walkDirs opens the directory of p one component at a time from the root (dirFD.subdir: each a
 // directory, not a link, and the one looked at), and makes those that are missing (0755, owned by
 // dirUID:dirGID). A directory it makes is given its owner and mode through a descriptor opened
 // without following a link, never through its name; and one that appears between the look and the
 // making (made by someone else) is refused, not taken.
-func walkDirs(r *os.Root, p string, dirUID, dirGID int) (*os.Root, error) {
-	cur, err := r.OpenRoot(".")
+func walkDirs(r *os.Root, p string, dirUID, dirGID int) (*dirFD, error) {
+	cur, err := treeDir(r)
 	if err != nil {
 		return nil, err
 	}
 	for _, d := range parents(p) {
 		name := path.Base(d)
-		if _, err := cur.Lstat(name); errors.Is(err, fs.ErrNotExist) {
+		if _, err := cur.lstat(name); errors.Is(err, fs.ErrNotExist) {
 			if err := makeDir(cur, name, d, dirUID, dirGID); err != nil {
 				cur.Close()
 				return nil, err
 			}
 		}
-		next, err := openSubdir(cur, name, d)
+		next, err := cur.subdir(name)
 		cur.Close()
 		if err != nil {
 			return nil, err
@@ -489,20 +468,20 @@ func walkDirs(r *os.Root, p string, dirUID, dirGID int) (*os.Root, error) {
 }
 
 // makeDir makes the directory name in parent (whose path is p), 0755 and owned by uid:gid.
-func makeDir(parent *os.Root, name, p string, uid, gid int) error {
-	if err := parent.Mkdir(name, 0o700); err != nil {
+func makeDir(parent *dirFD, name, p string, uid, gid int) error {
+	if err := parent.mkdir(name, 0o700); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("%s appeared while mamelet made it (made by someone else meanwhile): plan again", p)
 		}
 		return err
 	}
-	d, err := openChildDir(parent, name)
+	d, err := parent.madeDir(name)
 	if err != nil {
 		return err
 	}
 	defer d.Close()
-	if err := d.Chown(uid, gid); err != nil {
+	if err := d.chown(uid, gid); err != nil {
 		return err
 	}
-	return d.Chmod(0o755)
+	return d.chmod(0o755)
 }

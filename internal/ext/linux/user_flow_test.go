@@ -170,3 +170,35 @@ func replaced(diffs []plan.Diff, d plan.Diff) []plan.Diff {
 	}
 	return out
 }
+
+// Someone makes the user the plan saw missing, with keys of their own, before the apply: the
+// creation's grant carries what the plan saw of authorized_keys (none), and mamelet takes nothing
+// over (their keys stay, the user is not put in docker).
+func TestAUserMadeSinceThePlanIsNotTakenOver(t *testing.T) {
+	declared := userRes("web/user/app", `{"node":"web","name":"app","groups":["docker"],"authorizedKeys":["`+keyAlice+`"]}`)
+	f, accounts := userFlow(t, declared)
+	f.publish()
+	f.node.round() // it says it takes linux
+	f.publish()
+	f.node.round() // it observes the user
+	p, _ := f.plan()
+	if c := f.userChange(); c.Status != plan.StatusChange || c.Operations[0].Op != OpCreateUser {
+		t.Fatalf("the plan %+v", c)
+	}
+	addUser(t, f.node, appLine)
+	write(t, f.node.root+"/home/app/.ssh/authorized_keys", keyBob+"\n")
+	rep := f.apply(p)
+	if len(rep.Steps) != 1 || rep.Steps[0].Outcome == reconcile.OutcomeDone {
+		t.Fatalf("apply %+v", rep)
+	}
+	part := partOf(f.revision())
+	if u := part.user("app"); u == nil || u.Change == nil || u.Change.Before.Keys == nil || u.Change.Before.Keys.Exists {
+		t.Fatalf("the grant %+v", u)
+	}
+	if len(accounts.commands) != 0 {
+		t.Errorf("ran %q", accounts.commands)
+	}
+	if got := f.node.read("/home/app/.ssh/authorized_keys"); got != keyBob+"\n" {
+		t.Errorf("their keys are now %q", got)
+	}
+}

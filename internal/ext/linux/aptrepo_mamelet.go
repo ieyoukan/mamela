@@ -345,7 +345,7 @@ func removeFile(r *os.Root, p string, dirUID, dirGID int) error {
 		return err
 	}
 	defer dir.Close()
-	if err := dir.Remove(path.Base(p)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := dir.remove(path.Base(p)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil

@@ -123,8 +123,10 @@ func TestUserDecodeAndCanonicalForm(t *testing.T) {
 		t.Errorf("a system user: %q %v %s", h, made, sys.CreateShell())
 	}
 	sys.AuthorizedKeys = []string{keyAlice}
-	if _, made := sys.CreateHome(); !made {
-		t.Error("a system user with keys gets no home for them")
+	// Its home is named, never useradd's default (the node's /etc/default/useradd): the plan shows it,
+	// and mamelet looks at it before useradd makes it.
+	if h, made := sys.CreateHome(); h != "/home/svc" || !made {
+		t.Errorf("a system user with keys: home %q %v", h, made)
 	}
 	full, err := decodeGraph(userRes("web/user/deploy", `{"node":"web","name":"deploy","system":true,"uid":1500,"shell":"/bin/sh","home":"/srv/deploy","groups":["www-data","adm"],"authorizedKeys":[`+jsonString(keyAlice)+`,`+jsonString(keyBob)+`]}`))
 	if err != nil {

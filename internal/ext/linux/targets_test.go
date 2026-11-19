@@ -274,6 +274,60 @@ func TestMameletComparesBeforeItWrites(t *testing.T) {
 	}
 }
 
+// A file too large to hash has no sha256 to tell it from another: the plan's before-state carries its
+// stamp (inode, size, times), and a large file rewritten since (here the same size, with its mtime put
+// back) is not the one the plan saw. One without a stamp is never taken for it.
+func TestMameletComparesALargeFileByItsStamp(t *testing.T) {
+	n := newNode(t)
+	big := filepath.Join(n.root, "etc/app/big.conf")
+	write(t, big, strings.Repeat("a", MaxContent+1))
+	r, err := os.OpenRoot(n.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	seen := inspect(r, "/etc/app/big.conf", readAccounts(r))
+	if !seen.Large || (seen.Stamp == "") != !runtimeStamps() {
+		t.Fatalf("observed %+v", seen)
+	}
+	if !runtimeStamps() {
+		t.Skip("this system gives files no stamp")
+	}
+	fi, _ := os.Stat(big)
+	f, _ := os.OpenFile(big, os.O_WRONLY, 0)
+	f.WriteAt([]byte("b"), 0)
+	f.Close()
+	os.Chtimes(big, fi.ModTime(), fi.ModTime())
+	g := grant("/etc/app/big.conf", "small\n", opA, 1)
+	g.Write.Before = beforeOf(seen)
+	n.offer(Part{Files: []File{g}}, nil)
+	if res := result(t, n.round(), opA); res.Outcome != noderev.OutcomeRefused || !strings.Contains(res.Detail, "changed since the plan (it was a file too large to hash (inode") {
+		t.Errorf("result %+v", res)
+	}
+	if b, _ := os.ReadFile(big); len(b) != MaxContent+1 {
+		t.Error("overwritten")
+	}
+	// Seen again, unchanged since: written.
+	g = grant("/etc/app/big.conf", "small\n", opB, 1)
+	g.Write.Before = beforeOf(inspect(r, "/etc/app/big.conf", readAccounts(r)))
+	n.offer(Part{Files: []File{g}}, nil)
+	if res := result(t, n.round(), opB); res.Outcome != noderev.OutcomeDone || n.read("/etc/app/big.conf") != "small\n" {
+		t.Errorf("result %+v", res)
+	}
+	// A large file without a stamp is never the one the plan saw.
+	if (Before{Exists: true, Large: true}).Is(FileState{Exists: true, Large: true}) {
+		t.Error("two large files without stamps are the same")
+	}
+	for _, b := range []Before{{Exists: true, SHA256: sumA, Stamp: "1:2:3:4:5"}, {Exists: true, Large: true, Stamp: "x"}, {Stamp: "1:2:3:4:5"}} {
+		if b.check() == "" {
+			t.Errorf("%+v accepted", b)
+		}
+	}
+	if b := (Before{Exists: true, Large: true, Stamp: "66306:1234:262145:-1:1763550000000000000"}); b.check() != "" {
+		t.Errorf("%+v refused: %s", b, b.check())
+	}
+}
+
 // The same compare and swap for an artifact, an APT source and a user's shell and keys.
 func TestMameletComparesBeforeTheOtherKinds(t *testing.T) {
 	t.Run("artifact", func(t *testing.T) {
