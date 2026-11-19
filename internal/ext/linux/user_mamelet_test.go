@@ -581,3 +581,54 @@ func TestMameletComparesTheKeysBeforeItChangesAnything(t *testing.T) {
 		t.Errorf("ran %q", f.commands)
 	}
 }
+
+// cancelDuring is a runner that cancels the round (as SIGTERM would) when mamelet runs program, and
+// says whether what it ran then was cancelled with it, and bounded.
+type cancelDuring struct {
+	inner    mamelet.Runner
+	program  string
+	cancel   context.CancelFunc
+	canceled bool
+	deadline bool
+}
+
+func (c *cancelDuring) Run(ctx context.Context, program string, args []string, env []string) ([]byte, []byte, int, error) {
+	if c.cancel != nil && program == c.program {
+		c.cancel()
+		c.cancel = nil
+		c.canceled = ctx.Err() != nil
+		_, c.deadline = ctx.Deadline()
+	}
+	return c.inner.Run(ctx, program, args, env)
+}
+
+// mamelet stopping while useradd runs does not kill it (killed, it could leave /etc/passwd and
+// /etc/shadow half changed): it runs to its end, within AccountsTimeout. The attempt stops after it
+// without being recorded, and goes on in the next round from there.
+func TestMameletDoesNotKillUseraddWhenItStops(t *testing.T) {
+	n, f := newUserNode(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &cancelDuring{inner: f, program: progUseradd, cancel: cancel}
+	n.a.System.Runner = run
+	n.offer(Part{Users: []User{createApp(opA, 1)}}, nil)
+	rep, err := n.a.Round(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.canceled || !run.deadline {
+		t.Errorf("useradd ran with a context cancelled with mamelet's (%v), or unbounded (%v)", run.canceled, !run.deadline)
+	}
+	if want := []string{"useradd --create-home --shell /bin/bash --home-dir /home/app --user-group -- app"}; !slices.Equal(f.commands, want) {
+		t.Fatalf("ran %q", f.commands)
+	}
+	if slices.ContainsFunc(rep.Results, func(r noderev.Result) bool { return r.Operation == opA }) {
+		t.Fatalf("the attempt cut short was recorded: %+v", rep.Results)
+	}
+	f.commands = nil
+	if r := result(t, n.round(), opA); r.Outcome != noderev.OutcomeDone || !strings.Contains(r.Detail, "existed already as approved") {
+		t.Errorf("result %+v", r)
+	}
+	if want := []string{"usermod --append --groups docker -- app"}; !slices.Equal(f.commands, want) {
+		t.Errorf("ran %q", f.commands)
+	}
+}

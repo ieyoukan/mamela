@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ieyoukan/mamela/internal/mamelet"
 	"github.com/ieyoukan/mamela/internal/noderev"
@@ -21,6 +22,21 @@ const (
 	progUseradd = "/usr/sbin/useradd"
 	progUsermod = "/usr/sbin/usermod"
 )
+
+// AccountsTimeout bounds one run of useradd or usermod (they take the locks of /etc/passwd and
+// /etc/shadow a moment only, and give up at once when another holds them).
+var AccountsTimeout = 2 * time.Minute
+
+// runAccounts runs useradd or usermod to its end: mamelet stopping (SIGTERM cancels ctx) does not
+// kill it, which could leave /etc/passwd, /etc/shadow, /etc/group and /etc/gshadow half changed, or
+// their locks behind. Only one that runs longer than AccountsTimeout is killed. The caller looks at
+// ctx afterwards, and stops there (the attempt goes on in a later round).
+func runAccounts(ctx context.Context, s *mamelet.System, program string, args []string) error {
+	actx, cancel := context.WithTimeout(context.WithoutCancel(ctx), AccountsTimeout)
+	defer cancel()
+	_, err := s.Run(actx, program, args)
+	return err
+}
 
 // observeUsers observes each user of the part: its line of /etc/passwd and its groups, what it
 // needs (the shell, the groups, the uid and the group it would be made with), and its authorized_keys
@@ -378,11 +394,14 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 			}
 		}
 		ran = true
-		if _, err := x.System.Run(ctx, progUseradd, useraddArgs(u.Name, *k)); err != nil {
+		if err := runAccounts(ctx, x.System, progUseradd, useraddArgs(u.Name, *k)); err != nil {
 			return failed(err.Error())
 		}
 		madeNow = true
 		did = append(did, "made user "+u.Name)
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 		a = readAccounts(r)
 		if e, exists = a.entries[u.Name]; !exists || e.uid == 0 {
 			return failed("after useradd, user " + u.Name + " is not in /etc/passwd as made")
@@ -403,17 +422,23 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	}
 	if len(add) > 0 {
 		ran = true
-		if _, err := x.System.Run(ctx, progUsermod, []string{"--append", "--groups", strings.Join(add, ","), "--", u.Name}); err != nil {
+		if err := runAccounts(ctx, x.System, progUsermod, []string{"--append", "--groups", strings.Join(add, ","), "--", u.Name}); err != nil {
 			return failed(err.Error())
 		}
 		did = append(did, "added "+u.Name+" to "+strings.Join(add, ", "))
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 	}
 	if c.Shell != "" && e.shell != c.Shell {
 		ran = true
-		if _, err := x.System.Run(ctx, progUsermod, []string{"--shell", c.Shell, "--", u.Name}); err != nil {
+		if err := runAccounts(ctx, x.System, progUsermod, []string{"--shell", c.Shell, "--", u.Name}); err != nil {
 			return failed(err.Error())
 		}
 		did = append(did, "set the shell of "+u.Name+" to "+c.Shell)
+		if ctx.Err() != nil {
+			return failed(stopping)
+		}
 	}
 	a = readAccounts(r)
 	e = a.entries[u.Name]
@@ -466,6 +491,10 @@ func changeUser(ctx context.Context, x *mamelet.Act, u User, c UserChange) (outc
 	}
 	return noderev.OutcomeDone, strings.Join(did, "; "), ran
 }
+
+// stopping is why a change of a user stopped between two of its steps: mamelet is stopping (the
+// attempt is not recorded, and goes on from there in a later round).
+const stopping = "mamelet is stopping: the rest goes on in a later round"
 
 // userResults are the recorded outcomes of the part's changes of users.
 func userResults(p Part, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result {
