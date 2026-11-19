@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -605,6 +606,33 @@ func TestTheHashOfAFileChangedJustBeforeIsNotKept(t *testing.T) {
 	}
 	if got := largeHashed.Load() - before; got != 2 {
 		t.Errorf("hashed %d times in 2 rounds", got)
+	}
+}
+
+// The time a hash is kept against is taken with the file's stamp, before it is read: a hashing that
+// takes long (a large artifact) does not make a file that changed just before it look old enough to
+// keep its hash (a rewrite of the same size in the same tick would then go unseen).
+func TestTheTimeOfAHashIsTakenBeforeTheHashing(t *testing.T) {
+	if !runtimeStamps() {
+		t.Skip("this system gives files no stamp")
+	}
+	clock := time.Now()
+	hashedNow = func() time.Time { return clock }
+	hash := hashContent
+	hashContent = func(r io.Reader) (string, error) {
+		sum, err := hash(r)
+		clock = clock.Add(time.Minute) // a long hashing
+		return sum, err
+	}
+	t.Cleanup(func() { hashedNow, hashContent = time.Now, hash })
+	n := newNode(t)
+	write(t, filepath.Join(n.root, "usr/local/bin/big"), strings.Repeat("a", MaxContent+1))
+	n.offer(Part{Artifacts: []Artifact{{Path: "/usr/local/bin/big", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	before := largeHashed.Load()
+	n.round()
+	n.round()
+	if got := largeHashed.Load() - before; got != 2 {
+		t.Errorf("hashed %d times in 2 rounds: the hash of a file changed just before was kept", got)
 	}
 }
 

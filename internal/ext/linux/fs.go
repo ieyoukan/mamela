@@ -184,17 +184,29 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 		st.SHA256 = sum
 		return st
 	}
-	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, max+1)); err != nil {
+	// When the stamp was taken, not when the hashing ended: a file changed in the same tick as its
+	// stamp, while a long hashing ran, must still count as racy (hashCache.put).
+	at := hashedNow()
+	sum, err := hashContent(io.LimitReader(f, max+1))
+	if err != nil {
 		st.Error = err.Error()
 		return st
 	}
-	st.SHA256 = hex.EncodeToString(h.Sum(nil))
+	st.SHA256 = sum
 	if fi.Size() > MaxContent {
-		hashes.put(key, stamp, st.SHA256, hashedNow())
+		hashes.put(key, stamp, st.SHA256, at)
 		largeHashed.Add(1)
 	}
 	return st
+}
+
+// hashContent is the sha256 (hex) of what r reads (tests wrap it: a hashing that takes long).
+var hashContent = func(r io.Reader) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // racyWindow: a file whose content or status changed this close to when it was hashed may change
@@ -203,8 +215,8 @@ func inspectUpTo(r *os.Root, p string, a accounts, max int64) FileState {
 // rule). A file left alone that long gets a new stamp with any change.
 const racyWindow = 2 * time.Second
 
-// hashedNow is when a file was hashed: mamelet's clock (tests move it). It decides only whether a
-// hash is kept, never what is reported.
+// hashedNow is when a file was hashed (taken right after its stamp, before it is read): mamelet's
+// clock (tests move it). It decides only whether a hash is kept, never what is reported.
 var hashedNow = time.Now
 
 // largeHashed counts the large files hashed (tests: the cache spares the hashing).
