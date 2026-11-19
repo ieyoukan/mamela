@@ -197,6 +197,12 @@ type Observed struct {
 	// MaxObserved): each entry then has only its path or name, and its own Error.
 	Error string `json:"error,omitempty"`
 
+	// SetAside are the records of mamelet's state directory it could not read and set aside, while
+	// they are there ("linux-artifacts.json.corrupt"): what they said is lost (the artifacts mamelet
+	// installed are reported as ones it did not install, until they are installed again; what was
+	// pending after a write, as not known).
+	SetAside []string `json:"setAside,omitempty"`
+
 	// InForce is the Control Plane's, never mamelet's: it is set from the node's revision when the
 	// Control Plane observes (annotate, targets.go), whatever a report says. It names what the
 	// declaration in force has (the entries of the part that are InForce), which a plan of a
@@ -260,6 +266,10 @@ type Pending struct {
 	SHA256  string   `json:"sha256"` // of the file written
 	Reload  bool     `json:"reload,omitzero"`
 	Restart []string `json:"restart,omitempty"`
+	// Unknown: mamelet lost its record of what was left after its writes (it could not be read, and
+	// was set aside): whether what follows the write of this file (its daemon-reload, the restarts its
+	// declaration names) finished is not known. Restart is then empty.
+	Unknown bool `json:"unknown,omitzero"`
 }
 
 // MaxContent bounds a file's content, in bytes.
@@ -308,7 +318,7 @@ func encodeObserved(o Observed) jsontext.Value {
 	}
 	why := fmt.Sprintf("mamelet left the details out of its report: they would have been %d KiB, more than the %d KiB it sends of the linux part (a file of very many keys or lines?)",
 		len(out)>>10, MaxObserved>>10)
-	d := Observed{Users: o.Users, Groups: o.Groups, Error: why}
+	d := Observed{Users: o.Users, Groups: o.Groups, Error: why, SetAside: o.SetAside}
 	for _, f := range o.Files {
 		d.Files = append(d.Files, FileState{Path: f.Path, Error: why})
 	}

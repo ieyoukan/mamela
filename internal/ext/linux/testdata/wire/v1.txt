@@ -161,6 +161,7 @@ report: linux.Observed {
       "sha256" string
       "reload" (omitzero) bool
       "restart" (omitempty) []string
+      "unknown" (omitzero) bool
     }
     "error" (omitempty) string
   }
@@ -214,6 +215,7 @@ report: linux.Observed {
           "sha256" string
           "reload" (omitzero) bool
           "restart" (omitempty) []string
+          "unknown" (omitzero) bool
         }
         "error" (omitempty) string
       }
@@ -251,6 +253,7 @@ report: linux.Observed {
         "sha256" string
         "reload" (omitzero) bool
         "restart" (omitempty) []string
+        "unknown" (omitzero) bool
       }
       "error" (omitempty) string
     }
@@ -283,6 +286,7 @@ report: linux.Observed {
         "sha256" string
         "reload" (omitzero) bool
         "restart" (omitempty) []string
+        "unknown" (omitzero) bool
       }
       "error" (omitempty) string
     }
@@ -307,6 +311,7 @@ report: linux.Observed {
         "sha256" string
         "reload" (omitzero) bool
         "restart" (omitempty) []string
+        "unknown" (omitzero) bool
       }
       "error" (omitempty) string
     }
@@ -331,6 +336,7 @@ report: linux.Observed {
         "sha256" string
         "reload" (omitzero) bool
         "restart" (omitempty) []string
+        "unknown" (omitzero) bool
       }
       "error" (omitempty) string
     }
@@ -345,6 +351,7 @@ report: linux.Observed {
     "error" (omitempty) string
   }
   "error" (omitempty) string
+  "setAside" (omitempty) []string
   "inForce" (omitempty) *linux.InForce {
     "files" (omitempty) []string
     "users" (omitempty) []string

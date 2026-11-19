@@ -908,3 +908,132 @@ func TestCheckPathProtectsMamelet(t *testing.T) {
 		t.Error("a file of system.control is not taken as a unit")
 	}
 }
+
+// A record of the artifacts that cannot be read is set aside, not written over with the one artifact
+// installed next (which would lose what it said of the others); the report says so while it is there,
+// and the plan of an artifact it may have named says why it is taken as not installed by Mamela.
+func TestAnUnreadableRecordOfArtifactsIsSetAside(t *testing.T) {
+	rel := newReleases(t)
+	sum := rel.put("/tool", []byte("tool"))
+	n := artifactNode(t, rel)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	write(t, filepath.Join(state, recordName), `{"artifacts":{"/usr/local/bin/other":{"url":"https://x`)
+	write(t, filepath.Join(n.root, "usr/local/bin/other"), "other")
+	n.offer(Part{Artifacts: []Artifact{install("/usr/local/bin/tool", rel.url("/tool"), sum, "", opA, 1), {Path: "/usr/local/bin/other", Owners: []string{"root"}, Groups: []string{"root"}}}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone {
+		t.Fatalf("result %+v", r)
+	}
+	if b, err := os.ReadFile(filepath.Join(state, recordName+corruptSuffix)); err != nil || !strings.Contains(string(b), "/usr/local/bin/other") {
+		t.Errorf("set aside: %q %v", b, err)
+	}
+	if rec := n.record(); len(rec.Artifacts) != 1 || rec.Artifacts["/usr/local/bin/tool"].Installed != sum {
+		t.Errorf("record %+v", rec)
+	}
+	o := observedOf(t, rep)
+	if !slices.Equal(o.SetAside, []string{recordName + corruptSuffix}) || o.artifact("/usr/local/bin/other").From != nil {
+		t.Errorf("observed %+v %+v", o.SetAside, o.artifact("/usr/local/bin/other"))
+	}
+	// Still said while it is there; no more once a person removed it.
+	if o := observedOf(t, n.round()); len(o.SetAside) != 1 {
+		t.Errorf("forgotten: %+v", o.SetAside)
+	}
+	os.Remove(filepath.Join(state, recordName+corruptSuffix))
+	if o := observedOf(t, n.round()); len(o.SetAside) != 0 {
+		t.Errorf("still said: %+v", o.SetAside)
+	}
+}
+
+// A record of what is pending that cannot be read is set aside, and what it may have said is not
+// forgotten: each file found is reported as not known whether what follows its write finished, and
+// the plan asks to approve that again (a unit's daemon-reload, the declared restarts); approving it
+// does it, without writing the file again.
+func TestAnUnreadableRecordOfWhatIsPendingIsNotForgotten(t *testing.T) {
+	n := newNode(t)
+	unit := "[Service]\nExecStart=/bin/true\n"
+	write(t, filepath.Join(n.root, "etc/systemd/system/app.service"), unit)
+	os.Chmod(filepath.Join(n.root, "etc/systemd/system/app.service"), 0o640)
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	write(t, filepath.Join(state, pendingName), "{not json")
+	entry := File{Path: "/etc/systemd/system/app.service", Owners: []string{"root"}, Groups: []string{"root"}}
+	n.offer(Part{Files: []File{entry}}, nil)
+	o := observedOf(t, n.round())
+	got := o.file(entry.Path).Pending
+	if got == nil || !got.Unknown || !got.Reload || got.SHA256 != ContentSHA256(unit) || !slices.Equal(o.SetAside, []string{pendingName + corruptSuffix}) {
+		t.Fatalf("pending %+v, set aside %q", got, o.SetAside)
+	}
+	if b, _ := os.ReadFile(filepath.Join(state, pendingName+corruptSuffix)); string(b) != "{not json" {
+		t.Errorf("set aside: %q", b)
+	}
+	// Reported again in the next round (the record says so now).
+	if got := observedOf(t, n.round()).file(entry.Path).Pending; got == nil || !got.Unknown {
+		t.Fatalf("forgotten: %+v", got)
+	}
+	// What the plan asks for: the declared restarts, and the unit's daemon-reload.
+	left := pendingFor(got, ContentSHA256(unit), entry.Path, []string{"app"})
+	if left == nil || !left.Unknown || !left.Reload || !slices.Equal(left.Restart, []string{"app"}) {
+		t.Errorf("asked for %+v", left)
+	}
+	if pendingFor(&Pending{SHA256: sumA, Unknown: true}, sumA, "/etc/app.conf", nil) != nil {
+		t.Error("a file nothing follows is asked for")
+	}
+	// The approval: the file is as approved, what follows it runs, and nothing is pending any more.
+	f := grant(entry.Path, unit, opA, 1)
+	f.Write.Restart = []string{"app"}
+	f.Write.Before = Before{Exists: true, SHA256: ContentSHA256(unit)}
+	n.offer(Part{Files: []File{f}}, nil)
+	rep := n.round()
+	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeDone || !strings.Contains(r.Detail, "already as approved") {
+		t.Errorf("result %+v", r)
+	}
+	if !slices.Equal(n.sys.commands, []string{"daemon-reload", "try-restart -- app"}) {
+		t.Errorf("ran %q", n.sys.commands)
+	}
+	if got := observedOf(t, rep).file(entry.Path).Pending; got != nil {
+		t.Errorf("still pending: %+v", got)
+	}
+}
+
+// What follows a write is recorded before the file is replaced (mamelet killed, or the power lost,
+// between the two would forget it otherwise), and put back as it was when the write fails.
+func TestWhatFollowsAWriteIsRecordedBeforeIt(t *testing.T) {
+	n := newNode(t)
+	f := grant("/etc/app.conf", "x\n", opA, 1)
+	f.Write.Restart = []string{"app"}
+	state := filepath.Join(n.root, "var/lib/mamelet")
+	seen := false
+	testHookOpenLeaf = func(p string) {
+		// The look after the write: the file is replaced, and its restart is recorded already.
+		if p != f.Path || !n.exists("/etc/app.conf") || n.read("/etc/app.conf") != "x\n" || seen {
+			return
+		}
+		seen = true
+		rec, err := loadPending(state)
+		if left, ok := rec.Pending[f.Path]; err != nil || !ok || left.SHA256 != f.Write.SHA256 || !slices.Equal(left.Restart, []string{"app"}) {
+			t.Errorf("when the file was replaced, the record was %+v %v", rec, err)
+		}
+	}
+	t.Cleanup(func() { testHookOpenLeaf = nil })
+	n.offer(Part{Files: []File{f}}, nil)
+	if r := result(t, n.round(), opA); r.Outcome != noderev.OutcomeDone || !seen {
+		t.Fatalf("result %+v, seen %v", r, seen)
+	}
+	// A write that fails (no room) leaves the record as it was.
+	r, _ := os.OpenRoot(t.TempDir())
+	defer r.Close()
+	if freeBytes(must(r.Open("."))) < 0 {
+		t.Skip("this system does not say how much is free")
+	}
+	old := DiskMargin
+	DiskMargin = 1 << 62
+	t.Cleanup(func() { DiskMargin = old })
+	g := grant("/etc/other.conf", "y\n", opB, 1)
+	g.Write.Restart = []string{"other"}
+	n.offer(Part{Files: []File{g}}, nil)
+	if r := result(t, n.round(), opB); r.Outcome != noderev.OutcomeFailed {
+		t.Fatalf("result %+v", r)
+	}
+	if rec, err := loadPending(state); err != nil || len(rec.Pending) != 0 {
+		t.Errorf("the record is %+v %v", rec, err)
+	}
+}

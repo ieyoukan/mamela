@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,45 +30,97 @@ const pendingName = "linux-pending.json"
 // pendingRecord is what is pending after each path's last write.
 type pendingRecord struct {
 	Pending map[string]Pending `json:"pending"`
+	// Lost: the record before this one could not be read, and was set aside (setAside): what was
+	// pending after the writes it named is not known. The next observation marks each file and
+	// artifact it finds as such (Pending.Unknown), and clears it.
+	Lost bool `json:"lost,omitzero"`
 }
 
-// loadPending reads the record (empty when there is none, or when it cannot be read: what is lost
-// then is only what the plan would have said).
-func loadPending(dir string) pendingRecord {
+// loadPending reads the record (empty when there is none). One that cannot be read is set aside
+// (pendingName + corruptSuffix, for a person to look at) and replaced by one that says it was lost:
+// whether the restarts after the writes it named finished is then not known, which is reported (the
+// plan asks to approve them again), never forgotten. The error says why it could not be read nor set
+// aside (nothing is then written over it).
+func loadPending(dir string) (pendingRecord, error) {
 	rec := pendingRecord{Pending: map[string]Pending{}}
 	if dir == "" {
-		return rec
+		return rec, nil
 	}
 	data, err := os.ReadFile(filepath.Join(dir, pendingName))
-	if err != nil || json.Unmarshal(data, &rec, json.RejectUnknownMembers(true)) != nil || rec.Pending == nil {
-		return pendingRecord{Pending: map[string]Pending{}}
+	if errors.Is(err, fs.ErrNotExist) {
+		return rec, nil
 	}
-	return rec
+	if err == nil {
+		err = json.Unmarshal(data, &rec, json.RejectUnknownMembers(true))
+	}
+	if err != nil {
+		lost := pendingRecord{Pending: map[string]Pending{}, Lost: true}
+		if aerr := setAside(dir, pendingName); aerr != nil {
+			return lost, fmt.Errorf("mamelet's record of what is pending after its writes (%s) cannot be read (%v), nor set aside: %w", pendingName, err, aerr)
+		}
+		return lost, savePending(dir, lost)
+	}
+	if rec.Pending == nil {
+		rec.Pending = map[string]Pending{}
+	}
+	return rec, nil
 }
 
-// setPending records what is pending after the write of p (nil: nothing).
-func setPending(dir, p string, left *Pending) error {
+// corruptSuffix is added to the name of a record of mamelet's state directory that cannot be read:
+// it is set aside for a person to look at, never written over (it may say what nothing else does).
+const corruptSuffix = ".corrupt"
+
+// setAside renames the record name of mamelet's state directory dir, which cannot be read, to
+// name + corruptSuffix (replacing one set aside before).
+func setAside(dir, name string) error {
+	return os.Rename(filepath.Join(dir, name), filepath.Join(dir, name+corruptSuffix))
+}
+
+// setAsideRecords are the records of dir that were set aside and are still there (sorted names).
+func setAsideRecords(dir string) []string {
+	var out []string
 	if dir == "" {
-		return errors.New("mamelet has no state directory")
+		return nil
 	}
-	rec := loadPending(dir)
+	for _, name := range []string{recordName, pendingName} {
+		if fi, err := os.Lstat(filepath.Join(dir, name+corruptSuffix)); err == nil && fi.Mode().IsRegular() {
+			out = append(out, name+corruptSuffix)
+		}
+	}
+	return out
+}
+
+// setPending records what is pending after the write of p (nil: nothing), and returns what was
+// recorded before (nil: nothing), so that a write that fails can put it back.
+func setPending(dir, p string, left *Pending) (*Pending, error) {
+	if dir == "" {
+		return nil, errors.New("mamelet has no state directory")
+	}
+	rec, err := loadPending(dir)
+	if err != nil {
+		return nil, err
+	}
 	cur, had := rec.Pending[p]
+	var before *Pending
+	if had {
+		before = &cur
+	}
 	switch {
 	case left == nil && !had:
-		return nil
+		return nil, nil
 	case left == nil:
 		delete(rec.Pending, p)
-	case had && cur.SHA256 == left.SHA256 && cur.Reload == left.Reload && slices.Equal(cur.Restart, left.Restart):
-		return nil
+	case had && cur.SHA256 == left.SHA256 && cur.Reload == left.Reload && cur.Unknown == left.Unknown && slices.Equal(cur.Restart, left.Restart):
+		return before, nil
 	default:
 		rec.Pending[p] = *left
 	}
-	return savePending(dir, rec)
+	return before, savePending(dir, rec)
 }
 
 // savePending replaces the record (and removes it when nothing is pending).
 func savePending(dir string, rec pendingRecord) error {
-	if len(rec.Pending) == 0 {
+	if len(rec.Pending) == 0 && !rec.Lost {
 		if err := os.Remove(filepath.Join(dir, pendingName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
@@ -90,7 +143,7 @@ func followUp(ctx context.Context, x *mamelet.Act, p, sum string, restart []stri
 		setPending(dir, p, nil)
 		return noderev.OutcomeDone, strings.Join(did, "; ")
 	}
-	if err := setPending(dir, p, &left); err != nil {
+	if _, err := setPending(dir, p, &left); err != nil {
 		did = append(did, "(what is left could not be recorded: "+err.Error()+")")
 	}
 	stop := func(what string, err error) (string, string) {
@@ -113,10 +166,27 @@ func followUp(ctx context.Context, x *mamelet.Act, p, sum string, restart []stri
 		did = append(did, "restarted "+svc+" if it ran")
 		left.Restart = left.Restart[1:]
 	}
-	if err := setPending(dir, p, nil); err != nil {
+	if _, err := setPending(dir, p, nil); err != nil {
 		did = append(did, "(the record of what was pending could not be cleared: "+err.Error()+")")
 	}
 	return noderev.OutcomeDone, strings.Join(did, "; ")
+}
+
+// pendingBefore records, before a write of p (whose sha256 will be sum) that restarts restart, what
+// will be left once it is written: mamelet killed (or the node's power lost) between the write and
+// followUp then leaves the restarts recorded, not forgotten (an entry of a sha256 the file does not
+// have yet is not reported: observePending). undo puts back what was recorded before, for a write
+// that failed before the file was replaced. Nothing is recorded for a write nothing follows.
+func pendingBefore(dir, p, sum string, restart []string) (undo func(), err error) {
+	left := Pending{SHA256: sum, Reload: IsUnitFile(p), Restart: slices.Clone(restart)}
+	if !left.Reload && len(left.Restart) == 0 {
+		return func() {}, nil
+	}
+	before, err := setPending(dir, p, &left)
+	if err != nil {
+		return func() {}, err
+	}
+	return func() { setPending(dir, p, before) }, nil
 }
 
 // pendingText is what is pending, for a person: "systemctl daemon-reload, restart of nginx, app".
@@ -136,7 +206,30 @@ func pendingText(left Pending) string {
 // names, and one whose file changed since (a new write follows, with its own restarts).
 func observePending(s *mamelet.System, o *Observed) {
 	dir := stateDir(s)
-	rec := loadPending(dir)
+	rec, err := loadPending(dir)
+	if err != nil {
+		// Neither read nor set aside: whether what follows each write finished is not known.
+		rec.Lost = true
+	}
+	if rec.Lost {
+		// What was pending was lost: each file and artifact found is marked as not known (while it is
+		// still the file it is now), for the plan to ask to approve what follows its write again.
+		mark := func(st *FileState) {
+			if _, ok := rec.Pending[st.Path]; !ok && st.Error == "" && st.Unsafe == "" && st.Exists && st.SHA256 != "" {
+				rec.Pending[st.Path] = Pending{SHA256: st.SHA256, Reload: IsUnitFile(st.Path), Unknown: true}
+			}
+		}
+		for i := range o.Files {
+			mark(&o.Files[i])
+		}
+		for i := range o.Artifacts {
+			mark(&o.Artifacts[i].FileState)
+		}
+		if err == nil {
+			rec.Lost = false
+			savePending(dir, rec)
+		}
+	}
 	if len(rec.Pending) == 0 {
 		return
 	}
@@ -161,7 +254,7 @@ func observePending(s *mamelet.System, o *Observed) {
 	for i := range o.Artifacts {
 		visit(&o.Artifacts[i].FileState)
 	}
-	if len(keep) != len(rec.Pending) {
+	if len(keep) != len(rec.Pending) && err == nil {
 		savePending(dir, pendingRecord{Pending: keep})
 	}
 }

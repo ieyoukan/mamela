@@ -164,7 +164,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0156 | `NodeArtifact` の owner または group が、そのノードにない（Blocked）。それを作るパッケージを宣言するか、`NodeUser` で宣言するか、ある owner（root など）にする |
 | MAM-PLAN-0157 | サービスの起動が、そのサービスを `restart` に挙げた `NodeArtifact` が置かれるのを待つ（バイナリを置いてから起動する） |
 | MAM-PLAN-0158 | `NodeArtifact` の owner または group を、同じ宣言の別のリソース（NodeUser）が作るので、それを待つ。または、同じノードに宣言した `NodePackage` がまだ入っておらず、それが作るかもしれないので待つ（MAM-PLAN-0143 と同じ） |
-| MAM-PLAN-0159 | `NodeArtifact` の path にあるファイルは、Mamela が置いたものではない（ほかの方法で置いた、または置いたあとで変わった。mamelet の記録の sha256 と違う）。承認すると、ダウンロードしたもので置き換える。承認する前に、ノードに何があるかを確かめる（change の注記） |
+| MAM-PLAN-0159 | `NodeArtifact` の path にあるファイルは、Mamela が置いたものではない（ほかの方法で置いた、または置いたあとで変わった。mamelet の記録の sha256 と違う）。承認すると、ダウンロードしたもので置き換える。承認する前に、ノードに何があるかを確かめる（change の注記）。mamelet が置いたものの記録を読めなかったとき（壊れたとき）は、それを状態ディレクトリに `linux-artifacts.json.corrupt` として除けておき（新しい記録で上書きしない）、除けたものがある間はそれを報告し、注記もそう言う（Mamela が前に置いたものかもしれない） |
 | MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
 | MAM-PLAN-0130 | ノードの mamelet が、Control Plane の revision を拒否している（Blocked）。理由は mamelet の報告のとおり。未知のメンバー（mamelet が Control Plane より古い。[mamelet の更新](mamelet-update.md)の限界）、serial の巻き戻し（Control Plane の DB を古い写しから戻した。最新の DB に戻す）、時計のずれ（ノードの時計を直す）、署名や宛先の不一致（ノードの設定）、revision の内容が不正（宣言の名前や値）。許可は revision で届くので、拒否されているあいだは、承認しても何も届かない。同じノードで同期している（in sync）ものは、そのまま。Control Plane のログにも、拒否の始まりと終わりが出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
@@ -179,7 +179,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-PLAN-0215 | mamelet が `NodeAptRepo` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet がソースの値を断ったときもこれ）。ノードの APT のソースのファイル（`sources.list`、`sources.list.d` の `.list`・`.sources`）に mamelet が読めないもの（行き先のないリンク、通常のファイルでないもの、1 MiB を超えるもの）があるときもこれ。apt はそれを読むので、mamelet は同じ URI と suite を持つかを確かめられず、判断しない（fail closed）。読める通常のファイルにするか、消す |
 | MAM-PLAN-0216 | mamelet は、その path に `NodeArtifact` を置かない（Blocked）。path がシンボリックリンク・ディレクトリ・デバイス、または上のディレクトリがリンクかディレクトリでない。本当の path を宣言するか、手で置き換える |
 | MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ）。mamelet の linux の報告が 512 KiB を超えるときは、詳しいことを除いて、それぞれに理由だけを書くので、これになる |
-| MAM-PLAN-0218 | `NodeFile`・`NodeArtifact` のファイルは宣言どおりだが、書いたあとの `daemon-reload` か `restart` のサービスの再起動が終わっていない（失敗した、または途中で mamelet が止まった）。mamelet は、書いたファイルのあとに残っていることを状態ディレクトリに記録し、ファイルが書いたときのままの間、報告する。plan は in sync とせず、もう一度承認を求める（承認すると、mamelet はファイルを書き直さず、残りを行う）。前の試みの結果に理由がある |
+| MAM-PLAN-0218 | `NodeFile`・`NodeArtifact` のファイルは宣言どおりだが、書いたあとの `daemon-reload` か `restart` のサービスの再起動が終わっていない（失敗した、または途中で mamelet が止まった）。mamelet は、書いたファイルのあとに残っていることを状態ディレクトリに記録し、ファイルが書いたときのままの間、報告する。plan は in sync とせず、もう一度承認を求める（承認すると、mamelet はファイルを書き直さず、残りを行う）。前の試みの結果に理由がある。mamelet がこの記録を読めなかったとき（壊れたとき）は、それを状態ディレクトリに `linux-pending.json.corrupt` として除けておき、そのとき見つけたファイルごとに「終わったか分からない」と報告する。plan は、unit なら `daemon-reload` と、宣言した `restart` を、もう一度承認するよう求める（除けたファイルは、見たあとで手で消す） |
 | MAM-PLAN-0219 | 予約（linux 拡張の観測の問題） |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306 が詳しい） |

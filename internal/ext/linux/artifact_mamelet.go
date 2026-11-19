@@ -45,7 +45,11 @@ func stateDir(s *mamelet.System) string {
 	return s.Path(s.StateDir)
 }
 
-// loadRecord reads the record (empty when there is none yet).
+// loadRecord reads the record (empty when there is none yet). One that cannot be read is set aside
+// (recordName + corruptSuffix, for a person to look at: the report says so) and taken as empty: the
+// artifacts mamelet installed are then reported as ones it did not install, until they are installed
+// again, and the record is never written over with only what is installed next. The error says why
+// it could not be read nor set aside (nothing may then be written over it).
 func loadRecord(dir string) (artifactRecord, error) {
 	rec := artifactRecord{Artifacts: map[string]installed{}}
 	if dir == "" {
@@ -59,7 +63,11 @@ func loadRecord(dir string) (artifactRecord, error) {
 		err = json.Unmarshal(data, &rec, json.RejectUnknownMembers(true))
 	}
 	if err != nil {
-		return artifactRecord{Artifacts: map[string]installed{}}, fmt.Errorf("the record of the artifacts mamelet installed (%s): %w", recordName, err)
+		empty := artifactRecord{Artifacts: map[string]installed{}}
+		if aerr := setAside(dir, recordName); aerr != nil {
+			return empty, fmt.Errorf("the record of the artifacts mamelet installed (%s) cannot be read (%v), nor set aside: %w", recordName, err, aerr)
+		}
+		return empty, nil
 	}
 	if rec.Artifacts == nil {
 		rec.Artifacts = map[string]installed{}
@@ -121,8 +129,9 @@ func observeArtifacts(_ context.Context, s *mamelet.System, p Part, o *Observed)
 	}
 	defer r.Close()
 	acc := readAccounts(r)
-	// A record that cannot be read is taken as empty: every artifact is then reported as one mamelet
-	// did not install, and the plan asks to install it again (which writes a new record).
+	// A record that cannot be read is set aside and taken as empty: every artifact is then reported as
+	// one mamelet did not install (and the report says the record was set aside: SetAside), and the
+	// plan asks to install it again (which writes a new record).
 	rec, _ := loadRecord(stateDir(s))
 	for _, a := range p.Artifacts {
 		st := ArtifactState{FileState: FileState{Path: a.Path}}
@@ -231,8 +240,12 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 		return refused("mamelet does not install " + p + ": " + got.Unsafe + " (mamelet never follows a symbolic link)")
 	}
 	rec, recErr := loadRecord(dir)
+	if recErr != nil {
+		// What is installed could not be recorded without losing what the record says of the others.
+		return noderev.OutcomeFailed, recErr.Error() + "; nothing was installed (move it away by hand, then apply again)", false
+	}
 	prev, recorded := rec.Artifacts[p]
-	same := recErr == nil && recorded && prev.SHA256 == in.SHA256 && prev.Extract == in.Extract &&
+	same := recorded && prev.SHA256 == in.SHA256 && prev.Extract == in.Extract &&
 		got.Exists && !got.Large && got.SHA256 == prev.Installed
 	// Compare and swap: the path is as the approved plan saw it, or has the approved installation
 	// already (an attempt that was interrupted, or another apply).
@@ -261,7 +274,12 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 		if err != nil {
 			return noderev.OutcomeFailed, "open " + p + ": " + err.Error(), ran
 		}
-		err = writeFrom(r, p, src, fi.Size(), prev.Installed, in.Mode, uid, gid, dirUID, dirGID)
+		undo, err := pendingBefore(dir, p, prev.Installed, in.Restart)
+		if err == nil {
+			if err = writeFrom(r, p, src, fi.Size(), prev.Installed, in.Mode, uid, gid, dirUID, dirGID); err != nil {
+				undo()
+			}
+		}
 		src.Close()
 		if err != nil {
 			return noderev.OutcomeFailed, "install " + p + " again: " + err.Error(), ran
@@ -283,7 +301,15 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 			if err != nil {
 				return err
 			}
-			return writeFrom(r, p, src, fi.Size(), sum, in.Mode, uid, gid, dirUID, dirGID)
+			undo, err := pendingBefore(dir, p, sum, in.Restart)
+			if err != nil {
+				return err
+			}
+			if err := writeFrom(r, p, src, fi.Size(), sum, in.Mode, uid, gid, dirUID, dirGID); err != nil {
+				undo()
+				return err
+			}
+			return nil
 		})
 		if err != nil {
 			var no *Refusal
@@ -308,7 +334,7 @@ func installArtifact(ctx context.Context, x *mamelet.Act, p string, in Install) 
 	// The record says what is at p now, and where it came from (the approved URL: one of the same
 	// sha256 is the same download).
 	now := installed{Source: Source{URL: in.URL, SHA256: in.SHA256, Extract: in.Extract}, Installed: sum}
-	if recErr != nil || !recorded || prev != now {
+	if !recorded || prev != now {
 		rec.Artifacts[p] = now
 		if err := saveRecord(dir, rec); err != nil {
 			return noderev.OutcomeFailed, strings.Join(did, "; ") + "; but the record of it could not be written: " + err.Error(), ran

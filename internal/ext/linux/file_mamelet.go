@@ -127,8 +127,15 @@ func writeFile(ctx context.Context, x *mamelet.Act, p string, w Write) (outcome,
 		if id, ok := a.groups["root"]; ok {
 			dirGID = id
 		}
+		// What follows the write is recorded before it (mamelet killed between the two would forget it
+		// otherwise), and put back as it was if the file is not replaced.
+		undo, err := pendingBefore(stateDir(x.System), p, w.SHA256, w.Restart)
+		if err != nil {
+			return noderev.OutcomeFailed, "record what follows the write of " + p + ": " + err.Error() + "; nothing was written", false
+		}
 		ran = true
 		if err := writeTo(r, p, w, uid, gid, dirUID, dirGID); err != nil {
+			undo()
 			return noderev.OutcomeFailed, "write " + p + ": " + err.Error(), ran
 		}
 		after := inspect(r, p, a)

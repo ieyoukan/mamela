@@ -171,6 +171,12 @@ func TestGoldenFilePlans(t *testing.T) {
 			f.Pending = &Pending{SHA256: ContentSHA256(appConf), Restart: []string{"app"}}
 			w.observed = reported(f)
 		}), pol},
+		// mamelet lost its record of what follows its writes: whether the restart finished is not known.
+		{"restart-unknown", []string{appFile, appService}, with(now, func(w *world) {
+			f := present("/etc/app/app.conf", appConf)
+			f.Pending = &Pending{SHA256: ContentSHA256(appConf), Unknown: true}
+			w.observed = reported(f)
+		}), pol},
 		// A directory above the file that another user can change: a warning on the write.
 		{"exposed", []string{appFile, appService}, with(now, func(w *world) {
 			f := present("/etc/app/app.conf", oldConf)
