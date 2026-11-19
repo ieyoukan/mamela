@@ -179,17 +179,22 @@ func TestMakeDirRefusesWhatAppeared(t *testing.T) {
 	dir := t.TempDir()
 	r, _ := os.OpenRoot(dir)
 	defer r.Close()
+	top, err := treeDir(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer top.Close()
 	os.Mkdir(filepath.Join(dir, "there"), 0o777)
 	os.Symlink("/etc", filepath.Join(dir, "link"))
 	for _, name := range []string{"there", "link"} {
-		if err := makeDir(r, name, "/"+name, os.Getuid(), os.Getgid()); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
+		if err := makeDir(top, name, "/"+name, os.Getuid(), os.Getgid()); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if fi, _ := os.Stat(filepath.Join(dir, "there")); fi.Mode().Perm() != 0o777&^umask() {
 		t.Errorf("the directory that was there became %v", fi.Mode())
 	}
-	if err := makeDir(r, "new", "/new", os.Getuid(), os.Getgid()); err != nil {
+	if err := makeDir(top, "new", "/new", os.Getuid(), os.Getgid()); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Lstat(filepath.Join(dir, "new")); !fi.IsDir() || fi.Mode().Perm() != 0o755 {
@@ -511,7 +516,12 @@ func runtimeStamps() bool {
 	f.Close()
 	r, _ := os.OpenRoot(filepath.Dir(f.Name()))
 	defer r.Close()
-	g, _, s, err := openLeaf(r, filepath.Base(f.Name()), f.Name())
+	d, err := treeDir(r)
+	if err != nil {
+		return false
+	}
+	defer d.Close()
+	g, _, s, err := d.openLeaf(filepath.Base(f.Name()), f.Name())
 	if err == nil {
 		g.Close()
 	}

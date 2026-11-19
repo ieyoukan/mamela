@@ -454,20 +454,20 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 		return false, err
 	}
 	defer h.Close()
-	hfi, err := h.Stat(".")
+	hfi, err := h.stat()
 	if err != nil {
 		return false, err
 	}
 	if u, _, ok := ownerOf(hfi); ok && u != uid {
 		return false, &Refusal{Reason: fmt.Sprintf("the home %s is %s's (uid %d), not %s's: mamelet never writes into another's home", home, a.userName(u), u, name)}
 	}
-	if _, err := h.Lstat(".ssh"); errors.Is(err, fs.ErrNotExist) {
-		if err = h.Mkdir(".ssh", 0o700); err != nil {
+	if _, err := h.lstat(".ssh"); errors.Is(err, fs.ErrNotExist) {
+		if err = h.mkdir(".ssh", 0o700); err != nil {
 			return false, err
 		}
 		wrote = true
 	}
-	dir, err := openSubdir(h, ".ssh", home+"/.ssh")
+	dir, err := h.subdir(".ssh")
 	if err != nil {
 		var unsafe *unsafeError
 		if errors.As(err, &unsafe) {
@@ -478,12 +478,7 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 	defer dir.Close()
 	// ~/.ssh as sshd wants it, changed through the directory opened (not its name, which the user may
 	// have replaced meanwhile).
-	d, err := dir.Open(".")
-	if err != nil {
-		return wrote, err
-	}
-	defer d.Close()
-	dfi, err := d.Stat()
+	dfi, err := dir.stat()
 	if err != nil {
 		return wrote, err
 	}
@@ -492,18 +487,18 @@ func writeKeys(r *os.Root, a accounts, name, home, content string, uid, gid int)
 		return wrote, &Refusal{Reason: fmt.Sprintf("%s/.ssh is %s's (uid %d), not %s's: mamelet never takes another's ~/.ssh", home, a.userName(u), u, name)}
 	}
 	if !ok || u != uid || g != gid {
-		if err := d.Chown(uid, gid); err != nil {
+		if err := dir.chown(uid, gid); err != nil {
 			return wrote, err
 		}
 		wrote = true
 	}
 	if modeString(dfi.Mode()) != sshMode {
-		if err := d.Chmod(0o700); err != nil {
+		if err := dir.chmod(0o700); err != nil {
 			return wrote, err
 		}
 		wrote = true
 	}
-	if f, fi, _, err := openLeaf(dir, "authorized_keys", home+"/.ssh/authorized_keys"); err == nil {
+	if f, fi, _, err := dir.openLeaf("authorized_keys", home+"/.ssh/authorized_keys"); err == nil {
 		same := false
 		if u, g, ok := ownerOf(fi); ok && u == uid && g == gid && modeString(fi.Mode()) == keysMode && fi.Size() == int64(len(content)) {
 			b, err := io.ReadAll(io.LimitReader(f, MaxContent+1))
