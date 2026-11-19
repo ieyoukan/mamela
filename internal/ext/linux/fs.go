@@ -264,6 +264,39 @@ func (c *hashCache) put(key string, s fileStamp, sum string, at time.Time) {
 	c.m[key] = cachedSum{s, sum}
 }
 
+// testIDs is, in tests only, a swap of the test's own user and group (whose ids the files it makes
+// have) with a user and a group of the node the test stands up (fixed ids of its /etc/passwd): a
+// file of the test's is seen as theirs (ownerOf), and a chown to them gives it the test's own, which
+// a test that does not run as root can give. So a test sees the same node whoever runs it, root
+// included. Its zero value, mamelet's, changes nothing.
+var testIDs idSwap
+
+// idSwap swaps the user id realUID with uid and the group id realGID with gid, both ways (an
+// involution), when on.
+type idSwap struct {
+	on                         bool
+	realUID, realGID, uid, gid int
+}
+
+func (s idSwap) swap(uid, gid int) (int, int) {
+	if !s.on {
+		return uid, gid
+	}
+	switch uid {
+	case s.realUID:
+		uid = s.uid
+	case s.uid:
+		uid = s.realUID
+	}
+	switch gid {
+	case s.realGID:
+		gid = s.gid
+	case s.gid:
+		gid = s.realGID
+	}
+	return uid, gid
+}
+
 // rootIDs are the ids of root and of its group on the node (0 when the files do not name them).
 func (a accounts) rootIDs() (uid, gid int) {
 	return a.users["root"], a.groups["root"]
@@ -484,7 +517,7 @@ func replaceIn(dir *dirFD, where, base string, src io.Reader, size int64, sum st
 	if err := f.Sync(); err != nil {
 		return err
 	}
-	if err := f.Chown(uid, gid); err != nil {
+	if err := f.Chown(testIDs.swap(uid, gid)); err != nil {
 		return err
 	}
 	if err := f.Chmod(mode); err != nil {

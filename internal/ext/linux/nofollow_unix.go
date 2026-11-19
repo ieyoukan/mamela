@@ -152,6 +152,7 @@ func (d *dirFD) create(name string, perm fs.FileMode) (*os.File, error) {
 }
 
 func (d *dirFD) chown(uid, gid int) error {
+	uid, gid = testIDs.swap(uid, gid)
 	if err := ignoringEINTR(func() error { return unix.Fchown(d.fd, uid, gid) }); err != nil {
 		return &fs.PathError{Op: "chown", Path: d.path, Err: err}
 	}

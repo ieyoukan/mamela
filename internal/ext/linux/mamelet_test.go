@@ -62,11 +62,28 @@ type mnode struct {
 	serial int64
 }
 
+// The ids of the users and groups the tests' nodes have: root, and app (who the test's own files stand
+// for in the tests of users).
+const (
+	rootID = 0
+	appID  = 1000
+)
+
+// actAs makes the test's own user and group (whose every file the test makes is) uid and gid of the
+// node (testIDs), whoever runs the test: the test sees the same node as root and as another user.
+func actAs(t *testing.T, uid, gid int) {
+	t.Helper()
+	testIDs = idSwap{on: true, realUID: os.Getuid(), realGID: os.Getgid(), uid: uid, gid: gid}
+	t.Cleanup(func() { testIDs = idSwap{} })
+}
+
+// newNode is a mamelet on a node whose files are root's (the test's own, actAs).
 func newNode(t *testing.T) *mnode {
 	t.Helper()
 	root := t.TempDir()
-	write(t, filepath.Join(root, "etc/passwd"), fmt.Sprintf("root:x:%d:%d:root:/root:/bin/bash\n", os.Getuid(), os.Getgid()))
-	write(t, filepath.Join(root, "etc/group"), fmt.Sprintf("root:x:%d:\n", os.Getgid()))
+	actAs(t, rootID, rootID)
+	write(t, filepath.Join(root, "etc/passwd"), "root:x:0:0:root:/root:/bin/bash\n")
+	write(t, filepath.Join(root, "etc/group"), "root:x:0:\n")
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	n := &mnode{t: t, root: root, key: key, cp: &memCP{}, sys: &fakeSystemd{}}
 	n.a = &mamelet.Agent{
@@ -311,7 +328,9 @@ func TestMameletRetriesWithANewAttempt(t *testing.T) {
 	if o := observedOf(t, rep); o.Users["app"] || !o.Users["root"] {
 		t.Errorf("accounts %v", o.Users)
 	}
-	write(t, filepath.Join(n.root, "etc/passwd"), fmt.Sprintf("root:x:%d:%d::/root:/bin/sh\napp:x:%d:%d::/:/bin/false\n", 99999, os.Getgid(), os.Getuid(), os.Getgid()))
+	// app is made; the test's files are app's now (and their group root's).
+	write(t, filepath.Join(n.root, "etc/passwd"), fmt.Sprintf("root:x:0:0::/root:/bin/sh\napp:x:%d:0::/:/bin/false\n", appID))
+	actAs(t, appID, rootID)
 	rep = n.round()
 	if r := result(t, rep, opA); r.Outcome != noderev.OutcomeRefused {
 		t.Errorf("the same attempt ran again: %+v", r)

@@ -26,20 +26,16 @@ import (
 	"github.com/ieyoukan/mamela/internal/policy"
 )
 
-// notRoot skips a test that tells users apart by the owner of the test's files: run as root, they
-// would all be root's.
-func notRoot(t *testing.T) {
-	t.Helper()
-	if os.Getuid() == 0 {
-		t.Skip("needs to run as a user other than root (the test's own user stands for another user of the node)")
-	}
-}
+// bobID is the id of bob, another user of the node, and of his group.
+const bobID = 1001
 
-// addBob puts bob on the node with the test's own ids, and his home /home/bob with his key.
+// addBob puts bob on the node, and his home /home/bob with his key: the test's own files are his
+// (actAs), whoever runs the test.
 func addBob(t *testing.T, n *mnode) {
 	t.Helper()
-	appendTo(t, n, "etc/passwd", fmt.Sprintf("bob:x:%d:%d::/home/bob:/bin/bash\n", os.Getuid(), os.Getgid()))
-	appendTo(t, n, "etc/group", fmt.Sprintf("bob:x:%d:\n", os.Getgid()))
+	appendTo(t, n, "etc/passwd", fmt.Sprintf("bob:x:%d:%d::/home/bob:/bin/bash\n", bobID, bobID))
+	appendTo(t, n, "etc/group", fmt.Sprintf("bob:x:%d:\n", bobID))
+	actAs(t, bobID, bobID)
 	write(t, filepath.Join(n.root, "home/bob/.ssh/authorized_keys"), keyBob+"\n")
 }
 
@@ -47,7 +43,6 @@ func addBob(t *testing.T, n *mnode) {
 // and mamelet would then have chowned bob's ~/.ssh and replaced his keys); the report says whose the
 // home is, for the plan to block.
 func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
-	notRoot(t)
 	n, f := newUserNode(t)
 	addBob(t, n)
 	keys := KeysContent([]string{keyAlice})
@@ -77,7 +72,6 @@ func TestMameletNeverTakesAnotherUsersHome(t *testing.T) {
 // useradd's default) is there already (bob's): mamelet does not run useradd, which would take it as it
 // is. A grant that makes a home without naming it is refused whole.
 func TestMameletRefusesAHomeUseraddWouldTakeAsItIs(t *testing.T) {
-	notRoot(t)
 	n, f := newUserNode(t)
 	addBob(t, n)
 	write(t, filepath.Join(n.root, "home/svc/.ssh/authorized_keys"), keyBob+"\n")
@@ -105,8 +99,9 @@ func TestMameletRefusesAHomeUseraddWouldTakeAsItIs(t *testing.T) {
 // rootIsTheTestsUser makes root of the node the test's own user (whose the test's directories are).
 func rootIsTheTestsUser(t *testing.T, n *mnode) {
 	t.Helper()
-	write(t, filepath.Join(n.root, "etc/passwd"), fmt.Sprintf("root:x:%d:%d:root:/root:/bin/bash\n", os.Getuid(), os.Getgid()))
-	write(t, filepath.Join(n.root, "etc/group"), fmt.Sprintf("root:x:%d:\ndocker:x:998:\nwww-data:x:33:\n", os.Getgid()))
+	write(t, filepath.Join(n.root, "etc/passwd"), "root:x:0:0:root:/root:/bin/bash\n")
+	write(t, filepath.Join(n.root, "etc/group"), "root:x:0:\ndocker:x:998:\nwww-data:x:33:\n")
+	actAs(t, rootID, rootID)
 }
 
 // The home would be made below a directory a user other than root can change (everyone may write
@@ -163,7 +158,6 @@ func TestMameletDoesNotMakeAHomeBelowADirectoryOthersCanChange(t *testing.T) {
 // H1: a user whose home (in /etc/passwd) is another user's: its keys are never written there, and the
 // report says so.
 func TestMameletDoesNotWriteKeysIntoAnotherUsersHome(t *testing.T) {
-	notRoot(t)
 	n, f := newUserNode(t)
 	addBob(t, n)
 	appendTo(t, n, "etc/passwd", "app:x:5000:5000::/home/bob:/bin/bash\n")
@@ -249,17 +243,18 @@ func TestMakeDirRefusesWhatAppeared(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer top.Close()
+	actAs(t, rootID, rootID)
 	os.Mkdir(filepath.Join(dir, "there"), 0o777)
 	os.Symlink("/etc", filepath.Join(dir, "link"))
 	for _, name := range []string{"there", "link"} {
-		if err := makeDir(top, name, "/"+name, os.Getuid(), os.Getgid()); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
+		if err := makeDir(top, name, "/"+name, rootID, rootID); err == nil || !strings.Contains(err.Error(), "appeared while mamelet made it") {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
 	if fi, _ := os.Stat(filepath.Join(dir, "there")); fi.Mode().Perm() != 0o777&^umask() {
 		t.Errorf("the directory that was there became %v", fi.Mode())
 	}
-	if err := makeDir(top, "new", "/new", os.Getuid(), os.Getgid()); err != nil {
+	if err := makeDir(top, "new", "/new", rootID, rootID); err != nil {
 		t.Fatal(err)
 	}
 	if fi, _ := os.Lstat(filepath.Join(dir, "new")); !fi.IsDir() || fi.Mode().Perm() != 0o755 {
@@ -507,8 +502,8 @@ func TestReportStaysBoundedForAdversarialKeys(t *testing.T) {
 	n, _ := newUserNode(t)
 	lines := (MaxContent - 100) / 81
 	for _, u := range []string{"app", "deploy"} {
-		appendTo(t, n, "etc/passwd", fmt.Sprintf("%s:x:%d:%d::/home/%s:/bin/bash\n", u, os.Getuid(), os.Getgid(), u))
-		appendTo(t, n, "etc/group", fmt.Sprintf("%s:x:%d:\n", u, os.Getgid()))
+		appendTo(t, n, "etc/passwd", fmt.Sprintf("%s:x:%d:%d::/home/%s:/bin/bash\n", u, appID, appID, u))
+		appendTo(t, n, "etc/group", fmt.Sprintf("%s:x:%d:\n", u, appID))
 		write(t, filepath.Join(n.root, "home", u, ".ssh/authorized_keys"), randomKeys(t, lines))
 	}
 	n.offer(Part{Users: []User{{Name: "app", Shells: []string{DefaultShell}, Keys: true}, {Name: "deploy", Shells: []string{DefaultShell}, Keys: true}}}, nil)
