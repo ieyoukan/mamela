@@ -1,0 +1,13 @@
+Plan sha256:196bdae2c372
+  revision  sha256:ca5b33fa4073
+  observed  2026-11-17T12:01:00Z (snapshot sha256:50b0fdb5311b)
+  policy    sha256:b2ad900beffb
+
+! NodePackage web/docker-ce  [blocked]
+    MAM-PLAN-0202 the agent on web cannot observe docker-ce: simulate: /usr/bin/apt-get -s install docker-ce: exit 100: E: Unable to locate package docker-ce
+      hint: fix the cause on the node (for example apt sources), then plan again
+= TestVM web  [in sync]  via test
+= NodeAptRepo web/apt-repo/docker  [in sync]
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json/v2"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -120,6 +121,18 @@ func TestGoldenAptRepoPlans(t *testing.T) {
 		{"apt-unread-package", []string{dockerRepo, caCertificates}, with(now, func(w *world) {
 			w.observed = reported(reading(inSync, unread, nil))
 		}), caSimulated, policy.Default},
+		// The same after an apt-get update that failed once: docker-ce, which apt cannot find yet, waits
+		// for the source to be read (not blocked: the plan that runs the update again is applied by a push).
+		{"apt-unread-package-not-found", []string{dockerRepo, dockerCE}, with(now, func(w *world) {
+			w.observed = reported(reading(inSync, unread, nil))
+		}), locate, policy.Default},
+		// Every source read, and apt still cannot find the package: blocked (MAM-PLAN-0202).
+		{"apt-package-not-found", []string{dockerRepo, dockerCE}, with(now, func(w *world) { w.observed = reported(inSync) }), locate, policy.Default},
+		// A source to be added does not hold ca-certificates: mamelet downloads the key with the node's
+		// certificates.
+		{"apt-create-ca-certificates", []string{dockerRepo, caCertificates}, with(now, func(w *world) {
+			w.observed = reported(reading(dockerState(FileState{}, missing, missing), unread, nil))
+		}), caSimulated, policy.Default},
 	} {
 		t.Run(s.name, func(t *testing.T) {
 			g, err := decodeGraph(s.resources...)
@@ -163,13 +176,17 @@ func TestGoldenAptRepoPlans(t *testing.T) {
 					}
 				case graph.KindNodePackage:
 					// A package waits while its node's source is to be written or waits itself; a source that
-					// is blocked, or only to be read again (apt-get update), holds nothing.
+					// is blocked holds nothing, nor one only to be read again (apt-get update) but a package apt
+					// cannot find; and none holds ca-certificates.
 					repo := slices.IndexFunc(p.Changes, func(c plan.Change) bool { return c.Kind == KindAptRepo && c.Status != plan.StatusRetained })
 					if repo < 0 {
 						continue
 					}
 					r := p.Changes[repo]
-					holds := r.Status == plan.StatusWaiting || r.Status == plan.StatusChange && (r.Note == nil || r.Note.Code != codeAptRepoUnread)
+					unread := r.Status == plan.StatusChange && r.Note != nil && r.Note.Code == codeAptRepoUnread
+					holds := r.Status == plan.StatusWaiting || r.Status == plan.StatusChange && !unread ||
+						unread && aptNotFound(snap.Packages[c.Name].Error) != ""
+					holds = holds && !gateFree[strings.TrimPrefix(c.Name, "web/")]
 					held := c.Status == plan.StatusWaiting && c.Note.Code == codeAptRepoPackageGate
 					if holds != held {
 						t.Errorf("a package (held %v) by a source %s %+v: %+v", held, r.Status, r.Note, c)
