@@ -28,7 +28,11 @@ type Params struct {
 	Network       graph.Network // DHCP or a static address (validated by the graph)
 }
 
-// unit is mamelet's systemd service. mamelet needs root for apt and systemctl.
+// unit is mamelet's systemd service. mamelet needs root for apt and systemctl. A stop sends SIGTERM
+// to mamelet alone (KillMode=mixed): a useradd or usermod it runs is not killed with it (half-changed
+// /etc/passwd and /etc/shadow, locks left behind), and mamelet waits for it (at most the linux
+// extension's AccountsTimeout, 2 minutes), within TimeoutStopSec. What is left of its group is killed
+// once mamelet ends. A node made before has the old unit: docs/mamelet-update.md says how to add this.
 const unit = `[Unit]
 Description=Mamela node agent (mamelet)
 After=network-online.target
@@ -38,6 +42,8 @@ Wants=network-online.target
 ExecStart=/usr/local/sbin/mamelet -config /etc/mamelet/config.json
 Restart=always
 RestartSec=10
+KillMode=mixed
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target
