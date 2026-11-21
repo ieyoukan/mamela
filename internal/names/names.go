@@ -14,6 +14,8 @@ import "regexp"
 var (
 	// A node name is a DNS label: it becomes a hostname.
 	nodeRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+	// The name of a resource of a provider (a machine's is a node name as well).
+	resourceRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 	// Debian package names (Debian Policy 5.6.1: at least two characters), at most 128.
 	packageRe = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]{1,127}$`)
 	// A systemd unit name without the ".service" suffix: no path separators, no whitespace, no
@@ -34,6 +36,9 @@ const MaxManifest = 64 << 10
 
 // Node reports whether s can be a node's name (and so its hostname).
 func Node(s string) bool { return nodeRe.MatchString(s) }
+
+// Resource reports whether s can be the name of a resource of a provider (every node name can).
+func Resource(s string) bool { return resourceRe.MatchString(s) }
 
 // Package reports whether s can be a Debian package name (and is not an option).
 func Package(s string) bool { return packageRe.MatchString(s) }

@@ -53,9 +53,11 @@ type planOptions struct {
 	Tools         func() (tools, error)
 }
 
-// currentPolicy is the policy in force: the policy file (the built-in policy when there is none), and
-// this Control Plane's own host as a protected node (ADR 0003). A plan is made under it and stored
-// with it; apply names it the same way and refuses a plan made under another (MAM-REC-0010).
+// currentPolicy is the policy in force: the policy file (the built-in policy when there is none),
+// this Control Plane's own host as a protected node (ADR 0003), and the site's observe_only added to
+// the policy's observeOnly (MAM-POL-0312). A plan is made under it and stored with it; apply names it
+// the same way and refuses a plan made under another (MAM-REC-0010): lifting observe-only needs a
+// new plan, and so does adding to it.
 func currentPolicy(site *sitedef.Site, file string) (policy.Policy, error) {
 	pol := policy.Default
 	if file != "" {
@@ -69,6 +71,9 @@ func currentPolicy(site *sitedef.Site, file string) (policy.Policy, error) {
 	}
 	if site != nil && site.ControlPlane.Host != "" {
 		pol.ProtectedNodes = append(slices.Clone(pol.ProtectedNodes), site.ControlPlane.Host)
+	}
+	if site != nil && len(site.ObserveOnly) > 0 {
+		pol.ObserveOnly = policy.NormalNames(slices.Concat(pol.ObserveOnly, site.ObserveOnly))
 	}
 	return pol, nil
 }
@@ -203,6 +208,7 @@ func planDeclaration(ctx context.Context, st *store.Store, dir string, o planOpt
 type approved struct {
 	Approval store.Approval
 	Denied   int      // changes of the plan that will not run, approved or not
+	Held     int      // of them, those held by observe-only (MAM-POL-0312)
 	Removed  []string // the objects the plan deletes
 }
 
@@ -219,6 +225,9 @@ func approvePlan(ctx context.Context, st *store.Store, digest, by string, ttl ti
 	for _, c := range p.Changes {
 		if c.Verdict == policy.Denied {
 			out.Denied++
+		}
+		if c.Held() {
+			out.Held++
 		}
 		if c.Deletes() {
 			out.Removed = append(out.Removed, c.Deleted()...)

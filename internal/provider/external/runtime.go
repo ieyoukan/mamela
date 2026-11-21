@@ -132,6 +132,9 @@ type Creations interface {
 	CreationStack(ctx context.Context, provider, resource string) (string, error)
 	CreationOrder(ctx context.Context, provider string) (map[string]int, error)
 	RecordCreation(ctx context.Context, stack, provider, resource string, ids map[string]string, planDigest, operationID string) error
+	// Adopted are the IDs of the objects Mamela adopted for the resource (mamela act), which it did
+	// not create: a plan never deletes one (MAM-PLAN-0308).
+	Adopted(ctx context.Context, provider, resource string) ([]map[string]string, error)
 }
 
 // SetClaims sets, by provider, the IDs other plans are to create: observing treats them as taken.
@@ -487,29 +490,38 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 		if len(deps) == 0 {
 			deps = nil
 		}
-		changes, err := s.Diff(ctx, desired, observedOf[name], deps)
+		changes, previews, err := s.Diff(ctx, desired, observedOf[name], deps)
 		if err != nil {
 			return nil, fmt.Errorf("provider %s: diff: %w", name, err)
 		}
+		// What an object to adopt would need once adopted is a preview (shown, never approved or
+		// sent), checked as a change is; only such an object has previews, and it has no change.
 		seen := map[string]bool{}
+		for _, c := range previews {
+			p, ok := out[c.Resource]
+			if !ok || !p.Declared || p.Provider != name || p.Waiting != "" {
+				return nil, fmt.Errorf("provider %s: diff previews %s, which is not one of its declared resources", name, c.Resource)
+			}
+			if !toAdopt(p.Observed) {
+				return nil, fmt.Errorf("provider %s: diff previews %s, which is not an object to adopt (a preview is what an object that exists and is to be adopted would need once adopted; a provider may not preview what it could change)", name, c.Resource)
+			}
+			if err := checkChange(s, name, "preview", c, p.Observed, seen); err != nil {
+				return nil, err
+			}
+			p.Previews = append(p.Previews, rt.provided(s, c))
+			out[c.Resource] = p
+		}
+		seen = map[string]bool{}
 		for _, c := range changes {
 			p, ok := out[c.Resource]
 			if !ok || !p.Declared || p.Provider != name || p.Waiting != "" {
 				return nil, fmt.Errorf("provider %s: diff changes %s, which is not one of its declared resources ready to change", name, c.Resource)
 			}
-			if key := c.Resource + "\x00" + string(c.Op); seen[key] {
-				return nil, fmt.Errorf("provider %s: diff has %s on %s twice", name, c.Op, c.Resource)
-			} else {
-				seen[key] = true
+			if toAdopt(p.Observed) {
+				return nil, fmt.Errorf("provider %s: diff changes %s, which is to be adopted: Mamela changes nothing of an object before a person adopts it (mamela act), and what it would need then is a preview, never a change", name, c.Resource)
 			}
-			if p.Observed.Exists && !protocol.Targets(p.Observed.IDs, c.IDs) {
-				return nil, fmt.Errorf("provider %s: the change of %s names objects %v, not the observed %v", name, c.Resource, c.IDs, p.Observed.IDs)
-			}
-			if c.Precondition != "" && c.Precondition != p.Observed.Version {
-				return nil, fmt.Errorf("provider %s: the change of %s is based on version %s, but it observed %s", name, c.Resource, c.Precondition, p.Observed.Version)
-			}
-			if err := s.CheckPreconditions(c, p.Observed.Version); err != nil {
-				return nil, fmt.Errorf("provider %s: the change of %s: %w", name, c.Resource, err)
+			if err := checkChange(s, name, "change", c, p.Observed, seen); err != nil {
+				return nil, err
 			}
 			if err := s.CheckLimits(c); err != nil {
 				code := "MAM-SITE-0305" // over the site's budget
@@ -518,15 +530,45 @@ func (rt *Runtime) Observe(ctx context.Context, g *graph.Graph, asOf time.Time) 
 				}
 				return nil, fmt.Errorf("%s: provider %s: the change of %s: %w", code, name, c.Resource, err)
 			}
-			pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
-			if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
-				pc.Unsupported = o.Why
-			}
-			p.Changes = append(p.Changes, pc)
+			p.Changes = append(p.Changes, rt.provided(s, c))
 			out[c.Resource] = p
 		}
 	}
 	return out, nil
+}
+
+// toAdopt is whether an observed object exists and is to be adopted (imported, named by its
+// declaration, or recognized by its provider) and is not Mamela's yet: the plan waits for a person to
+// adopt it (MAM-PLAN-0114).
+func toAdopt(o protocol.Observed) bool { return o.Exists && o.Adoptable && !o.Owned }
+
+// checkChange checks a change (or a preview) of a provider's diff against what was observed of its
+// resource: once per operation, on the observed object, based on its observed version.
+func checkChange(s *host.Session, name, what string, c protocol.Change, observed protocol.Observed, seen map[string]bool) error {
+	if key := c.Resource + "\x00" + string(c.Op); seen[key] {
+		return fmt.Errorf("provider %s: diff has %s on %s twice", name, c.Op, c.Resource)
+	} else {
+		seen[key] = true
+	}
+	if observed.Exists && !protocol.Targets(observed.IDs, c.IDs) {
+		return fmt.Errorf("provider %s: the %s of %s names objects %v, not the observed %v", name, what, c.Resource, c.IDs, observed.IDs)
+	}
+	if c.Precondition != "" && c.Precondition != observed.Version {
+		return fmt.Errorf("provider %s: the %s of %s is based on version %s, but it observed %s", name, what, c.Resource, c.Precondition, observed.Version)
+	}
+	if err := s.CheckPreconditions(c, observed.Version); err != nil {
+		return fmt.Errorf("provider %s: the %s of %s: %w", name, what, c.Resource, err)
+	}
+	return nil
+}
+
+// provided is a checked change (or preview) with what the host's catalog verifies of its requests.
+func (rt *Runtime) provided(s *host.Session, c protocol.Change) state.ProvidedChange {
+	pc := state.ProvidedChange{Change: c, Verified: rt.verify(s, c)}
+	if o, ok := s.Manifest().Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+		pc.Unsupported = o.Why
+	}
+	return pc
 }
 
 // stackName is how a plan says which declaration it is for (an unnamed Pome has no stack).
@@ -809,7 +851,17 @@ func (rt *Runtime) planRemoval(ctx context.Context, s *host.Session, p *state.Pr
 	if err != nil {
 		return err
 	}
+	adoptions, err := rt.creations.Adopted(ctx, p.Provider, p.Observed.ID)
+	if err != nil {
+		return err
+	}
+	adopted := slices.ContainsFunc(adoptions, func(ids map[string]string) bool { return protocol.SameObject(p.Observed.IDs, ids) })
 	switch {
+	case adopted:
+		// Something else made it (a machine that ran before Mamela): what it holds is not Mamela's
+		// to throw away because a declaration no longer has it.
+		keep("MAM-PLAN-0308", "Mamela adopted it, and did not make it; it never deletes what it adopted",
+			"if you mean to delete it, delete it by hand, or with its provider's explicit delete operation (mamela act)")
 	case !hasOp:
 		keep("MAM-PLAN-0304", fmt.Sprintf("provider %s has no operation that deletes a %s", p.Provider, p.Kind),
 			"delete it by hand, or with the provider's explicit operation if it has one (mamela act)")

@@ -436,6 +436,119 @@ func TestProvidersMachineAsControlPlaneHostIsProtected(t *testing.T) {
 	}
 }
 
+// An observe-only name (MAM-POL-0312) is observed and planned, and nothing of it or on it changes: its
+// changes are shown and denied (held), its creation too, and its removal is never planned. A change
+// denied for its own reason keeps that reason: lifting observe-only would not let it run.
+func TestObserveOnly(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("app-server", `{"mode":"dhcp"}`) + `,` + vm("new", `{"mode":"dhcp"}`) + `,` +
+		`{"kind":"NodeService","name":"app-server/nginx","spec":{"enabled":true,"node":"app-server","running":true,"service":"nginx"}},` +
+		`{"kind":"Thing","name":"theirs","provider":"test","spec":{}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := converged()
+	s.Services["app-server/nginx"] = state.Service{Exists: true, Enabled: true, Running: false, ObservedAt: t0}
+	machineObserved(&s, g, "app-server", true, true, true, 600, providedChange("TestVM app-server", "resize-vm", protocol.EffectChange))
+	machineObserved(&s, g, "new", false, false, false, 0, providedChange("TestVM new", "create-vm", protocol.EffectCreate))
+	theirs := g.Resources[slices.IndexFunc(g.Resources, func(r graph.Resource) bool { return r.Name == "theirs" })]
+	s.Provided["Thing theirs"] = state.Provided{Provider: "test", Kind: "Thing", Name: "theirs", Declared: true, ObservedAt: t0,
+		SpecDigest: state.SpecDigest(theirs.Provided.Spec), Observed: protocol.Observed{ID: "Thing theirs", Kind: "Thing", Name: "theirs", Exists: true}}
+	s.Provided["TestVM gone"] = state.Provided{Provider: "test", Kind: "TestVM", Name: "gone", ObservedAt: t0,
+		Observed: protocol.Observed{ID: "TestVM gone", Kind: "TestVM", Name: "gone", Exists: true, Owned: true, IDs: map[string]string{"name": "gone"}},
+		Removal:  &state.ProvidedChange{Change: protocol.Change{Resource: "TestVM gone", Kind: "TestVM", Op: "delete-vm"}}}
+	pol := policy.Default
+	pol.ObserveOnly = []string{"app-server", "new", "theirs", "gone"}
+	p := Build(g, s, pol)
+	for _, id := range []string{"TestVM app-server", "NodeService app-server/nginx", "TestVM new"} {
+		c := find(t, p, id)
+		if c.Status != StatusChange || c.Verdict != policy.Denied || !c.Held() || len(c.Diffs) == 0 {
+			t.Errorf("%s: shown and held: %+v", id, c)
+		}
+		for _, o := range c.Operations {
+			if o.Decision != policy.ObserveOnlyDecision {
+				t.Errorf("%s: %s: %+v", id, o.Op, o.Decision)
+			}
+		}
+	}
+	if c := find(t, p, "TestVM new"); !c.Creates {
+		t.Errorf("a creation under an observe-only name is shown as one: %+v", c)
+	}
+	if c := find(t, p, "Thing theirs"); c.Verdict != policy.Denied || c.Held() || c.Operations[0].Decision.Code != "MAM-POL-0303" {
+		t.Errorf("a Foreign resource keeps its own reason: %+v", c)
+	}
+	if c := find(t, p, "TestVM gone"); c.Status != StatusRetained || c.Removes || c.Note == nil || c.Note.Code != "MAM-POL-0312" || c.Deletes() {
+		t.Errorf("the removal of an observe-only object is planned: %+v", c)
+	}
+	if p.Removals() != 0 || p.Held() != 3 {
+		t.Errorf("removals %d, held %d", p.Removals(), p.Held())
+	}
+	if sum := Summary(p); !strings.Contains(sum, "4 denied (3 observe-only)") {
+		t.Errorf("the summary does not say it: %s", sum)
+	}
+	var out bytes.Buffer
+	Render(&out, p)
+	if !strings.Contains(out.String(), "~ TestVM app-server  [DENIED: observe-only]") {
+		t.Errorf("the plan does not show it:\n%s", out.String())
+	}
+	// The same, with the Control Plane's host protected too: that reason comes first.
+	pol.ProtectedNodes = []string{"app-server"}
+	if c := find(t, Build(g, s, pol), "TestVM app-server"); c.Operations[0].Decision.Code != "MAM-POL-0308" || c.Held() {
+		t.Errorf("the Control Plane's host: %+v", c)
+	}
+	// Observe-only is part of the plan's inputs, whatever the order of its names.
+	again := policy.Default
+	again.ObserveOnly = []string{"gone", "theirs", "new", "app-server", "new"}
+	if Build(g, s, again).Digest != Build(g, s, policy.Policy{Version: pol.Version, MaxObservationAgeSeconds: pol.MaxObservationAgeSeconds,
+		AllowedAptOrigins: pol.AllowedAptOrigins, ObserveOnly: []string{"app-server", "gone", "new", "theirs"}}).Digest {
+		t.Error("the order of the names changes the plan")
+	}
+	if Build(g, s, again).Digest == Build(g, s, policy.Default).Digest {
+		t.Error("observe-only is not part of the plan's inputs")
+	}
+	if Build(g, s, policy.Default).Held() != 0 {
+		t.Error("held without observe-only")
+	}
+}
+
+// What a resource to adopt would need once adopted (the provider's previews) is shown as its diffs;
+// it waits, with no operation and nothing to approve or send, and the note says whether anything
+// would change once it is adopted.
+func TestAdoptablePreviews(t *testing.T) {
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` + vm("legacy", `{"mode":"dhcp"}`) + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := state.Empty(t0)
+	machineObserved(&s, g, "legacy", true, false, true, 600)
+	o := s.Provided["TestVM legacy"]
+	o.Observed.Adoptable = true
+	s.Provided["TestVM legacy"] = o
+	c := find(t, Build(g, s, policy.Default), "TestVM legacy")
+	if c.Status != StatusWaiting || len(c.Diffs) != 0 || c.Note == nil || c.Note.Code != "MAM-PLAN-0114" ||
+		!strings.Contains(c.Note.Message, "nothing would change once adopted: it matches the declaration") {
+		t.Fatalf("no preview: %+v", c)
+	}
+	o.Previews = []state.ProvidedChange{providedChange("TestVM legacy", "resize-vm", protocol.EffectChange)}
+	o.Previews[0].Change.Reasons = []string{"memory 2048 -> 4096 MiB"}
+	s.Provided["TestVM legacy"] = o
+	p := Build(g, s, policy.Default)
+	c = find(t, p, "TestVM legacy")
+	if c.Status != StatusWaiting || len(c.Operations) != 0 || len(c.ProviderChanges) != 0 || c.Verdict != "" ||
+		!slices.Equal(c.Diffs, []Diff{{Field: "resize-vm (once adopted)", To: "memory 2048 -> 4096 MiB"}}) ||
+		!strings.Contains(c.Note.Message, "once adopted, Mamela would: resize-vm") {
+		t.Fatalf("previews: %+v", c)
+	}
+	if p.Held() != 0 || p.Removals() != 0 || strings.Contains(Summary(p), "approval") {
+		t.Fatalf("a preview is something to approve: %s", Summary(p))
+	}
+	// Observe-only changes nothing of a preview: it is not a change.
+	pol := policy.Default
+	pol.ObserveOnly = []string{"legacy"}
+	if d := find(t, Build(g, s, pol), "TestVM legacy"); d.Status != StatusWaiting || len(d.Operations) != 0 {
+		t.Fatalf("observe-only: %+v", d)
+	}
+}
+
 // A difference a provider never acts on is shown and denied, with its reason; it is not "in sync".
 func TestUnsupportedProviderChangeIsDenied(t *testing.T) {
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[{"kind":"ProxmoxVM","name":"web","provider":"proxmox","spec":{"diskGiB":5}}]}`))

@@ -21,6 +21,7 @@ var headMeaning = map[string]string{
 	HeadEvalRetry: "the evaluator was not available (MAM-GIT-0201): evaluated again after the retry interval",
 	HeadStopped:   "the same change keeps coming back (MAM-GIT-0101): push another commit, or approve the plan on the host",
 	HeadUntrusted: "not merged from a trusted author's pull request (or pushed by one): not planned",
+	HeadHeld:      "what differs is held by observe-only (MAM-POL-0312): shown, never applied; lifted on the Control Plane's host (planned again at the resync interval)",
 }
 
 // openExisting opens mamelacd's database if it exists; it is never made here (a database made by

@@ -320,6 +320,10 @@ const (
 	// HeadStopped: the same change came back (stale, or applied and still planned) too many times in
 	// a row: not applied again until another commit, or a person's approval on the host (MAM-GIT-0101).
 	HeadStopped = "stopped"
+	// HeadHeld: what differs from the declaration is held by observe-only (MAM-POL-0312), and there
+	// is nothing else to change: the plan shows it and nothing applies it. Planned again at the
+	// resync interval or with another commit, like a declaration in sync.
+	HeadHeld = "held"
 )
 
 // Head returns the last state of a declaration at the head of the branch.

@@ -84,6 +84,20 @@ func (r rogue) Diff(ctx context.Context, p protocol.DiffParams) (protocol.DiffRe
 		for i := range out.Changes {
 			out.Changes[i].Precondition = "999"
 		}
+	case "preview-not-adoptable":
+		// Previews what it may change (an item to create): only an object to adopt has previews.
+		out.Previews = append(out.Previews, out.Changes...)
+	case "change-adoptable":
+		// Changes an object to adopt, instead of previewing what it would need.
+		out.Changes, out.Previews = append(out.Changes, out.Previews...), nil
+	case "preview-other-object":
+		for i := range out.Previews {
+			out.Previews[i].IDs = map[string]string{"item": "other"}
+		}
+	case "preview-precondition":
+		for i := range out.Previews {
+			out.Previews[i].Precondition = "999"
+		}
 	case "diff-no-precondition":
 		// Leaves out the precondition and the version: would overwrite whatever is there.
 		for i := range out.Changes {

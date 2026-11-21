@@ -1,0 +1,28 @@
+Plan sha256:424b086faf92
+  revision  sha256:91c5d84fd46e
+  observed  2026-11-08T12:00:00Z (snapshot sha256:b867d256647e)
+  policy    sha256:85e143ba14ad
+
+~ NodeMamelet a/mamelet  [DENIED: observe-only]
+      sha256: 11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa -> 22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb
+      version: 0.9.0 -> 0.9.1
+      from: the Control Plane: /v1/mamelet/22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb (the binary of controlplane.mamelet_binary)
+      restart: mamelet on a restarts into it and reports again in a few seconds; the previous binary is kept as /usr/local/sbin/mamelet.prev, and mamelet goes back to it if the new one has not reported within 10 minutes
+    update-mamelet: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+~ NodeMamelet b/mamelet  [needs approval]
+      sha256: 11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa -> 22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb
+      version: 
+      from: the Control Plane: /v1/mamelet/22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb (the binary of controlplane.mamelet_binary)
+      restart: mamelet on b restarts into it and reports again in a few seconds; the previous binary is kept as /usr/local/sbin/mamelet.prev, and mamelet goes back to it if the new one has not reported within 10 minutes
+    update-mamelet: needs approval (MAM-POL-0215 replaces mamelet (the node's agent, which runs as root) with the binary of the declared sha256, which the Control Plane serves, and restarts it; the previous binary is kept, and mamelet goes back to it if the new one does not report)
+      hint: check the sha256 against the binary you built and put in controlplane.mamelet_binary; nodes are updated one at a time
+. NodeMamelet c/mamelet  [waiting]
+    MAM-PLAN-0119 waits for the agent on c to report which mamelet it runs
+      hint: a mamelet from before updates were declared does not report it: replace it by hand once (docs/mamelet-update.md)
+= TestVM a  [in sync]  via test
+= TestVM b  [in sync]  via test
+= TestVM c  [in sync]  via test
+
+Summary: 1 needs approval, 1 denied (1 observe-only), 1 waiting, 3 in sync.
+Nothing has been changed: a plan only describes.

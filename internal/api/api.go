@@ -48,8 +48,11 @@ type Planned struct {
 	Changes  int    `json:"changes"`  // changes to make
 	Removals int    `json:"removals"` // of them, the deletions (ADR 0013): approved only on the Control Plane's host
 	Waiting  int    `json:"waiting"`  // waiting for observation or dependencies
-	Blocked  int    `json:"blocked"`  // refused (blocked or denied)
-	Text     string `json:"text"`     // the plan as people read it, without the host's paths
+	Blocked  int    `json:"blocked"`  // refused (blocked or denied), but not held
+	// Held are the changes denied only because their names are observe-only (MAM-POL-0312): the
+	// plan shows them, nothing runs them, and they are neither blocked nor to approve.
+	Held int    `json:"held,omitempty"`
+	Text string `json:"text"` // the plan as people read it, without the host's paths
 	// Programs are the providers' programs the plan uses ("<provider> <version> (<source>, <digest>)").
 	Programs []string `json:"programs,omitempty"`
 }

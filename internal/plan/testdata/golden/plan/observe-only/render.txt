@@ -1,0 +1,35 @@
+Plan sha256:64914ed3524c
+  revision  sha256:1cedc869d0f4
+  observed  2026-11-08T12:00:00Z (snapshot sha256:b5c0f57deb92)
+  policy    sha256:8dba1bb5d907
+
+~ NodePackage app-server/nginx  [DENIED: observe-only]
+      installed: false -> true
+      changeSet: sha256:f3b52a65a3a9be904415c1a288a28bcefa025af2b33283569688c5105f940373
+      apt: install nginx 1.24.0 (Ubuntu:24.04/noble)
+    install-package: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+~ NodeService app-server/nginx  [DENIED: observe-only]
+      running: false -> true
+    start-service: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+~ TestVM app-server  [DENIED: observe-only]  via test
+      resize-vm: memory 2048 -> 4096 MiB
+    resize-vm: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+      objects: name=app-server
+~ TestVM db  [needs approval]  via test
+      resize-vm: cpu 1 -> 2
+    resize-vm: needs approval (MAM-POL-0209 a change through a provider (change))
+      objects: name=db
++ TestVM web-new  [DENIED: observe-only]  via test
+      create-vm: the machine does not exist
+    create-vm: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+      objects: name=web-new
+= TestVM old  [retained]  via test
+    MAM-POL-0312 not in this declaration; kept: it is observe-only (observeOnly in the policy, or observe_only in mamela.site.toml), and Mamela deletes nothing that is
+      hint: to have it deleted, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again: the plan then shows the deletion
+
+Summary: 1 needs approval, 4 denied (4 observe-only), 1 retained.
+Nothing has been changed: a plan only describes.

@@ -55,6 +55,9 @@ type Machine struct {
 	ID      int64 // the node's number (assigned at create when 0)
 	// Stack is the declaration that made it (World.SetStack when it was created).
 	Stack string
+	// Adoptable: not Mamela's, and to be adopted (imported, or named by its declaration): the
+	// provider previews what it would need once adopted, and changes nothing of it.
+	Adoptable bool
 }
 
 // World is the fake real world.
@@ -171,6 +174,7 @@ func (w *World) Observe(ctx context.Context) (state.Snapshot, error) {
 		o := protocol.Observed{ID: string(Kind) + " " + name, Kind: Kind, Name: name, Exists: exists}
 		if exists {
 			o.Owned, o.Version, o.IDs = m.Owned, version(m), map[string]string{"name": name}
+			o.Adoptable = m.Adoptable && !m.Owned
 			o.Node = &protocol.ObservedNode{ID: m.ID, Running: m.Running}
 		}
 		return o
@@ -193,6 +197,10 @@ func (w *World) Observe(ctx context.Context) (state.Snapshot, error) {
 			start := change(OpStart, protocol.EffectRestart, startReason)
 			start.Change.Late, start.Change.Requests[0].Params = true, nil
 			p.Changes = []state.ProvidedChange{change(OpCreate, protocol.EffectCreate, fmt.Sprintf("%d vCPU", want)), start}
+		case !m.Owned && m.Adoptable:
+			if m.CPU != want {
+				p.Previews = []state.ProvidedChange{change(OpResize, protocol.EffectChange, fmt.Sprintf("vCPUs %d -> %d", m.CPU, want))}
+			}
 		case !m.Owned:
 		default:
 			switch {

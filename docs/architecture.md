@@ -210,6 +210,10 @@ Mamela が管理するのは、次の **両方** を満たすものだけであ�
 
 印の中身はプロバイダーが決める。Proxmox では、Mamela 専用 pool、VMID の予約範囲、タグ、説明欄の所有マーカーである（mamela-proxmox）。以前に別の形で Mamela が作ったもの（旧組み込みプロバイダーの VM）は、プロバイダーが `adoptable` と申告し、人が引き継ぎの明示操作（`mamela act`）を確かめたときだけ Mamela のものになる。
 
+- **引き継ぐ対象になるもの:** Terraform から取り込んだ物（ADR 0009）と、宣言が IDs（VMID など）で名指しした物（プロバイダーの種類が `kit.Adopter` を持つとき）も、`adoptable` になる。Mamela の印を持つ物は、名指ししても引き継がない。
+- **プレビュー:** 引き継ぐまで、plan は何も変えない（MAM-PLAN-0114）。プロバイダーは、引き継いだあとに要る変更をプレビュー（`DiffResult.Previews`）として返す。plan はその理由を差分（`update-vm (once adopted): ...`）として示し、引き継げば何が変わるかを注記に書く。プレビューは、変更と同じく host が確かめる（宣言したリソースか、観測した物を指すか、観測した版に基づくか）。引き継ぐ対象のものでなければ拒む。plan の変更にはならず、承認も送信もされない。apply は観測し直すが、プレビューは見ない。
+- **引き継いだ物:** 引き継いだ物は、作成の記録を持つ（`plan_digest` が `act:` で始まる）。Mamela の物として変えられるが、宣言から消しても削除しない（MAM-PLAN-0308）。
+
 ## 5. Control Plane と SQLite
 
 **3種類の状態を区別する。**
@@ -295,20 +299,43 @@ SQLite の WAL モードとトランザクションを使い、**単一 Control 
 |---|---|---|
 | Auto | 読み取り、明示許可されたサービス再起動 | 事前条件を満たした場合のみ |
 | ApprovalRequired | 初回パッケージ追加、プロバイダーの変更（マシンの作成・大きさの変更など）、サービス停止、Firewall 拡大 | 承認待ち |
-| Denied | plan の中の削除・データを失う変更、破壊的置換、任意 shell 実行、未知の APT source、`Foreign` リソースへの変更、Control Plane のホストの変更 | 拒否 |
+| Denied | plan の中の削除・データを失う変更、破壊的置換、任意 shell 実行、未知の APT source、`Foreign` リソースへの変更、Control Plane のホストの変更、観測だけ（observe-only）の名前の変更 | 拒否 |
 
 APT インストールは maintainer script の特権実行を含み得るため「追加だから安全」としない。許可済み apt source / package/version、signature verification、変更集合の検証と承認が必要。サービスを起動するだけでも副作用はあり得る。
 
+### 観測だけ（observe-only）
+
+すでにある物（手で作ったマシンなど）を Mamela の下に置くとき、最初は何も危険にさらさない。Mamela は観測し、宣言との差を plan に示し、何も変えない。変えてよくなったら、人が Control Plane のホストで外す。
+
+- **書く場所:** policy の `observeOnly`（名前のリスト）か、site（`mamela.site.toml`）の最上位の `observe_only`。どちらも、マシン（ノード）の名前か、プロバイダーのリソースの名前である。名前の形は、宣言の名前と同じ規則で確かめる。site の分は、Control Plane のホストを保護するのと同じく、いまの policy に足される（`currentPolicy`）。
+- **plan:** その名前の変更と、その名前のマシンの上の変更（パッケージ、サービス、mamelet の更新、k3s、linux 拡張の資源）は、差を示したうえで拒否する（MAM-POL-0312）。表示は `[DENIED: observe-only]` で、まとめの行は `3 denied (2 observe-only)` のように数を分けて言う。
+  - 作成も同じである。その名前の物がまだなければ、作成を示して拒否する。
+  - 削除（ADR 0013）は plan に載せない。残す理由（MAM-POL-0312）を示す。
+  - ほかの理由で拒否される操作（Foreign の変更 MAM-POL-0303 など）は、その理由のまま示す。外しても通らないからである。
+  - Control Plane のホストでもある名前は、MAM-POL-0308 が先である。
+- **ノード:** observe-only のノードの revision には、許可を何も入れない（パッケージの導入、サービスの一度きりの操作と自動起動の repair、mamelet の更新、拡張の許可）。plan のたびに、前からある許可も外す。mamelet は、それまでどおり観測して報告する。
+- **明示操作:** `mamela act` は、observe-only の名前に、引き継ぎ（`adopts`）の操作だけを行う。引き継ぎは、プロバイダーの契約で Mamela の印を付けるだけで、observe-only のまま Mamela の物にする方法である。ほかの操作は MAM-POL-0312 で断る。`act` は `--policy` で policy のファイルを読む（site の `observe_only` は、いつも読む）。Control Plane のホストには、引き継ぎも行わない（MAM-POL-0308）。
+- **外す:** plan が期待どおりの差を示したら、policy のファイルか site から名前を外し、plan し直す。policy の digest が変わるので、外す前に作った plan は apply されない（MAM-REC-0010）。足すときも同じである。
+- **gitops:** mamelacd は、observe-only で止めた変更を、失敗としても、承認するものとしても扱わない。commit の状態は success で「held by observe-only」と言い、PR のコメントは外し方を言う。ほかの変更がなければ、poll のたびには plan し直さない（ブランチの先頭は resync の間隔ごと。[gitops.md](gitops.md)）。
+
+すでにある物を名指しで引き継ぐ流れは、次のとおりである。
+
+1. 名前を `observe_only` に入れる。
+2. 宣言が、その物を IDs（VMID など）で名指しする（プロバイダーの種類が `kit.Adopter` を持つとき）。
+3. plan は、その物を「引き継ぐ対象」として待たせ（MAM-PLAN-0114）、引き継いだら何が変わるかを示す（プロバイダーのプレビュー）。何も承認できない。
+4. 人が `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で引き継ぐ。印が付くだけである。
+5. plan は、宣言との差を、observe-only の拒否として示す。期待どおりなら、名前を外す。
+
 ### 削除と承認
 
-- 未宣言 → その宣言が作った物で、種類に削除する操作があれば、plan に削除として現れる（要承認。ADR 0013）。それ以外は `Unmanaged/Orphaned` として保持し、理由を示す。再起動・引き継ぎは、プロバイダーが明示操作として宣言したものだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
+- 未宣言 → その宣言が作った物で、種類に削除する操作があれば、plan に削除として現れる（要承認。ADR 0013）。それ以外は `Unmanaged/Orphaned` として保持し、理由を示す。Mamela が引き継いだ物（MAM-PLAN-0308）と、観測だけの名前の物（MAM-POL-0312）は、削除しない。再起動・引き継ぎは、プロバイダーが明示操作として宣言したものだけを、`mamela act` で人が名前を打ち直したときに行う（§7.1）。
 - 承認は Plan digest、対象 ID、操作範囲、期限に結びつけ、変更で失効する。
 - **一度きりの許可（grant）には寿命がある。** apply が許可を revision に入れるとき、期限も記録する（結果を待つ時間に 15 分を足したもの。承認の期限が先ならそちら）。Control Plane は、期限を過ぎた許可と、期限のない許可（0.3.1 以前の Control Plane が入れたもの）を、revision から外して配る。revision 自体の有効期間は取得のたびに付け直されるので、許可の寿命にはならない。期限は DB の revision にだけ持ち、署名する内容（wire）には入れない（旧い mamelet は知らないメンバーを丸ごと断る）。承認が切れたあとは、承認が要る操作の許可を出さない（MAM-NODE-0120）。agent が不在で apply が「結果不明」で止まっても、許可が後から（承認の期限後や、宣言から消したあとに）実行されることはない。
-- **宣言から消えた物には許可を残さない。外すのは、承認した plan を apply するときだけである。** plan は、候補の宣言（承認前の PR やブランチ）でも作るので、plan が既存の項目・許可を外したり変えたりしてはならない（`node.Publish` は観測の対象を足すだけ）。承認済みの plan を apply するとき、Reconciler が、plan の確認（providers の一致、承認）のあと、最初の操作の前に `node.Prune` を一度呼ぶ。`Prune` は、その plan の宣言にない package・service・manifest・k3s・mamelet の項目を、許可（一度きりの許可、自動起動の repair、manifest の書き込み）ごと revision から外す。外すのは許可と観測の対象だけで、ノード上の物は何も変えない（ADR 0013 の 6）。外したノードは、plan のイベントログに `pruned` で残る。承認のない apply は何も外さない。宣言から物を消しただけで plan が「変更なし」になるときは、gitops は apply しない（in sync）ので、外れるのは、その宣言の次の apply か、`mamela approve <digest>` と `mamela apply <digest>` を手で実行したときである。一度きりの許可は、そのあいだも期限で終わる。Control Plane のホスト（保護されたノード）は、plan のときに、宣言にある物の許可もすべて外す（局所の安全）。
+- **宣言から消えた物には許可を残さない。外すのは、承認した plan を apply するときだけである。** plan は、候補の宣言（承認前の PR やブランチ）でも作るので、plan が既存の項目・許可を外したり変えたりしてはならない（`node.Publish` は観測の対象を足すだけ）。承認済みの plan を apply するとき、Reconciler が、plan の確認（providers の一致、承認）のあと、最初の操作の前に `node.Prune` を一度呼ぶ。`Prune` は、その plan の宣言にない package・service・manifest・k3s・mamelet の項目を、許可（一度きりの許可、自動起動の repair、manifest の書き込み）ごと revision から外す。外すのは許可と観測の対象だけで、ノード上の物は何も変えない（ADR 0013 の 6）。外したノードは、plan のイベントログに `pruned` で残る。承認のない apply は何も外さない。宣言から物を消しただけで plan が「変更なし」になるときは、gitops は apply しない（in sync）ので、外れるのは、その宣言の次の apply か、`mamela approve <digest>` と `mamela apply <digest>` を手で実行したときである。一度きりの許可は、そのあいだも期限で終わる。Control Plane のホスト（保護されたノード）と、観測だけ（observe-only）のノードは、plan のときに、宣言にある物の許可もすべて外す（局所の安全）。
 - **mamelet が revision を拒否したとき**（未知のメンバー、serial の巻き戻し、時計のずれ、署名の不一致など）、その理由は mamelet の報告（`Refused`）で Control Plane に届く。plan はそのノードの変更を Blocked にして、理由と直し方を示す（MAM-PLAN-0130）。許可は revision で届くので、拒否されているノードには、承認しても何も届かない。Control Plane のログにも、拒否が始まったとき・理由が変わったとき・終わったときに 1 行ずつ出る。
 - **承認は追記する記録である。** 承認済みの plan をもう一度承認しても、承認者と期限は書き換わらず、先の承認が残る（その要求は event に残り、`mamela approve` は MAM-APR-0002 と表示する）。期限が切れた、または取り消された plan の承認は、横に新しい記録として加わる。
 - **承認は取り消せる。** `mamela revoke <digest>` は承認を失効させ（承認の記録は残り、取り消しが別の記録と event として加わる）、以後の apply は、その承認が要る操作を行わない。実行中の apply も、まだ始めていない承認が要る操作の前で止まる（MAM-REC-0011。済んだことは戻らない）。
-- **apply は、plan を作ったときの policy が、いま有効な policy と同じときだけ行う。** 承認は、そのときの policy の下での判断だからである。`mamela apply` と `mamela api` は、plan と同じ `--policy` のファイル（なければ内蔵の policy）と、site の Control Plane のホストの保護から、いまの policy を求め、plan に保存した policy の digest と違えば何も実行せず（MAM-REC-0010）、plan し直すよう促す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける。
+- **apply は、plan を作ったときの policy が、いま有効な policy と同じときだけ行う。** 承認は、そのときの policy の下での判断だからである。`mamela apply` と `mamela api` は、plan と同じ `--policy` のファイル（なければ内蔵の policy）と、site の Control Plane のホストの保護と `observe_only` から、いまの policy を求め、plan に保存した policy の digest と違えば何も実行せず（MAM-REC-0010）、plan し直すよう促す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける。
 - **削除は直前にもう一度観測する。** 削除は最後の段で、前の段（image の取り込みは数時間かかる）の間に対象が変わりうる。各削除の直前に世界を観測し直し、承認した plan の削除と同じ要求・対象・前提条件でなければ、何も消さずに止まる（MAM-REC-0002）。観測し直せなければ消さずに止まる（MAM-REC-0008）。
 - Agent は署名不正、期限切れ、対象ノード不一致、未知の操作を拒否する。
 - Provider credential、Agent secret、署名鍵は Resource Graph/ログに含めず、安全な権限境界で渡す。

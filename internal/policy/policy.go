@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ieyoukan/mamela/internal/names"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -76,6 +77,13 @@ type Policy struct {
 	// ProtectedNodes are machines that this Control Plane never changes: its own host (site
 	// controlplane.host). Every change to them, or to what runs on them, is denied (ADR 0003).
 	ProtectedNodes []string `json:"protectedNodes,omitempty"`
+	// ObserveOnly are names of machines (nodes) and of resources of providers that Mamela observes
+	// and plans, and never changes: a change of one, or of what runs on a machine of one, is shown
+	// and denied (MAM-POL-0312); nothing is created under such a name, nothing of it is deleted, and
+	// a node's mamelet gets no grant. It is how something that already exists comes under Mamela
+	// with nothing at risk: the plan shows how it differs from the declaration until a person lifts
+	// it on the Control Plane's host. The site's observe_only adds to it (cmd/mamela currentPolicy).
+	ObserveOnly []string `json:"observeOnly,omitempty"`
 	// Removal says what becomes of an object Mamela made for a declaration once the declaration no
 	// longer has it (ADR 0013): "delete" (the default) plans its deletion, which needs an approval
 	// made on the Control Plane's host; "retain" keeps it, as before.
@@ -93,6 +101,35 @@ func (p Policy) Protected(node string) bool {
 // ProtectedDecision is the decision for any operation on a protected node.
 var ProtectedDecision = Decision{Denied, "MAM-POL-0308", "this machine is the Control Plane's own host; a Control Plane never changes the host it runs on (it could stop itself in the middle of an apply)",
 	"change it from another Control Plane, or by hand while this one is stopped (ADR 0003)"}
+
+// ObservesOnly reports whether name is observe-only: Mamela shows how it differs from the
+// declaration and changes nothing of it or on it.
+func (p Policy) ObservesOnly(name string) bool {
+	return name != "" && slices.Contains(p.ObserveOnly, name)
+}
+
+// ObserveOnlyDecision is the decision for any operation of an observe-only name, or on it.
+var ObserveOnlyDecision = Decision{Denied, "MAM-POL-0312",
+	"observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it",
+	"when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again"}
+
+// Held says what holds every change of name, or of what runs on it: the Control Plane's own host
+// (MAM-POL-0308, ADR 0003) before observe-only (MAM-POL-0312). ok is false when nothing does.
+func (p Policy) Held(name string) (d Decision, ok bool) {
+	switch {
+	case p.Protected(name):
+		return ProtectedDecision, true
+	case p.ObservesOnly(name):
+		return ObserveOnlyDecision, true
+	}
+	return Decision{}, false
+}
+
+// Holds reports whether every change of name, or of what runs on it, is denied (Held).
+func (p Policy) Holds(name string) bool {
+	_, ok := p.Held(name)
+	return ok
+}
 
 // Default is the conservative policy used when nothing else is configured.
 var Default = Policy{
@@ -212,6 +249,7 @@ func (p Policy) Canonical() []byte {
 	q := p
 	q.AutoStartServices = slices.Sorted(slices.Values(p.AutoStartServices))
 	q.AllowedAptOrigins = slices.Sorted(slices.Values(p.AllowedAptOrigins))
+	q.ObserveOnly = NormalNames(p.ObserveOnly)
 	out, err := json.Marshal(q, json.Deterministic(true))
 	if err != nil {
 		panic("policy: encoding failed: " + err.Error())
@@ -228,7 +266,30 @@ func Decode(data []byte) (Policy, error) {
 	if p.Removal != "" && p.Removal != "delete" && p.Removal != "retain" {
 		return Policy{}, fmt.Errorf("policy: removal %q: \"delete\" or \"retain\"", p.Removal)
 	}
+	if err := CheckNames("policy: observeOnly", p.ObserveOnly); err != nil {
+		return Policy{}, err
+	}
 	return p, nil
+}
+
+// CheckNames checks a list of names of machines and resources (observeOnly): each a name a
+// declaration can give a machine or a provider's resource.
+func CheckNames(what string, list []string) error {
+	for _, n := range list {
+		if !names.Resource(n) {
+			return fmt.Errorf("%s: %q is not the name of a machine or a resource (letters, digits and '.', '_', ':', '@', '-', starting with a letter or digit)", what, n)
+		}
+	}
+	return nil
+}
+
+// NormalNames is a list of names sorted, each once (nil when empty): the same names in another
+// order, or twice, are the same policy.
+func NormalNames(list []string) []string {
+	if len(list) == 0 {
+		return nil
+	}
+	return slices.Compact(slices.Sorted(slices.Values(list)))
 }
 
 // The operations of node extensions (k3s, docs/design/node-extensions.md) are registered, each with
@@ -248,7 +309,7 @@ var (
 	coreOps   = []Op{OpChangeForeign, OpInstallPackage, OpEnableService, OpDisableService, OpStartService, OpStopService, OpConfigureService, OpUpdateMamelet}
 	coreCodes = []Code{"MAM-POL-0101", "MAM-POL-0102", "MAM-POL-0103", "MAM-POL-0204", "MAM-POL-0205", "MAM-POL-0206", "MAM-POL-0207",
 		"MAM-POL-0208", "MAM-POL-0209", "MAM-POL-0215", "MAM-POL-0303", "MAM-POL-0304", "MAM-POL-0305", "MAM-POL-0306", "MAM-POL-0308",
-		"MAM-POL-0309", "MAM-POL-0310", "MAM-POL-0311", "MAM-POL-0399"}
+		"MAM-POL-0309", "MAM-POL-0310", "MAM-POL-0311", "MAM-POL-0312", "MAM-POL-0399"}
 )
 
 // RegisterOp adds an operation of the node extension owner, with its decision. It panics when the

@@ -5,10 +5,14 @@ import (
 	"encoding/json/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ieyoukan/mamela/examples/kv/kvapi"
 	"github.com/ieyoukan/mamela/internal/policy"
+	sitedef "github.com/ieyoukan/mamela/internal/site"
 )
 
 // A plan is applied only under the policy it was made under (B3). Approving a deletion, then
@@ -94,5 +98,81 @@ func TestApplyNeedsTheSamePolicyFileAsPlan(t *testing.T) {
 	}
 	if _, ok := l.kv.Items()["web"]; !ok {
 		t.Fatal("web was not created")
+	}
+}
+
+// The site's observe_only is added to the policy's observeOnly, as the Control Plane's host is to its
+// protected nodes: the policy in force, which plans are made under and apply checks.
+func TestCurrentPolicyHasTheSitesObserveOnly(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "policy.json")
+	os.WriteFile(file, []byte(`{"version":"x","maxObservationAgeSeconds":600,"allowedAptOrigins":["Ubuntu:"],"observeOnly":["db","web"]}`), 0o600)
+	site := &sitedef.Site{ObserveOnly: []string{"web", "legacy"}}
+	site.ControlPlane.Host = "cp"
+	pol, err := currentPolicy(site, file)
+	if err != nil || !slices.Equal(pol.ObserveOnly, []string{"db", "legacy", "web"}) || !slices.Equal(pol.ProtectedNodes, []string{"cp"}) {
+		t.Fatalf("%+v %v", pol, err)
+	}
+	without, _ := currentPolicy(&sitedef.Site{}, file)
+	if without.Digest() == pol.Digest() {
+		t.Error("the site's observe_only is not part of the policy's digest")
+	}
+	if d, _ := currentPolicy(nil, ""); d.Digest() != policy.Default.Digest() {
+		t.Error("no site, no file: not the built-in policy")
+	}
+}
+
+// mamela act carries out no explicit operation on an observe-only name but one that adopts it; on the
+// Control Plane's host, none.
+func TestActOnAHeldName(t *testing.T) {
+	pol := policy.Default
+	pol.ObserveOnly, pol.ProtectedNodes = []string{"legacy"}, []string{"cp"}
+	if err := actHeld(pol, "legacy", "adopt-vm", true); err != nil {
+		t.Errorf("adopting an observe-only guest: %v", err)
+	}
+	if err := actHeld(pol, "legacy", "reboot-vm", false); err == nil || !strings.Contains(err.Error(), "MAM-POL-0312") ||
+		!strings.Contains(err.Error(), "nothing was changed") || !strings.Contains(err.Error(), "to reboot-vm it, remove the name") {
+		t.Errorf("rebooting an observe-only guest: %v", err)
+	}
+	for _, adopts := range []bool{false, true} {
+		if err := actHeld(pol, "cp", "adopt-vm", adopts); err == nil || !strings.Contains(err.Error(), "MAM-POL-0308") {
+			t.Errorf("the Control Plane's host (adopts %v): %v", adopts, err)
+		}
+	}
+	if err := actHeld(pol, "web", "delete-vm", false); err != nil {
+		t.Errorf("a name nothing holds: %v", err)
+	}
+}
+
+// A plan of an observe-only item is held, not blocked: the API counts it apart (mamelacd says so and
+// reports no failure). A plan made before the item became observe-only is not applied after (the
+// policy changed, MAM-REC-0010): its approval did not know.
+func TestObserveOnlyThroughTheAPI(t *testing.T) {
+	l := newKVLab(t)
+	d := l.declaration("github.com/example/infra", "web")
+	l.applyAll(d)
+	l.kv.Put(kvapi.Item{Name: "web", Value: "by hand", Owner: "mamela", Version: 50})
+	before, _ := l.plan(d)
+	if code, out := l.approve(before); code != 0 {
+		t.Fatalf("approve: %s", out)
+	}
+	pol := policy.Default
+	pol.ObserveOnly = []string{"web"}
+	data, _ := json.Marshal(pol)
+	file := filepath.Join(l.dir, "observe-only.json")
+	os.WriteFile(file, data, 0o600)
+	if code, out := l.apply(before, "--policy", file); code == 0 || !strings.Contains(out, "MAM-REC-0010") || l.kv.Items()["web"].Value != "by hand" {
+		t.Fatalf("a plan made before observe-only was applied: %d\n%s", code, out)
+	}
+	b := testBackend(t, l.db, l.providers)
+	b.policy = file
+	p, err := b.Plan(context.Background(), d)
+	if err != nil || p.Held != 1 || p.Blocked != 0 || p.Changes != 0 || !strings.Contains(p.Text, "[DENIED: observe-only]") {
+		t.Fatalf("the API's plan: %+v %v", p, err)
+	}
+	if err := b.Approve(context.Background(), p.Digest, "github:alice", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if a, err := b.Apply(context.Background(), p.Digest); err != nil || !a.OK || !strings.Contains(a.Text, "observe-only") || l.kv.Items()["web"].Value != "by hand" {
+		t.Fatalf("the API's apply: %+v %v", a, err)
 	}
 }

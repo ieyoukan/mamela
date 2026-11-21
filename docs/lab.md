@@ -18,7 +18,7 @@ Mamela 本体は、特定の基盤を知らない。実機での検証の安全�
 
 | ファイル | 中身 | コミット |
 |---|---|---|
-| `mamela.site.toml`（`--site`、`MAMELA_SITE`） | Mamela の site（`mamela-site/v1`）: Control Plane、マシンのログインユーザーと SSH 公開鍵のファイル、ネットワークの規則（DHCP、固定アドレスの範囲）、1 台あたりの予算 | しない（雛形は `mamela.site.example.toml`） |
+| `mamela.site.toml`（`--site`、`MAMELA_SITE`） | Mamela の site（`mamela-site/v1`）: Control Plane、マシンのログインユーザーと SSH 公開鍵のファイル、ネットワークの規則（DHCP、固定アドレスの範囲）、1 台あたりの予算、観測だけにする名前（`observe_only`） | しない（雛形は `mamela.site.example.toml`） |
 | `mamela.providers.toml`（`--providers`、`MAMELA_PROVIDERS`） | プロバイダーごとの API の URL、資格情報（`token_id`、`token_file`）、guard の資格情報（`guard_token_id`、`guard_token_file`）、guard の設定（`[provider.<name>.guard]`）、カタログ | しない |
 | `lab/local/` | 実アドレスを含む検証用の宣言 | しない |
 
@@ -76,7 +76,8 @@ mamela act <op> <resource> <pome-dir>                         # 送る要求を�
 mamela act --confirm <resource> <op> <resource> <pome-dir>    # 名前を打ち直したときだけ実行する
 ~~~
 
-- 対象は、Mamela が作ったと記録したものだけである。引き継ぎ（adopt）の操作は、プロバイダーが `adoptable` と報告したものだけが対象になる。Control Plane のホスト（site の `controlplane.host`）は対象にならない（MAM-POL-0308）。
+- 対象は、Mamela が作ったと記録したものだけである。引き継ぎ（adopt）の操作は、プロバイダーが `adoptable` と報告したものだけが対象になる。Control Plane のホスト（site の `controlplane.host`）は対象にならない（MAM-POL-0308）。観測だけの名前（site の `observe_only`、policy の `observeOnly`）には、引き継ぎの操作だけを行う（MAM-POL-0312。policy のファイルは `--policy` で渡す）。
+- 引き継いだ物は、宣言から消しても削除しない（MAM-PLAN-0308）。消すなら、削除の明示操作で消す。
 - `--confirm` のときは、次の順に進む。
   1. guard（前）。block があれば何もしない。
   2. 意図を記録する（SQLite の `explicit_operations`）。
@@ -110,6 +111,21 @@ max_disk_gib_per_vm = 20
 - **範囲の外は plan で止める**（MAM-SITE-0304）。apply でも、seed を作る前にもう一度確かめる。
 - **予算を超える変更は plan で止める**（MAM-SITE-0305）。apply でも、送る前にもう一度確かめる。
 - **公開リポジトリに実アドレスを書かない。** 固定アドレスを使う宣言は、gitignore した `lab/local/` に置く。
+
+### 4.1 すでにあるマシンを観測だけで迎える
+
+手で作ったマシンは、最初は観測だけにする（[architecture.md](architecture.md) の「観測だけ（observe-only）」）。
+
+~~~toml
+schema = "mamela-site/v1"
+observe_only = ["legacy-web"]   # 最上位のキー。最初の [table] より前に書く（架空の名前）
+~~~
+
+1. site の `observe_only` に、そのマシンの名前を足す。
+2. 宣言が、そのマシンを IDs（VMID など）で名指しする（プロバイダーが対応するとき）。plan は、引き継ぐ対象として待ち（MAM-PLAN-0114）、引き継げば何が変わるかを示す。
+3. `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で引き継ぐ。印が付くだけである。
+4. plan は、宣言との差を `[DENIED: observe-only]` で示す（MAM-POL-0312）。そのマシンの上の宣言（パッケージ、サービス、ファイル）も同じで、mamelet には許可が届かない。
+5. 差が期待どおりなら、`observe_only` から名前を外して plan し直す。外す前の plan は apply されない（MAM-REC-0010）。
 
 ## 5. Control Plane を専用のホストに移す（ADR 0003）
 

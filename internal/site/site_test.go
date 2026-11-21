@@ -57,6 +57,33 @@ func TestLoadRejectsUnknownKeysAndWeakSettings(t *testing.T) {
 	}
 }
 
+// observe_only names machines and resources, as a declaration names them; a name of any other shape is
+// refused, and a key below a table is not the top-level one.
+func TestObserveOnly(t *testing.T) {
+	text, err := os.ReadFile(example)
+	if err != nil {
+		t.Fatal(err)
+	}
+	load := func(top string) (*Site, error) {
+		path := filepath.Join(t.TempDir(), "site.toml")
+		os.WriteFile(path, []byte(strings.Replace(string(text), `schema = "mamela-site/v1"`, `schema = "mamela-site/v1"`+"\n"+top, 1)), 0o600)
+		return Load(path)
+	}
+	if s, err := load(`observe_only = ["legacy-web", "Thing:a@b"]`); err != nil || len(s.ObserveOnly) != 2 || s.ObserveOnly[0] != "legacy-web" {
+		t.Fatalf("%+v %v", s, err)
+	}
+	for _, bad := range []string{`observe_only = ["../x"]`, `observe_only = [""]`, `observe_only = ["a b"]`, `observe_only = "web"`} {
+		if _, err := load(bad); err == nil {
+			t.Errorf("%s: accepted", bad)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "site.toml")
+	os.WriteFile(path, []byte(string(text)+"\nobserve_only = [\"web\"]\n"), 0o600)
+	if _, err := Load(path); err == nil {
+		t.Error("observe_only below a table is taken as the site's")
+	}
+}
+
 func TestControlPlaneListen(t *testing.T) {
 	s := exampleSite(t)
 	for _, c := range []struct {

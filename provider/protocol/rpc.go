@@ -241,6 +241,10 @@ type DiffParams struct {
 // DiffResult lists the changes that make the world match the declaration, in order.
 type DiffResult struct {
 	Changes []Change `json:"changes"`
+	// Previews are the changes an object to adopt (Observed.Adoptable) would need once adopted, for
+	// a person to read before adopting it: the plan shows them, and nothing approves or sends
+	// them. A change of an adoptable resource is a preview, never a change.
+	Previews []Change `json:"previews,omitempty"`
 }
 
 // Change is one planned operation on one resource. A person or the policy approves exactly this:

@@ -438,35 +438,50 @@ func (s *Session) ObserveWith(ctx context.Context, p protocol.ObserveParams) ([]
 	return out.Resources, g.record, nil
 }
 
-// Diff asks the provider for the changes. The provider may send no request.
-func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed, dependencies map[string]protocol.Observed) ([]protocol.Change, error) {
+// Diff asks the provider for the changes, and for the previews of the objects to adopt (what each
+// would need once adopted, protocol.DiffResult.Previews). The provider may send no request. A
+// preview is checked as a change is: the plan shows it, though nothing approves or sends it.
+func (s *Session) Diff(ctx context.Context, desired []protocol.Resource, observed []protocol.Observed, dependencies map[string]protocol.Observed) (changes, previews []protocol.Change, err error) {
 	g := s.gate(phaseDiff, nil, nil)
 	var out protocol.DiffResult
-	err := s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed, Dependencies: dependencies}, &out)
+	err = s.call(ctx, g, protocol.MethodDiff, protocol.DiffParams{Desired: desired, Observed: observed, Dependencies: dependencies}, &out)
 	if err := firstRefusal(g, err); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	for _, c := range out.Changes {
-		if c.Resource == "" {
-			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change %+v has no resource", c)}
-		}
-		// An explicit operation is never planned: a person asks for it (mamela act).
-		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Explicit {
-			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is an explicit operation, which diff never returns", c.Resource, c.Op)}
-		}
-		// A difference the provider never acts on is reported as a change of an operation it
-		// declares unsupported, with nothing to send: the plan shows it and denies it.
-		if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
-			if len(c.Requests) > 0 || len(c.Artifacts) > 0 {
-				return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %s is unsupported and sends nothing, yet it has requests", c.Resource, c.Op)}
+	for _, list := range []struct {
+		what    string
+		changes []protocol.Change
+	}{{"change", out.Changes}, {"preview", out.Previews}} {
+		for _, c := range list.changes {
+			if err := s.checkDiffChange(list.what, c); err != nil {
+				return nil, nil, err
 			}
-			continue
-		}
-		if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
-			return nil, &Error{Code: CodeProtocol, Message: fmt.Sprintf("change of %s: %v", c.Resource, err)}
 		}
 	}
-	return out.Changes, nil
+	return out.Changes, out.Previews, nil
+}
+
+// checkDiffChange checks one change (or preview) a diff returned.
+func (s *Session) checkDiffChange(what string, c protocol.Change) error {
+	if c.Resource == "" {
+		return &Error{Code: CodeProtocol, Message: fmt.Sprintf("%s %+v has no resource", what, c)}
+	}
+	// An explicit operation is never planned: a person asks for it (mamela act).
+	if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Explicit {
+		return &Error{Code: CodeProtocol, Message: fmt.Sprintf("%s of %s: %s is an explicit operation, which diff never returns", what, c.Resource, c.Op)}
+	}
+	// A difference the provider never acts on is reported as a change of an operation it
+	// declares unsupported, with nothing to send: the plan shows it and denies it.
+	if o, ok := s.manifest.Operation(c.Kind, c.Op); ok && o.Support == protocol.Unsupported {
+		if len(c.Requests) > 0 || len(c.Artifacts) > 0 {
+			return &Error{Code: CodeProtocol, Message: fmt.Sprintf("%s of %s: %s is unsupported and sends nothing, yet it has requests", what, c.Resource, c.Op)}
+		}
+		return nil
+	}
+	if _, err := protocol.NewPermit(s.manifest, c, "check", "", "", "check"); err != nil {
+		return &Error{Code: CodeProtocol, Message: fmt.Sprintf("%s of %s: %v", what, c.Resource, err)}
+	}
+	return nil
 }
 
 // Guard runs the provider's safety check (ADR 0006): reads only, the manifest's guard calls, with

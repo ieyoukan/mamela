@@ -164,6 +164,8 @@ func (b *apiBackend) Plan(ctx context.Context, dir string) (api.Planned, error) 
 	out := api.Planned{Digest: p.Digest, Revision: p.Inputs.RevisionDigest}
 	for _, c := range p.Changes {
 		switch {
+		case c.Held():
+			out.Held++ // observe-only: shown, never run, and no failure
 		case c.Status == plan.StatusBlocked || c.Verdict == policy.Denied:
 			out.Blocked++
 		case c.Status == plan.StatusWaiting:

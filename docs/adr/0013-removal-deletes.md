@@ -3,6 +3,7 @@
 - 状態: Accepted（2026-11-14）
 - 日付: 2026-11-14
 - 対象: ADR 0002・0006（削除は計画に入れない、を改める）、0012（承認の場所）。[宣言に追従する削除](../design/declarative-removal.md)の案を、小さくして実装したもの
+- **後の変更:** 1 に 2 つの条件を足した。Mamela が引き継いだ物（`mamela act` の引き継ぎの操作で Mamela の物になった物）は、宣言から消しても削除しない（MAM-PLAN-0308）。Mamela が作った物ではなく、宣言の前からあった物だからである。policy の `observeOnly`（site の `observe_only`）にある名前の物も、削除しない（MAM-POL-0312）。
 
 ## 文脈
 
@@ -23,6 +24,8 @@
 4. その種類が、provider の契約で削除する操作（`removes`）を持つ。
 5. policy の `removal` が `retain` でない（既定は `delete`）。
 6. Control Plane 自身のホストでない（MAM-POL-0308）。
+7. Mamela が引き継いだ物でない（MAM-PLAN-0308）。作成の記録が、`mamela act` の引き継ぎで書いたもの（`plan_digest` が `act:` で始まる）なら、引き継いだ物である。
+8. 観測だけ（observe-only）の名前でない（MAM-POL-0312）。
 
 どれかを満たさない物は、これまでどおり残す。plan は残す理由を示す。
 
@@ -34,6 +37,8 @@
 | MAM-PLAN-0305 | policy が残す（`removal = "retain"`） |
 | MAM-PLAN-0306 | provider が削除を用意できなかった |
 | MAM-POL-0308 | Control Plane 自身のホスト |
+| MAM-PLAN-0308 | Mamela が引き継いだ物（作っていない） |
+| MAM-POL-0312 | 観測だけ（observe-only）の名前 |
 
 ### 2. 宣言の名前（stack）
 

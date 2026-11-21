@@ -304,6 +304,46 @@ func TestAFileWaitsForTheMameletUpdateOfItsDeclaration(t *testing.T) {
 	}
 }
 
+// An observe-only node (MAM-POL-0312) gets no grant of linux of any kind, even one granted before
+// (Extension.Protect): no write, no user's change, no installation, no source. It is still watched.
+func TestAnObserveOnlyNodeGetsNoGrantOfLinux(t *testing.T) {
+	f := newFlow(t, flowFile)
+	f.publish()
+	f.node.round()
+	f.publish()
+	once := func(op, action string) noderev.Once {
+		return noderev.Once{Operation: op, Attempt: 1, Action: action, Expires: f.now.Add(time.Hour)}
+	}
+	if _, err := f.st.PublishNodeRevision(f.ctx, "web", func(prev *noderev.Revision) (noderev.Revision, error) {
+		r := *prev
+		p := partOf(&r)
+		p.Files[0].Write = &Write{Content: "x", SHA256: ContentSHA256("x"), Mode: "0644", Owner: "root", Group: "root", Grant: once(opA, ActionWrite)}
+		p.Users = append(p.Users, User{Name: "deploy", Change: &UserChange{Shell: "/bin/bash", Grant: once(opB, ActionChangeUser)}})
+		p.Artifacts = append(p.Artifacts, Artifact{Path: "/opt/app/app", Install: &Install{URL: "https://example.com/app", SHA256: strings.Repeat("a", 64),
+			Mode: "0755", Owner: "root", Group: "root", Grant: once(opC, ActionInstallArtifact)}})
+		p.AptRepos = append(p.AptRepos, AptRepo{Name: "example", Add: &AptRepoAdd{URIs: []string{"https://example.com/apt"}, Suites: []string{"stable"},
+			Components: []string{"main"}, KeyURL: "https://example.com/key.asc", KeySHA256: strings.Repeat("b", 64), Grant: once("op-dddddddddddddddddddddddd", ActionAddAptRepo)}})
+		setPart(&r, p)
+		return r, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.revision().Grants()); n != 4 {
+		t.Fatalf("setup: %d grants of linux, want one of each kind", n)
+	}
+	held := policy.Default
+	held.ObserveOnly = []string{"web"}
+	if err := node.Publish(f.ctx, f.st, f.g, held, "", map[string]int64{"web": 7001}); err != nil {
+		t.Fatal(err)
+	}
+	if g := f.revision().Grants(); len(g) != 0 {
+		t.Errorf("an observe-only node keeps grants: %+v", g)
+	}
+	if p := partOf(f.revision()); len(p.Files) != 1 {
+		t.Errorf("it is not watched any more: %+v", p)
+	}
+}
+
 // A protected node (the Control Plane's host) gets no write of linux, even one granted before.
 func TestAProtectedNodeGetsNoWrite(t *testing.T) {
 	f := newFlow(t, flowFile)

@@ -31,8 +31,24 @@ type Imported struct {
 	Also []string
 }
 
+// Adopter is a kind whose declaration may name an object that exists and is not Mamela's, to adopt
+// it (a guest by its VMID): observe reports that object as adoptable for the declaration, as an
+// import does (ADR 0009), without a record of one. An object List gives as Adoptable with those IDs,
+// or else the one the kind's Finder finds, is it. An object that carries Mamela's mark (List gives
+// it, not Adoptable nor Foreign) is never adopted for a declaration that names it, and an object is
+// adopted for one declaration only: either is an error of observe that says so. It is Mamela's only
+// once a person adopts it with the kind's adopt operation (mamela act); until then the plan shows
+// what it would need (DiffResult.Previews: the kind's Diff of it) and changes nothing. A
+// declaration that names an object that is not there is one to create, as any other.
+type Adopter interface {
+	// Adopts returns the IDs of the object the declaration names to adopt (nil when it names none).
+	// It reads the declaration only, never the API.
+	Adopts(r protocol.Resource) (map[string]string, error)
+}
+
 // Finder is a kind that finds one object by its IDs, though List does not give it (List gives
-// what carries Mamela's marks; an imported object carries none until it is adopted).
+// what carries Mamela's marks; an imported object carries none until it is adopted). It returns nil
+// when there is none, and never an object that carries Mamela's mark: that is not one to adopt.
 type Finder interface {
 	Find(c *Client, ids map[string]string) (*Object, error)
 }

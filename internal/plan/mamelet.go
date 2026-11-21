@@ -33,7 +33,7 @@ func (b builder) mamelet(r graph.Resource) Change {
 	}
 	for _, other := range b.g.Sorted() {
 		o := other.NodeMamelet
-		if o == nil || o.Node >= want.Node || b.pol.Protected(o.Node) {
+		if o == nil || o.Node >= want.Node || b.pol.Holds(o.Node) {
 			continue
 		}
 		if og, seen := b.snap.Mamelets[other.Name]; seen && og.SHA256 != o.SHA256 {

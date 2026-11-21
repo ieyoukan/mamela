@@ -261,8 +261,12 @@ func (k *Kit) MachineLeaves(name string) bool { return k.b.machineLeaves(name) }
 func (k *Kit) MachineExists(name string) bool { return k.b.machineExists(name) }
 
 // MachineRestarts is whether this plan restarts (reboots, stops) the existing machine called name
-// that the declaration has.
+// that the declaration has. A machine the policy holds (the Control Plane's host, observe-only) is
+// not restarted by any plan: nothing waits for it.
 func (k *Kit) MachineRestarts(name string) bool {
+	if k.b.pol.Holds(name) {
+		return false
+	}
 	for _, m := range k.Resources() {
 		if m.Provided != nil && m.Name == name && k.b.restartsMachine(k.b.snap.Provided[m.ID()]) && k.b.snap.Provided[m.ID()].Observed.Exists {
 			return true
@@ -298,11 +302,13 @@ var (
 	}()
 )
 
-// coreCodes are the codes of the core's notes. A note's code is in the plan's JSON, so it never
-// changes meaning, and no extension may take one.
+// coreCodes are the codes of the core's notes (with the reasons the providers' runtime keeps an
+// object for, MAM-PLAN-0302 to 0308). A note's code is in the plan's JSON, so it never changes
+// meaning, and no extension may take one.
 var coreCodes = []string{"MAM-PLAN-0101", "MAM-PLAN-0102", "MAM-PLAN-0103", "MAM-PLAN-0104", "MAM-PLAN-0105", "MAM-PLAN-0106",
 	"MAM-PLAN-0107", "MAM-PLAN-0110", "MAM-PLAN-0111", "MAM-PLAN-0113", "MAM-PLAN-0114", "MAM-PLAN-0119", "MAM-PLAN-0120",
-	"MAM-PLAN-0122", "MAM-PLAN-0123", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
+	"MAM-PLAN-0122", "MAM-PLAN-0123", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0302",
+	"MAM-PLAN-0303", "MAM-PLAN-0304", "MAM-PLAN-0305", "MAM-PLAN-0306", "MAM-PLAN-0307", "MAM-PLAN-0308"}
 
 // Extension is what a node extension adds to planning.
 type Extension struct {

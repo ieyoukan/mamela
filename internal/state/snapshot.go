@@ -154,6 +154,10 @@ type Provided struct {
 	// SpecDigest identifies the declared spec the changes were computed for (SpecDigest()).
 	SpecDigest string           `json:"specDigest,omitempty"`
 	Changes    []ProvidedChange `json:"changes,omitempty"`
+	// Previews are what an object to adopt (Observed.Adoptable, not Owned) would need once adopted,
+	// as its provider's diff says (protocol.DiffResult.Previews), checked like changes. The plan
+	// shows them; they are never changes: nothing approves or sends them.
+	Previews []ProvidedChange `json:"previews,omitempty"`
 	// Waiting says which resource it needs first does not exist yet or is not Mamela's (ADR
 	// 0007): its changes are not computed until then.
 	Waiting    string    `json:"waiting,omitempty"`

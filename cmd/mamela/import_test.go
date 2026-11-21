@@ -106,13 +106,27 @@ fn main() {
 		}
 		return out
 	}
-	if out := plan(); !strings.Contains(out, "MAM-PLAN-0114") || !strings.Contains(out, "KVItem legacy") || planDigest.MatchString(out) && strings.Contains(out, "PUT") {
+	if out := plan(); !strings.Contains(out, "MAM-PLAN-0114") || !strings.Contains(out, "KVItem legacy") || planDigest.MatchString(out) && strings.Contains(out, "PUT") ||
+		!strings.Contains(out, "nothing would change once adopted: it matches the declaration") {
 		t.Fatalf("before adopting, the plan:\n%s", out)
 	}
+	// What it would need once adopted is shown (the provider's preview), and nothing is sent.
+	api.Put(kvapi.Item{Name: "legacy", Value: "older", Owner: "terraform", Labels: []string{"a", "b"}, Version: 8})
+	if out := plan(); !strings.Contains(out, `update-item (once adopted): value "older" -> "old"`) ||
+		!strings.Contains(out, "once adopted, Mamela would: update-item") || !strings.Contains(out, ". KVItem legacy  [waiting]") || strings.Contains(out, "sends PUT") {
+		t.Fatalf("the preview:\n%s", out)
+	}
+	if it := api.Items()["legacy"]; it.Value != "older" || it.Version != 8 {
+		t.Fatalf("planning changed it: %+v", it)
+	}
+	api.Put(kvapi.Item{Name: "legacy", Value: "old", Owner: "terraform", Labels: []string{"a", "b"}, Version: 9})
 	act := func(args ...string) (int, string) {
 		return mamela(append([]string{"act", "--db", db, "--providers", config, "--toolchain", tools, "--by", "tester"}, args...)...)
 	}
-	if code, out := act("--confirm", "legacy", "adopt-item", "KVItem legacy", decl); code != 0 || !strings.Contains(out, "owner=mamela") {
+	// It is observe-only (MAM-POL-0312): adopting it is the one explicit operation allowed on it.
+	observeOnly := filepath.Join(dir, "observe-only.json")
+	os.WriteFile(observeOnly, []byte(`{"version":"default/1","maxObservationAgeSeconds":600,"allowedAptOrigins":["Ubuntu:"],"observeOnly":["legacy"]}`), 0o644)
+	if code, out := act("--policy", observeOnly, "--confirm", "legacy", "adopt-item", "KVItem legacy", decl); code != 0 || !strings.Contains(out, "owner=mamela") {
 		t.Fatalf("adopt: %d\n%s", code, out)
 	}
 	if it := api.Items()["legacy"]; it.Owner != "mamela" || it.Value != "old" {
@@ -126,5 +140,36 @@ fn main() {
 	}
 	if api.Items()["theirs"].Version != 1 {
 		t.Fatal("someone else's item changed")
+	}
+
+	// Adopted and observe-only: its drift is shown and held, an approval runs nothing, and no explicit
+	// operation but adopting is carried out on it.
+	api.Put(kvapi.Item{Name: "legacy", Value: "drift", Owner: "mamela", Labels: []string{"a", "b"}, Version: 20})
+	code, out = mamela("plan", "--db", db, "--providers", config, "--toolchain", tools, "--policy", observeOnly, decl)
+	m := planDigestRe.FindStringSubmatch(out)
+	if code != 0 || m == nil || !strings.Contains(out, "~ KVItem legacy  [DENIED: observe-only]") || !strings.Contains(out, "MAM-POL-0312") ||
+		!strings.Contains(out, "1 denied (1 observe-only)") {
+		t.Fatalf("observe-only, the plan: %d\n%s", code, out)
+	}
+	if code, out := mamela("approve", "--db", db, "--by", "tester", m[1]); code != 0 || !strings.Contains(out, "1 held by observe-only") {
+		t.Fatalf("approve: %d\n%s", code, out)
+	}
+	if code, out := mamela("apply", "--db", db, "--providers", config, "--toolchain", tools, "--policy", observeOnly, m[1]); code != 0 ||
+		!strings.Contains(out, "observe-only") || api.Items()["legacy"].Value != "drift" {
+		t.Fatalf("apply: %d %+v\n%s", code, api.Items()["legacy"], out)
+	}
+	if code, out := act("--policy", observeOnly, "--confirm", "legacy", "delete-item", "KVItem legacy", decl); code != 1 || !strings.Contains(out, "MAM-POL-0312") ||
+		!strings.Contains(out, "nothing was changed") {
+		t.Fatalf("delete an observe-only item: %d\n%s", code, out)
+	}
+	if _, ok := api.Items()["legacy"]; !ok {
+		t.Fatal("an observe-only item was deleted")
+	}
+
+	// Mamela adopted it and did not make it: once the declaration no longer has it, it is kept
+	// (MAM-PLAN-0308), never deleted (ADR 0013 deletes only what the declaration made).
+	os.WriteFile(filepath.Join(decl, "src/main.emel"), []byte("import Std.Console.{SystemConsole}\nimport Mamela\n\nfn main() {\n  with SystemConsole {\n    Mamela.empty() |> Mamela.print\n  }\n}\n"), 0o644)
+	if out := plan(); !strings.Contains(out, "= KVItem legacy  [retained]") || !strings.Contains(out, "MAM-PLAN-0308") || strings.Contains(out, "- KVItem legacy") {
+		t.Fatalf("an adopted item no longer declared:\n%s", out)
 	}
 }

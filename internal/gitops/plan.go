@@ -80,7 +80,7 @@ func (e *Engine) planAndPost(ctx context.Context, pr int, sha, dir string, atHea
 	if err := e.GitHub.Status(ctx, sha, state, statusContext(dir), desc); err != nil {
 		e.logf("mamelacd: status of %s: %v", short(sha), err)
 	}
-	e.logf("mamelacd: #%d %s at %s: plan %s (%d changes, %d waiting, %d blocked)", pr, dir, short(sha), short(p.Digest), p.Changes, p.Waiting, p.Blocked)
+	e.logf("mamelacd: #%d %s at %s: plan %s (%d changes, %d waiting, %d blocked, %d held by observe-only)", pr, dir, short(sha), short(p.Digest), p.Changes, p.Waiting, p.Blocked, p.Held)
 	if pr == 0 {
 		return p, nil
 	}
@@ -149,18 +149,25 @@ func repeats(previous Plan, p api.Planned, sha string, atHead bool) bool {
 		previous.Changes == 0 && p.Changes == 0 && previous.Waiting == p.Waiting && previous.Blocked == p.Blocked
 }
 
-// planStatus is the commit status a plan sets.
+// planStatus is the commit status a plan sets. A change held by observe-only (MAM-POL-0312) is no
+// failure: it is what the operator asked for, and the status says so.
 func planStatus(p api.Planned) (state, description string) {
+	held := ""
+	if p.Held > 0 {
+		held = fmt.Sprintf("; %d held by observe-only", p.Held)
+	}
 	switch {
 	case p.Blocked > 0:
-		return "failure", fmt.Sprintf("%d blocked, %d waiting", p.Blocked, p.Waiting)
+		return "failure", fmt.Sprintf("%d blocked, %d waiting%s", p.Blocked, p.Waiting, held)
 	case p.Removals > 0:
 		// ADR 0013: only the Control Plane's host approves a deletion; the status says how.
 		return "pending", fmt.Sprintf("deletes %d: on the host, mamela approve %s", p.Removals, p.Digest)
 	case p.Changes > 0:
-		return "pending", fmt.Sprintf("%d changes, approve %s", p.Changes, short(p.Digest))
+		return "pending", fmt.Sprintf("%d changes, approve %s%s", p.Changes, short(p.Digest), held)
 	case p.Waiting > 0:
-		return "pending", fmt.Sprintf("%d waiting for observation or dependencies", p.Waiting)
+		return "pending", fmt.Sprintf("%d waiting for observation or dependencies%s", p.Waiting, held)
+	case p.Held > 0:
+		return "success", fmt.Sprintf("%d held by observe-only (MAM-POL-0312): shown, not applied", p.Held)
 	}
 	return "success", "in sync"
 }
@@ -173,8 +180,12 @@ func (e *Engine) planComment(p api.Planned, dir, sha string, atHead bool) string
 		what = "head of `" + e.Config.Branch + "`"
 	}
 	fmt.Fprintf(&b, "### Mamela plan: `%s` at %s (%s)\n\n", dir, short(sha), what)
-	if p.Changes == 0 && p.Waiting == 0 && p.Blocked == 0 {
+	if p.Changes == 0 && p.Waiting == 0 && p.Blocked == 0 && p.Held == 0 {
 		b.WriteString("Nothing to change: the declaration is in sync.\n\n")
+	}
+	if p.Held > 0 {
+		fmt.Fprintf(&b, "**%d change(s) are held by observe-only (MAM-POL-0312).** Mamela shows how they differ from the declaration and changes nothing of them: no approval runs them, and they are not a failure. "+
+			"When the plan shows what you expect, remove the names from `observeOnly` in the policy file, or from `observe_only` in `mamela.site.toml`, on the Control Plane's host; the next plan shows them as changes to approve.\n\n", p.Held)
 	}
 	fmt.Fprintf(&b, "```text\n%s\n```\n\n", clip(p.Text))
 	if len(p.Programs) > 0 {

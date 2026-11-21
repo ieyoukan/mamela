@@ -51,7 +51,7 @@ systemctl show mamelet -p KillMode -p TimeoutStopUSec   # KillMode=mixed、Timeo
 
 - **更新の仕組みより前の mamelet は、一度だけ手で置き換える。** 古い mamelet は、`mamelet` の許可を含む revision を、知らない項目として断る。断られていることは、plan が MAM-PLAN-0130 で示す（そのノードの変更は Blocked で、理由が mamelet の言葉で出る）。Control Plane のログにも出る。`/usr/local/sbin/mamelet` を置き換えて `systemctl restart mamelet` する（検証環境では `/tmp/vm-update.sh` のような手順）。これ以降は、宣言で更新できる。
 - **新しい mamelet が、起動の前に壊れるとき**（ELF が壊れているなど）は、`-version` で見つかる。起動はするが、すぐ落ちるときは、3 回の起動で戻る。起動して動き続けるが、何かを間違えて報告するときは、戻らない（plan が違いを見つけて、また更新を出す）。
-- **Control Plane のホスト**（保護されたノード）の mamelet は、plan では更新しない（ADR 0003）。手で置き換える。
+- **Control Plane のホスト**（保護されたノード）の mamelet は、plan では更新しない（ADR 0003）。手で置き換える。観測だけ（observe-only）のノードも同じで、更新は MAM-POL-0312 で拒否される。どちらも、1 台ずつの順番を止めない（次のノードは、そのノードを待たない）。
 - **種類の違う Control Plane（古い）** は、`/v1/nodes/<node>/wait` を知らない。mamelet はその場合も動く（今までの間隔）。
 
 ## 実機で確かめたこと（2026-11-16、検証環境の 3 台、push で同期）
