@@ -17,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ieyoukan/mamela/internal/download"
 )
 
 // Downloads pinned by sha256, as mamelet makes them: over https only (a redirect too), bounded in
@@ -34,12 +36,10 @@ const maxUnpacked = 8 * MaxArtifact
 
 // Refusal is an error that says mamelet refuses what it was given (a download that is not the
 // approved one, a redirect to http, an archive whose member is a link), not that something failed
-// on the way and could work another time.
-type Refusal struct{ Reason string }
+// on the way and could work another time. It is the type every download shares (internal/download).
+type Refusal = download.Refusal
 
-func (r *Refusal) Error() string { return r.Reason }
-
-func refusal(format string, args ...any) error { return &Refusal{Reason: fmt.Sprintf(format, args...)} }
+func refusal(format string, args ...any) error { return download.Refuse(format, args...) }
 
 // HTTPSClient is the client downloads are made with: base's transport and timeout (when base is
 // nil: Go's default transport, with a minute to wait for the response's header, and the node's
@@ -58,15 +58,7 @@ func HTTPSClient(base *http.Client) *http.Client {
 	if c.Timeout == 0 {
 		c.Timeout = DownloadTimeout
 	}
-	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		switch {
-		case req.URL.Scheme != "https":
-			return refusal("%s redirects to %s, which is not https: mamelet downloads over https only", via[0].URL.Redacted(), req.URL.Redacted())
-		case len(via) >= 10:
-			return refusal("%s redirects more than 10 times", via[0].URL.Redacted())
-		}
-		return nil
-	}
+	download.HTTPSOnly(c, "mamelet")
 	return c
 }
 
