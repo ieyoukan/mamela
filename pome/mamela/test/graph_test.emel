@@ -251,3 +251,78 @@ fn a_flat_apt_repo_with_its_architectures() {
     "{\"kind\":\"NodeAptRepo\",\"name\":\"app-server/apt-repo/flat\",\"spec\":{\"architectures\":[\"amd64\",\"arm64\"],\"components\":[],\"keySha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"keyUrl\":\"https://deb.example.org/key.asc\",\"name\":\"flat\",\"node\":\"app-server\",\"suites\":[\"./\"],\"uris\":[\"http://deb.example.org/repo\",\"https://mirror.example.org/repo\"]}}",
   )
 }
+
+@test
+fn a_file_from_the_pome_with_the_defaults() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.file_from(app(), "/etc/motd", "files/motd")
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/motd\",\"spec\":{\"contentFrom\":\"files/motd\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/motd\"}},",
+      "{\"kind\":\"TestVM\",\"name\":\"app-server\",\"provider\":\"test\",\"spec\":{\"network\":{\"mode\":\"dhcp\"}}}",
+      "],\"schema\":\"mamela-graph/v2\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
+}
+
+@test
+fn a_file_from_the_pome_with_its_mode_owner_and_restart() {
+  f = Lib.FileFrom(
+    mode: "0640",
+    owner: "www-data",
+    group: "www-data",
+    restart: ["nginx"],
+    ..Lib.file_from_of("/etc/nginx/conf.d/app.conf", "files/nginx/app.conf"),
+  )
+  g = Lib.empty() |> Lib.file_from_with(app(), f)
+  assert Lib.to_json(g)
+    == "{\"resources\":[{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/nginx/conf.d/app.conf\",\"spec\":{\"contentFrom\":\"files/nginx/app.conf\",\"group\":\"www-data\",\"mode\":\"0640\",\"node\":\"app-server\",\"owner\":\"www-data\",\"path\":\"/etc/nginx/conf.d/app.conf\",\"restart\":[\"nginx\"]}}],\"schema\":\"mamela-graph/v1\"}"
+}
+
+@test
+fn a_running_service() {
+  g = Lib.empty() |> Lib.running(app(), "nginx")
+  assert Lib.to_json(g) == Lib.to_json(Lib.empty() |> Lib.service(app(), "nginx", True, True))
+  assert Lib.to_json(g)
+    == "{\"resources\":[{\"kind\":\"NodeService\",\"name\":\"app-server/nginx\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"nginx\"}}],\"schema\":\"mamela-graph/v1\"}"
+}
+
+@test
+fn a_system_user() {
+  g = Lib.empty() |> Lib.system_user(app(), "node-exporter")
+  assert Lib.to_json(g)
+    == "{\"resources\":[{\"kind\":\"NodeUser\",\"name\":\"app-server/user/node-exporter\",\"spec\":{\"name\":\"node-exporter\",\"node\":\"app-server\",\"system\":true}}],\"schema\":\"mamela-graph/v1\"}"
+}
+
+@test
+fn a_systemd_service_from_its_unit() {
+  g = Lib.empty()
+    |> Lib.systemd_service(app(), "app", "[Service]\nExecStart=/usr/local/bin/app\n")
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"NodeService\",\"name\":\"app-server/app\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"app\"}},",
+      "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/systemd/system/app.service\",\"spec\":{\"content\":\"[Service]\\nExecStart=/usr/local/bin/app\\n\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/systemd/system/app.service\",\"restart\":[\"app\"]}}",
+      "],\"schema\":\"mamela-graph/v1\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
+}
+
+@test
+fn a_systemd_service_from_a_file_of_the_pome() {
+  g = Lib.empty()
+    |> Lib.systemd_service_from(app(), "node-exporter", "files/node-exporter.service")
+  expected = String.concat(
+    [
+      "{\"resources\":[",
+      "{\"kind\":\"NodeService\",\"name\":\"app-server/node-exporter\",\"spec\":{\"enabled\":true,\"node\":\"app-server\",\"running\":true,\"service\":\"node-exporter\"}},",
+      "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/systemd/system/node-exporter.service\",\"spec\":{\"contentFrom\":\"files/node-exporter.service\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/systemd/system/node-exporter.service\",\"restart\":[\"node-exporter\"]}}",
+      "],\"schema\":\"mamela-graph/v1\"}",
+    ],
+  )
+  assert Lib.to_json(g) == expected
+}
