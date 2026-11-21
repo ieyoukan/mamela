@@ -74,6 +74,22 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
    - apply の後は先頭を plan し直す。次の段階に変更があれば、新しい digest の承認を待つ。
    - 待ち・拒否のあいだは poll のたびに plan し直す（同じ状態は二度コメントしない）。
 
+## 配布物の版を変える（`mamela.sum` と `mamela pin`）
+
+宣言が sha256 を書かずに取得先の URL だけを書くもの（`Mamela.artifact_pinned`、`Mamela.apt_repo_pinned`、`K3s.server_pinned`、`K3s.agent_pinned`）は、sha256 を宣言の Pome のルートの `mamela.sum` から取る（[graph-schema.md の「配布物の sha256 と mamela.sum」](graph-schema.md#配布物の-sha256-と-mamelasum)）。Control Plane の評価は何も取得せず、`mamela.sum` も書かない。`mamela.sum` は、mamelacd が送る宣言のツリー（GitHub の tarball）にそのまま入る。
+
+版を上げるときは、手元で次のようにする。
+
+1. 宣言の版（URL を作る値。`K3s.server_pinned(node, "v1.37.3+k3s1")`、node_exporter の `v`）を書き換える。URL が変わる。
+2. `mamela pin <pome-dir>` を実行する。`mamela.sum` にない URL だけを取得し（https だけ、512 MiB まで）、sha256 を書き、使われなくなった行を消す。GitHub のリリースの asset は、GitHub が示す digest とも照合し、食い違えば何も書かない。足した行と消した行を表示する。
+3. 表示と `git diff mamela.sum` を確かめる。署名鍵（APT の `keyUrl`）を新しく固定したときは、`mamela pin` の案内に従って、鍵の指紋を配布元が公開しているものと照合する（`mamela pin` が保証するのは、初めて取得したときのバイト列だけ。TOFU）。
+4. 宣言と `mamela.sum` を **同じコミット** にして PR を出す。mamelacd が plan をコメントする。
+
+- **忘れたとき:** `mamela.sum` にない URL があると、評価が `MAM-EVAL-0601` で止まり、PR のコメントにその URL と `mamela pin <declaration>` が出る。何も apply されない。古い sha256 が残ったまま通ることはない（版を変えれば URL が変わる）。
+- **CI で確かめる:** `mamela pin --check <pome-dir>` は、ネットワークを使わず、足りない行（あれば終了コード 1）と使われていない行を示す。何も書かない。
+- **取得し直して確かめる:** `mamela pin --verify <pome-dir>` は、`mamela.sum` のすべての URL を取得し直して照合する（何も書かない）。公開済みのファイルが変わっていれば `MAM-PIN-0302`。
+- **手で直さない:** `mamela.sum` は道具のファイルで、形が違えば（重複、順序、コメント、未知の行）評価が `MAM-EVAL-0602` で止まる。git から戻すか、消して `mamela pin` で書き直す。
+
 ## push で同期する（`sync = "push"`、ADR 0014）
 
 書く人が一人なら、PR もコメントも要らない。`mamelacd.toml` に `sync = "push"` を書くと、`main` の先頭のコミットの作者が `authors` にいれば、その先頭を plan し、変更があれば作者の名前で承認して、次の poll で apply する。結果は commit status（`mamela/<dir>`）に出る。
@@ -164,7 +180,7 @@ mamelacd once --config mamelacd.toml   # mamela_socket = "/tmp/mamela-api.sock"
 
 テストは次の三つで行う。
 
-- **`cmd/mamela/api_test.go`:** 偽の GitHub（`internal/gitops/fakegithub`）と例の kv で、PR → plan → 承認 → マージ → apply を、`mamela api` と mamelacd の通しで確かめる。`cmd/mamela/contentfrom_test.go` は、ファイルを指す宣言（`contentFrom`）のツリーを API で plan し、中身を書いた宣言と同じ revision になること、コミットにないファイルと Pome の外を断ることを確かめる。
+- **`cmd/mamela/api_test.go`:** 偽の GitHub（`internal/gitops/fakegithub`）と例の kv で、PR → plan → 承認 → マージ → apply を、`mamela api` と mamelacd の通しで確かめる。`cmd/mamela/contentfrom_test.go` は、ファイルを指す宣言（`contentFrom`）のツリーを API で plan し、中身を書いた宣言と同じ revision になること、コミットにないファイルと Pome の外を断ることを確かめる。`cmd/mamela/pin_test.go` は、sha256 を `mamela.sum` に任せた宣言のツリーを API で評価し、ツリーの `mamela.sum` から埋めた revision が sha256 を書いた宣言と同じになること、`mamela.sum` がなければ `mamela pin <declaration>` を示すことを確かめる。
 - **`internal/gitops`:** 偽の API で、先頭の扱いを確かめる。偽の GitHub（`fakegithub`）は、`per_page` とページング（Link）、更新時刻（`updated_at`、Date）、アカウントの数値 ID と改名、レート制限（403 と X-RateLimit-*、Retry-After）、5xx、リクエストの記録を模す。模さない偽物は、これらの欠陥（監査 A7）をすり抜けた。
 - **`cmd/mamelacd`:** `status`、`repin`、SIGHUP によるトークンの読み直しを、実際のソケットと偽の GitHub で確かめる。
 - **`internal/api`:** API の拒否を確かめる。

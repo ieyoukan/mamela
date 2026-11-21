@@ -33,6 +33,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/component"
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/sumfile"
 )
 
 // Limits bound one evaluation.
@@ -81,8 +82,23 @@ type Result struct {
 	Stderr     string // diagnostics the program wrote (dbg, print_error_line)
 }
 
-// Evaluate builds and runs the Pome in dir and returns its graph.
+// Evaluate builds and runs the Pome in dir and returns its graph. A sha256 the declaration leaves
+// out is the one its mamela.sum has (sums.go); nothing is downloaded and the file is not written.
 func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
+	sums, err := readSums(dir)
+	if err != nil {
+		return nil, err
+	}
+	res, err := e.evaluate(ctx, dir, sums)
+	var missing *graph.MissingSums
+	if errors.As(err, &missing) {
+		return nil, missingSums(dir, missing)
+	}
+	return res, err
+}
+
+// evaluate builds and runs the Pome in dir and decodes its graph with the sha256 of sums (nil: none).
+func (e *Evaluator) evaluate(ctx context.Context, dir string, sums *sumfile.Sums) (*Result, error) {
 	versions, err := e.Toolchain.Verify(ctx)
 	if err != nil {
 		return nil, err
@@ -124,7 +140,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	g, err := e.decode(stdout, dir)
+	g, err := e.decode(stdout, dir, sums)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +160,10 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 }
 
 // decode reads the graph the Pome in dir printed. The texts its specs take from the Pome's files
-// (contentFrom) are read from dir, before the graph is validated: the graph is the one the same
-// texts written in would make.
-func (e *Evaluator) decode(stdout []byte, dir string) (*graph.Graph, error) {
+// (contentFrom) are read from dir, and the sha256 they leave out are those of sums (its mamela.sum,
+// sums.go), before the graph is validated: the graph is the one the same texts and sha256 written in
+// would make.
+func (e *Evaluator) decode(stdout []byte, dir string, sums *sumfile.Sums) (*graph.Graph, error) {
 	max := e.Limits.MaxFileTexts
 	if max <= 0 {
 		max = graph.MaxDocumentBytes
@@ -157,6 +174,7 @@ func (e *Evaluator) decode(stdout []byte, dir string) (*graph.Graph, error) {
 			Hint: "pass the directory that contains Pome.toml and src/main.emel"}
 	}
 	defer files.Close()
+	files.sums = sums
 	return graph.DecodeWith(stdout, files)
 }
 

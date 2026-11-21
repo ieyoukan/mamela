@@ -13,13 +13,17 @@ import (
 // name before the graph is validated, so that everything after (validation, the canonical form, the
 // digest, the plan, the revision) sees what it would have seen had the text been written in.
 
-// Files are the files of the Pome being evaluated, which a spec may take a text from. Only the
-// evaluation of a Pome has them: a graph read back from the database has its texts written in.
+// Files are the files of the Pome being evaluated, which a spec may take a text from, and its
+// mamela.sum, which a spec may take a sha256 from. Only the evaluation of a Pome has them: a graph
+// read back from the database has its texts and its sha256 written in.
 type Files interface {
 	// Text is the text of the file at path, relative to the root of the Pome (the directory of its
 	// Pome.toml), exactly as it is: at most max bytes of UTF-8 without NUL. What cannot be taken is a
 	// *FileError, which says why and what to do.
 	Text(path string, max int) (string, error)
+	// Sum is the sha256 (64 lowercase hex digits) the Pome's mamela.sum has for url, the sha256 of
+	// what a node downloads from it, when it has one (sums.go).
+	Sum(url string) (sha256 string, ok bool)
 }
 
 // FileError is why a file that a spec names cannot be taken: a stable code (the evaluator's,

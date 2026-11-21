@@ -14,6 +14,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/safetext"
+	"github.com/ieyoukan/mamela/internal/sumfile"
 )
 
 // A declaration may take a text from a file of its own Pome (contentFrom, graph.Files): a unit, a
@@ -32,6 +33,7 @@ type pomeFiles struct {
 	root *os.Root
 	left int // what the declaration may still take from its files, in bytes
 	max  int
+	sums *sumfile.Sums // its mamela.sum (sums.go); nil: none
 }
 
 func newPomeFiles(dir string, max int) (*pomeFiles, error) {

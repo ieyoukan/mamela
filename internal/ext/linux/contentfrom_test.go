@@ -82,3 +82,6 @@ func TestAProblemOfAFileFromThePomeNamesTheFile(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// Sum: these Pomes have no mamela.sum.
+func (m mapFiles) Sum(string) (string, bool) { return "", false }

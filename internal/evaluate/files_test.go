@@ -68,13 +68,13 @@ func TestATextFromAFileIsTheTextWrittenIn(t *testing.T) {
 				`\`, `\\`), `"`, `\"`), "\n", `\n`), "\t", `\t`), "\r", `\r`)
 			inline, err := decodeOnly(0).decode(pomeOutput(
 				`{"content":"`+quoted+`","node":"web","path":"/etc/app/app.conf","restart":["app"]}`,
-				`{"content":"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: app\n","name":"app","node":"web"}`), dir)
+				`{"content":"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: app\n","name":"app","node":"web"}`), dir, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			from, err := decodeOnly(0).decode(pomeOutput(
 				`{"contentFrom":"files/app.conf","node":"web","path":"/etc/app/app.conf","restart":["app"]}`,
-				`{"contentFrom":"manifests/app.yaml","name":"app","node":"web"}`), dir)
+				`{"contentFrom":"manifests/app.yaml","name":"app","node":"web"}`), dir, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -178,7 +178,7 @@ func TestFilesThatAreRefused(t *testing.T) {
 		{name: "not a string", file: `{"contentFrom":["files/app.conf"],"node":"web","path":"/etc/app/app.conf"}`, graph: graph.CodeWrongType, says: "contentFrom"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			g, err := decodeOnly(0).decode(pomeOutput(c.file, c.manifest), dir)
+			g, err := decodeOnly(0).decode(pomeOutput(c.file, c.manifest), dir, nil)
 			var ge *graph.Error
 			if !errors.As(err, &ge) {
 				t.Fatalf("accepted (%v): %s", err, g.Canonical())
@@ -207,10 +207,10 @@ func TestTheTextsOfADeclarationAreBoundedInAll(t *testing.T) {
 	dir := pomeDir(t, map[string]string{"files/a.conf": strings.Repeat("a", 600), "files/b.conf": strings.Repeat("b", 500)})
 	out := pomeOutput(`{"contentFrom":"files/a.conf","node":"web","path":"/etc/app/app.conf"}`,
 		`{"contentFrom":"files/b.conf","name":"app","node":"web"}`)
-	if _, err := decodeOnly(1100).decode(out, dir); err != nil {
+	if _, err := decodeOnly(1100).decode(out, dir, nil); err != nil {
 		t.Fatalf("within the limit: %v", err)
 	}
-	_, err := decodeOnly(1099).decode(out, dir)
+	_, err := decodeOnly(1099).decode(out, dir, nil)
 	var ge *graph.Error
 	if !errors.As(err, &ge) || len(ge.Problems) != 1 || ge.Problems[0].Code != graph.Code(CodeFileTooLarge) ||
 		!strings.Contains(ge.Problems[0].Message, "files/b.conf is one file too many") || !strings.Contains(ge.Problems[0].Message, "1099 bytes in all") {
@@ -227,18 +227,18 @@ func TestTheTextsOfADeclarationAreBoundedInAll(t *testing.T) {
 func TestTheSameTreeGivesTheSameGraph(t *testing.T) {
 	dir := pomeDir(t, map[string]string{"files/app.conf": unit})
 	out := pomeOutput(`{"contentFrom":"files/app.conf","node":"web","path":"/etc/app/app.conf"}`, "")
-	a, err := decodeOnly(0).decode(out, dir)
+	a, err := decodeOnly(0).decode(out, dir, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := decodeOnly(0).decode(out, dir)
+	b, err := decodeOnly(0).decode(out, dir, nil)
 	if err != nil || a.Digest() != b.Digest() {
 		t.Fatalf("%v: %s %s", err, a.Digest(), b.Digest())
 	}
 	if err := os.WriteFile(filepath.Join(dir, "files/app.conf"), []byte(unit+"# changed\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	c, err := decodeOnly(0).decode(out, dir)
+	c, err := decodeOnly(0).decode(out, dir, nil)
 	if err != nil || c.Digest() == a.Digest() {
 		t.Fatalf("a changed file gave the same graph: %v", err)
 	}

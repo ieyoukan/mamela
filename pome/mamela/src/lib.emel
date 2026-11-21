@@ -290,6 +290,16 @@ pub fn artifact_of(path: String, url: String, sha256: String) -> Artifact {
   )
 }
 
+## An artifact at `path`, the download of `url` itself, mode "0755", owned by root, that restarts
+## nothing, whose sha256 is the one the declaration's `mamela.sum` has for `url` (an `Artifact` whose
+## `sha256` is `""` takes it from there). `mamela pin <pome-dir>` downloads `url` once and writes its
+## sha256 into `mamela.sum`; evaluating never downloads, and fails while `mamela.sum` lacks it. The
+## graph and the plan are the same as with the sha256 written in the declaration. Change it with
+## `Artifact(extract: "app-1.0/app", ..Mamela.artifact_pinned(path, url))`.
+pub fn artifact_pinned(path: String, url: String) -> Artifact {
+  artifact_of(path, url, "")
+}
+
 ## Declares that `node` has at `path` the download of `url` whose sha256 is `sha256`, mode "0755",
 ## owned by root (`artifact_with` declares a member of a `.tar.gz`, another mode, owner, or services
 ## to restart). The plan shows the URL and the sha256 and asks for an approval; mamelet installs
@@ -300,8 +310,14 @@ pub fn artifact(graph: Graph, node: Node, path: String, url: String, sha256: Str
   artifact_with(graph, node, artifact_of(path, url, sha256))
 }
 
-## Declares the artifact `a` on `node`.
+## Declares the artifact `a` on `node`. An `a.sha256` of `""` is left out of the graph: the
+## sha256 is the one `mamela.sum` has for `a.url` (`artifact_pinned`).
 pub fn artifact_with(graph: Graph, node: Node, a: Artifact) -> Graph {
+  sum = if a.sha256 == "" {
+    []
+  } else {
+    [("sha256", Text(a.sha256))]
+  }
   extract = if a.extract == "" {
     []
   } else {
@@ -321,12 +337,11 @@ pub fn artifact_with(graph: Graph, node: Node, a: Artifact) -> Graph {
       [
         ("path", Text(a.path)),
         ("url", Text(a.url)),
-        ("sha256", Text(a.sha256)),
         ("mode", Text(a.mode)),
         ("owner", Text(a.owner)),
         ("group", Text(a.group)),
       ],
-      List.append(extract, restart),
+      List.append(sum, List.append(extract, restart)),
     ),
   )
 }
@@ -467,8 +482,32 @@ pub fn apt_repo(
   apt_repo_with(graph, node, apt_repo_of(name, uri, suite, components, key_url, key_sha256))
 }
 
-## Declares the APT source `r` on `node`.
+## Declares that `node` has the APT source `name`, as `apt_repo` does, signed by the key at
+## `key_url` whose sha256 is the one the declaration's `mamela.sum` has for `key_url` (an `AptRepo`
+## whose `key_sha256` is `""` takes it from there, so `apt_repo_with` and `apt_repo_of(..., key_url,
+## "")` work the same way). `mamela pin <pome-dir>` downloads the key once and writes its sha256 into
+## `mamela.sum`: it pins the key it downloaded then, so compare the key's fingerprint with the one
+## its vendor publishes before you commit `mamela.sum`. Evaluating never downloads.
+pub fn apt_repo_pinned(
+  graph: Graph,
+  node: Node,
+  name: String,
+  uri: String,
+  suite: String,
+  components: List[String],
+  key_url: String,
+) -> Graph {
+  apt_repo_with(graph, node, apt_repo_of(name, uri, suite, components, key_url, ""))
+}
+
+## Declares the APT source `r` on `node`. An `r.key_sha256` of `""` is left out of the graph: the
+## key's sha256 is the one `mamela.sum` has for `r.key_url` (`apt_repo_pinned`).
 pub fn apt_repo_with(graph: Graph, node: Node, r: AptRepo) -> Graph {
+  key_sum = if r.key_sha256 == "" {
+    []
+  } else {
+    [("keySha256", Text(r.key_sha256))]
+  }
   architectures = if List.is_empty(r.architectures) {
     []
   } else {
@@ -486,9 +525,8 @@ pub fn apt_repo_with(graph: Graph, node: Node, r: AptRepo) -> Graph {
         ("suites", Items(r.suites.map(Text))),
         ("components", Items(r.components.map(Text))),
         ("keyUrl", Text(r.key_url)),
-        ("keySha256", Text(r.key_sha256)),
       ],
-      architectures,
+      List.append(key_sum, architectures),
     ),
   )
 }

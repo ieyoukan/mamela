@@ -351,7 +351,8 @@ func decodeAptRepo(d *graph.SpecDecoder) any {
 	d.Need(s.Suites != nil, "suites")
 	d.Need(s.Components != nil, "components")
 	d.Need(s.KeyURL != nil, "keyUrl")
-	d.Need(s.KeySHA256 != nil, "keySha256")
+	// Left out, the key's sha256 is mamela.sum's for its URL (docs/design/declaration-inputs.md, 2).
+	d.Need(s.KeySHA256 != nil || d.Summed(), "keySha256")
 	var archs []string
 	if s.Architectures != nil {
 		if string(s.Architectures) == "null" || json.Unmarshal(s.Architectures, &archs) != nil {
@@ -365,8 +366,14 @@ func decodeAptRepo(d *graph.SpecDecoder) any {
 	if len(archs) == 0 {
 		archs = nil
 	}
-	return &AptRepoSpec{Node: *s.Node, Name: *s.Name, URIs: *s.URIs, Suites: *s.Suites, Components: slices.Clip(*s.Components),
-		Architectures: archs, KeyURL: *s.KeyURL, KeySHA256: *s.KeySHA256}
+	r := &AptRepoSpec{Node: *s.Node, Name: *s.Name, URIs: *s.URIs, Suites: *s.Suites, Components: slices.Clip(*s.Components),
+		Architectures: archs, KeyURL: *s.KeyURL}
+	if s.KeySHA256 != nil {
+		r.KeySHA256 = *s.KeySHA256
+	} else {
+		d.FromSum("keySha256", r.KeyURL, true, func(h string) { r.KeySHA256 = h })
+	}
+	return r
 }
 
 func validateAptRepo(v *graph.Validator, r graph.Resource) {

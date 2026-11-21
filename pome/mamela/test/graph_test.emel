@@ -253,6 +253,59 @@ fn a_flat_apt_repo_with_its_architectures() {
 }
 
 @test
+fn a_pinned_artifact_leaves_its_sha256_to_mamela_sum() {
+  a = Lib.Artifact(
+    extract: "node_exporter-1.8.2.linux-amd64/node_exporter",
+    restart: ["node_exporter"],
+    ..Lib.artifact_pinned(
+      "/usr/local/bin/node_exporter",
+      "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz",
+    ),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.artifact_with(app(), a)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeArtifact\",\"name\":\"app-server/artifact/usr/local/bin/node_exporter\",\"spec\":{\"extract\":\"node_exporter-1.8.2.linux-amd64/node_exporter\",\"group\":\"root\",\"mode\":\"0755\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/usr/local/bin/node_exporter\",\"restart\":[\"node_exporter\"],\"url\":\"https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz\"}}",
+  )
+  assert !Lib.to_json(g).contains("sha256")
+}
+
+@test
+fn a_pinned_apt_repo_leaves_the_sha256_of_its_key_to_mamela_sum() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.apt_repo_pinned(
+      app(),
+      "caddy",
+      "https://dl.cloudsmith.io/public/caddy/stable/deb/debian",
+      "any-version",
+      ["main"],
+      "https://dl.cloudsmith.io/public/caddy/stable/gpg.key",
+    )
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptRepo\",\"name\":\"app-server/apt-repo/caddy\",\"spec\":{\"components\":[\"main\"],\"keyUrl\":\"https://dl.cloudsmith.io/public/caddy/stable/gpg.key\",\"name\":\"caddy\",\"node\":\"app-server\",\"suites\":[\"any-version\"],\"uris\":[\"https://dl.cloudsmith.io/public/caddy/stable/deb/debian\"]}}",
+  )
+}
+
+@test
+fn a_pinned_apt_repo_record_with_its_architectures() {
+  r = Lib.AptRepo(
+    architectures: ["amd64"],
+    ..Lib.apt_repo_of(
+      "flat",
+      "https://deb.example.org/repo",
+      "./",
+      [],
+      "https://deb.example.org/key.asc",
+      "",
+    ),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.apt_repo_with(app(), r)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptRepo\",\"name\":\"app-server/apt-repo/flat\",\"spec\":{\"architectures\":[\"amd64\"],\"components\":[],\"keyUrl\":\"https://deb.example.org/key.asc\",\"name\":\"flat\",\"node\":\"app-server\",\"suites\":[\"./\"],\"uris\":[\"https://deb.example.org/repo\"]}}",
+  )
+}
+
+@test
 fn a_file_from_the_pome_with_the_defaults() {
   g = Lib.empty()
     |> machine("app-server", Lib.Dhcp)

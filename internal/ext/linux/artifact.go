@@ -125,7 +125,8 @@ func decodeArtifact(d *graph.SpecDecoder) any {
 	}
 	d.Need(s.Node != nil, "node")
 	d.Need(s.URL != nil, "url")
-	d.Need(s.SHA256 != nil, "sha256")
+	// Left out, the sha256 is mamela.sum's for the URL (docs/design/declaration-inputs.md, 2).
+	d.Need(s.SHA256 != nil || d.Summed(), "sha256")
 	d.Need(s.Path != nil, "path")
 	extract := d.OptionalString(s.Extract, "extract")
 	mode := d.OptionalString(s.Mode, "mode")
@@ -141,7 +142,12 @@ func decodeArtifact(d *graph.SpecDecoder) any {
 	if !d.OK() {
 		return nil
 	}
-	a := &ArtifactSpec{Node: *s.Node, URL: *s.URL, SHA256: *s.SHA256, Path: *s.Path, Mode: DefaultArtifactMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart}
+	a := &ArtifactSpec{Node: *s.Node, URL: *s.URL, Path: *s.Path, Mode: DefaultArtifactMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart}
+	if s.SHA256 != nil {
+		a.SHA256 = *s.SHA256
+	} else {
+		d.FromSum("sha256", a.URL, false, func(h string) { a.SHA256 = h })
+	}
 	if extract != nil {
 		a.Extract = *extract
 	}

@@ -22,7 +22,7 @@ func TestANamedPipeIsNotWaitedOn(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := decodeOnly(0).decode(pomeOutput(`{"contentFrom":"pipe","node":"web","path":"/etc/app/app.conf"}`, ""), dir)
+		_, err := decodeOnly(0).decode(pomeOutput(`{"contentFrom":"pipe","node":"web","path":"/etc/app/app.conf"}`, ""), dir, nil)
 		done <- err
 	}()
 	select {

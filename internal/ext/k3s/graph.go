@@ -10,6 +10,7 @@ import (
 
 	"github.com/ieyoukan/mamela/internal/graph"
 	"github.com/ieyoukan/mamela/internal/names"
+	"github.com/ieyoukan/mamela/internal/noderev"
 	"github.com/ieyoukan/mamela/internal/safetext"
 )
 
@@ -206,7 +207,8 @@ func decodeK3s(d *graph.SpecDecoder) any {
 	d.Need(s.Node != nil, "node")
 	d.Need(s.Role != nil, "role")
 	d.Need(s.Version != nil, "version")
-	d.Need(s.SHA256 != nil, "sha256")
+	// Left out, the sha256 is mamela.sum's for the release's binary (PinnedURL).
+	d.Need(s.SHA256 != nil || d.Summed(), "sha256")
 	server := d.OptionalString(s.Server, "server")
 	if server != nil && *server == "" {
 		d.Invalid(graph.CodeInvalidValue, "server", "the server is an empty string", "leave the member out (a k3s server has no server), or name the node of the server (an agent)")
@@ -214,11 +216,23 @@ func decodeK3s(d *graph.SpecDecoder) any {
 	if !d.OK() {
 		return nil
 	}
-	k := &Spec{Node: *s.Node, Role: Role(*s.Role), Version: *s.Version, SHA256: *s.SHA256}
+	k := &Spec{Node: *s.Node, Role: Role(*s.Role), Version: *s.Version}
+	if s.SHA256 != nil {
+		k.SHA256 = *s.SHA256
+	} else {
+		d.FromSum("sha256", PinnedURL(k.Version), false, func(h string) { k.SHA256 = h })
+	}
 	if server != nil {
 		k.Server = *server
 	}
 	return k
+}
+
+// PinnedURL is the download whose sha256 a NodeK3s without one takes from mamela.sum: the release's
+// binary for linux/amd64, the one architecture whose sha256 a declaration names for now (a spec has
+// one sha256, and mamelet on another architecture downloads another asset).
+func PinnedURL(version string) string {
+	return noderev.K3sReleases + "/" + noderev.K3sTag(version) + "/k3s"
 }
 
 func decodeK3sManifest(d *graph.SpecDecoder) any {

@@ -157,6 +157,8 @@ type SpecDecoder struct {
 	problems []Problem
 	files    Files             // the Pome's files (DecodeWith); nil: none
 	sources  map[string]string // the texts read from them (Text), by member
+	id       string            // the resource's ID
+	sums     *sumState         // what mamela.sum lacks (DecodeWith; FromSum)
 }
 
 // Strict decodes the spec into v (a struct of pointer members, to tell a missing member from a

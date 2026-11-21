@@ -32,6 +32,10 @@ const (
 	CodeFileNotRegular Code = "MAM-EVAL-0504" // a directory, a named pipe, a device
 	CodeFileNotText    Code = "MAM-EVAL-0505" // not UTF-8, or it has a NUL
 	CodeFileTooLarge   Code = "MAM-EVAL-0506" // larger than the member takes, or the files together larger than MaxFileTexts
+
+	// mamela.sum, the sha256 of what a declaration downloads (sums.go).
+	CodeSumMissing   Code = "MAM-EVAL-0601" // the declaration leaves a sha256 to mamela.sum, which does not have it
+	CodeSumMalformed Code = "MAM-EVAL-0602" // mamela.sum is not the file mamela pin writes
 )
 
 // Stage is the step of evaluation that failed.
@@ -43,6 +47,7 @@ const (
 	StageInspect   Stage = "inspect"
 	StageRun       Stage = "run"
 	StageCompare   Stage = "compare"
+	StageSums      Stage = "sums" // mamela.sum
 )
 
 // Error is an evaluation failure written for a person.
