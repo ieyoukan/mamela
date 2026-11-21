@@ -42,5 +42,6 @@ and `scripts/check.sh`.
 
 - [Architecture](docs/architecture.md) / [Development plan](docs/development.md) / [Lab](docs/lab.md) / [Releasing Pomes](docs/releasing.md)
 - [Emela / WASM evaluation findings](docs/emela-wasm.md) / [`mamela-graph/v1`](docs/graph-schema.md) / [Reason codes](docs/reason-codes.md)
+- [Design: declaration inputs (files referenced by path, `mamela.sum` and `mamela pin`)](docs/design/declaration-inputs.md) (adopted; being implemented)
 - [Writing a provider](docs/provider-authoring.md) (`mamela provider new` writes one that passes its tests) / [ADR 0002: the provider contract](docs/adr/0002-provider-contract.md) / [ADR 0006: Proxmox out of the core](docs/adr/0006-proxmox-out-of-core.md) / [ADR 0009: provider kit, generated Pomes, moving from Terraform](docs/adr/0009-provider-kit-and-imports.md)
 - [Running from a repository of declarations with mamelacd (pull requests, approval by comment)](docs/gitops.md) / [ADR 0010](docs/adr/0010-gitops-from-the-control-plane.md), [ADR 0012](docs/adr/0012-mamelacd.md) (its trust boundary: section 6), [ADR 0011: continuous sync and checks while writing (proposal)](docs/adr/0011-continuous-sync-and-authoring-checks.md)
