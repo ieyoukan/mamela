@@ -26,3 +26,30 @@ fn a_manifest_on_the_server() {
     "{\"kind\":\"NodeK3sManifest\",\"name\":\"s/manifest/argocd\",\"spec\":{\"content\":\"kind: Namespace\\nmetadata:\\n  name: argocd\\n\",\"name\":\"argocd\",\"node\":\"s\"}}",
   )
 }
+
+@test
+fn a_pinned_server_and_agent_leave_their_sha256_to_mamela_sum() {
+  s = Mamela.Node(name: "s")
+  a = Mamela.Node(name: "a")
+  json = Mamela.to_json(
+    Mamela.empty()
+      |> Lib.server_pinned(s, "v1.33.5+k3s1")
+      |> Lib.agent_pinned(a, s, "v1.33.5+k3s1"),
+  )
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"s/k3s\",\"spec\":{\"node\":\"s\",\"role\":\"server\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+  assert json.contains(
+    "{\"kind\":\"NodeK3s\",\"name\":\"a/k3s\",\"spec\":{\"node\":\"a\",\"role\":\"agent\",\"server\":\"s\",\"version\":\"v1.33.5+k3s1\"}}",
+  )
+  assert !json.contains("sha256")
+}
+
+@test
+fn a_manifest_from_a_file_of_the_pome() {
+  s = Mamela.Node(name: "s")
+  json = Mamela.to_json(Mamela.empty() |> Lib.manifest_from(s, "argocd", "manifests/argocd.yaml"))
+  assert json.contains(
+    "{\"kind\":\"NodeK3sManifest\",\"name\":\"s/manifest/argocd\",\"spec\":{\"contentFrom\":\"manifests/argocd.yaml\",\"name\":\"argocd\",\"node\":\"s\"}}",
+  )
+}

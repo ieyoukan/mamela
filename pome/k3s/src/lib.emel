@@ -44,6 +44,39 @@ pub fn agent(
   )
 }
 
+## Declares that `node` runs a k3s server of `version`, whose binary's sha256 is the one the
+## declaration's `mamela.sum` has for the release's linux/amd64 binary
+## (`https://github.com/k3s-io/k3s/releases/download/<version>/k3s`, `+` written `%2B`). Changing
+## `version` changes that URL: run `mamela pin <pome-dir>`, which downloads the binary once and
+## writes its sha256 into `mamela.sum`, and commit both. Evaluating never downloads, and fails while
+## `mamela.sum` lacks it. The graph and the plan are the same as `server` with the sha256 written.
+pub fn server_pinned(graph: Mamela.Graph, node: Node, version: String) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    node,
+    "NodeK3s",
+    "#{node.name}/k3s",
+    [("role", Text("server")), ("version", Text(version))],
+  )
+}
+
+## Declares that `node` runs a k3s agent of `version` that joins the server on `server`, whose
+## binary's sha256 is the one `mamela.sum` has, as for `server_pinned`.
+pub fn agent_pinned(
+  graph: Mamela.Graph,
+  node: Node,
+  server: Node,
+  version: String,
+) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    node,
+    "NodeK3s",
+    "#{node.name}/k3s",
+    [("role", Text("agent")), ("server", Text(server.name)), ("version", Text(version))],
+  )
+}
+
 ## Declares that the k3s server on `server` has the manifest `name` in its auto-deploy directory
 ## (`mamela-<name>.yaml`): k3s applies what is in `content` (a workload, a `HelmChart`) with
 ## cluster-admin rights, and applies it again whenever it changes. The plan shows the whole
@@ -56,5 +89,25 @@ pub fn manifest(graph: Mamela.Graph, server: Node, name: String, content: String
     "NodeK3sManifest",
     "#{server.name}/manifest/#{name}",
     [("name", Text(name)), ("content", Text(content))],
+  )
+}
+
+## Declares the manifest `name` on the k3s server on `server`, as `manifest` does, whose content is
+## the file `source` of the declaration's Pome: a path relative to the Pome's root
+## (`"manifests/argocd.yaml"`), without `..`, that is not a link. Mamela reads the file when it
+## evaluates the declaration (its bytes as they are) and puts it into the graph as `content`, so the
+## graph and the plan are the same as `manifest` with that content.
+pub fn manifest_from(
+  graph: Mamela.Graph,
+  server: Node,
+  name: String,
+  source: String,
+) -> Mamela.Graph {
+  Mamela.on_node(
+    graph,
+    server,
+    "NodeK3sManifest",
+    "#{server.name}/manifest/#{name}",
+    [("name", Text(name)), ("contentFrom", Text(source))],
   )
 }
