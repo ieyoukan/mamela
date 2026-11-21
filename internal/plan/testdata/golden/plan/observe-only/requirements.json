@@ -1,0 +1,1 @@
+[{"resource":"TestVM db","op":"resize-vm","provider":"","support":"unsupported","why":"no provider handles TestVM","resolved":false,"always":false}]

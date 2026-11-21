@@ -24,10 +24,12 @@ import (
 //	  and still planned) retry_max + 1 times in a row    -> HeadStopped (until another commit, or a host approval)
 //	an approved plan of exactly the head's declaration   -> applied: HeadFailed, or planned again
 //	waiting, blocked or unplanned (same head)            -> planned again
-//	in sync (same head), the resync interval has passed  -> planned again, to find drift
+//	in sync or held (same head), the resync interval
+//	  has passed                                         -> planned again, to find drift (or that
+//	                                                        observe-only was lifted)
 //	failed (same head), the retry interval has passed,
 //	  and fewer than retry_max failures                  -> planned again, and with sync = "push" applied again
-//	pending, in sync or failed (same head)               -> left alone
+//	pending, in sync, held or failed (same head)         -> left alone
 //	a new head, the declaration in sync before           -> HeadInSync, nothing to plan
 //	any other new head                                   -> planned
 //
@@ -36,8 +38,10 @@ import (
 // (at most maxChain per poll). A declaration that waits for what it depends on (a machine, an
 // agent's report) makes the next poll come sooner (active_interval).
 //
-// "Planned" ends in HeadInSync, HeadPending, HeadWaiting or HeadBlocked (the plan's counts), or
-// HeadUnplanned when the plan could not be made. With sync = "push" (ADR 0014) a plan with
+// "Planned" ends in HeadInSync, HeadHeld, HeadPending, HeadWaiting or HeadBlocked (the plan's
+// counts), or HeadUnplanned when the plan could not be made. A plan whose only changes are held by
+// observe-only (MAM-POL-0312) is HeadHeld: nothing is to approve or apply, nothing failed, and it is
+// not planned again at each poll. With sync = "push" (ADR 0014) a plan with
 // changes and no deletion is approved right after it is planned, as the head's author: the next
 // poll applies it.
 
@@ -209,6 +213,8 @@ func headState(p api.Planned) string {
 		return HeadPending
 	case p.Waiting > 0:
 		return HeadWaiting
+	case p.Held > 0:
+		return HeadHeld
 	}
 	return HeadInSync
 }
@@ -351,11 +357,12 @@ func (h *headSync) plan(ctx context.Context, rev string) error {
 	return h.recordPlanned(ctx, rev, p, err)
 }
 
-// resyncDue says whether a declaration that is in sync at the head has not been planned for the
-// resync interval: the world may have drifted from it.
+// resyncDue says whether a declaration that is in sync at the head (or held by observe-only) has not
+// been planned for the resync interval: the world may have drifted from it, or observe-only may have
+// been lifted.
 func (e *Engine) resyncDue(last Head) bool {
 	d, _ := e.Config.resync()
-	return d > 0 && last.State == HeadInSync && e.Store.Now().UnixMilli()-last.UpdatedMs >= d.Milliseconds()
+	return d > 0 && (last.State == HeadInSync || last.State == HeadHeld) && e.Store.Now().UnixMilli()-last.UpdatedMs >= d.Milliseconds()
 }
 
 // retryDue says whether the head's last apply failed, was a while ago, and may be tried again.

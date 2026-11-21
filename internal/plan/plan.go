@@ -207,6 +207,12 @@ func (b builder) undeclared(declared map[string]bool) []Change {
 		case b.pol.Protected(o.Name):
 			c.Status, c.Note = StatusRetained, &Note{Code: string(policy.ProtectedDecision.Code), Message: policy.ProtectedDecision.Message, Hint: policy.ProtectedDecision.Hint}
 			kept = append(kept, c)
+		case b.pol.ObservesOnly(o.Name):
+			// Nothing observe-only is deleted: a plan only shows how it differs.
+			c.Status, c.Note = StatusRetained, &Note{Code: string(policy.ObserveOnlyDecision.Code),
+				Message: "not in this declaration; kept: it is observe-only (observeOnly in the policy, or observe_only in mamela.site.toml), and Mamela deletes nothing that is",
+				Hint:    "to have it deleted, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again: the plan then shows the deletion"}
+			kept = append(kept, c)
 		case !b.pol.Deletes():
 			c.Status = StatusRetained
 			c.Note = &Note{Code: "MAM-PLAN-0305", Message: "not in this declaration; kept: the policy retains what a declaration no longer has (removal = retain)"}
@@ -233,6 +239,29 @@ func keptNote(o state.Provided) *Note {
 	}
 	return &Note{Code: "MAM-PLAN-0301", Message: "not in this declaration; kept unchanged",
 		Hint: "its provider's explicit delete operation removes it (mamela act)"}
+}
+
+// Held is whether the change is denied only because its name is held by observe-only (MAM-POL-0312):
+// every operation of it that is denied is denied for that, so that without it the change could be
+// approved. The plan shows it; nothing runs it.
+func (c Change) Held() bool {
+	if c.Status != StatusChange || c.Verdict != policy.Denied || len(c.Operations) == 0 {
+		return false
+	}
+	return !slices.ContainsFunc(c.Operations, func(o Operation) bool {
+		return o.Decision.Verdict == policy.Denied && o.Decision.Code != policy.ObserveOnlyDecision.Code
+	})
+}
+
+// Held counts the changes held by observe-only (Change.Held).
+func (p *Plan) Held() int {
+	n := 0
+	for _, c := range p.Changes {
+		if c.Held() {
+			n++
+		}
+	}
+	return n
 }
 
 // Removals counts the deletions in the plan.
@@ -311,7 +340,9 @@ func (b builder) provided(r graph.Resource) Change {
 		c.Verdict = policy.Stricter(c.Verdict, d.Verdict)
 		c.ProviderChanges = append(c.ProviderChanges, pc.Change)
 	}
-	if got.Observed.Exists && b.restartsMachine(got) {
+	// A restart the policy holds (the Control Plane's host, observe-only) is shown denied, never as
+	// waiting for its turn: it does not happen.
+	if got.Observed.Exists && b.restartsMachine(got) && !b.pol.Holds(r.Name) {
 		if note := b.machineRestartGate(r); note != nil {
 			w := NewChange(r)
 			w.Provider, w.Status, w.Note = c.Provider, StatusWaiting, note
@@ -605,7 +636,7 @@ func (b builder) service(r graph.Resource) Change {
 
 // machineLeaves is whether this plan deletes the machine called name (ADR 0013).
 func (b builder) machineLeaves(name string) bool {
-	if !b.pol.Deletes() || b.pol.Protected(name) {
+	if !b.pol.Deletes() || b.pol.Holds(name) {
 		return false
 	}
 	for id, o := range b.snap.Provided {
@@ -674,14 +705,20 @@ func (b builder) refusal(node string) *Note {
 		Hint:    hint}
 }
 
-// guard denies every operation of a change on a node the Control Plane must never change: its own
-// host (ADR 0003). The change is still shown.
+// guard denies every operation of a change of, or on, a name the Control Plane must not change: its
+// own host (ADR 0003, MAM-POL-0308), or an observe-only name (MAM-POL-0312). The change is still
+// shown. Observe-only leaves an operation that is denied for its own reason as it is: it stays
+// denied once observe-only is lifted, and its reason says why.
 func (b builder) guard(node string, c Change) Change {
-	if !b.pol.Protected(node) || c.Status != StatusChange {
+	d, held := b.pol.Held(node)
+	if !held || c.Status != StatusChange {
 		return c
 	}
 	for i := range c.Operations {
-		c.Operations[i].Decision = policy.ProtectedDecision
+		if d.Code == policy.ObserveOnlyDecision.Code && c.Operations[i].Decision.Verdict == policy.Denied {
+			continue
+		}
+		c.Operations[i].Decision = d
 	}
 	c.Verdict = policy.Denied
 	return c

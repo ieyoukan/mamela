@@ -192,6 +192,7 @@ func TestGoldenDecisions(t *testing.T) {
 		}
 	}
 	rows = append(rows, row{policy.Subject{Op: "protected"}, policy.ProtectedDecision})
+	rows = append(rows, row{policy.Subject{Op: "observe-only"}, policy.ObserveOnlyDecision})
 	golden(t, "decisions.json", jsonOf(t, rows))
 }
 

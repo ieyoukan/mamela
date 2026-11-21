@@ -203,7 +203,7 @@ func (b k3sPlanner) retireNode(r graph.Resource, got state.K3s, c plan.Change) p
 	}
 	byName := slices.SortedFunc(slices.Values(got.Nodes), func(x, y state.K3sNode) int { return strings.Compare(x.Name, y.Name) })
 	for _, n := range byName {
-		if declared[n.Name] || b.Policy().Protected(n.Name) {
+		if declared[n.Name] || b.Policy().Holds(n.Name) {
 			continue
 		}
 		var why string

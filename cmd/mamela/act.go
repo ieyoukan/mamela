@@ -30,6 +30,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	db := fs.String("db", envOr("MAMELA_DB", defaultDB), "state database (SQLite)")
 	sitePath := addSiteFlag(fs)
 	providersFile := addProvidersFlag(fs)
+	policyFile := fs.String("policy", "", "policy JSON file in force, as for mamela plan (its observeOnly is honored, with the site's observe_only)")
 	recoverID := fs.String("recover", "", "re-observe a recorded operation without resending it")
 	confirm := fs.String("confirm", "", "the resource's name, typed again: carry the operation out")
 	by := fs.String("by", envOr("USER", ""), "who confirms")
@@ -39,7 +40,8 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 			"An explicit operation of a provider (for Proxmox: delete-vm, reboot-vm, reset-vm, adopt-vm): never\n"+
 			"planned, carried out only when a person types the resource's name again (--confirm <name>).\n"+
 			"<resource> is its name or its ID (\"ProxmoxVM web\"). It acts only on what Mamela recorded creating\n"+
-			"(or, to adopt, what the provider reports as adoptable), never on the Control Plane's own host.\n"+
+			"(or, to adopt, what the provider reports as adoptable), never on the Control Plane's own host, and\n"+
+			"on an observe-only name (observeOnly, observe_only) only an operation that adopts.\n"+
 			"Without --confirm, it shows the requests it would send and changes nothing.\n\nFlags:\n")
 		fs.PrintDefaults()
 	}
@@ -52,6 +54,10 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	}
 	op, target, dir := protocol.Op(fs.Arg(0)), fs.Arg(1), fs.Arg(2)
 	site, err := loadSite(*sitePath)
+	if err != nil {
+		return report(stderr, err)
+	}
+	pol, err := currentPolicy(site, *policyFile)
 	if err != nil {
 		return report(stderr, err)
 	}
@@ -114,9 +120,8 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	case !o.Adopts && !obs.Owned:
 		return report(stderr, fmt.Errorf("MAM-ACT-0105: Mamela has no record of creating %s (Foreign, or not finished); it acts only on its own resources", obs.ID))
 	}
-	if site != nil && site.ControlPlane.Host == pr.Name {
-		d := policy.ProtectedDecision
-		return report(stderr, fmt.Errorf("%s: %s\n  hint: %s", d.Code, d.Message, d.Hint))
+	if err := actHeld(pol, pr.Name, op, o.Adopts); err != nil {
+		return report(stderr, err)
 	}
 	var desired *protocol.Resource
 	for _, r := range res.Graph.Resources {
@@ -243,6 +248,24 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 		fmt.Fprintf(stderr, "MAM-ACT-0202: %s %s: %v\n", op, outcome, r.Err)
 	}
 	return 1
+}
+
+// actHeld refuses an explicit operation on a name the policy holds: on the Control Plane's own host,
+// every operation (MAM-POL-0308, ADR 0003); on an observe-only name, every operation but one that
+// adopts (MAM-POL-0312). Adopting writes only the provider's marks of Mamela's (its contract) and is
+// how an object Mamela observes becomes Mamela's while it stays observe-only.
+func actHeld(pol policy.Policy, name string, op protocol.Op, adopts bool) error {
+	d, held := pol.Held(name)
+	switch {
+	case !held:
+		return nil
+	case d.Code == policy.ObserveOnlyDecision.Code && adopts:
+		return nil
+	case d.Code == policy.ObserveOnlyDecision.Code:
+		return fmt.Errorf("%s: %s is observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela changes nothing of it or on it, and mamela act carries out no explicit operation on it but one that adopts it; nothing was changed\n"+
+			"  hint: to %s it, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host first", d.Code, name, op)
+	}
+	return fmt.Errorf("%s: %s\n  hint: %s", d.Code, d.Message, d.Hint)
 }
 
 // findProvided finds a provider's resource by its ID or its name (which must name one resource).

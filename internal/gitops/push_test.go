@@ -1,12 +1,14 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/api"
+	"github.com/ieyoukan/mamela/internal/gitops/fakegithub"
 )
 
 // pushFixture follows the branch with sync = "push" (ADR 0014): nobody comments an approval.
@@ -387,5 +389,97 @@ func TestFailedPlanStatusIsReplaced(t *testing.T) {
 	f.once()
 	if s := f.lastStatus(head); s.State != "success" {
 		t.Fatalf("the failure was left on a head that is in sync: %+v", s)
+	}
+}
+
+// A plan whose only changes are held by observe-only (MAM-POL-0312) is not a failure and not a loop:
+// the head's status says they are held (success), the plan is not approved by the push nor applied,
+// and it is not planned again at each poll (only at the resync interval, which finds it lifted).
+func TestHeldByObserveOnly(t *testing.T) {
+	f := pushFixture(t)
+	held := true
+	f.m.state = func(rev string) api.Planned {
+		switch {
+		case held:
+			return api.Planned{Text: "~ Item web  [DENIED: observe-only]", Held: 1}
+		case f.m.world != rev:
+			return api.Planned{Text: "~ Item web", Changes: 1}
+		}
+		return api.Planned{Text: "= Item web"}
+	}
+	head := f.push("v1", "alice")
+	f.once()
+	s := f.lastStatus(head)
+	if s.State != "success" || !strings.Contains(s.Description, "1 held by observe-only (MAM-POL-0312)") {
+		t.Fatalf("the head's status: %+v", s)
+	}
+	planned, statuses := f.m.planned, len(f.gh.Statuses(head))
+	f.once()
+	f.once()
+	if f.m.planned != planned || len(f.m.approved) != 0 || len(f.m.applied) != 0 || len(f.gh.Statuses(head)) != statuses || f.e.Busy() {
+		t.Fatalf("planned %d (was %d), approved %v, applied %v, statuses %+v", f.m.planned, planned, f.m.approved, f.m.applied, f.gh.Statuses(head))
+	}
+	if h, _, _ := f.e.Store.Head(context.Background(), "me/infra", "infra"); h.State != HeadHeld {
+		t.Fatalf("the head: %+v", h)
+	}
+	// The resync interval plans it again: still held, nothing is said twice.
+	f.later(time.Hour)
+	f.once()
+	if f.m.planned != planned+1 || len(f.gh.Statuses(head)) != statuses {
+		t.Fatalf("resync: planned %d, statuses %+v", f.m.planned, f.gh.Statuses(head))
+	}
+	// Lifted on the Control Plane's host: the next resync finds the changes, which wait for an
+	// approval (a drift: the push approved what was held, not this).
+	held = false
+	f.later(time.Hour)
+	f.once()
+	f.once()
+	if s := f.lastStatus(head); s.State != "pending" || len(f.m.applied) != 0 {
+		t.Fatalf("lifted: %+v, applied %v", s, f.m.applied)
+	}
+}
+
+// With other changes beside the held ones, the push approves the plan: the held changes are denied
+// and never run, the others are applied, and the head ends held, not failed.
+func TestHeldBesideChanges(t *testing.T) {
+	f := pushFixture(t)
+	f.m.state = func(rev string) api.Planned {
+		if f.m.world != rev {
+			return api.Planned{Text: "~ Item db\n~ Item web  [DENIED: observe-only]", Changes: 1, Held: 1}
+		}
+		return api.Planned{Text: "~ Item web  [DENIED: observe-only]", Held: 1}
+	}
+	head := f.push("v1", "alice")
+	f.once()
+	if len(f.m.applied) != 1 || f.m.world != "v1" {
+		t.Fatalf("applied %v", f.m.applied)
+	}
+	if s := f.lastStatus(head); s.State != "success" || !strings.Contains(s.Description, "held by observe-only") {
+		t.Fatalf("the head's status: %+v", s)
+	}
+	f.once()
+	if len(f.m.applied) != 1 {
+		t.Fatalf("applied again: %v", f.m.applied)
+	}
+}
+
+// A pull request whose plan has held changes says so, and how to lift them; it is not a failure.
+func TestHeldOnAPullRequest(t *testing.T) {
+	f := newFixture(t)
+	f.m.state = func(rev string) api.Planned { return api.Planned{Text: "~ Item web  [DENIED: observe-only]", Held: 2} }
+	head := f.commit("v1")
+	f.gh.Open(fakegithub.PR{Number: 1, Author: "alice", Base: "main", HeadSHA: head})
+	f.once()
+	if !f.said(1, "2 change(s) are held by observe-only (MAM-POL-0312)") || !f.said(1, "observe_only") || f.said(1, "Nothing to change") ||
+		f.said(1, "/mamela approve") {
+		t.Fatalf("the comment: %+v", f.gh.Comments(1))
+	}
+	if s := f.lastStatus(head); s.State != "success" {
+		t.Fatalf("status %+v", s)
+	}
+	planned := f.m.planned
+	f.once()
+	if f.m.planned != planned {
+		t.Fatal("planned again at each poll")
 	}
 }

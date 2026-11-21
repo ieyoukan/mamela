@@ -610,8 +610,20 @@ func TestGrantDoesNotOutliveItsDeclaration(t *testing.T) {
 
 // The Control Plane's own host is never changed (ADR 0003): publishing takes every grant away from
 // it, of every kind, even of what the declaration has (audit B17: the removal of a Kubernetes node
-// was left).
+// was left). So does an observe-only node (MAM-POL-0312), and it is still watched.
 func TestAProtectedNodeHasNoGrantOfAnyKind(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		hold func(p *policy.Policy)
+	}{
+		{"protected", func(p *policy.Policy) { p.ProtectedNodes = []string{"app"} }},
+		{"observe-only", func(p *policy.Policy) { p.ObserveOnly = []string{"app"} }},
+	} {
+		t.Run(c.name, func(t *testing.T) { heldNodeHasNoGrant(t, c.hold) })
+	}
+}
+
+func heldNodeHasNoGrant(t *testing.T, hold func(p *policy.Policy)) {
 	e := newEnv(t)
 	sha := strings.Repeat("a", 64)
 	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
@@ -649,11 +661,11 @@ func TestAProtectedNodeHasNoGrantOfAnyKind(t *testing.T) {
 	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 6 {
 		t.Fatalf("setup: %d grants, want one of each kind: %s", len(rev.Grants()), rev.Content())
 	}
-	e.pol.ProtectedNodes = []string{"app"}
+	hold(&e.pol)
 	e.publish()
 	rev, _ := e.st.NodeRevision(e.ctx, "app")
 	if len(rev.Grants()) != 0 || (len(rev.Services) == 1 && len(rev.Services[0].Repair) != 0) {
-		t.Fatalf("a protected node still has permissions: %s", rev.Content())
+		t.Fatalf("a held node still has permissions: %s", rev.Content())
 	}
 	if len(rev.Packages) != 1 || len(rev.Services) != 1 || rev.K3s == nil || len(rev.Manifests) != 1 {
 		t.Fatalf("it is still watched: %s", rev.Content())
@@ -763,6 +775,47 @@ func TestPublishOnAProvidersMachine(t *testing.T) {
 	rev, err := st.NodeRevision(ctx, "ext")
 	if err != nil || rev == nil || rev.VMID != 7007 || len(rev.Packages) != 1 || rev.Packages[0].Name != "nginx" {
 		t.Fatalf("revision %+v %v", rev, err)
+	}
+}
+
+// An observe-only node (MAM-POL-0312) is observed and planned, and nothing is done on it: its
+// mamelet reports what it finds, the plan shows how it differs and denies it, the service the policy
+// would start by itself is not started, and an approved plan installs nothing there.
+func TestObserveOnlyNodeIsObservedAndUnchanged(t *testing.T) {
+	e := newEnv(t)
+	e.os.exists, e.os.enabled = true, true
+	e.pol.AutoStartServices = []string{"nginx"}
+	e.pol.ObserveOnly = []string{"app"}
+	e.publish()
+	e.round()
+	p := e.plan()
+	for _, id := range []string{"NodePackage app/nginx", "NodeService app/nginx"} {
+		c := change(t, p, id)
+		if c.Status != plan.StatusChange || c.Verdict != policy.Denied || !c.Held() || len(c.Diffs) == 0 {
+			t.Fatalf("%s: observed, and the difference shown and held: %+v", id, c)
+		}
+		for _, o := range c.Operations {
+			if o.Decision.Code != "MAM-POL-0312" {
+				t.Fatalf("%s: %+v", id, o.Decision)
+			}
+		}
+	}
+	rep := e.applyApproved(p)
+	if rep.Stopped != nil || e.os.installs != 0 || e.os.starts != 0 || e.os.running || len(rep.Steps) == 0 {
+		t.Fatalf("an approved plan changed an observe-only node: %+v (installs %d, starts %d)", rep, e.os.installs, e.os.starts)
+	}
+	for _, s := range rep.Steps {
+		if s.Outcome != reconcile.OutcomeDenied || !strings.Contains(s.Detail, "observe-only") {
+			t.Fatalf("the apply does not say it is held: %+v", s)
+		}
+	}
+	if rev, _ := e.st.NodeRevision(e.ctx, "app"); len(rev.Grants()) != 0 || len(rev.Services[0].Repair) != 0 {
+		t.Fatalf("an observe-only node got a permission: %s", rev.Content())
+	}
+	// Lifted: the same world is a plan to approve (a new policy, so a new plan).
+	e.pol.ObserveOnly = nil
+	if c := change(t, e.plan(), "NodePackage app/nginx"); c.Verdict != policy.ApprovalRequired || c.Held() {
+		t.Fatalf("lifted: %+v", c)
 	}
 }
 

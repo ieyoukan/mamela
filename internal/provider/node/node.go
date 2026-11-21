@@ -140,7 +140,9 @@ func printable(s string, limit int) string {
 // What a declaration no longer has loses its permissions only when a plan made from it is approved
 // and applied (Prune).
 //
-// A protected node is the exception: local safety revokes all grants, including undeclared ones.
+// A protected node (the Control Plane's host) or an observe-only one is the exception: local safety
+// revokes all grants, including undeclared ones and the extensions' (Extension.Protect); mamelet on
+// it still observes and reports.
 // Control Plane relocation is not an observation and is never published by plan.
 func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Policy, _ string, nodeIDs map[string]int64) error {
 	for _, machine := range g.Sorted() {
@@ -201,7 +203,7 @@ func Publish(ctx context.Context, st *store.Store, g *graph.Graph, pol policy.Po
 			// An extension's part goes only to a mamelet that takes it (noderev's ext.go): an older
 			// mamelet would refuse the whole revision.
 			r.KeepTaken(report)
-			if pol.Protected(name) {
+			if pol.Holds(name) {
 				for i := range r.Packages {
 					r.Packages[i].Install = nil
 				}

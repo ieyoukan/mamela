@@ -7,6 +7,13 @@
 
 schema = "mamela-site/v1"
 
+# Optional: machines and resources of providers that this Control Plane observes and plans, and never
+# changes (MAM-POL-0312): their plan shows how they differ from the declaration, and denies every
+# change of them and on them. Name a machine here before its first plan, to bring a machine that
+# exists already under Mamela with nothing at risk; remove the name when the plan shows what you
+# expect. It is a top-level key: keep it above the first [table].
+# observe_only = ["legacy-web"]
+
 [guest]
 # The login of the machines (their seed): the user and an SSH public key file (optional, outside
 # the repository).

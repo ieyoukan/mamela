@@ -150,7 +150,11 @@ func runApprove(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		fmt.Fprintf(stdout, "note: this plan DELETES %d object%s once applied: %s\n", n, plural(n), strings.Join(res.Removed, ", "))
 	}
 	if n := res.Denied; n > 0 {
-		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run\n", n, plural(n), choose(n == 1, "is", "are"))
+		held := ""
+		if res.Held > 0 {
+			held = fmt.Sprintf(" (%d held by observe-only, MAM-POL-0312)", res.Held)
+		}
+		fmt.Fprintf(stdout, "note: %d change%s in this plan %s denied and will not run%s\n", n, plural(n), choose(n == 1, "is", "are"), held)
 	}
 	return 0
 }

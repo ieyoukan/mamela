@@ -231,6 +231,9 @@ func (r *Reconciler) Apply(ctx context.Context, planDigest string) (*Report, err
 			}
 			id := c.ID()
 			switch {
+			case c.Verdict == policy.Denied && full.Held():
+				r.addAll(rep, c, OutcomeDenied, "held: observe-only (MAM-POL-0312); Mamela never runs it")
+				continue
 			case c.Verdict == policy.Denied:
 				r.addAll(rep, c, OutcomeDenied, "denied by policy; Mamela never runs it")
 				continue

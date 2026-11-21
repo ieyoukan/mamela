@@ -261,8 +261,12 @@ func (k *Kit) MachineLeaves(name string) bool { return k.b.machineLeaves(name) }
 func (k *Kit) MachineExists(name string) bool { return k.b.machineExists(name) }
 
 // MachineRestarts is whether this plan restarts (reboots, stops) the existing machine called name
-// that the declaration has.
+// that the declaration has. A machine the policy holds (the Control Plane's host, observe-only) is
+// not restarted by any plan: nothing waits for it.
 func (k *Kit) MachineRestarts(name string) bool {
+	if k.b.pol.Holds(name) {
+		return false
+	}
 	for _, m := range k.Resources() {
 		if m.Provided != nil && m.Name == name && k.b.restartsMachine(k.b.snap.Provided[m.ID()]) && k.b.snap.Provided[m.ID()].Observed.Exists {
 			return true

@@ -18,10 +18,9 @@ import (
 // what the graph accepts is signed (A11 of the 0.3.2 audit).
 var (
 	mameletVersionRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$`)
-	// A provider's kind ("KVItem"), its name ("kv-example"), and a resource name.
+	// A provider's kind ("KVItem") and its name ("kv-example"); a resource name is names.Resource.
 	providedKindRe = regexp.MustCompile(`^[A-Z][A-Za-z0-9]{0,63}$`)
 	providerNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	providedNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,252}$`)
 )
 
 // Validate checks the meaning of a decoded graph: names, ranges, references and duplicates.
@@ -67,7 +66,7 @@ func Validate(g *Graph) error {
 				add(r, CodeInvalidName, "provider", fmt.Sprintf("provider %q is not a valid provider name", p.Provider),
 					"a provider name is lowercase letters, digits and '-'")
 			}
-			if !providedNameRe.MatchString(r.Name) {
+			if !names.Resource(r.Name) {
 				add(r, CodeInvalidName, "name", fmt.Sprintf("name %q is not a valid resource name", r.Name),
 					"use letters, digits and '.', '_', ':', '@', '-', starting with a letter or digit")
 			}

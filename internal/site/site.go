@@ -8,7 +8,8 @@
 //   - the Control Plane that mamelet on the machines reaches;
 //   - the login user and SSH keys of the machines;
 //   - the network rules (whether DHCP is allowed, the range of static addresses);
-//   - the limits per machine (vCPUs, memory, disk) that every provider's create is held to.
+//   - the limits per machine (vCPUs, memory, disk) that every provider's create is held to;
+//   - what Mamela only observes (observe_only): the plans of this Control Plane change nothing of it.
 package site
 
 import (
@@ -24,6 +25,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/ieyoukan/mamela/internal/graph"
+	"github.com/ieyoukan/mamela/internal/policy"
 )
 
 // Schema is the only accepted value of `schema`.
@@ -38,6 +40,10 @@ type Site struct {
 	// ControlPlane is optional: without it, machines are made and configured but get no mamelet (a plain
 	// seed: login user, network, guest agent), and a declaration has nothing for mamelet to do.
 	ControlPlane ControlPlane `toml:"controlplane"`
+	// ObserveOnly names machines and resources of providers that this Control Plane observes and
+	// plans, and never changes (policy.Policy.ObserveOnly, MAM-POL-0312): a top-level key, before the
+	// first table. It is the policy's observeOnly, kept on the Control Plane's host with the site.
+	ObserveOnly []string `toml:"observe_only"`
 }
 
 // ControlPlane is where mamelet on the machines reaches Mamela, and how Mamela serves it.
@@ -191,6 +197,9 @@ func (s *Site) Validate() error {
 		if cp.StateDir == "" || cp.MameletBinary == "" {
 			bad("controlplane.state_dir and controlplane.mamelet_binary are required")
 		}
+	}
+	if err := policy.CheckNames("observe_only", s.ObserveOnly); err != nil {
+		bad("%v", err)
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid site:\n  - %s", strings.Join(errs, "\n  - "))

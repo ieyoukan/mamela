@@ -121,7 +121,8 @@ func lines(s string) []string {
 	return safetext.EscapeLines(strings.TrimSuffix(s, "\n"))
 }
 
-// Summary is a one-line count of the plan.
+// Summary is a one-line count of the plan. The denied changes that observe-only holds are counted
+// with the denied, and said apart: "3 denied (2 observe-only)".
 func Summary(p *Plan) string {
 	counts := map[string]int{}
 	for _, c := range p.Changes {
@@ -132,11 +133,16 @@ func Summary(p *Plan) string {
 			counts[string(c.Status)]++
 		}
 	}
+	held := p.Held()
 	parts := []string{}
 	for _, k := range []string{string(policy.Auto), string(policy.ApprovalRequired), string(policy.Denied),
 		string(StatusWaiting), string(StatusBlocked), string(StatusRetained), string(StatusInSync)} {
 		if counts[k] > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", counts[k], summaryLabel(k, counts[k])))
+			part := fmt.Sprintf("%d %s", counts[k], summaryLabel(k, counts[k]))
+			if k == string(policy.Denied) && held > 0 {
+				part += fmt.Sprintf(" (%d observe-only)", held)
+			}
+			parts = append(parts, part)
 		}
 	}
 	if len(parts) == 0 {
@@ -146,6 +152,9 @@ func Summary(p *Plan) string {
 }
 
 func label(c Change) string {
+	if c.Held() {
+		return "DENIED: observe-only"
+	}
 	switch c.Status {
 	case StatusChange:
 		return verdictText(c.Verdict)
