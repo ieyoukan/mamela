@@ -281,13 +281,36 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 		}
 		i := slices.IndexFunc(byKind[r.Kind], func(x Object) bool { return x.Name == r.Name && x.Scope == scope })
 		j := -1
-		if ids, ok := adopting[r.ID]; ok && (i < 0 || byKind[r.Kind][i].Foreign) {
-			j = adoptable(byKind[r.Kind], taken[r.Kind], ids)
-			if f, ok := k.(Finder); ok && j < 0 {
+		ids, imported := adopting[r.ID]
+		named := false
+		if a, ok := k.(Adopter); ok && !imported {
+			var err error
+			if ids, err = a.Adopts(r); err != nil {
+				return out, fmt.Errorf("%s: %w", r.ID, err)
+			}
+			named = len(ids) > 0
+		}
+		if (imported || named) && (i < 0 || byKind[r.Kind][i].Foreign) {
+			if imported {
+				j = adoptable(byKind[r.Kind], taken[r.Kind], ids)
+			} else {
+				// Named by the declaration: only what the kind itself recognizes as adoptable, never an
+				// object that carries Mamela's mark (another declaration's).
+				j = slices.IndexFunc(byKind[r.Kind], func(x Object) bool { return x.Adoptable && protocol.Targets(x.IDs, ids) })
+				if j >= 0 && taken[r.Kind][j] {
+					j = -1
+				}
+			}
+			// An object Mamela has (listed with its mark) is never one to adopt for a declaration that
+			// names it by its IDs.
+			marked := named && slices.ContainsFunc(byKind[r.Kind], func(x Object) bool {
+				return !x.Adoptable && !x.Foreign && protocol.Targets(x.IDs, ids)
+			})
+			if f, ok := k.(Finder); ok && j < 0 && !marked {
 				// Not listed (it carries no mark of Mamela's yet): found by its IDs.
 				x, err := f.Find(c, ids)
 				if err != nil {
-					return out, fmt.Errorf("%s: finding the imported object: %w", r.ID, err)
+					return out, fmt.Errorf("%s: finding the object to adopt: %w", r.ID, err)
 				}
 				if x != nil && protocol.Targets(x.IDs, ids) {
 					byKind[r.Kind] = append(byKind[r.Kind], *x)
@@ -297,7 +320,8 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 		}
 		switch {
 		case j >= 0:
-			// Imported to adopt (ADR 0009): made by another tool, and Mamela's once adopted.
+			// Imported to adopt (ADR 0009), or named by its declaration (Adopter): made by something
+			// else, and Mamela's once adopted.
 			taken[r.Kind][j] = true
 			fill(&o, byKind[r.Kind][j])
 			o.Owned, o.Unfinished, o.Adoptable = false, false, true
@@ -364,7 +388,14 @@ func (p *Provider) Diff(_ context.Context, in protocol.DiffParams) (protocol.Dif
 		switch {
 		case !o.Exists || o.Owned || o.Unfinished:
 		case o.Adoptable:
-			continue // to adopt (an explicit operation): nothing is planned for it until then
+			// To adopt (an explicit operation): nothing is planned for it until then; what it would need
+			// once adopted is a preview, for a person to read before adopting it.
+			cs, err := k.Diff(Desired{Resource: r, Observed: o, Dependencies: in.Dependencies})
+			if err != nil {
+				return out, err
+			}
+			out.Previews = append(out.Previews, cs...)
+			continue
 		default:
 			return out, fmt.Errorf("%s exists and Mamela did not create it: Mamela changes only what it created; "+
 				"declare it under another name, or remove the declaration", r.ID)
