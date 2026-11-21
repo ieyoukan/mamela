@@ -58,7 +58,10 @@ var strict = json.JoinOptions(json.RejectUnknownMembers(true))
 
 // Decode parses one mamela-graph/v1 document strictly and validates it.
 // The returned error is an *Error listing every problem found.
-func Decode(data []byte) (*Graph, error) {
+func Decode(data []byte) (*Graph, error) { return decode(data, nil) }
+
+// decode is Decode, and DecodeSummed when sums is not nil (sums.go).
+func decode(data []byte, sums *sumState) (*Graph, error) {
 	if len(data) > MaxDocumentBytes {
 		return nil, single(CodeTooLarge, "",
 			fmt.Sprintf("the graph document is %d bytes, more than the limit of %d", len(data), MaxDocumentBytes),
@@ -98,7 +101,7 @@ func Decode(data []byte) (*Graph, error) {
 				Hint:    "use a Mamela Pome that writes " + SchemaV2})
 			continue
 		}
-		r, ps := decodeResource(i, wr)
+		r, ps := decodeResource(i, wr, sums)
 		problems = append(problems, ps...)
 		if r == nil {
 			continue
@@ -119,10 +122,13 @@ func Decode(data []byte) (*Graph, error) {
 	if err := Validate(g); err != nil {
 		return nil, err
 	}
+	if sums != nil && len(sums.missing) > 0 {
+		return nil, &MissingSums{Pins: sums.missing}
+	}
 	return g, nil
 }
 
-func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
+func decodeResource(i int, wr wireResource, sums *sumState) (*Resource, []Problem) {
 	at := fmt.Sprintf("/resources/%d", i)
 	var problems []Problem
 	missing := func(field string) {
@@ -222,7 +228,7 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		}
 	default:
 		if def, ok := extKinds[r.Kind]; ok {
-			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where}
+			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where, id: r.ID(), sums: sums}
 			spec := def.Decode(d)
 			if !d.OK() {
 				return nil, d.problems

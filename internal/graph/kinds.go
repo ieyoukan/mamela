@@ -155,6 +155,8 @@ type SpecDecoder struct {
 	kind     Kind
 	where    string
 	problems []Problem
+	id       string    // the resource's ID
+	sums     *sumState // mamela.sum, while evaluating (DecodeSummed): FromSum
 }
 
 // Strict decodes the spec into v (a struct of pointer members, to tell a missing member from a

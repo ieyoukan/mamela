@@ -76,8 +76,23 @@ type Result struct {
 	Stderr     string // diagnostics the program wrote (dbg, print_error_line)
 }
 
-// Evaluate builds and runs the Pome in dir and returns its graph.
+// Evaluate builds and runs the Pome in dir and returns its graph. A sha256 the declaration leaves
+// out is the one its mamela.sum has (sums.go); nothing is downloaded and the file is not written.
 func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
+	sums, err := readSums(dir)
+	if err != nil {
+		return nil, err
+	}
+	res, err := e.evaluate(ctx, dir, sums.Lookup)
+	var missing *graph.MissingSums
+	if errors.As(err, &missing) {
+		return nil, missingSums(dir, missing)
+	}
+	return res, err
+}
+
+// evaluate builds and runs the Pome in dir and decodes its graph with the sha256 of sums.
+func (e *Evaluator) evaluate(ctx context.Context, dir string, sums graph.SumFunc) (*Result, error) {
 	versions, err := e.Toolchain.Verify(ctx)
 	if err != nil {
 		return nil, err
@@ -119,7 +134,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	g, err := graph.Decode(stdout)
+	g, err := graph.DecodeSummed(stdout, sums)
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,9 @@ const (
 	CodeOutputLimit        Code = "MAM-EVAL-0305"
 	CodeAbnormalExit       Code = "MAM-EVAL-0306"
 	CodeNotDeterministic   Code = "MAM-EVAL-0401"
+	// mamela.sum (docs/design/declaration-inputs.md, 2).
+	CodeSumMissing   Code = "MAM-EVAL-0601"
+	CodeSumMalformed Code = "MAM-EVAL-0602"
 )
 
 // Stage is the step of evaluation that failed.
@@ -34,6 +37,7 @@ const (
 	StageInspect   Stage = "inspect"
 	StageRun       Stage = "run"
 	StageCompare   Stage = "compare"
+	StageSums      Stage = "sums" // mamela.sum
 )
 
 // Error is an evaluation failure written for a person.
