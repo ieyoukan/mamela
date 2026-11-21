@@ -398,7 +398,8 @@ upstream の README と `spec/targets/wasm.md`（`[target.wasm]`）より:
 3. `wasmtime run -S p3=y` を子プロセスで直接起動する（`emela run` は経由しない）。`--dir`、ネットワーク、`--env` は渡さない。stdin は空にする。
 4. 実行時間（`-W timeout`、既定 10 秒）、メモリ（`-W max-memory-size`、既定 256 MiB）、stdout（4 MiB）を制限する。`-S inherit-env=n,inherit-stdin=n,inherit-network=n,tcp=n,udp=n,allow-ip-name-lookup=n,http=n`、`-C cache=n` も付ける。
 5. 終了コードが 0 以外、制限超過、JSON として不完全な出力は、すべて評価失敗として扱う。
-6. emela のコンパイラ自体はネイティブに動くので、サンドボックスの外にある。ネットワークなし・空の環境変数・時間制限で動かすが、悪意あるソースに対する隔離は今後の課題（§13）。
+6. Graph の `contentFrom`（`NodeFile`・`NodeK3sManifest` の中身を、宣言の Pome の中のファイルで指したもの）は、WASM ではなく Go が、Graph を検査する前に、評価した Pome のディレクトリから読む（相対パス、Pome の外・シンボリックリンク・通常のファイルでないもの・テキストでないものは断る、大きさの上限）。読んだ中身は `content` になり、正規形と digest は中身を書いた宣言と同じ（[graph-schema.md の「ファイルから取り込む」](graph-schema.md#ファイルから取り込むcontentfrom)、MAM-EVAL-0501〜0506）。WASM に渡すものは変えない。
+7. emela のコンパイラ自体はネイティブに動くので、サンドボックスの外にある。ネットワークなし・空の環境変数・時間制限で動かすが、悪意あるソースに対する隔離は今後の課題（§13）。
 
 ### 9.4 その他
 

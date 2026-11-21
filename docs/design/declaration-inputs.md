@@ -46,6 +46,7 @@ graph
 - **理由コード:** ファイルがない、範囲の外、リンク、テキストでない、大きすぎる、を区別する（MAM-EVAL の新しい番号）。
 - **mamelacd:** Control Plane に渡す宣言のツリーに、Pome の中の `.emel` 以外のファイルも入れる（入っていなければ、ここで直す）。評価はそのツリーだけを読む。
 - **エディタ:** 生成するモジュールがないので、言語サーバーと `emela check` はそのまま使える。指したファイルがあるかは、`mamela check` が確かめる。
+- **実装（段 1）:** 核は kind の member を知らない。kind の `Decode` が `SpecDecoder.Text("content", content, contentFrom, 上限)` で中身を求め（`content` と `contentFrom` のどちらか一方）、評価器が `graph.Files` として Pome のディレクトリから読む（`graph.DecodeWith`）。`NodeFile`（linux）と `NodeK3sManifest`（k3s）がこれを使う。読んだパスは `Resource.Sources` に残し、正規形・digest には入れない。plan は `Change.Sources`（digest の外）から diff に `content (from files/app.conf)` と出し、`mamela eval` の一覧と、中身の問題の場所にも出す。理由コードは MAM-EVAL-0501〜0506（[reason-codes.md](../reason-codes.md)）。mamelacd が送るツリーは、もともとコミットのすべてのファイルを含んでいた（`internal/tree` がリンクと特殊なファイルを断る）。
 
 ## 2. 配布物の sha256（`mamela.sum` と `mamela pin`）
 
