@@ -57,14 +57,14 @@ func TestAK3sSha256FromTheSum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summed, err := graph.DecodeSummed(doc(""), func(u string) (string, bool) { return sum, u == url })
+	summed, err := graph.DecodeWith(doc(""), sumFiles{url: sum})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if summed.Digest() != inline.Digest() || string(summed.Canonical()) != string(inline.Canonical()) {
 		t.Errorf("from mamela.sum:\n%s\nwritten:\n%s", summed.Canonical(), inline.Canonical())
 	}
-	_, err = graph.DecodeSummed(doc(""), nil)
+	_, err = graph.DecodeWith(doc(""), sumFiles{})
 	var m *graph.MissingSums
 	if !errors.As(err, &m) || len(m.Pins) != 1 || m.Pins[0] != (graph.Pin{URL: url, Resource: "NodeK3s s/k3s", Field: "spec.sha256"}) {
 		t.Errorf("err = %v", err)
@@ -73,9 +73,18 @@ func TestAK3sSha256FromTheSum(t *testing.T) {
 		t.Errorf("without mamela.sum: %v", err)
 	}
 	// An invalid version is the graph's problem, not mamela.sum's.
-	_, err = graph.DecodeSummed([]byte(strings.Replace(string(doc("")), "v1.37.2+k3s1", "latest", 1)), nil)
+	_, err = graph.DecodeWith([]byte(strings.Replace(string(doc("")), "v1.37.2+k3s1", "latest", 1)), sumFiles{})
 	var ge *graph.Error
 	if !errors.As(err, &ge) || !strings.Contains(err.Error(), "not a k3s release") {
 		t.Errorf("an invalid version: %v", err)
 	}
 }
+
+// sumFiles are a Pome with no file but its mamela.sum (URL -> sha256), for graph.DecodeWith.
+type sumFiles map[string]string
+
+func (s sumFiles) Text(path string, _ int) (string, error) {
+	return "", &graph.FileError{Code: "MAM-EVAL-0501", Message: path + " is not in the Pome"}
+}
+
+func (s sumFiles) Sum(url string) (string, bool) { h, ok := s[url]; return h, ok }

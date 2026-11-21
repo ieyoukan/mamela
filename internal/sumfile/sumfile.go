@@ -178,7 +178,7 @@ func Read(dir string) (s *Sums, data []byte, err error) {
 	if !fi.Mode().IsRegular() {
 		return nil, nil, &Error{Message: "it is not a regular file (a link, a directory): it must be the file mamela pin writes, in the declaration's own tree"}
 	}
-	f, err := os.Open(p)
+	f, err := os.OpenFile(p, os.O_RDONLY|openFlags, 0)
 	if err != nil {
 		return nil, nil, err
 	}

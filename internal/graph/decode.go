@@ -57,11 +57,22 @@ type wireNodeService struct {
 var strict = json.JoinOptions(json.RejectUnknownMembers(true))
 
 // Decode parses one mamela-graph/v1 document strictly and validates it.
-// The returned error is an *Error listing every problem found.
-func Decode(data []byte) (*Graph, error) { return decode(data, nil) }
+// The returned error is an *Error listing every problem found. A spec that names a file of a Pome
+// (contentFrom), or leaves a sha256 to its mamela.sum, is refused: only DecodeWith, given the
+// Pome's files, reads them.
+func Decode(data []byte) (*Graph, error) { return DecodeWith(data, nil) }
 
-// decode is Decode, and DecodeSummed when sums is not nil (sums.go).
-func decode(data []byte, sums *sumState) (*Graph, error) {
+// DecodeWith is Decode for the document a Pome printed, with files the Pome's own: a spec that
+// names one of them for a text (contentFrom) has the text of that file, and a sha256 a spec leaves
+// out is the one the Pome's mamela.sum has (sums.go), both read before the graph is validated,
+// exactly as if the spec had written them. The graph, its canonical form and its digest are the
+// same either way; only Resource.Sources tells. When mamela.sum lacks a sha256, the error is a
+// *MissingSums once the graph is valid.
+func DecodeWith(data []byte, files Files) (*Graph, error) {
+	var sums *sumState
+	if files != nil {
+		sums = &sumState{seen: map[Pin]bool{}}
+	}
 	if len(data) > MaxDocumentBytes {
 		return nil, single(CodeTooLarge, "",
 			fmt.Sprintf("the graph document is %d bytes, more than the limit of %d", len(data), MaxDocumentBytes),
@@ -101,7 +112,7 @@ func decode(data []byte, sums *sumState) (*Graph, error) {
 				Hint:    "use a Mamela Pome that writes " + SchemaV2})
 			continue
 		}
-		r, ps := decodeResource(i, wr, sums)
+		r, ps := decodeResource(i, wr, files, sums)
 		problems = append(problems, ps...)
 		if r == nil {
 			continue
@@ -128,7 +139,7 @@ func decode(data []byte, sums *sumState) (*Graph, error) {
 	return g, nil
 }
 
-func decodeResource(i int, wr wireResource, sums *sumState) (*Resource, []Problem) {
+func decodeResource(i int, wr wireResource, files Files, sums *sumState) (*Resource, []Problem) {
 	at := fmt.Sprintf("/resources/%d", i)
 	var problems []Problem
 	missing := func(field string) {
@@ -228,12 +239,12 @@ func decodeResource(i int, wr wireResource, sums *sumState) (*Resource, []Proble
 		}
 	default:
 		if def, ok := extKinds[r.Kind]; ok {
-			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where, id: r.ID(), sums: sums}
+			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where, files: files, id: r.ID(), sums: sums}
 			spec := def.Decode(d)
 			if !d.OK() {
 				return nil, d.problems
 			}
-			r.Ext = spec
+			r.Ext, r.Sources = spec, d.sources
 			break
 		}
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",

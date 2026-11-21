@@ -14,9 +14,17 @@ import (
 
 const keyURL = "https://download.docker.com/linux/ubuntu/gpg"
 
-func summedGraph(sums map[string]string, resources ...string) (*graph.Graph, error) {
-	return graph.DecodeSummed([]byte(`{"schema":"mamela-graph/v2","resources":[`+strings.Join(append([]string{vm}, resources...), ",")+`]}`),
-		func(u string) (string, bool) { h, ok := sums[u]; return h, ok })
+// sumFiles are a Pome with no file but its mamela.sum (URL -> sha256), for graph.DecodeWith.
+type sumFiles map[string]string
+
+func (s sumFiles) Text(path string, _ int) (string, error) {
+	return "", &graph.FileError{Code: "MAM-EVAL-0501", Message: path + " is not in the Pome"}
+}
+
+func (s sumFiles) Sum(url string) (string, bool) { h, ok := s[url]; return h, ok }
+
+func summedGraph(sums sumFiles, resources ...string) (*graph.Graph, error) {
+	return decodeWithFiles(sums, resources...)
 }
 
 func pinnedArtifact(sha string) string {
@@ -43,7 +51,7 @@ func TestASha256FromTheSumIsTheSameGraphAsOneWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	summed, err := summedGraph(map[string]string{exporterURL: sumA, keyURL: sumB}, pinnedArtifact(""), pinnedAptRepo(""))
+	summed, err := summedGraph(sumFiles{exporterURL: sumA, keyURL: sumB}, pinnedArtifact(""), pinnedAptRepo(""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,14 +59,14 @@ func TestASha256FromTheSumIsTheSameGraphAsOneWritten(t *testing.T) {
 		t.Errorf("from mamela.sum:\n%s\nwritten:\n%s", summed.Canonical(), inline.Canonical())
 	}
 	// Written in the declaration, the sha256 is the declaration's: mamela.sum is not read.
-	written, err := summedGraph(map[string]string{exporterURL: sumB, keyURL: sumA}, pinnedArtifact(sumA), pinnedAptRepo(sumB))
+	written, err := summedGraph(sumFiles{exporterURL: sumB, keyURL: sumA}, pinnedArtifact(sumA), pinnedAptRepo(sumB))
 	if err != nil || written.Digest() != inline.Digest() {
 		t.Errorf("a sha256 the declaration writes was replaced by mamela.sum's: %v", err)
 	}
 }
 
 func TestASha256MamelaSumLacksStopsTheEvaluation(t *testing.T) {
-	_, err := summedGraph(map[string]string{exporterURL: sumA}, pinnedArtifact(""), pinnedAptRepo(""), pinnedArtifact(""))
+	_, err := summedGraph(sumFiles{exporterURL: sumA}, pinnedArtifact(""), pinnedAptRepo(""), pinnedArtifact(""))
 	var m *graph.MissingSums
 	if !errors.As(err, &m) {
 		t.Fatalf("err = %v, want MissingSums", err)

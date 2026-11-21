@@ -46,6 +46,7 @@ graph
 - **理由コード:** ファイルがない、範囲の外、リンク、テキストでない、大きすぎる、を区別する（MAM-EVAL の新しい番号）。
 - **mamelacd:** Control Plane に渡す宣言のツリーに、Pome の中の `.emel` 以外のファイルも入れる（入っていなければ、ここで直す）。評価はそのツリーだけを読む。
 - **エディタ:** 生成するモジュールがないので、言語サーバーと `emela check` はそのまま使える。指したファイルがあるかは、`mamela check` が確かめる。
+- **実装（段 1）:** 核は kind の member を知らない。kind の `Decode` が `SpecDecoder.Text("content", content, contentFrom, 上限)` で中身を求め（`content` と `contentFrom` のどちらか一方）、評価器が `graph.Files` として Pome のディレクトリから読む（`graph.DecodeWith`）。`NodeFile`（linux）と `NodeK3sManifest`（k3s）がこれを使う。読んだパスは `Resource.Sources` に残し、正規形・digest には入れない。plan は `Change.Sources`（digest の外）から diff に `content (from files/app.conf)` と出し、`mamela eval` の一覧と、中身の問題の場所にも出す。理由コードは MAM-EVAL-0501〜0506（[reason-codes.md](../reason-codes.md)）。mamelacd が送るツリーは、もともとコミットのすべてのファイルを含んでいた（`internal/tree` がリンクと特殊なファイルを断る）。
 
 ## 2. 配布物の sha256（`mamela.sum` と `mamela pin`）
 
@@ -83,6 +84,7 @@ https://github.com/prometheus/node_exporter/releases/download/v1.13.0/node_expor
 - **`mamela pin --check`:** ネットワークを使わない。足りない行と、使われていない行を示して、ファイルは変えない。
 - **`mamela pin --verify`:** 既存の行も取得し直して照合する。
 - **信頼:** pin が確かめるのは、取得した時点のバイト列だけ（初回に見たものを信じる、TOFU）。守りの中心は、PR で版と URL の差分を人が読むこと。署名鍵（`keyUrl`）を新しく固定するときは、`mamela pin` が鍵の sha256 を示し、配布元の指紋と照合するよう案内する。
+- **実装（段 2）:** 核は kind の member を知らない。kind の `Decode` が `SpecDecoder.FromSum(member, url, 鍵か, 置き場所)` で「どの URL の sha256 か」を言い（k3s は版からリリースの linux/amd64 のバイナリの URL を作る）、評価器は段 1 と同じ `graph.Files`（`Sum(url)`）で `mamela.sum` を渡す（`graph.DecodeWith`）。`mamela.sum` は `internal/sumfile` が読み書きし、ビルドの前に読む（形の違いは MAM-EVAL-0602）。足りないものは、仮の値で Graph を検証してから MAM-EVAL-0601 で並べる（不正な宣言のために `mamela pin` を勧めない）。`mamela pin` は `Evaluator.Pins`（`mamela.sum` を読まずに評価）で URL を集め、`internal/pin` が取得と書き込みを行う（MAM-PIN）。取得の共通部分（https だけのリダイレクト、`Refusal`）は `internal/download` に移し、mamelet と同じ規則にした。
 
 ## 3. 書きやすくする部品（Mamela Pome 0.4.1）
 

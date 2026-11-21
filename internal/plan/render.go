@@ -43,7 +43,7 @@ func Render(w io.Writer, p *Plan) {
 		}
 		fmt.Fprintf(w, "%s %s %s  [%s]%s\n", sym, esc(string(c.Kind)), esc(c.Name), label(c), via)
 		for _, d := range c.Diffs {
-			renderDiff(w, d)
+			renderDiff(w, d, c.Sources[d.Field])
 		}
 		for _, op := range c.Operations {
 			fmt.Fprintf(w, "    %s: %s (%s %s)\n", esc(string(op.Op)), verdictText(op.Decision.Verdict), esc(string(op.Decision.Code)), esc(op.Decision.Message))
@@ -89,17 +89,22 @@ func esc(s string) string { return safetext.Escape(s) }
 // renderDiff writes one field that differs. A value of one line is "field: from -> to"; a text of
 // several lines (the content of a manifest, which is approved as it is shown) is written line by
 // line, each line after a marker of its own ("+" is what it will be, "-" what it is), so that no
-// line of it can pass for a line of the plan.
-func renderDiff(w io.Writer, d Diff) {
+// line of it can pass for a line of the plan. A text read from a file of the declaration's Pome
+// (source) says which: "content (from files/app.service):".
+func renderDiff(w io.Writer, d Diff, source string) {
+	field := esc(d.Field)
+	if source != "" {
+		field += " (from " + esc(source) + ")"
+	}
 	if !strings.Contains(d.From, "\n") && !strings.Contains(d.To, "\n") {
 		if d.From == "" {
-			fmt.Fprintf(w, "      %s: %s\n", esc(d.Field), esc(d.To))
+			fmt.Fprintf(w, "      %s: %s\n", field, esc(d.To))
 		} else {
-			fmt.Fprintf(w, "      %s: %s -> %s\n", esc(d.Field), esc(d.From), esc(d.To))
+			fmt.Fprintf(w, "      %s: %s -> %s\n", field, esc(d.From), esc(d.To))
 		}
 		return
 	}
-	fmt.Fprintf(w, "      %s:\n", esc(d.Field))
+	fmt.Fprintf(w, "      %s:\n", field)
 	if d.From != "" {
 		for _, l := range lines(d.From) {
 			fmt.Fprintf(w, "      - %s\n", l)

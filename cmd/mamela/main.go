@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -197,7 +199,16 @@ func printSummary(w io.Writer, dir string, res *evaluate.Result, twice bool) {
 	tw.Flush()
 }
 
+// describe is the resource in a few words, and where its texts were read from.
 func describe(r graph.Resource) string {
+	s := describeSpec(r)
+	for _, member := range slices.Sorted(maps.Keys(r.Sources)) {
+		s += fmt.Sprintf(" (%s from %s)", member, r.Sources[member])
+	}
+	return s
+}
+
+func describeSpec(r graph.Resource) string {
 	switch r.Kind {
 	case graph.KindNodePackage:
 		s := r.NodePackage

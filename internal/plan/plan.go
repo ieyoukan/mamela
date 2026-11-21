@@ -97,6 +97,12 @@ type Change struct {
 	// every other change, newest object first, and only a plan approved on the Control Plane's
 	// host runs it.
 	Removes bool `json:"removes,omitempty"`
+	// Sources are the files of the declaration's Pome that the resource's texts were read from
+	// (graph.Resource.Sources), by the field of the diff that shows the text ("content"): the plan
+	// says "content (from files/app.service)". They are not part of the plan or its digest: the
+	// text itself is, shown in full, and it is the same text whether it was written in or read from
+	// a file. A plan loaded back from the database has none.
+	Sources map[string]string `json:"-"`
 }
 
 // Deletes is whether the change deletes anything: an object no declaration has any more, or an
@@ -653,7 +659,7 @@ func (b builder) guard(node string, c Change) Change {
 
 // NewChange is the plan of a resource with nothing in it yet: no diff, no operation.
 func NewChange(r graph.Resource) Change {
-	return Change{Kind: r.Kind, Name: r.Name, Diffs: []Diff{}, Operations: []Operation{}}
+	return Change{Kind: r.Kind, Name: r.Name, Diffs: []Diff{}, Operations: []Operation{}, Sources: r.Sources}
 }
 
 func (b builder) withOps(c Change, subjects ...policy.Subject) Change {

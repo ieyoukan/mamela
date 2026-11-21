@@ -33,6 +33,20 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 - **見たとおりに表示されない文字は入れられない**（MAM-GRAPH-0109）。manifest とファイル（`NodeFile`）の内容とプロバイダーの `spec` の文字列・メンバー名には、改行 `\n` とタブ `\t` 以外の制御文字（復帰 `\r`、ESC を含む）、bidi 制御、ゼロ幅文字などを書けない。plan は全文を読んで承認するもので、k3s は manifest を cluster-admin で適用するので、表示を偽装できる文字を通さない。それでも、plan とエラーは、引用する文字列の制御文字を `\x1b`・`\u202e` のように書き出して表示する（二重の防御）。
 - 宣言として正しいが意図と違いそうなもの（MAM-GRAPH-02xx）は、拒否せず**警告**にして、plan のそのリソースの `warnings` に出す。plan の状態と操作は変えない。
 - 文書は 4 MiB まで、リソースは 10,000 件まで。
+- `NodeFile` と `NodeK3sManifest` の内容は、`content` に書く代わりに、宣言の Pome の中のファイルを `contentFrom` で指せる（下の「ファイルから取り込む」）。
+
+## ファイルから取り込む（`contentFrom`）
+
+`NodeFile` と `NodeK3sManifest` の spec は、`content`（テキストそのもの）か `contentFrom`（宣言の Pome のルート、つまり `Pome.toml` のあるディレクトリからの相対パス）の、どちらか一方を持つ。両方あれば MAM-GRAPH-0106、どちらもなければ MAM-GRAPH-0004。宣言は Mamela Pome（0.4.1 から）の `Mamela.file_from(graph, node, path, "files/app.conf")`、`Mamela.file_from_with`、`Mamela.systemd_service_from`。K3s の Pome（0.1.2 から）の `K3s.manifest_from(graph, server, name, source)`。設計は [宣言の入力](design/declaration-inputs.md)。
+
+- **正規形は同じ:** Go が、評価のとき、Graph を検査する前にファイルを読み、`contentFrom` を `content` に置き換える。正規形・digest・plan の digest・承認・revision に `contentFrom` は残らず、同じ中身を `content` に書いた宣言と 1 バイトも違わない。中身の検査（大きさ、MAM-GRAPH-0109 など）も、書いたときと同じに行い、問題の場所に `(from files/app.conf)` と、どのファイルかを添える。
+- **読むもの:** 評価した Pome のディレクトリの中の、通常のファイルだけ。パスは相対で、`path.Clean` したものと同じ（`./`、`//`、末尾の `/` なし）、`..` を含まない、`\` と制御文字を含まない、1024 バイトまで。パスのどの段もシンボリックリンクではいけない（Pome の中を指すものも）。名前付きパイプなどは開く前に断り、開いたものが見たものと同じ通常のファイルであることを確かめる。
+- **中身:** UTF-8 のテキスト（NUL なし）を、バイトのとおりに使う。末尾の改行も含め、改行の変換、空白の除去、変数の展開はしない（CRLF のファイルは、復帰があるので MAM-GRAPH-0109 で断る）。
+- **大きさ:** その member の上限（`NodeFile` 256 KiB、manifest 64 KiB）と、1 回の評価で読む中身の合計（4 MiB。同じファイルを 2 か所で指せば 2 回数える。Graph が、書いた宣言で出せるより大きくならないように）。
+- **拒否:** 理由ごとに MAM-EVAL-0501〜0506（ない、範囲の外、リンク、通常のファイルでない、テキストでない、大きすぎる）。`contentFrom` の場所と、パスと、直し方を示す。
+- **評価の外:** Pome の評価でない Graph（DB から読み直したもの、手で書いたもの）の `contentFrom` は MAM-GRAPH-0003。古い `mamela` も、知らない member として MAM-GRAPH-0003 で断る（黙って違う中身で動くことはない）。
+- **plan:** 中身の diff に、どのファイルから来たかを示す（`content (from files/app.conf):`）。これは表示だけで、plan の digest と DB の plan には入らない（承認するのは中身であり、それは全文が出る）。`mamela eval` の一覧にも `(content from files/app.conf)` と出る。
+- **Control Plane（mamelacd）:** 評価は、コミットのツリーの宣言のディレクトリだけを読む。ファイルはコミットする（[gitops.md の「宣言から指すファイル」](gitops.md#宣言から指すファイル)）。
 
 ## kind
 
@@ -138,6 +152,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 | `spec.node` | string | 同じ Graph で `NodeK3s` の server として宣言したマシンの名前 |
 | `spec.name` | string | `[a-z0-9-]`、63 字まで。ファイルは `mamela-<name>.yaml`（k3s 自身のファイルと名前がぶつからない） |
 | `spec.content` | string | YAML（UTF-8、NUL なし、64 KiB まで）。改行 `\n` とタブ `\t` 以外の制御文字（復帰 `\r` を含む）、bidi 制御、ゼロ幅文字は不可（MAM-GRAPH-0109）。宣言の中に書く。取得はしない |
+| `spec.contentFrom` | string | `content` の代わりに、宣言の Pome の中のファイル（`"manifests/argocd.yaml"`）。評価のときに読み、`content` に置き換える（上の「ファイルから取り込む」）。`content` とどちらか一方 |
 
 - **承認:** `write-k3s-manifest`（MAM-POL-0213）。plan の diff に内容の全文（1 行ごとに `+` を付けて。内容の 1 行が plan の行に見えないように）と sha256 が出る。承認したものと別の内容は書かない。内容を変えるのは、新しい承認になる。
 - **書き込み:** mamelet が、承認のあと一度だけ、そのとおりの内容を書く（0600、root。置き換えは原子的）。観測は、ファイルの sha256 だけである。
@@ -162,7 +177,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ### NodeFile
 
-ノードの上の 1 つのファイル。宣言したとおりの内容・mode・所有者にする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.file(graph, node, path, content)`（mode 0644、root の所有、再起動なし）、または `Mamela.file_with(graph, node, Mamela.File(mode: "0640", owner: "www-data", restart: ["nginx"], ..Mamela.file_of(path, content)))`。
+ノードの上の 1 つのファイル。宣言したとおりの内容・mode・所有者にする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.file(graph, node, path, content)`（mode 0644、root の所有、再起動なし）、または `Mamela.file_with(graph, node, Mamela.File(mode: "0640", owner: "www-data", restart: ["nginx"], ..Mamela.file_of(path, content)))`。内容を宣言の Pome の中のファイルから取るときは、0.4.1 から `Mamela.file_from(graph, node, path, source)`、または `Mamela.file_from_with(graph, node, Mamela.FileFrom(mode: "0640", ..Mamela.file_from_of(path, source)))`。systemd のサービスは `Mamela.systemd_service(graph, node, name, unit)`（`/etc/systemd/system/<name>.service` に unit を置き、書いたら再起動の対象にし〔`restart: [name]`〕、有効にして動かす〔`Mamela.running`〕）と、unit をファイルから取る `Mamela.systemd_service_from(graph, node, name, source)`。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -170,6 +185,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 | `spec.node` | string | 同じ Graph のノード（provider のマシン） |
 | `spec.path` | string | 絶対 path。`filepath.Clean` したもの（`//`、`.`、`..`、末尾の `/` なし）、255 バイトまで。各部分は英数字と `. _ + @ = : , -` だけ。下の「書かない場所」は拒否する |
 | `spec.content` | string | テキスト（UTF-8、NUL なし、256 KiB まで）。改行とタブ以外の制御文字、bidi 制御、ゼロ幅文字は不可（MAM-GRAPH-0109）。空でもよい。1 つのノードのファイルの内容の合計は 1 MiB まで（承認した書き込みは revision に乗る） |
+| `spec.contentFrom` | string | `content` の代わりに、宣言の Pome の中のファイル（`"files/app.service"`）。評価のときに読み、`content` に置き換える（上の「ファイルから取り込む」）。`content` とどちらか一方。Mamela Pome（0.4.1 から）の `Mamela.file_from`、`Mamela.file_from_with`、`Mamela.systemd_service_from` |
 | `spec.mode` | string | 省略できる（既定 `"0644"`）。8 進 4 桁。setuid・setgid・sticky と、誰でも書けるもの（`o+w`）は拒否 |
 | `spec.owner`、`spec.group` | string | 省略できる（既定 `"root"`）。ユーザー名・グループ名（`[a-z_][a-z0-9_-]`、32 字まで）。ノードにないと plan は Blocked（MAM-PLAN-0141） |
 | `spec.restart` | string の配列 | 省略できる。同じノードの systemd のサービス名。ファイルを書いたあと、動いていれば再起動する（`systemctl try-restart`。unit がまだない（読み込まれていない）サービスは動いていないので、何もしない。同じ周で unit のファイルがあとから書かれるときもこれ）。宣言していないサービスは警告（MAM-GRAPH-0204）。`mamelet`（`mamelet.service`）は不可（書き込みを行っている mamelet 自身を止めてしまう。graph と mamelet の両方が断る） |
@@ -413,10 +429,10 @@ Mamela のバイナリにはまだ版のタグがなく、`mamela version` は b
 | `pome/mamela` | 0.3.1 | `NodeMamelet`（`Mamela.mamelet`） | PR #23（`37ab2b5`）以降 |
 | `pome/mamela` | 0.3.2 | Pome の API は 0.3.1 と同じ。0.3.2 の Mamela（監査 2026-11-17 の修正、k3s を `internal/ext/k3s` へ）に合わせた版。graph の検証が厳しくなった（service 名の `:`、制御文字、optional の null などを拒否） | どの版でも読めるが、0.3.2 の修正は PR #36 以降のバイナリ |
 | `pome/mamela` | 0.4.0 | linux 拡張（ADR 0016）の `NodeFile`（`Mamela.file`）、`NodeUser`（`Mamela.user`）、`NodeAptRepo`（`Mamela.apt_repo`）、`NodeArtifact`（`Mamela.artifact`）。ノードの mamelet が linux を受け取る版（0.10.0 以降）でなければ、その資源は MAM-PLAN-0122 | PR #39（`7ecf714`）以降。PR #49 までの修正を含むバイナリを使う。CP を先に、mamelet をあとに更新する（ADR 0016 §4） |
-| `pome/mamela` | 0.4.1 | `sha256` のない `NodeArtifact`（`Mamela.artifact_pinned`）、`keySha256` のない `NodeAptRepo`（`Mamela.apt_repo_pinned`）。どちらも sha256 を `mamela.sum` から取る | `mamela.sum` を読むバイナリ（この表に、その PR のマージコミットを足す）。古いバイナリは MAM-GRAPH-0004 で拒む |
+| `pome/mamela` | 0.4.1 | `NodeFile` の `spec.contentFrom`（`Mamela.file_from`、`Mamela.file_from_with`、`Mamela.systemd_service_from`）。部品の `Mamela.running`、`Mamela.system_user`、`Mamela.systemd_service` は今の kind を出すだけ（0.4.0 のバイナリで読める）。`contentFrom` を古いバイナリは MAM-GRAPH-0003 で断る。`sha256` のない `NodeArtifact`（`Mamela.artifact_pinned`）と `keySha256` のない `NodeAptRepo`（`Mamela.apt_repo_pinned`）は sha256 を `mamela.sum` から取る。古いバイナリは MAM-GRAPH-0004 で断る | `contentFrom` は PR #52 以降。`mamela.sum` は PR #53 以降 |
 | `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
 | `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
-| `pome/k3s` | 0.1.2 | `sha256` のない `NodeK3s`（`K3s.server_pinned`、`K3s.agent_pinned`。`mamela.sum` から）、`contentFrom` の `NodeK3sManifest`（`K3s.manifest_from`）。依存は `pome/mamela` 0.3.0 のまま | `mamela.sum` を読むバイナリ（この表に、その PR のマージコミットを足す）。`K3s.manifest_from` は、`contentFrom` を読むバイナリも要る。古いバイナリは MAM-GRAPH-0004 / 0003 で拒む |
+| `pome/k3s` | 0.1.2 | `sha256` のない `NodeK3s`（`K3s.server_pinned`、`K3s.agent_pinned`。`mamela.sum` から）、`contentFrom` の `NodeK3sManifest`（`K3s.manifest_from`）。依存は `pome/mamela` 0.3.0 のまま | PR #53 以降（`K3s.manifest_from` の `contentFrom` は PR #52 以降）。古いバイナリは MAM-GRAPH-0004 / 0003 で断る |
 
 新しい kind や member を出す版を公開する PR は、この表に行を足す（[releasing.md](releasing.md)）。Emela は依存の中で最も高い版を選ぶので、`pome/k3s` が要求する `pome/mamela` の版を上げると、K3s を使う宣言すべてが、その版の要るバイナリを求める。
 

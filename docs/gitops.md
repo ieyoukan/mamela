@@ -147,6 +147,15 @@ mamelacd は、正常に待っているあいだは何も出さない。それ�
 
 ファイルが読めない・空のときは、使っているトークンのまま、ログに理由を出す。
 
+## 宣言から指すファイル
+
+宣言は、長い unit や YAML を、拡張子のあるファイルのまま宣言の Pome に置き、`contentFrom` で相対パスで指せる（Mamela Pome 0.4.1 の `Mamela.file_from`、`Mamela.systemd_service_from`。規則は [graph-schema.md の「ファイルから取り込む」](graph-schema.md#ファイルから取り込むcontentfrom)）。
+
+- **送るもの:** mamelacd は、コミットのツリー（GitHub の tarball）をそのまま `mamela api` に送る。宣言のディレクトリの `.emel` 以外のファイルも入っている。`mamela api` は、ツリーを展開するとき、リンク・特殊なファイル・ツリーの外へのパスを含むツリーを丸ごと断り（通常のファイルとディレクトリだけ、合計 256 MiB、20,000 個まで）、評価はその宣言のディレクトリ（`dirs` の 1 つ）だけを読む。リポジトリの別の場所のファイルは指せない。
+- **コミットする:** 評価するのはコミットのツリーだけである。手元で `mamela plan` が通っても、コミットしていない（`.gitignore` にある）ファイルは Control Plane にない（MAM-EVAL-0501）。秘密を置いたファイルを指さない（中身は plan のコメント、DB、revision に平文で残る）。
+- **リンクにしない:** 手元でもシンボリックリンクは断る（MAM-EVAL-0503）。手元と Control Plane で評価が食い違わないように。
+- **digest:** 中身が同じなら、`content` に書いた宣言と同じ Graph・plan になる。宣言を `content` から `contentFrom` に移しても、plan は in sync のまま（中身が同じなら）。
+
 ## しないこと
 
 - **明示操作・取り込み:** 再起動・引き継ぎ・削除の明示操作（`mamela act --confirm`）と `mamela import terraform` はしない。`mamela api` にもその呼び出しはない。
@@ -171,7 +180,7 @@ mamelacd once --config mamelacd.toml   # mamela_socket = "/tmp/mamela-api.sock"
 
 テストは次の三つで行う。
 
-- **`cmd/mamela/api_test.go`:** 偽の GitHub（`internal/gitops/fakegithub`）と例の kv で、PR → plan → 承認 → マージ → apply を、`mamela api` と mamelacd の通しで確かめる。
+- **`cmd/mamela/api_test.go`:** 偽の GitHub（`internal/gitops/fakegithub`）と例の kv で、PR → plan → 承認 → マージ → apply を、`mamela api` と mamelacd の通しで確かめる。`cmd/mamela/contentfrom_test.go` は、ファイルを指す宣言（`contentFrom`）のツリーを API で plan し、中身を書いた宣言と同じ revision になること、コミットにないファイルと Pome の外を断ることを確かめる。`cmd/mamela/pin_test.go` は、sha256 を `mamela.sum` に任せた宣言のツリーを API で評価し、ツリーの `mamela.sum` から埋めた revision が sha256 を書いた宣言と同じになること、`mamela.sum` がなければ `mamela pin <declaration>` を示すことを確かめる。
 - **`internal/gitops`:** 偽の API で、先頭の扱いを確かめる。偽の GitHub（`fakegithub`）は、`per_page` とページング（Link）、更新時刻（`updated_at`、Date）、アカウントの数値 ID と改名、レート制限（403 と X-RateLimit-*、Retry-After）、5xx、リクエストの記録を模す。模さない偽物は、これらの欠陥（監査 A7）をすり抜けた。
 - **`cmd/mamelacd`:** `status`、`repin`、SIGHUP によるトークンの読み直しを、実際のソケットと偽の GitHub で確かめる。
 - **`internal/api`:** API の拒否を確かめる。

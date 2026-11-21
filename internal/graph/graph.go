@@ -71,6 +71,12 @@ type Resource struct {
 	// After are the resources of providers this one needs first ("Kind name", sorted, ADR 0007):
 	// it is planned once each exists and is Mamela's.
 	After []string
+	// Sources are the files of the Pome that the spec's texts were read from (contentFrom,
+	// SpecDecoder.Text), by member: {"content": "files/app.service"}. They are for a person (the
+	// plan and the problems say where a text came from), and are not part of the canonical form or
+	// the digest: a text read from a file is the same resource as the text written in. A graph read
+	// back from its canonical form has none.
+	Sources map[string]string
 }
 
 // ProvidedSpec is a resource of a provider's kind.

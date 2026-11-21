@@ -12,11 +12,16 @@ import (
 
 // A declaration may leave the sha256 of what a node downloads out (Mamela.artifact_pinned,
 // K3s.server_pinned): it is then the one the declaration's mamela.sum has for the URL, read from
-// the root of the Pome before the graph is validated (docs/design/declaration-inputs.md, 2). The
+// the root of the Pome and given to the decoder with the Pome's files (graph.Files.Sum, as
+// contentFrom's texts are) before the graph is validated (docs/design/declaration-inputs.md, 2). The
 // graph and its digest are the same as when the declaration writes the sha256 itself. Evaluating
 // reads the file only: `mamela pin` downloads and writes it.
 
-// readSums reads the mamela.sum of the Pome in dir (none: no sha256 at all).
+// Sum is the sha256 the Pome's mamela.sum has for url (graph.Files).
+func (f *pomeFiles) Sum(url string) (string, bool) { return f.sums.Lookup(url) }
+
+// readSums reads the mamela.sum of the Pome in dir (none: no sha256 at all). It is read before the
+// build, so that a file that is not the tool's stops the evaluation at once.
 func readSums(dir string) (*sumfile.Sums, error) {
 	s, _, err := sumfile.Read(dir)
 	if err == nil {
@@ -24,7 +29,7 @@ func readSums(dir string) (*sumfile.Sums, error) {
 	}
 	var se *sumfile.Error
 	if !errors.As(err, &se) {
-		return nil, &Error{Code: CodeSumMalformed, Stage: StageSums, Message: fmt.Sprintf("%s cannot be read: %v", sumfile.Name, err),
+		return nil, &Error{Code: CodeSumMalformed, Stage: StageSums, Message: fmt.Sprintf("%s cannot be read: %s", sumfile.Name, reason(err)),
 			Hint: "check the file's permissions"}
 	}
 	return nil, &Error{Code: CodeSumMalformed, Stage: StageSums,

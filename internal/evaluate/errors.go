@@ -23,9 +23,19 @@ const (
 	CodeOutputLimit        Code = "MAM-EVAL-0305"
 	CodeAbnormalExit       Code = "MAM-EVAL-0306"
 	CodeNotDeterministic   Code = "MAM-EVAL-0401"
-	// mamela.sum (docs/design/declaration-inputs.md, 2).
-	CodeSumMissing   Code = "MAM-EVAL-0601"
-	CodeSumMalformed Code = "MAM-EVAL-0602"
+
+	// The files a declaration takes texts from (contentFrom, files.go): each says the path and what
+	// to do. They are reported as problems of the graph, at the member that names the file.
+	CodeFileMissing    Code = "MAM-EVAL-0501" // not in the Pome (or it cannot be read)
+	CodeFileOutside    Code = "MAM-EVAL-0502" // not a clean relative path inside the Pome
+	CodeFileLink       Code = "MAM-EVAL-0503" // the file, or a directory on its way, is a symbolic link
+	CodeFileNotRegular Code = "MAM-EVAL-0504" // a directory, a named pipe, a device
+	CodeFileNotText    Code = "MAM-EVAL-0505" // not UTF-8, or it has a NUL
+	CodeFileTooLarge   Code = "MAM-EVAL-0506" // larger than the member takes, or the files together larger than MaxFileTexts
+
+	// mamela.sum, the sha256 of what a declaration downloads (sums.go).
+	CodeSumMissing   Code = "MAM-EVAL-0601" // the declaration leaves a sha256 to mamela.sum, which does not have it
+	CodeSumMalformed Code = "MAM-EVAL-0602" // mamela.sum is not the file mamela pin writes
 )
 
 // Stage is the step of evaluation that failed.

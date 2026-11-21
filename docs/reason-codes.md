@@ -30,8 +30,16 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-EVAL-0305 | stdout に書きすぎた | Graph を 2 回以上書いている、診断を stdout に書いている |
 | MAM-EVAL-0306 | Wasmtime が異常終了した | stderr の詳細を見る |
 | MAM-EVAL-0401 | 2 回の評価で結果が違った | ツールチェーンか Mamela のバグ |
+| MAM-EVAL-0501 | `contentFrom` が指すファイルが Pome にない（途中のディレクトリがない、ディレクトリのはずがファイル、読めない、読んでいる間に変わった） | パスは `Pome.toml` のあるディレクトリからの相対。ファイルをコミットする（Control Plane はコミットのツリーだけを評価する） |
+| MAM-EVAL-0502 | `contentFrom` のパスが、Pome の中のきれいな相対パスでない（空、絶対パス、`..`、`./`・`//`・末尾の `/`、`\`、制御文字、1024 バイト超） | `files/app.service` のように、`path.Clean` した形の相対パスで書く。Pome の外のファイルは取り込めない |
+| MAM-EVAL-0503 | `contentFrom` のファイル、または途中のディレクトリが、シンボリックリンク（Pome の中を指すものも） | リンクでなく、ファイルそのものを Pome に置く（mamelacd が送るツリーはリンクを含めない） |
+| MAM-EVAL-0504 | `contentFrom` が、ディレクトリ・名前付きパイプ・デバイスなど、通常のファイルでないものを指す（開く前に断る） | 通常のファイルを指す |
+| MAM-EVAL-0505 | `contentFrom` のファイルがテキストでない（UTF-8 でないバイト、NUL）。何バイト目・何行目かを示す | UTF-8 で保存する。バイナリは宣言のテキストにしない（リリースのバイナリは sha256 で固定した `NodeArtifact`） |
+| MAM-EVAL-0506 | `contentFrom` のファイルが大きすぎる（その member の上限: `NodeFile` 256 KiB、manifest 64 KiB）、または 1 回の評価で読む中身の合計が 4 MiB を超えた | ファイルを小さくする。大きなものは sha256 で固定したダウンロード（`NodeArtifact`）か、HelmChart のマニフェスト |
 | MAM-EVAL-0601 | 宣言が sha256 を書かずに任せた URL（`Mamela.artifact_pinned`、`Mamela.apt_repo_pinned`、`K3s.server_pinned` など）が、`mamela.sum` にない。URL とリソースを示す（評価は何も取得しない） | 版を変えて URL が変わった、`mamela.sum` をコミットし忘れた。`mamela pin <pome-dir>` を実行し、表示と差分を確かめ、宣言と同じコミットにする（[gitops.md](gitops.md)） |
 | MAM-EVAL-0602 | `mamela.sum` の形が違う（同じ URL の 2 行、URL の順でない、コメント、空行、CR、別の形の行、https でない URL、リンク、4 MiB 超）。何も評価しない | 手で直さない。git から戻す（`git checkout -- mamela.sum`）か、消して `mamela pin <pome-dir>` で書き直す（すべて取得し直すので、足された sha256 を配布元のものと照合する） |
+
+MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resources/3 (NodeFile web/file/etc/app.conf) spec.contentFrom`）とともに、ほかの問題と一緒に出る（`mamela check --json` の診断も同じ）。MAM-EVAL-0602 は、ビルドの前に `mamela.sum` を読んだところで止める。MAM-EVAL-0601 は、Graph にほかの問題がないときだけ、足りない URL をすべて並べて出す（不正な宣言のために `mamela pin` を勧めない）。
 
 ## MAM-PIN — `mamela pin`（`mamela.sum` を書く）
 
@@ -53,8 +61,8 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 |---|---|
 | MAM-GRAPH-0001 | JSON として正しくない（途中で切れた、Graph 以外を出力した、不正な UTF-8） |
 | MAM-GRAPH-0002 | `schema` が対応していない値 |
-| MAM-GRAPH-0003 | 定義されていないメンバーがある。組み込みの kind のリソースに `after` を書いた（`after` を持てるのはプロバイダーのリソースだけ。マシンの上のものは、もともとマシンを待つ） |
-| MAM-GRAPH-0004 | 必要なメンバーがない、または `null` |
+| MAM-GRAPH-0003 | 定義されていないメンバーがある。組み込みの kind のリソースに `after` を書いた（`after` を持てるのはプロバイダーのリソースだけ。マシンの上のものは、もともとマシンを待つ）。Pome の評価でない Graph（DB から読み直したもの、手で書いたもの）に `contentFrom` がある（ファイルは Pome を評価するときに読む）。`contentFrom` を知らない古い `mamela` も、これで断る |
+| MAM-GRAPH-0004 | 必要なメンバーがない、または `null`（`NodeFile`・`NodeK3sManifest` では、`content` も `contentFrom` もない） |
 | MAM-GRAPH-0005 | 知らない kind。組み込みの kind をプロバイダーのリソースとして書いた。組み込みの `VirtualMachine`（ADR 0006 でなくなった）。マシンはプロバイダーの Pome で宣言する（Proxmox なら `github.com/ieyoukan/mamela-proxmox/pome`）。Mamela の Pome は 0.3.0 を使う |
 | MAM-GRAPH-0006 | 文書が大きすぎる |
 | MAM-GRAPH-0007 | 値の型が違う（整数でない数値、文字列のところの数値など）。省略できるメンバー（k3s の `server`、mamelet の `version`）に `null` を書いた（書かずに省略する）。プロバイダーの `spec` の `null`、深さ 32 を超える入れ子、2^53 を超える整数 |
@@ -72,7 +80,7 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-GRAPH-0103 | 参照している node が Graph にない（プロバイダーのリソースとして宣言されていない）。k3s の agent の server が、k3s の server として宣言されていない。`after` の参照（`"Kind name"`）が、同じ Graph のプロバイダーのリソースではない（宣言していない、組み込みの kind のリソース、書き間違い）。**プロバイダーが動いたあと（plan の観測の前）**: 同じ名前のマシンが 2 台ある（どのリソースか示す）、node が machine（マニフェストで `node: true` の kind）ではないリソースを指している。同じ名前でも、machine と disk のように kind が違えば、machine だけが node になる |
 | MAM-GRAPH-0104 | 名前が `<node>/<package>` などの形と合わない |
 | MAM-GRAPH-0105 | 廃止（ADR 0006）。値が範囲外（組み込みの VirtualMachine の vCPU・メモリ・ディスク）。マシンの大きさの上限は site の予算（MAM-SITE-0305）が決める |
-| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、`Present` 以外の状態、k3s の版・sha256・役割、k3s の server の空の `server`、マシンの `spec.network`）。`spec.network` が、`mode`・`address`・`gateway`・`dns` だけを持つオブジェクトでない（文字列・配列・未知のメンバー・型違い）ものも、これで拒否する |
+| MAM-GRAPH-0106 | 値が正しくない（パッケージ名、サービス名、`Present` 以外の状態、k3s の版・sha256・役割、k3s の server の空の `server`、マシンの `spec.network`、`NodeFile`・`NodeK3sManifest` の spec に `content` と `contentFrom` の両方）。`spec.network` が、`mode`・`address`・`gateway`・`dns` だけを持つオブジェクトでない（文字列・配列・未知のメンバー・型違い）ものも、これで拒否する |
 | MAM-GRAPH-0107 | 同じ固定アドレスが複数のマシンに宣言されている（マシンの `spec.network.address`） |
 | MAM-GRAPH-0108 | `after` の依存が循環している（自分自身を待つものも含む。ADR 0007）。循環に入るリソースごとに、そのリソースから一周する経路（`Thing a -> Thing b -> Thing a`）を示して報告する。経路の中の依存を 1 つ外す |
 | MAM-GRAPH-0109 | 文字列が、見たとおりのものとして表示されない文字を含む。C0・DEL・C1 の制御文字（k3s の manifest の内容と provider の `spec` の文字列は、改行 `\n` とタブ `\t` だけ許す。復帰 `\r`、ESC、ベルを含む）、bidi 制御（U+202A–202E、U+2066–2069、U+200E/F、U+061C）、ゼロ幅文字（U+200B–200D、U+2060、U+FEFF）、U+2028/2029、タグ文字、UTF-8 でないバイト。plan の表示を偽装できるので（k3s は manifest を cluster-admin で適用する）、何がどこ（行・列、`spec` では JSON pointer）にあるかを示して拒否する。manifest は LF の改行で書き、YAML に必要な文字はエスケープ（`"\u202e"`）で書く |
