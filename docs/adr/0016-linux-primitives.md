@@ -79,6 +79,7 @@ Control Plane は、承認していない宣言（PR、ブランチ）からも 
 
 - アプリの導入（レシピ）は、部品を組み合わせた Emela の関数として Pome で配る。community-scripts のような目録を、宣言の言葉で作れる。レシピは desired state を作るだけで、何も実行しない。plan に出るのは部品であり、承認するのも部品である。
 - Go の拡張を新しく書くのは、部品では表せない、ノードをまたぐ順序と健全性の確認が要るもの（k3s のように、server が先、Ready を確かめて 1 台ずつ）だけにする。
+- 追記（2026-11-21、[宣言の入力](../design/declaration-inputs.md)）: よく組む部品は Mamela Pome 0.4.1 の関数にした（`Mamela.running`、`Mamela.system_user`、`Mamela.systemd_service(_from)`）。どれも今の kind を出すだけで、新しい kind は足さない。`NodeFile` の中身は、宣言の Pome の中のファイルを `contentFrom` で指せる。Go が評価のときに読んで `content` に置き換えるので、plan・承認・mamelet が扱うのは今までと同じ中身である（§6 の秘密の扱いも同じ: 指したファイルの中身も平文で残る）。
 
 ### 8. mamelet の側の安全（2026-11-18 の見直し）
 

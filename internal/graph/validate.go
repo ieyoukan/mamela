@@ -33,6 +33,10 @@ func Validate(g *Graph) error {
 		if field != "" {
 			path += " " + field
 		}
+		// A text read from a file of the Pome: the problem is in that file.
+		if src, ok := r.Sources[strings.TrimPrefix(field, "spec.")]; ok {
+			path += " (from " + src + ")"
+		}
 		problems = append(problems, Problem{Code: code, Path: path, Message: message, Hint: hint})
 	}
 

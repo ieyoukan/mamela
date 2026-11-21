@@ -153,27 +153,108 @@ pub fn file(graph: Graph, node: Node, path: String, content: String) -> Graph {
 
 ## Declares the file `f` on `node`.
 pub fn file_with(graph: Graph, node: Node, f: File) -> Graph {
-  restart = if List.is_empty(f.restart) {
+  node_file(graph, node, f.path, ("content", Text(f.content)), f.mode, f.owner, f.group, f.restart)
+}
+
+## A file on a node whose content is the file `source` of the declaration's own Pome: a path relative
+## to the directory of its `Pome.toml`, such as "files/app.service" (not absolute, without `..`, and
+## through no symbolic link). `path`, `mode`, `owner`, `group` and `restart` are as a `File`'s.
+## Mamela reads the source when it evaluates the declaration, byte for byte (a regular file of UTF-8
+## text without NUL, at most 256 KiB, nothing trimmed or converted), and the graph has its text as if
+## it had been written in: the plan, its digest and its approval are the same, and the plan says which
+## file the content came from. Commit the source: the Control Plane evaluates the commit's tree.
+## `file_from_of` makes one with the defaults, to change with
+## `FileFrom(mode: "0640", ..Mamela.file_from_of(path, source))`.
+pub type FileFrom(
+  path: String,
+  source: String,
+  mode: String,
+  owner: String,
+  group: String,
+  restart: List[String],
+)
+
+## A file at `path` whose content is the Pome's file `source`, mode "0644", owned by root, that
+## restarts nothing.
+pub fn file_from_of(path: String, source: String) -> FileFrom {
+  FileFrom(path:, source:, mode: "0644", owner: "root", group: "root", restart: [])
+}
+
+## Declares that `node` has the file at `path` with exactly the content of the Pome's file `source`,
+## mode "0644", owned by root (`file_from_with` declares another mode, owner, or services to
+## restart). Everything else is as `file`.
+pub fn file_from(graph: Graph, node: Node, path: String, source: String) -> Graph {
+  file_from_with(graph, node, file_from_of(path, source))
+}
+
+## Declares the file `f` on `node`, its content taken from the Pome's file `f.source`.
+pub fn file_from_with(graph: Graph, node: Node, f: FileFrom) -> Graph {
+  node_file(
+    graph,
+    node,
+    f.path,
+    ("contentFrom", Text(f.source)),
+    f.mode,
+    f.owner,
+    f.group,
+    f.restart,
+  )
+}
+
+## A `NodeFile` whose content is `content`: the text itself, or the Pome's file that has it.
+fn node_file(
+  graph: Graph,
+  node: Node,
+  path: String,
+  content: (String, Dynamic),
+  mode: String,
+  owner: String,
+  group: String,
+  restart: List[String],
+) -> Graph {
+  restarted = if List.is_empty(restart) {
     []
   } else {
-    [("restart", Items(f.restart.map(Text)))]
+    [("restart", Items(restart.map(Text)))]
   }
   on_node(
     graph,
     node,
     "NodeFile",
-    "#{node.name}/file#{f.path}",
+    "#{node.name}/file#{path}",
     List.append(
       [
-        ("path", Text(f.path)),
-        ("content", Text(f.content)),
-        ("mode", Text(f.mode)),
-        ("owner", Text(f.owner)),
-        ("group", Text(f.group)),
+        ("path", Text(path)),
+        content,
+        ("mode", Text(mode)),
+        ("owner", Text(owner)),
+        ("group", Text(group)),
       ],
-      restart,
+      restarted,
     ),
   )
+}
+
+## Declares the systemd service `name` (the unit's name, without ".service") on `node` from its
+## `unit`: the file /etc/systemd/system/<name>.service with exactly `unit` (systemd reads its units
+## again once it is written, and the service is restarted after it changes, if it runs), and the
+## service enabled and running (`running`). The plan shows the unit and asks for an approval, as for
+## any file.
+pub fn systemd_service(graph: Graph, node: Node, name: String, unit: String) -> Graph {
+  graph
+    |> file_with(node, File(restart: [name], ..file_of(unit_path(name), unit)))
+    |> running(node, name)
+}
+
+## `systemd_service` with the unit taken from the Pome's file `source` (as `file_from`).
+pub fn systemd_service_from(graph: Graph, node: Node, name: String, source: String) -> Graph {
+  graph
+    |> file_from_with(node, FileFrom(restart: [name], ..file_from_of(unit_path(name), source)))
+    |> running(node, name)
+}
+
+fn unit_path(name: String) -> String {
+  "/etc/systemd/system/#{name}.service"
 }
 
 ## A file on a node downloaded over https and pinned by its sha256 (the linux extension's
@@ -275,6 +356,13 @@ pub type User(
 ## alone, made with useradd's choices.
 pub fn user_of(name: String) -> User {
   User(name:, system: False, uid: None, shell: None, home: None, groups: [], authorized_keys: None)
+}
+
+## Declares that `node` has the system user `name` (`User(system: True, ..user_of(name))`), such as
+## the user a service runs as: made with useradd's choices for a system user (its shell is
+## /usr/sbin/nologin, and its home is not made), in no supplementary group, its SSH keys left alone.
+pub fn system_user(graph: Graph, node: Node, name: String) -> Graph {
+  user_with(graph, node, User(system: True, ..user_of(name)))
 }
 
 ## Declares that `node` has the user `name` (`user_with` declares its groups, SSH keys, and how it
@@ -414,6 +502,12 @@ pub fn package(graph: Graph, node: Node, name: String) -> Graph {
 pub fn service(graph: Graph, node: Node, name: String, enabled: Bool, running: Bool) -> Graph {
   s = Service(node: node.name, name:, enabled:, running:)
   Graph(services: List.append(graph.services, [s]), ..graph)
+}
+
+## Declares that the systemd service `name` on `node` is enabled and running
+## (`service(graph, node, name, True, True)`).
+pub fn running(graph: Graph, node: Node, name: String) -> Graph {
+  service(graph, node, name, True, True)
 }
 
 fn integer(n: Int) -> Dynamic {

@@ -42,13 +42,16 @@ func FileOf(r graph.Resource) *FileSpec { s, _ := r.Ext.(*FileSpec); return s }
 func FileName(node, path string) string { return node + "/file" + path }
 
 type wireFile struct {
-	Node    *string        `json:"node"`
-	Path    *string        `json:"path"`
-	Content *string        `json:"content"`
-	Mode    jsontext.Value `json:"mode"`    // optional
-	Owner   jsontext.Value `json:"owner"`   // optional
-	Group   jsontext.Value `json:"group"`   // optional
-	Restart jsontext.Value `json:"restart"` // optional
+	Node    *string `json:"node"`
+	Path    *string `json:"path"`
+	Content *string `json:"content"`
+	// ContentFrom names the file of the declaration's Pome that has the content, instead of content
+	// (graph.SpecDecoder.Text): the graph then has the content, as if it had been written in.
+	ContentFrom jsontext.Value `json:"contentFrom"`
+	Mode        jsontext.Value `json:"mode"`    // optional
+	Owner       jsontext.Value `json:"owner"`   // optional
+	Group       jsontext.Value `json:"group"`   // optional
+	Restart     jsontext.Value `json:"restart"` // optional
 }
 
 type canonFile struct {
@@ -106,7 +109,7 @@ func decodeFile(d *graph.SpecDecoder) any {
 	}
 	d.Need(s.Node != nil, "node")
 	d.Need(s.Path != nil, "path")
-	d.Need(s.Content != nil, "content")
+	content := d.Text("content", s.Content, s.ContentFrom, MaxContent)
 	mode := d.OptionalString(s.Mode, "mode")
 	owner := d.OptionalString(s.Owner, "owner")
 	group := d.OptionalString(s.Group, "group")
@@ -120,7 +123,7 @@ func decodeFile(d *graph.SpecDecoder) any {
 	if !d.OK() {
 		return nil
 	}
-	f := &FileSpec{Node: *s.Node, Path: *s.Path, Content: *s.Content, Mode: DefaultMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart}
+	f := &FileSpec{Node: *s.Node, Path: *s.Path, Content: *content, Mode: DefaultMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart}
 	if mode != nil {
 		f.Mode = *mode
 	}

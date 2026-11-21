@@ -61,6 +61,9 @@ type wireNodeK3sManifest struct {
 	Node    *string `json:"node"`
 	Name    *string `json:"name"`
 	Content *string `json:"content"`
+	// ContentFrom names the file of the declaration's Pome that has the manifest, instead of content
+	// (graph.SpecDecoder.Text): the graph then has the manifest, as if it had been written in.
+	ContentFrom jsontext.Value `json:"contentFrom"`
 }
 
 type canonNodeK3s struct {
@@ -225,11 +228,11 @@ func decodeK3sManifest(d *graph.SpecDecoder) any {
 	}
 	d.Need(s.Node != nil, "node")
 	d.Need(s.Name != nil, "name")
-	d.Need(s.Content != nil, "content")
+	content := d.Text("content", s.Content, s.ContentFrom, MaxManifest)
 	if !d.OK() {
 		return nil
 	}
-	return &ManifestSpec{Node: *s.Node, Name: *s.Name, Content: *s.Content}
+	return &ManifestSpec{Node: *s.Node, Name: *s.Name, Content: *content}
 }
 
 // k3sServers are the nodes the graph declares as k3s servers.

@@ -57,8 +57,15 @@ type wireNodeService struct {
 var strict = json.JoinOptions(json.RejectUnknownMembers(true))
 
 // Decode parses one mamela-graph/v1 document strictly and validates it.
-// The returned error is an *Error listing every problem found.
-func Decode(data []byte) (*Graph, error) {
+// The returned error is an *Error listing every problem found. A spec that names a file of a Pome
+// (contentFrom) is refused: only DecodeWith, given the Pome's files, reads them.
+func Decode(data []byte) (*Graph, error) { return DecodeWith(data, nil) }
+
+// DecodeWith is Decode for the document a Pome printed, with files the Pome's own: a spec that
+// names one of them for a text (contentFrom) has the text of that file, read before the graph is
+// validated, exactly as if the spec had written it. The graph, its canonical form and its digest
+// are the same either way; only Resource.Sources tells.
+func DecodeWith(data []byte, files Files) (*Graph, error) {
 	if len(data) > MaxDocumentBytes {
 		return nil, single(CodeTooLarge, "",
 			fmt.Sprintf("the graph document is %d bytes, more than the limit of %d", len(data), MaxDocumentBytes),
@@ -98,7 +105,7 @@ func Decode(data []byte) (*Graph, error) {
 				Hint:    "use a Mamela Pome that writes " + SchemaV2})
 			continue
 		}
-		r, ps := decodeResource(i, wr)
+		r, ps := decodeResource(i, wr, files)
 		problems = append(problems, ps...)
 		if r == nil {
 			continue
@@ -122,7 +129,7 @@ func Decode(data []byte) (*Graph, error) {
 	return g, nil
 }
 
-func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
+func decodeResource(i int, wr wireResource, files Files) (*Resource, []Problem) {
 	at := fmt.Sprintf("/resources/%d", i)
 	var problems []Problem
 	missing := func(field string) {
@@ -222,12 +229,12 @@ func decodeResource(i int, wr wireResource) (*Resource, []Problem) {
 		}
 	default:
 		if def, ok := extKinds[r.Kind]; ok {
-			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where}
+			d := &SpecDecoder{Spec: wr.Spec, kind: r.Kind, where: where, files: files}
 			spec := def.Decode(d)
 			if !d.OK() {
 				return nil, d.problems
 			}
-			r.Ext = spec
+			r.Ext, r.Sources = spec, d.sources
 			break
 		}
 		problems = append(problems, Problem{Code: CodeUnknownKind, Path: at + "/kind",
