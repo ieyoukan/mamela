@@ -133,6 +133,7 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
 | MAM-POL-0311 | Denied | 削除の要求に、host のカタログが知らない呼び出しがある。分類できない呼び出しでは削除しない |
+| MAM-POL-0312 | Denied | 観測だけ（observe-only）の名前の変更、またはその名前のマシンの上の変更（policy の `observeOnly`、site の `observe_only`）。Mamela は宣言との差を示し、その物にも、その上にも、何も変えない。作成も同じく拒み、削除（ADR 0013）は plan に載せない（残す理由としてこのコードを示す）。ノードの revision には許可を入れない。ほかの理由で拒否される操作は、その理由のまま示す。plan の表示は `[DENIED: observe-only]`、まとめは `N denied (M observe-only)`。mamelacd は失敗とせず、commit の状態を success（held by observe-only）にする。`mamela act` は、引き継ぎの操作のほかを、このコードで断る。plan が期待どおりの差を示したら、Control Plane のホストで、policy のファイルの `observeOnly` か `mamela.site.toml` の `observe_only` から名前を外し、plan し直す |
 | MAM-POL-0301 | — | 廃止（ADR 0006）。ディスクの縮小。今はプロバイダーが unsupported とした操作（MAM-POL-0309） |
 | MAM-POL-0302 | — | 廃止（ADR 0006）。イメージの変更。今は MAM-POL-0309 |
 | MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更。プロバイダーが引き継ぎ（adopt）の明示操作を持つなら、`mamela act` で引き継げる |
@@ -160,7 +161,7 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-PLAN-0111 | マシンが止まっているので、その上のリソースは起動を待つ |
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
-| MAM-PLAN-0114 | プロバイダーのリソースが存在し、引き継ぐ対象（`adoptable`）である。`mamela import terraform` で取り込んだもの、またはプロバイダーが以前 Mamela の作ったものと認めたもの。人が引き継ぐまで、Mamela は何も変えない（ADR 0009） | プロバイダーの引き継ぎ操作を `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。そのあと plan すると、宣言との差分が出る |
+| MAM-PLAN-0114 | プロバイダーのリソースが存在し、引き継ぐ対象（`adoptable`）である。`mamela import terraform` で取り込んだもの、宣言が IDs（VMID など）で名指ししたもの（kit の `Adopter`）、またはプロバイダーが以前 Mamela の作ったものと認めたもの。人が引き継ぐまで、Mamela は何も変えない（ADR 0009）。引き継いだあとに要る変更（プロバイダーのプレビュー）を、差分として示す（`update-vm (once adopted): ...`）。注記は、何も変わらないなら「nothing would change once adopted: it matches the declaration」、変わるなら「once adopted, Mamela would: ...」と言う。プレビューは承認も送信もされない | プロバイダーの引き継ぎ操作を `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。そのあと plan すると、宣言との差分が変更として出る（それぞれ承認する） |
 | MAM-PLAN-0115 | k3s の版上げは、全 Kubernetes ノードが Ready のあいだだけ進む。Ready でないノードがある、または server がノードを報告していない（server の k3s を調べる） |
 | MAM-PLAN-0116 | k3s の版上げの順番待ち。server が先、agent は名前の順に 1 台ずつ（agent は server より新しい版にしない） |
 | MAM-PLAN-0117 | mamelet からの k3s のマニフェストの報告を待つ |
@@ -206,12 +207,13 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-PLAN-0218 | `NodeFile`・`NodeArtifact` のファイルは宣言どおりだが、書いたあとの `daemon-reload` か `restart` のサービスの再起動が終わっていない（失敗した、または途中で mamelet が止まった）。mamelet は、書いたファイルのあとに残っていることを状態ディレクトリに記録し、ファイルが書いたときのままの間、報告する。plan は in sync とせず、もう一度承認を求める（承認すると、mamelet はファイルを書き直さず、残りを行う）。前の試みの結果に理由がある。mamelet がこの記録を読めなかったとき（壊れたとき）は、それを状態ディレクトリに `linux-pending.json.corrupt` として除けておき、そのとき見つけたファイルごとに「終わったか分からない」と報告する。plan は、unit なら `daemon-reload` と、宣言した `restart` を、もう一度承認するよう求める（除けたファイルは、見たあとで手で消す） |
 | MAM-PLAN-0219 | linux 拡張の資源（`NodeFile`・`NodeUser`・`NodeAptRepo`・`NodeArtifact`）を、mamelet が観測していない。ノードの revision に、その場所がないため（Waiting）。mamelet は 1 つのノードで種類ごとに上限（ファイル 256、ユーザー 64、ソース 32、artifact 64）までしか観測せず、Control Plane は、いま効いている宣言のものと許可のあるもの、plan した宣言のもの（名前の順）、ほかの宣言の plan が足したもの、の順に入れる。(1) 効いている宣言のもので埋まり、plan した宣言の新しいものが入らない: その plan を承認して apply すると、観測はその宣言のものになり、次の plan で計画される（ほかに変更のない plan は push では承認されないので、ホストで `mamela approve <digest>` と `mamela apply`）。(2) 一緒には入らないほかの宣言と交互に plan され、mamelet が報告する前に除かれた: 入れ替わりで場所を取る。どちらかを apply すると、それが場所を持つ。どちらも、宣言の数を減らしてもよい |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
-| MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306 が詳しい） |
+| MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306・0308 が詳しい） |
 | MAM-PLAN-0302 | 現在の宣言にないが、別の宣言（stack）が作った物なので保持する（ADR 0013）。作った宣言から消す |
 | MAM-PLAN-0303 | 現在の宣言にないが、どの宣言が作ったかを記録する前に作った物なので保持する。`mamela claim <dir> --confirm` でその宣言の物にするか、プロバイダーの明示操作（`mamela act`）で消す |
 | MAM-PLAN-0304 | 現在の宣言にないが、プロバイダーにその種類を削除する操作（`removes`）がないので保持する |
 | MAM-PLAN-0305 | 現在の宣言にないが、policy の `removal = "retain"` なので保持する |
 | MAM-PLAN-0306 | 現在の宣言にないが、プロバイダーが削除を用意できなかったので保持する |
+| MAM-PLAN-0308 | 現在の宣言にないが、Mamela が引き継いだ物（`mamela act` の引き継ぎ）で、作った物ではないので保持する。Mamela は、引き継いだ物を削除しない（宣言の前からあった物である）。作成の記録の `plan_digest` が `act:` で始まるもの（以前の版の引き継ぎも同じ）。本当に消すなら、手で消すか、プロバイダーの削除の明示操作（`mamela act`）で消す |
 | MAM-PLAN-0310 | 宣言から外れた `NodeFile`（いま効いている宣言、つまり最後に apply した plan の宣言が持ち、この宣言が持たない。ほかの宣言が plan しただけのものは示さない）。ファイルはノードにそのまま残る（Mamela はまだファイルを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で |
 | MAM-PLAN-0311 | 宣言から外れた `NodeUser`（MAM-PLAN-0310 と同じく、いま効いている宣言が持つもの）。ユーザーは、グループ・home・SSH の鍵とともにノードにそのまま残る（Mamela はユーザーを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（`userdel`） |
 | MAM-PLAN-0312 | 宣言から外れた `NodeAptRepo`（MAM-PLAN-0310 と同じく、いま効いている宣言が持つもの）。ソースと鍵はノードにそのまま残り、apt はそれを読み続ける（Mamela はまだソースを消さない）。plan を apply すると、mamelet はそれを観測しなくなる。消すなら手で（2 つのファイルを消して apt-get update） |
@@ -234,7 +236,7 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-REC-0007 | plan を作ったときとプロバイダーの契約が違う（マニフェスト、外部のプロバイダーのプログラム、API の接続先・資格情報・カタログ）。承認はその契約に対するもの。このとき apply は guard も呼ばない | 新しく plan して、レビューと承認をやり直す |
 | MAM-REC-0008 | 削除の直前に世界を観測し直せなかったので、何も消さずに止まった。それより前の操作の結果は残る | プロバイダーが答えるようになってから、もう一度 apply する（観測してから、承認どおりのものだけを消す） |
 | MAM-REC-0009 | この DB に対する別の apply が動いている（CLI の `mamela apply` と `mamela api` など）。apply は 1 つの DB につき 1 つずつ、前の apply のあとの世界を観測して行う。何も実行していない | 終わるのを待って、もう一度 apply する |
-| MAM-REC-0010 | plan を作ったときの policy が、いま有効な policy と違う（policy のファイルを変えた、保護するノードを足した、plan のときと違う `--policy` を付けた）。承認はそのときの policy の下での判断なので、何も実行していない | 新しく plan して、レビューと承認をやり直す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける |
+| MAM-REC-0010 | plan を作ったときの policy が、いま有効な policy と違う（policy のファイルを変えた、保護するノードを足した、observe-only の名前を足した・外した（policy の `observeOnly`、site の `observe_only`）、plan のときと違う `--policy` を付けた）。承認はそのときの policy の下での判断なので、何も実行していない | 新しく plan して、レビューと承認をやり直す。plan に `--policy` を付けたなら、apply にも同じファイルを付ける |
 | MAM-REC-0011 | apply の最中に、承認が取り消された（`mamela revoke`）。まだ始めていない、承認が要る操作は実行していない。済んだ操作は戻らない | まだ要るなら承認し直す（`mamela approve`）。そうでなければ新しく plan する |
 | MAM-REC-0101 | 適用後の再観測でも宣言全体は未収束 | 次の観測を待って再計画する。次の変更にはその計画のポリシー判定・承認が必要 |
 | MAM-REC-0102 | 適用後の再観測に失敗した。実行した操作の結果は記録済みで、収束したかは分からない | 新しく plan して確かめる |
@@ -357,4 +359,4 @@ CP と mamelet の mTLS の証明書、CP の CA と署名鍵。手順は [recov
 | MAM-NODE-0104 | 拡張の操作の許可を、その拡張を受け取らない mamelet のノードに出さなかった（plan のあとに mamelet が古いものに戻ったなど）。plan は MAM-PLAN-0122 で止める | mamelet を更新して、もう一度 plan する |
 | MAM-NODE-0120 | 承認が切れたので、ノードに許可を出さなかった。apply が長く（イメージの取り込みなどで）、承認の期限を過ぎてからノードの操作に着いた | 承認し直して、もう一度 apply する |
 
-`mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）と、guard の block（何も送らない）で止まる。
+`mamela act` は、ほかに MAM-POL-0308（Control Plane のホスト）、MAM-POL-0312（観測だけの名前。引き継ぎの操作のほか。`--policy` のファイルと site の `observe_only` を読む）と、guard の block（何も送らない）で止まる。

@@ -98,6 +98,16 @@ GitHub や CI から Control Plane へ入る道は要らない。資格情報と
 - **ブランチ保護:** PR 必須の保護は外す（force push と削除の禁止は残す）。ブランチへ書ける人が、承認する人になる。複数人で運用するなら `sync = "approval"`（既定）にする。
 - **approvers は空でよい:** push では承認のコメントを読まない（PR の承認コメントは、これまでどおり動く）。
 
+## 観測だけの名前（observe-only）
+
+Control Plane の policy の `observeOnly`（site の `observe_only`）にある名前の変更は、plan に出るが拒否される（MAM-POL-0312。[architecture.md](architecture.md) の「観測だけ」）。mamelacd は、これを失敗とも、承認するものとも扱わない。
+
+- **commit status:** ほかに変更がなければ success で、`N held by observe-only (MAM-POL-0312): shown, not applied` と出る。ほかの変更や待ちがあれば、その説明に `; N held by observe-only` を足す。
+- **PR のコメント:** 止めた変更の数と、外し方（Control Plane のホストで `observeOnly`・`observe_only` から名前を外す）を書く。承認の 1 行は、ほかに変更があるときだけ出る。
+- **push:** ほかに変更があれば、push はその plan を承認する。止めた変更は apply でも実行されない（`held: observe-only`）。
+- **繰り返さない:** 止めた変更だけの先頭は `held` の状態になり、poll のたびには plan し直さない。`resync` の間隔ごとに plan し直し、同じなら何も言わない。
+- **外したとき:** 次の `resync` の plan に、変更として出る。ずれと同じく、push では承認しない（`self_heal` がなければ、ホストで `mamela approve`）。すぐに進めたいときは、ホストで plan して承認する。
+
 ## ずれを見つける（`resync`、`self_heal`）
 
 収束済みの先頭は、新しいコミットがない限り plan し直さない。それだけだと、あとから世界が変わっても（サービスを手で止めた、バイナリを替えた、VM が落ちた）、commit status は「in sync」のままになる。`resync`（既定 10 分）ごとに、収束済みの宣言を plan し直す。plan は観測するだけで、何も変えない。

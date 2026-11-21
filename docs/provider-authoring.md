@@ -66,6 +66,8 @@ cd mamela-foo && go mod tidy && ./build.sh && go test ./...
 | `Scoped` | 名前のほかに境界で区別する |
 | `Explicit`（`Prepare`） | 明示操作（削除・再起動・引き継ぎ）の変更 |
 | `Importer` | Terraform の型の取り込み（下の「Terraform からの乗り換え」） |
+| `Adopter`（`Adopts(r)`） | 宣言が、すでにある物を IDs（VMID など）で名指しして引き継ぐ（下の「すでにある物を名指しする」） |
+| `Finder`（`Find(c, ids)`） | `List` が返さない物（Mamela の印のない物）を、IDs で 1 つ探す。取り込みと `Adopter` が使う |
 | `Node` | mamelet が動くマシンの種類 |
 
 要求は `kit.Client` で送る（`Read`・`ReadJSON`・`Send`）。パスの `{x}` は IDs から埋まり、パラメータは呼び出しが宣言した場所（クエリ、フォーム、ヘッダー、JSON の本文）に置かれる。JSON の本文は `kit.JSONMembers` で作る。
@@ -135,7 +137,7 @@ func main() { sdk.Serve(myprovider.Provider{}) }
 - **使える要求:** `ObserveCalls` の読み取りだけを使う。
 - **宣言されたリソース:** 宣言されたリソースごとに、存在するか、Mamela が作ったものか（`Owned`。API の中に印を残す）、API の ID（`IDs`）、版（`Version`）、状態を返す。
 - **宣言されていないリソース:** Mamela が作ったもので、もう宣言されていないものも、`Owned` として返す。Mamela はこれを見て保持する。
-- **引き継げるもの:** 以前に別の形で Mamela が作ったもの（Proxmox では、旧組み込みプロバイダーの印を持つ VM）は、`Owned` ではなく `Adoptable` として返す。引き継ぎの明示操作だけが、これに触れられる。
+- **引き継げるもの:** 以前に別の形で Mamela が作ったもの（Proxmox では、旧組み込みプロバイダーの印を持つ VM）は、`Owned` ではなく `Adoptable` として返す。引き継ぎの明示操作だけが、これに触れられる。取り込んだ物（`ObserveParams.Adopting`）と、宣言が IDs で名指しした物（kit の `Adopter`）も、`Adoptable` として返す。
 - **ID の形:** `IDs` の名前は、パスのテンプレートの引数になれる名前にする。値は、パスの区画（英数字と `._~:@=+,!-`）を `/` でつないだものにする。先頭の `/` は許す（CloudWatch Logs のロググループ `/ecs/web`）。空の値、空の区画、`.`・`..` の区画は、host が拒む。
 
 ### Diff: 計算する
@@ -152,6 +154,10 @@ func main() { sdk.Serve(myprovider.Provider{}) }
   - `Late`（必要なとき。下の「遅い変更」）
 - **触らないもの:** 宣言されていないリソースと、Mamela が作っていないリソースは変えない。Mamela が作っていない既存のものと名前が衝突したら、エラーにする。
 - **明示操作は返さない:** `Explicit` の操作の変更を diff が返すと、host が拒む（MAM-PRV-0003）。
+- **引き継ぐ対象はプレビューにする:** 存在し、`Adoptable` で、`Owned` でない物には、変更を返さない。引き継いだあとに要る変更を、`DiffResult.Previews` に、変更と同じ形で返す（kit の `Diff` は、種類の `Diff` の結果をそうする）。
+  - plan は、プレビューの理由を差分として示し（`update-vm (once adopted): ...`）、引き継げば何が変わるかを注記に書く（MAM-PLAN-0114）。プレビューは承認されず、送られない。
+  - host は、プレビューも変更と同じく確かめる。宣言したリソースのものか、観測した物を指すか（`IDs`）、観測した版に基づくか（`Precondition`）。
+  - 引き継ぐ対象でない物のプレビューと、引き継ぐ対象の変更は、host が拒み、plan は止まる。プロバイダーは、変えられる物をプレビューにできず、まだ Mamela のものでない物を変更にできない。
 
 ### Apply: 1 つの変更を実行する
 
@@ -323,7 +329,8 @@ func TestConformance(t *testing.T) {
   - 許可を越える要求が 1 つもない。
   - 次の diff が空で、待つリソースもない。
   - lookup が、適用の前と収束の後に正しく答える。
-- **keeps-undeclared:** 宣言を空にしても、作ったものが `Owned` として観測される。diff は何も変えない。
+- **keeps-undeclared:** 宣言を空にしても、作ったものが `Owned` として観測される。diff は何も変えず、プレビューも返さない。
+- **プレビュー:** どの diff も、引き継ぐ対象（存在し、`Adoptable` で、`Owned` でない物）を変更にせず、それ以外をプレビューにしない。
 - **faults:** 変更の要求を 1 つずつ選び、次の 2 通りの障害を入れる。
   - 送られない
   - 送られて効いたが、応答が失われる
@@ -481,10 +488,26 @@ mamela import terraform --state /tmp/state.json <pome-dir>      # --dry-run で�
   - サイトの値（境界など）は `r.Settings(&v)` で guard の設定から読む。
   - 取り込めないものは `kit.Skip(理由)` を返す。
 - 一覧（`List`）が Mamela の印のある物しか返さないなら、`kit.Finder` の `Find(c, ids)` で、IDs から物を 1 つ探す。
+  - ないときは `nil` を返す。
+  - Mamela の印を持つ物は返さない（引き継ぐ物ではない）。
 
 `lib.emel` を手で書く Pome は、生成した型と関数を `src/kinds.emel` に置く（`mamela provider pome --out src/kinds.emel pome`）。取り込んだ宣言は、そのモジュール（`Aws.Kinds`）を使う。
 
 引き継ぎの操作（`kit.AdoptOp`）は、Mamela の印（タグ、所有者）を付けるだけにする。それ以外は変えない。
+
+### すでにある物を名指しする（`kit.Adopter`）
+
+手で作った VM のように、Terraform も Mamela も作っていない物は、宣言がその IDs（VMID など）を名指しして引き継ぐ。取り込みの記録は要らない。
+
+- **作者:** 種類に `kit.Adopter` を実装する。`Adopts(r)` は、宣言の spec から、名指しした物の IDs を返す（名指ししていなければ `nil`）。API は読まない。
+- **見つけ方:** `List` が `Adoptable` として返す物で IDs が合うもの、なければ `Finder` の `Find` が見つけた物が、その宣言の引き継ぐ対象になる（`Adoptable`、`Owned` でない）。見つからなければ、ほかの宣言と同じく作る対象になる。
+- **引き継がない物:**
+  - Mamela の印を持つ物（`List` が、`Adoptable` でも `Foreign` でもなく返す物）は、名指ししても引き継がない。observe がエラーで理由を言う（その名前で宣言するか、別の物を名指しする）。
+  - 1 つの物を引き継ぐのは 1 つの宣言だけである。2 つ目の宣言が名指しすると、observe がエラーにする。
+  - 取り込みの記録があれば、そちらの IDs が先である。
+- **plan:** 引き継ぐまで、何も変えない（MAM-PLAN-0114）。引き継いだあとに要る変更を、プレビューとして示す（上の「Diff」）。
+- **引き継ぐ:** 人が `mamela act --confirm <name> <adopt-op> "<ID>" <pome-dir>` で行う。Mamela は、それを「引き継いだ物」として記録する。宣言から消しても削除しない（MAM-PLAN-0308）。
+- **観測だけにする:** 使う人は、引き継ぐ前の物の名前を policy の `observeOnly`（site の `observe_only`）に入れてよい。plan は差を示すだけになり、引き継ぎ以外の明示操作も断る（MAM-POL-0312。[architecture.md](architecture.md) の「観測だけ」）。
 
 ### Proxmox
 
