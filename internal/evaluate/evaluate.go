@@ -8,7 +8,8 @@
 //     stdout/stderr/exit (component.EvaluationPolicy) before running it;
 //  3. run: `wasmtime run` with no environment, no stdin, no directories, no network, and limits on
 //     time, memory and output;
-//  4. decode: parse standard output strictly as one mamela-graph/v1 document.
+//  4. decode: parse standard output strictly as one mamela-graph/v1 document, taking the texts it
+//     names from the Pome's own files (contentFrom, files.go) before validating it.
 //
 // The same source, lock and toolchain give the same graph digest.
 package evaluate
@@ -41,6 +42,9 @@ type Limits struct {
 	MaxMemoryBytes uint64        // per linear memory (wasmtime -W max-memory-size)
 	MaxStdoutBytes int           // the graph document
 	MaxStderrBytes int           // diagnostics kept for the report
+	// MaxFileTexts bounds the texts the declaration takes from its Pome's files (contentFrom), in
+	// all; 0 is graph.MaxDocumentBytes, as much as the declaration could have written in.
+	MaxFileTexts int
 }
 
 // DefaultLimits suit a homelab-sized declaration with a wide margin.
@@ -50,6 +54,7 @@ var DefaultLimits = Limits{
 	MaxMemoryBytes: 256 << 20,
 	MaxStdoutBytes: graph.MaxDocumentBytes,
 	MaxStderrBytes: 64 << 10,
+	MaxFileTexts:   graph.MaxDocumentBytes,
 }
 
 // Evaluator evaluates Pomes with a fixed toolchain and limits.
@@ -119,7 +124,7 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	g, err := graph.Decode(stdout)
+	g, err := e.decode(stdout, dir)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +141,23 @@ func (e *Evaluator) Evaluate(ctx context.Context, dir string) (*Result, error) {
 		Versions:   versions,
 		Stderr:     stderr,
 	}, nil
+}
+
+// decode reads the graph the Pome in dir printed. The texts its specs take from the Pome's files
+// (contentFrom) are read from dir, before the graph is validated: the graph is the one the same
+// texts written in would make.
+func (e *Evaluator) decode(stdout []byte, dir string) (*graph.Graph, error) {
+	max := e.Limits.MaxFileTexts
+	if max <= 0 {
+		max = graph.MaxDocumentBytes
+	}
+	files, err := newPomeFiles(dir, max)
+	if err != nil {
+		return nil, &Error{Code: CodeBuildFailed, Stage: StageBuild, Message: "the Pome's directory cannot be opened: " + reason(err),
+			Hint: "pass the directory that contains Pome.toml and src/main.emel"}
+	}
+	defer files.Close()
+	return graph.DecodeWith(stdout, files)
 }
 
 // StackOf is the name of the declaration in dir: its Pome's name, which its author chooses and
