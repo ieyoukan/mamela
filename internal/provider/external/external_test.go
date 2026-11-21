@@ -177,6 +177,57 @@ func TestObserveChecksTheDiff(t *testing.T) {
 	}
 }
 
+// What an object to adopt would need once adopted is a preview: checked like a change (on the
+// observed object, based on its observed version), kept apart from the changes, and only for an
+// object to adopt. A preview of what the provider may change, and a change of an object to adopt,
+// are refused: a provider may not preview what it could change, nor change what is not Mamela's yet.
+func TestObserveChecksThePreviews(t *testing.T) {
+	for _, c := range []struct{ mode, want string }{
+		{"", ""},
+		{"preview-not-adoptable", "diff previews KVItem web, which is not an object to adopt"},
+		{"change-adoptable", "diff changes KVItem web, which is to be adopted"},
+		{"preview-other-object", "the preview of KVItem web names objects map[item:other]"},
+		{"preview-precondition", "the preview of KVItem web is based on version 999"},
+	} {
+		t.Run(c.mode, func(t *testing.T) {
+			api := kvapi.New()
+			if c.mode != "preview-not-adoptable" {
+				// Made by another tool, imported to adopt (ADR 0009); its value is not the declared one.
+				api.Put(kvapi.Item{Name: "web", Value: "old", Owner: "terraform", Version: 4})
+			}
+			srv := httptest.NewServer(api)
+			defer srv.Close()
+			cfg := Config{Provider: map[string]APIConfig{"kv-example": {APIURL: srv.URL, Catalog: "../../../examples/kv-demo/kv-catalog.json"}}}
+			var flags []string
+			if c.mode != "" {
+				flags = append(flags, "-ldflags=-X main.mode="+c.mode)
+			}
+			rt, err := Start(t.Context(), []store.Program{program(t, wasm(t, "../host/testdata/rogue", flags...))}, cfg, wasmtime(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rt.Close()
+			rt.SetCreations(noCreations{})
+			rt.SetAdoptions(map[string][]protocol.Adopting{"kv-example": {{Resource: "KVItem web", IDs: map[string]string{"item": "web"}}}})
+			got, err := rt.Observe(t.Context(), declaration(t), time.Unix(0, 0))
+			if c.want != "" {
+				if err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("got %v, want %q", err, c.want)
+				}
+				return
+			}
+			web := got["KVItem web"]
+			if err != nil || !web.Observed.Adoptable || len(web.Changes) != 0 || len(web.Previews) != 1 ||
+				web.Previews[0].Change.Op != "update-item" || web.Previews[0].Change.Precondition != "4" || len(web.Previews[0].Verified.Effects) == 0 {
+				t.Fatalf("%+v %v", web, err)
+			}
+			if api.Items()["web"].Value != "old" {
+				t.Fatal("observing changed the item")
+			}
+		})
+	}
+}
+
 // A provider's Pome ships the catalogs of its APIs (ADR 0008): files inside the Pome, each a valid
 // mamela-catalog/v1. Mamela ships none: builtin: names are refused with a hint.
 func TestShippedCatalogs(t *testing.T) {

@@ -1,0 +1,1 @@
+{"resources":[{"kind":"TestVM","name":"legacy","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}},{"kind":"TestVM","name":"same","provider":"test","spec":{"cpu":1,"network":{"mode":"dhcp"}}}],"schema":"mamela-graph/v2"}

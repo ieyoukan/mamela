@@ -215,12 +215,15 @@ func Run(t *testing.T, s Suite) {
 					t.Errorf("with nothing declared, observe does not report %s as an existing resource Mamela owns; Mamela must see what it created to keep it", r.ID)
 				}
 			}
-			changes, err := e.s.Diff(e.ctx, nil, observed, nil)
+			changes, previews, err := e.s.Diff(e.ctx, nil, observed, nil)
 			if err != nil {
 				t.Fatalf("diff with nothing declared: %v", err)
 			}
 			if len(changes) > 0 {
 				t.Errorf("with nothing declared, diff changes %s: removing a declaration must not change or delete anything", changes[0].Resource)
+			}
+			if len(previews) > 0 {
+				t.Errorf("with nothing declared, diff previews %s: only a declared object to adopt has previews", previews[0].Resource)
 			}
 		})
 		t.Run(c.Name+"/faults", func(t *testing.T) {
@@ -434,8 +437,29 @@ func (e *env) diff(desired []protocol.Resource, observed []protocol.Observed) ([
 	if len(deps) == 0 {
 		deps = nil
 	}
-	changes, err := e.s.Diff(e.ctx, ready, observed, deps)
+	changes, previews, err := e.s.Diff(e.ctx, ready, observed, deps)
+	if err == nil {
+		err = splitsPreviews(byID, changes, previews)
+	}
 	return changes, waiting, err
+}
+
+// splitsPreviews checks that a diff changes nothing of an object to adopt (one that exists, is
+// adoptable and is not Mamela's), and previews only such objects: what one would need once adopted
+// is a preview, which the plan shows and nothing approves or sends.
+func splitsPreviews(byID map[string]protocol.Observed, changes, previews []protocol.Change) error {
+	toAdopt := func(id string) bool { o := byID[id]; return o.Exists && o.Adoptable && !o.Owned }
+	for _, c := range changes {
+		if toAdopt(c.Resource) {
+			return fmt.Errorf("%s %s: a change of an object to adopt; what it would need once adopted is a preview (kit.Diff returns it as one)", c.Op, c.Resource)
+		}
+	}
+	for _, c := range previews {
+		if !toAdopt(c.Resource) {
+			return fmt.Errorf("%s %s: a preview of what is not an object to adopt; a provider previews only what it may not change yet", c.Op, c.Resource)
+		}
+	}
+	return nil
 }
 
 // roundWaiting observes, diffs and applies every change once; waiting is how many resources the

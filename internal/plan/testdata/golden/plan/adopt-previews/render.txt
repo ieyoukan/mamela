@@ -1,0 +1,16 @@
+Plan sha256:eec78dd83938
+  revision  sha256:57496a4547fb
+  observed  2026-11-08T12:00:00Z (snapshot sha256:71734d9e7a3d)
+  policy    sha256:b2ad900beffb
+
+. TestVM legacy  [waiting]  via test
+      resize-vm (once adopted): memory 2048 -> 4096 MiB
+      shrink-vm-disk (once adopted): disk 20 -> 10 GiB
+    MAM-PLAN-0114 it exists and is to be adopted: Mamela changes nothing of it until a person adopts it; once adopted, Mamela would: resize-vm, shrink-vm-disk (which provider test does not carry out: shrinking a disk can destroy data) (the diffs above; after the adoption, a plan shows each as a change, with its decision)
+      hint: adopt it with its provider's adopt operation: mamela act --confirm legacy <adopt-op> "TestVM legacy" <pome-dir>
+. TestVM same  [waiting]  via test
+    MAM-PLAN-0114 it exists and is to be adopted: Mamela changes nothing of it until a person adopts it; nothing would change once adopted: it matches the declaration
+      hint: adopt it with its provider's adopt operation: mamela act --confirm same <adopt-op> "TestVM same" <pome-dir>
+
+Summary: 2 waiting.
+Nothing has been changed: a plan only describes.

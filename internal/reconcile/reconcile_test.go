@@ -580,3 +580,50 @@ func TestPruneRunsOnlyForAnApprovedPlansDeclaration(t *testing.T) {
 		t.Fatalf("a failing prune: %+v %v", rep, err)
 	}
 }
+
+// What a machine to adopt would need once adopted is a preview: the plan shows it, nothing approves
+// or sends it, and the apply of the plan's other changes neither looks at it nor stops when the
+// preview is different at apply time (the machine changed under the plan).
+func TestPreviewsAreNeverApplied(t *testing.T) {
+	e := newEnv(t)
+	g, err := graph.Decode([]byte(`{"schema":"mamela-graph/v2","resources":[` +
+		`{"kind":"FakeVM","name":"legacy","provider":"fake","spec":{"cpu":2}},` +
+		`{"kind":"FakeVM","name":"web","provider":"fake","spec":{"cpu":2}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.g = g
+	e.world.Declare(g)
+	e.world.SetMachine("web", fake.Machine{Owned: true, Running: true, CPU: 1})
+	e.world.SetMachine("legacy", fake.Machine{Adoptable: true, Running: true, CPU: 1})
+	p := e.plan()
+	legacy := findChange(t, p, "FakeVM legacy")
+	if legacy.Status != plan.StatusWaiting || len(legacy.Operations) != 0 || len(legacy.ProviderChanges) != 0 ||
+		len(legacy.Diffs) != 1 || legacy.Diffs[0].To != "vCPUs 1 -> 2" {
+		t.Fatalf("the machine to adopt: %+v", legacy)
+	}
+	e.approve(p)
+	// The machine to adopt changes before the apply: its preview is another.
+	e.world.SetMachine("legacy", fake.Machine{Adoptable: true, Running: true, CPU: 3, ID: 7001})
+	rep := e.apply(p)
+	if rep.Stopped != nil || outcomes(rep)[fake.OpResize] != reconcile.OutcomeDone || len(rep.Steps) != 1 || rep.Steps[0].Resource != "FakeVM web" {
+		t.Fatalf("apply: %+v", rep)
+	}
+	if m := e.world.Machines()["legacy"]; m.CPU != 3 || m.Owned || slices.ContainsFunc(e.world.Applied, func(a string) bool { return strings.HasSuffix(a, " legacy") }) {
+		t.Fatalf("the machine to adopt was changed: %+v %v", m, e.world.Applied)
+	}
+	if c := findChange(t, rep.Remaining, "FakeVM legacy"); c.Status != plan.StatusWaiting || c.Diffs[0].To != "vCPUs 3 -> 2" {
+		t.Fatalf("after: %+v", c)
+	}
+}
+
+func findChange(t *testing.T, p *plan.Plan, id string) plan.Change {
+	t.Helper()
+	for _, c := range p.Changes {
+		if c.ID() == id {
+			return c
+		}
+	}
+	t.Fatalf("no change of %s", id)
+	return plan.Change{}
+}

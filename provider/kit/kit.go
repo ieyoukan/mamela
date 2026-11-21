@@ -259,6 +259,7 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 	}
 	reported := map[string]bool{}
 	taken := map[protocol.ResourceKind]map[int]bool{}
+	adopter := map[protocol.ResourceKind]map[int]string{} // the declaration that adopts each object taken to adopt
 	adopting := map[string]map[string]string{}
 	for _, a := range in.Adopting {
 		adopting[a.Resource] = a.IDs
@@ -291,22 +292,34 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 			named = len(ids) > 0
 		}
 		if (imported || named) && (i < 0 || byKind[r.Kind][i].Foreign) {
-			if imported {
-				j = adoptable(byKind[r.Kind], taken[r.Kind], ids)
-			} else {
-				// Named by the declaration: only what the kind itself recognizes as adoptable, never an
-				// object that carries Mamela's mark (another declaration's).
-				j = slices.IndexFunc(byKind[r.Kind], func(x Object) bool { return x.Adoptable && protocol.Targets(x.IDs, ids) })
-				if j >= 0 && taken[r.Kind][j] {
-					j = -1
+			objs := byKind[r.Kind]
+			// The object another declaration of this observe adopts is not adopted twice; an object
+			// Mamela has (listed with its mark) is never one to adopt for a declaration that names it.
+			claimed := -1
+			for n, x := range objs {
+				if taken[r.Kind][n] && protocol.Targets(x.IDs, ids) {
+					claimed = n
+					break
 				}
 			}
-			// An object Mamela has (listed with its mark) is never one to adopt for a declaration that
-			// names it by its IDs.
-			marked := named && slices.ContainsFunc(byKind[r.Kind], func(x Object) bool {
-				return !x.Adoptable && !x.Foreign && protocol.Targets(x.IDs, ids)
-			})
-			if f, ok := k.(Finder); ok && j < 0 && !marked {
+			marked := slices.IndexFunc(objs, func(x Object) bool { return !x.Adoptable && !x.Foreign && protocol.Targets(x.IDs, ids) })
+			switch {
+			case named && claimed >= 0 && adopter[r.Kind][claimed] != "":
+				return out, fmt.Errorf("%s names the object %s to adopt, and so does %s: declare each object once",
+					r.ID, formatIDs(ids), adopter[r.Kind][claimed])
+			case named && marked >= 0:
+				return out, fmt.Errorf("%s names the object %s to adopt, which is Mamela's already (%s %s): Mamela never adopts what it has; "+
+					"declare it by that name, or name another object", r.ID, formatIDs(ids), r.Kind, objs[marked].Name)
+			case named && claimed >= 0:
+				return out, fmt.Errorf("%s names the object %s to adopt, which %s %s is declared as: declare each object once",
+					r.ID, formatIDs(ids), r.Kind, objs[claimed].Name)
+			case imported:
+				j = adoptable(objs, taken[r.Kind], ids)
+			default:
+				// Named by the declaration: only what the kind itself recognizes as adoptable.
+				j = slices.IndexFunc(objs, func(x Object) bool { return x.Adoptable && protocol.Targets(x.IDs, ids) })
+			}
+			if f, ok := k.(Finder); ok && j < 0 && claimed < 0 {
 				// Not listed (it carries no mark of Mamela's yet): found by its IDs.
 				x, err := f.Find(c, ids)
 				if err != nil {
@@ -323,6 +336,10 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 			// Imported to adopt (ADR 0009), or named by its declaration (Adopter): made by something
 			// else, and Mamela's once adopted.
 			taken[r.Kind][j] = true
+			if adopter[r.Kind] == nil {
+				adopter[r.Kind] = map[int]string{}
+			}
+			adopter[r.Kind][j] = r.ID
 			fill(&o, byKind[r.Kind][j])
 			o.Owned, o.Unfinished, o.Adoptable = false, false, true
 		case i >= 0:
@@ -358,6 +375,15 @@ func (p *Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.Observe
 		}
 	}
 	return out, nil
+}
+
+// formatIDs is an object's IDs as a person reads them, in order ("vmid=101 node=pve1" sorted).
+func formatIDs(ids map[string]string) string {
+	var out []string
+	for _, k := range slices.Sorted(maps.Keys(ids)) {
+		out = append(out, k+"="+ids[k])
+	}
+	return strings.Join(out, " ")
 }
 
 func fill(o *protocol.Observed, x Object) {

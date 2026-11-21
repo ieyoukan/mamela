@@ -193,6 +193,11 @@ func Targets(observed, change map[string]string) bool {
 	return true
 }
 
+// SameObject reports whether observed IDs are those of the object recorded with other IDs (a
+// record of a creation or an adoption): the IDs they share have the same values, and all of one's
+// are among the other's.
+func SameObject(observed, recorded map[string]string) bool { return sameObject(observed, recorded) }
+
 // sameObject: the IDs of one are among those of the other, with the same values. A create is
 // recorded with the IDs known before it (a Proxmox VMID, an EC2 client token); the object is
 // later observed with those and maybe more (its instance ID), or with fewer (no storage).

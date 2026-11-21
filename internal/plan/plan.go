@@ -281,11 +281,10 @@ func (b builder) provided(r graph.Resource) Change {
 			Hint: "apply the plan that makes it, then plan again (ADR 0007)"}
 		return c
 	case got.Observed.Exists && got.Observed.Adoptable && !got.Observed.Owned:
-		// Imported (ADR 0009), or recognized by its provider: a person adopts it first.
-		c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0114",
-			Message: "it exists and is to be adopted: Mamela changes nothing of it until a person adopts it",
-			Hint:    fmt.Sprintf("adopt it with its provider's adopt operation: mamela act --confirm %s <adopt-op> %q <pome-dir>", r.Name, r.ID())}
-		return c
+		// Imported (ADR 0009), named by its declaration, or recognized by its provider: a person
+		// adopts it first. What it would need once adopted (the provider's previews) is shown, for the
+		// person to read before adopting it; nothing approves or sends it.
+		return b.adoptable(r, c, got)
 	case got.Observed.Exists && !got.Observed.Owned:
 		return b.withOps(c, policy.Subject{Op: policy.OpChangeForeign})
 	}
@@ -319,6 +318,37 @@ func (b builder) provided(r graph.Resource) Change {
 			return w
 		}
 	}
+	return c
+}
+
+// adoptable is the plan of a resource whose object exists and is to be adopted (MAM-PLAN-0114): it
+// waits for a person to adopt it, and shows, as diffs, what its provider says it would need once
+// adopted (state.Provided.Previews). It has no operation: nothing of it is approved or sent, and
+// once it is adopted the next plan makes those changes, each to approve as any other.
+func (b builder) adoptable(r graph.Resource, c Change, got state.Provided) Change {
+	var would []string
+	for _, pc := range got.Previews {
+		field := string(pc.Change.Op) + " (once adopted)"
+		for _, reason := range pc.Change.Reasons {
+			c.Diffs = append(c.Diffs, Diff{Field: field, To: reason})
+		}
+		if len(pc.Change.Reasons) == 0 {
+			c.Diffs = append(c.Diffs, Diff{Field: field, To: "(its provider gives no reason)"})
+		}
+		what := string(pc.Change.Op)
+		if pc.Unsupported != "" {
+			what += fmt.Sprintf(" (which provider %s does not carry out: %s)", r.Provided.Provider, pc.Unsupported)
+		}
+		would = append(would, what)
+	}
+	msg := "it exists and is to be adopted: Mamela changes nothing of it until a person adopts it; "
+	if len(would) == 0 {
+		msg += "nothing would change once adopted: it matches the declaration"
+	} else {
+		msg += "once adopted, Mamela would: " + strings.Join(would, ", ") + " (the diffs above; after the adoption, a plan shows each as a change, with its decision)"
+	}
+	c.Status, c.Note = StatusWaiting, &Note{Code: "MAM-PLAN-0114", Message: msg,
+		Hint: fmt.Sprintf("adopt it with its provider's adopt operation: mamela act --confirm %s <adopt-op> %q <pome-dir>", r.Name, r.ID())}
 	return c
 }
 
