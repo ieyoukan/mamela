@@ -29,6 +29,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 - 最上位は `schema`（値は `"mamela-graph/v1"` か `"mamela-graph/v2"`）と `resources`（配列）の 2 つ。
 - 各リソースは `kind`・`name`・`spec` の 3 つ。プロバイダーのリソースは、それに `provider` が加わり、`after`（下の「依存」）も持てる。
 - 書かれていないメンバー、重複したメンバー、`null`、小数・指数表記の数値、不正な UTF-8、文書の後に続くデータは、すべて拒否する（末尾の改行 1 つだけは許す）。省略できるメンバー（k3s の `server`、mamelet の `version`）も、`null` は書けない（書かずに省略する）。
+- **配布物の sha256 は、宣言が書かずに `mamela.sum` に任せられる**（`NodeArtifact` の `sha256`、`NodeAptRepo` の `keySha256`、`NodeK3s` の `sha256`）。評価が、検証の前に `mamela.sum` から埋めるので、正規形と digest には必ず入る（下の「配布物の sha256 と `mamela.sum`」）。
 - **見たとおりに表示されない文字は入れられない**（MAM-GRAPH-0109）。manifest とファイル（`NodeFile`）の内容とプロバイダーの `spec` の文字列・メンバー名には、改行 `\n` とタブ `\t` 以外の制御文字（復帰 `\r`、ESC を含む）、bidi 制御、ゼロ幅文字などを書けない。plan は全文を読んで承認するもので、k3s は manifest を cluster-admin で適用するので、表示を偽装できる文字を通さない。それでも、plan とエラーは、引用する文字列の制御文字を `\x1b`・`\u202e` のように書き出して表示する（二重の防御）。
 - 宣言として正しいが意図と違いそうなもの（MAM-GRAPH-02xx）は、拒否せず**警告**にして、plan のそのリソースの `warnings` に出す。plan の状態と操作は変えない。
 - 文書は 4 MiB まで、リソースは 10,000 件まで。
@@ -83,7 +84,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ### NodeK3s
 
-k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Pome（`github.com/ieyoukan/mamela/pome/k3s`、モジュール `K3s`）の `K3s.server(graph, node, version, sha256)` と `K3s.agent(graph, node, server, version, sha256)` で書く（ADR 0007）。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
+k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Pome（`github.com/ieyoukan/mamela/pome/k3s`、モジュール `K3s`）の `K3s.server(graph, node, version, sha256)` と `K3s.agent(graph, node, server, version, sha256)` で書く（ADR 0007）。sha256 を `mamela.sum` に任せるときは、`K3s.server_pinned(graph, node, version)` と `K3s.agent_pinned(graph, node, server, version)`（0.1.2 から）。mamelet が、承認のあと一度だけ、GitHub のリリースからバイナリを取得し、sha256 が一致したときだけ `/usr/local/bin/k3s` に置いて、Mamela が決めた systemd unit を書く。起動は `NodeService`（`k3s`）で行う。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -92,7 +93,7 @@ k3s（軽量な Kubernetes）の server または agent。宣言は、K3s の Po
 | `spec.role` | string | `"server"` か `"agent"` |
 | `spec.server` | string | agent のとき、同じ Graph で k3s server を宣言したマシンの名前（server のときは書かない。`null` や空の文字列で「なし」とは書けない） |
 | `spec.version` | string | k3s のリリース（`v1.37.2+k3s1`） |
-| `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`） |
+| `spec.sha256` | string | そのノードのアーキテクチャのバイナリの sha256（16 進の小文字 64 桁。リリースの `sha256sum-<arch>.txt`）。省略すると、`mamela.sum` の、リリースの linux/amd64 のバイナリ（`https://github.com/k3s-io/k3s/releases/download/<version の + を %2B にしたもの>/k3s`）の sha256 になる（今は linux/amd64 だけ） |
 
 - **起動の宣言:** バイナリを置くだけでは k3s は起動も維持もされず、plan は in sync になる。`NodeK3s` を宣言したノードには、`NodeService`（`k3s`）も宣言する。書き忘れには警告（MAM-GRAPH-0202）が出る。k3s の service を `running=false` にするのは矛盾なので拒否する（MAM-GRAPH-0110）。
 - **agent の版:** agent は、その server より新しい版にできない（Kubernetes は API server より新しい kubelet を支えない）。新しければ警告（MAM-GRAPH-0201）。
@@ -211,7 +212,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ### NodeAptRepo
 
-ノードの APT のソースと、それに署名する鍵（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.apt_repo(graph, node, name, uri, suite, components, key_url, key_sha256)`（URI と suite が 1 つ、ノードのすべてのアーキテクチャ）、または `Mamela.apt_repo_with(graph, node, Mamela.AptRepo(architectures: ["amd64"], ..Mamela.apt_repo_of(name, uri, suite, components, key_url, key_sha256)))`。
+ノードの APT のソースと、それに署名する鍵（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.apt_repo(graph, node, name, uri, suite, components, key_url, key_sha256)`（URI と suite が 1 つ、ノードのすべてのアーキテクチャ）、または `Mamela.apt_repo_with(graph, node, Mamela.AptRepo(architectures: ["amd64"], ..Mamela.apt_repo_of(name, uri, suite, components, key_url, key_sha256)))`。鍵の sha256 を `mamela.sum` に任せるときは `Mamela.apt_repo_pinned(graph, node, name, uri, suite, components, key_url)`（0.4.1 から。`key_sha256` が `""` の `AptRepo` も同じ）。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -223,7 +224,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 | `spec.components` | string の配列 | 0〜16 個（`main`、`stable` など）。flat なリポジトリ（suite がすべて `/` で終わる）では空で、それ以外では 1 つ以上。`/` で終わる suite と終わらない suite は混ぜられない |
 | `spec.architectures` | string の配列 | 省略できる（ノードのすべてのアーキテクチャ。空の配列も同じで、正規形では書かない）。dpkg のアーキテクチャ名（`amd64`、`arm64`）を 8 個まで |
 | `spec.keyUrl` | string | `https://` だけ（512 バイトまで）。ユーザー名・パスワード、フラグメントは不可。クエリは書ける（鍵サーバーの検索） |
-| `spec.keySha256` | string | 取得したままの鍵ファイルの sha256（小文字の 16 進 64 桁。取得したファイルを `sha256sum` したもの） |
+| `spec.keySha256` | string | 取得したままの鍵ファイルの sha256（小文字の 16 進 64 桁。取得したファイルを `sha256sum` したもの）。省略すると、`mamela.sum` の `keyUrl` の sha256 になる |
 
 - **行を足せない:** 値は狭い形だけを通す。空白・改行・制御文字・`#`・`$`・`[` を含められないので、どの値も、ソースのファイルに行やオプション（別の `Signed-By`、`trusted=yes`）を足せない。それぞれの配列で同じ値を 2 度書けない。
 - **同じソースを 2 度宣言しない:** 同じノードの 2 つの NodeAptRepo が同じ URI（末尾の `/` は区別しない）と suite を持つと MAM-GRAPH-0110。apt は 1 つのソースに 2 つの鍵を認めず、すべてのソースを読まなくなるため。`NodeFile` は apt のソースのファイルを書かないので、宣言のファイルと衝突することはない（ノードにあるソースのファイルとの衝突は、mamelet が見つける。下の「ほかのソースとの衝突」）。
@@ -274,14 +275,14 @@ Mamela.empty()
 
 ### NodeArtifact
 
-ノードの上の 1 つのファイルを、https のダウンロードから、sha256 で固定して置く（linux 拡張、ADR 0016）。リリースのバイナリ、または `.tar.gz` の中の 1 つのファイル。宣言は Mamela Pome（0.4.0 から）の `Mamela.artifact(graph, node, path, url, sha256)`（ダウンロードそのもの、mode 0755、root の所有、再起動なし）、または `Mamela.artifact_with(graph, node, Mamela.Artifact(extract: "app-1.0/app", restart: ["app"], ..Mamela.artifact_of(path, url, sha256)))`。
+ノードの上の 1 つのファイルを、https のダウンロードから、sha256 で固定して置く（linux 拡張、ADR 0016）。リリースのバイナリ、または `.tar.gz` の中の 1 つのファイル。宣言は Mamela Pome（0.4.0 から）の `Mamela.artifact(graph, node, path, url, sha256)`（ダウンロードそのもの、mode 0755、root の所有、再起動なし）、または `Mamela.artifact_with(graph, node, Mamela.Artifact(extract: "app-1.0/app", restart: ["app"], ..Mamela.artifact_of(path, url, sha256)))`。sha256 を `mamela.sum` に任せるときは `Mamela.artifact_pinned(path, url)`（0.4.1 から。`sha256` が `""` の `Artifact` も同じ）。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
 | `name` | string | `<node>/artifact<path>`（`web/artifact/usr/local/bin/node_exporter`） |
 | `spec.node` | string | 同じ Graph のノード（provider のマシン） |
 | `spec.url` | string | `https://` の URL（2048 バイトまで）。ホストがあり、ユーザー・パスワード（`user@`）と fragment（`#`）はない。文字は RFC 3986 のものだけ（空白・制御文字なし）。`http://` は拒否 |
-| `spec.sha256` | string | ダウンロードしたバイト列の sha256（小文字 16 進 64 桁）。リリースのチェックサムファイル（`sha256sums.txt` など）に載っている値 |
+| `spec.sha256` | string | ダウンロードしたバイト列の sha256（小文字 16 進 64 桁）。リリースのチェックサムファイル（`sha256sums.txt` など）に載っている値。省略すると、`mamela.sum` の `url` の sha256 になる |
 | `spec.path` | string | 置く場所。`NodeFile` の `path` と同じ規則（書かない場所も同じ） |
 | `spec.extract` | string | 省略できる。書くと、ダウンロードは gzip で圧縮した tar で、その中のこのメンバー（通常のファイル）だけを置く。`tar -tzf` が示す名前で、相対・`Clean` したもの（先頭の `/` と `./`、`..`、末尾の `/` なし）。各部分は英数字と `. _ + @ = : , -` だけ。1024 バイトまで |
 | `spec.mode` | string | 省略できる（既定 `"0755"`）。`NodeFile` と同じ規則 |
@@ -365,6 +366,29 @@ pub fn node_exporter(graph: Mamela.Graph, node: Mamela.Node) -> Mamela.Graph {
 - **プロバイダーに渡すもの:** diff には、待たないリソースの依存先の観測（Mamela が所有を確かめた ID と状態）を `dependencies` として渡す（[provider-authoring.md](provider-authoring.md)）。
 - **宣言:** Mamela の Pome では `Mamela.provided_after(graph, provider, kind, name, spec, after)` と書く。`after` は、Mamela の Pome の型 `Ref(kind: ..., name: ...)` の一覧である。`Ref` は、プロバイダーの Pome が自分の型の値から作る。使う人は型の値を渡すだけなので、宣言にない名前を書き間違えない。
 
+## 配布物の sha256 と `mamela.sum`
+
+宣言は、ノードが取得するものの sha256 を書かずに、取得先の URL だけを書ける（[設計](design/declaration-inputs.md) の 2）。sha256 は、宣言の Pome のルート（`Pome.toml` の隣）の `mamela.sum` に置き、`mamela pin` が書く。go.mod と go.sum と同じ分け方で、人は版と URL を書いて読み、sha256 は道具が書いて、レビューではその差分を見る。
+
+| kind | 省略できるメンバー | `mamela.sum` のキー（URL） | Pome の関数 |
+|---|---|---|---|
+| `NodeArtifact` | `sha256` | `url` | `Mamela.artifact_pinned(path, url)` |
+| `NodeAptRepo` | `keySha256` | `keyUrl`（署名鍵） | `Mamela.apt_repo_pinned(...)` |
+| `NodeK3s` | `sha256` | リリースの linux/amd64 のバイナリ（k3s 拡張が版から作る） | `K3s.server_pinned`、`K3s.agent_pinned` |
+
+`NodeMamelet` は公開の URL がないので、これまでどおり宣言に sha256 を書く。
+
+- **形:** 1 行に 1 つ、`<url> sha256:<小文字 16 進 64 桁>`、URL のバイトの順、改行は LF、最後の行も LF で終わる。1 行目に限り、`mamela pin` が書く見出しの行（`` # Written by `mamela pin`: the sha256 of what this declaration downloads. Do not edit. ``）を置ける。それ以外のコメント、空行、同じ URL の 2 行、順序の違い、別の形の行、https でない URL は、すべて拒む（`MAM-EVAL-0602`）。シンボリックリンクも拒む。4 MiB まで。
+- **評価:** Go が、Graph を検証する前に、省略された sha256 を `mamela.sum` から埋める。正規形と digest は、宣言に sha256 を書いたときと 1 バイトも違わない。`mamela.sum` にない URL があれば、検証のあと（Graph が正しいとき）に、その URL とリソースと「`mamela pin <pome-dir>` を実行する」を示して止める（`MAM-EVAL-0601`）。評価はネットワークを使わず、`mamela.sum` を書き換えない。宣言に sha256 を書いたものは、それを使い、`mamela.sum` を見ない。使われていない行があっても評価は通る（`mamela pin --check` が示す）。
+- **保存した Graph:** 正規形には必ず sha256 があるので、保存した Graph（`internal/store`）を読み直すときに `mamela.sum` は要らない。sha256 のない文書を `mamela.sum` なしで読むと、これまでどおり `MAM-GRAPH-0004`。
+- **古いバイナリ:** sha256 を省略した文書を、この機能より前のバイナリで評価すると `MAM-GRAPH-0004`（メンバーがない）で拒む。黙って違うものを入れることはない。Control Plane を先に更新する。
+- **`mamela pin [--check | --verify] <pome-dir>`:** 宣言を評価して（このときは `mamela.sum` を読まない）、sha256 の要る URL を集める。Graph が正しくなければ、何も取得しない。
+  - 既定: `mamela.sum` にない URL だけを、https だけ（リダイレクトも https だけ、10 回まで）、512 MiB まで、10 分以内で取得し、バイト列の sha256 を書く。GitHub のリリースの asset（`https://github.com/<owner>/<repo>/releases/download/<tag>/<asset>`）は、GitHub の API が返す asset の `digest` とも照合する（`MAM-PIN-0103`。digest のない古い asset は、そう表示して照合しない）。使われなくなった行は消す。書き込みは、同じディレクトリの一時ファイルと rename で行い、読んだあとに `mamela.sum` が変わっていれば書かない（`MAM-PIN-0201`）。取得の失敗、拒否、照合の食い違いのどれでも、何も書かない。足した行と消した行を表示する。
+  - `--check`: ネットワークを使わない。足りない行と使われていない行を示し、足りなければ終了コード 1（`MAM-PIN-0301`）。何も書かない。
+  - `--verify`: `mamela.sum` のすべての行を取得し直して照合する（`MAM-PIN-0302`）。何も書かない。
+- **信頼:** `mamela pin` が確かめるのは、取得したときのバイト列だけ（初めて見たものを信じる、TOFU）。守りの中心は、PR で版・URL・sha256 の差分を人が読むこと。署名鍵（`keyUrl`）を新しく固定したときは、`mamela pin` が鍵の指紋を配布元のものと照合するよう案内する。
+- **mamelacd:** `mamela.sum` は宣言の Pome のツリーにあるので、mamelacd が Control Plane に送るツリー（GitHub の tarball）にそのまま入る。版を変えたら、`mamela pin` を実行し、宣言と `mamela.sum` を同じコミットにする（[gitops.md](gitops.md)）。
+
 ## 正規化と digest
 
 - 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持つ）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
@@ -389,8 +413,10 @@ Mamela のバイナリにはまだ版のタグがなく、`mamela version` は b
 | `pome/mamela` | 0.3.1 | `NodeMamelet`（`Mamela.mamelet`） | PR #23（`37ab2b5`）以降 |
 | `pome/mamela` | 0.3.2 | Pome の API は 0.3.1 と同じ。0.3.2 の Mamela（監査 2026-11-17 の修正、k3s を `internal/ext/k3s` へ）に合わせた版。graph の検証が厳しくなった（service 名の `:`、制御文字、optional の null などを拒否） | どの版でも読めるが、0.3.2 の修正は PR #36 以降のバイナリ |
 | `pome/mamela` | 0.4.0 | linux 拡張（ADR 0016）の `NodeFile`（`Mamela.file`）、`NodeUser`（`Mamela.user`）、`NodeAptRepo`（`Mamela.apt_repo`）、`NodeArtifact`（`Mamela.artifact`）。ノードの mamelet が linux を受け取る版（0.10.0 以降）でなければ、その資源は MAM-PLAN-0122 | PR #39（`7ecf714`）以降。PR #49 までの修正を含むバイナリを使う。CP を先に、mamelet をあとに更新する（ADR 0016 §4） |
+| `pome/mamela` | 0.4.1 | `sha256` のない `NodeArtifact`（`Mamela.artifact_pinned`）、`keySha256` のない `NodeAptRepo`（`Mamela.apt_repo_pinned`）。どちらも sha256 を `mamela.sum` から取る | `mamela.sum` を読むバイナリ（この表に、その PR のマージコミットを足す）。古いバイナリは MAM-GRAPH-0004 で拒む |
 | `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
 | `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
+| `pome/k3s` | 0.1.2 | `sha256` のない `NodeK3s`（`K3s.server_pinned`、`K3s.agent_pinned`。`mamela.sum` から）、`contentFrom` の `NodeK3sManifest`（`K3s.manifest_from`）。依存は `pome/mamela` 0.3.0 のまま | `mamela.sum` を読むバイナリ（この表に、その PR のマージコミットを足す）。`K3s.manifest_from` は、`contentFrom` を読むバイナリも要る。古いバイナリは MAM-GRAPH-0004 / 0003 で拒む |
 
 新しい kind や member を出す版を公開する PR は、この表に行を足す（[releasing.md](releasing.md)）。Emela は依存の中で最も高い版を選ぶので、`pome/k3s` が要求する `pome/mamela` の版を上げると、K3s を使う宣言すべてが、その版の要るバイナリを求める。
 

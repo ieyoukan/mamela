@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/codes.go` の `reserved`。この文書の予約の行と同じであることを `codes_test.go` が確かめる）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/pin/pin.go`（MAM-PIN）、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/codes.go` の `reserved`。この文書の予約の行と同じであることを `codes_test.go` が確かめる）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -30,6 +30,22 @@ Mamela が止まったり拒否したりしたときに表示するコード。�
 | MAM-EVAL-0305 | stdout に書きすぎた | Graph を 2 回以上書いている、診断を stdout に書いている |
 | MAM-EVAL-0306 | Wasmtime が異常終了した | stderr の詳細を見る |
 | MAM-EVAL-0401 | 2 回の評価で結果が違った | ツールチェーンか Mamela のバグ |
+| MAM-EVAL-0601 | 宣言が sha256 を書かずに任せた URL（`Mamela.artifact_pinned`、`Mamela.apt_repo_pinned`、`K3s.server_pinned` など）が、`mamela.sum` にない。URL とリソースを示す（評価は何も取得しない） | 版を変えて URL が変わった、`mamela.sum` をコミットし忘れた。`mamela pin <pome-dir>` を実行し、表示と差分を確かめ、宣言と同じコミットにする（[gitops.md](gitops.md)） |
+| MAM-EVAL-0602 | `mamela.sum` の形が違う（同じ URL の 2 行、URL の順でない、コメント、空行、CR、別の形の行、https でない URL、リンク、4 MiB 超）。何も評価しない | 手で直さない。git から戻す（`git checkout -- mamela.sum`）か、消して `mamela pin <pome-dir>` で書き直す（すべて取得し直すので、足された sha256 を配布元のものと照合する） |
+
+## MAM-PIN — `mamela pin`（`mamela.sum` を書く）
+
+`mamela pin` は、`mamela.sum` を読めないとき（形が違う）は MAM-EVAL-0602 を出し、何も取得しない。以下のどれでも、`mamela.sum` は書かない。
+
+| コード | 意味 | よくある原因と対処 |
+|---|---|---|
+| MAM-PIN-0101 | 取得できなかった（ネットワーク、HTTP の状態、10 分の時間切れ） | URL（とそれを作る版）とネットワークを確かめ、もう一度実行する |
+| MAM-PIN-0102 | 取得を拒んだ: https でない、http へのリダイレクト、512 MiB を超える | https の URL を宣言する。Mamela は https だけで、512 MiB までしか取得しない（mamelet も同じ） |
+| MAM-PIN-0103 | GitHub のリリースの asset が、GitHub の示す digest と違う。またはリリースがその asset を持たない | 固定しない。途中（プロキシ、ミラー）で変わった可能性がある。別のネットワークで実行し直し、理由を確かめる。URL の asset 名を確かめる |
+| MAM-PIN-0104 | GitHub の API が、リリースの asset が何かを答えなかった（レート制限、ないリリース） | トークンなしの API は 1 時間に 60 回まで。待って実行し直す。リリース（タグ）があるか確かめる |
+| MAM-PIN-0201 | `mamela pin` の実行中に、`mamela.sum` がほかから変わった | もう一度実行する（別の `mamela pin`、エディタ、git checkout が書いた） |
+| MAM-PIN-0301 | `--check`・`--verify`: 宣言が要る sha256 が `mamela.sum` にない（評価は MAM-EVAL-0601 になる） | `mamela pin <pome-dir>` を実行して、コミットする |
+| MAM-PIN-0302 | `--verify`: URL のバイト列が、固定した sha256 と違う | 公開済みのファイルは変わらないはず。理由（リリースの出し直し、ミラー、改ざん）を確かめる。新しいものを取るなら、その行を消して `mamela pin` を実行し、新しい版と同じくレビューする |
 
 ## MAM-GRAPH — Graph の形式
 
