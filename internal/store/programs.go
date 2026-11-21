@@ -147,6 +147,42 @@ VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(provider, resource, ids) DO NOTHING`, pr
 	return err
 }
 
+// adoptionRecord begins the plan_digest of the creation record of an object Mamela adopted (an explicit
+// operation that adopts, mamela act), followed by the operation's ID: a plan's record has the plan's
+// digest ("sha256:..."). mamela act has written adoptions so since adopting was first an explicit
+// operation, so the records of earlier adoptions are told apart the same way.
+const adoptionRecord = "act:"
+
+// RecordAdopted records that Mamela adopted the object with these IDs for the resource (mamela
+// act): it is Mamela's from then on, as what it created is, but something else made it, and a plan
+// never deletes it (ADR 0013, MAM-PLAN-0308).
+func (s *Store) RecordAdopted(ctx context.Context, stack, provider, resource string, ids map[string]string, operationID string) error {
+	return s.RecordCreation(ctx, stack, provider, resource, ids, adoptionRecord+operationID, operationID)
+}
+
+// Adopted are the IDs of the objects Mamela adopted for a resource (RecordAdopted), not created.
+func (s *Store) Adopted(ctx context.Context, provider, resource string) ([]map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ids FROM provider_creations WHERE provider = ? AND resource = ? AND substr(plan_digest, 1, ?) = ? ORDER BY recorded_ms, ids`,
+		provider, resource, len(adoptionRecord), adoptionRecord)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []map[string]string
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return nil, err
+		}
+		var ids map[string]string
+		if err := json.Unmarshal([]byte(text), &ids); err != nil {
+			return nil, err
+		}
+		out = append(out, ids)
+	}
+	return out, rows.Err()
+}
+
 // CreationStack is the declaration a resource's objects were created for: "" when none was
 // recorded, or when the records name more than one (then none is trusted).
 func (s *Store) CreationStack(ctx context.Context, provider, resource string) (string, error) {

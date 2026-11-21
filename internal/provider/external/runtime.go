@@ -132,6 +132,9 @@ type Creations interface {
 	CreationStack(ctx context.Context, provider, resource string) (string, error)
 	CreationOrder(ctx context.Context, provider string) (map[string]int, error)
 	RecordCreation(ctx context.Context, stack, provider, resource string, ids map[string]string, planDigest, operationID string) error
+	// Adopted are the IDs of the objects Mamela adopted for the resource (mamela act), which it did
+	// not create: a plan never deletes one (MAM-PLAN-0308).
+	Adopted(ctx context.Context, provider, resource string) ([]map[string]string, error)
 }
 
 // SetClaims sets, by provider, the IDs other plans are to create: observing treats them as taken.
@@ -848,7 +851,17 @@ func (rt *Runtime) planRemoval(ctx context.Context, s *host.Session, p *state.Pr
 	if err != nil {
 		return err
 	}
+	adoptions, err := rt.creations.Adopted(ctx, p.Provider, p.Observed.ID)
+	if err != nil {
+		return err
+	}
+	adopted := slices.ContainsFunc(adoptions, func(ids map[string]string) bool { return protocol.SameObject(p.Observed.IDs, ids) })
 	switch {
+	case adopted:
+		// Something else made it (a machine that ran before Mamela): what it holds is not Mamela's
+		// to throw away because a declaration no longer has it.
+		keep("MAM-PLAN-0308", "Mamela adopted it, and did not make it; it never deletes what it adopted",
+			"if you mean to delete it, delete it by hand, or with its provider's explicit delete operation (mamela act)")
 	case !hasOp:
 		keep("MAM-PLAN-0304", fmt.Sprintf("provider %s has no operation that deletes a %s", p.Provider, p.Kind),
 			"delete it by hand, or with the provider's explicit operation if it has one (mamela act)")

@@ -302,11 +302,13 @@ var (
 	}()
 )
 
-// coreCodes are the codes of the core's notes. A note's code is in the plan's JSON, so it never
-// changes meaning, and no extension may take one.
+// coreCodes are the codes of the core's notes (with the reasons the providers' runtime keeps an
+// object for, MAM-PLAN-0302 to 0308). A note's code is in the plan's JSON, so it never changes
+// meaning, and no extension may take one.
 var coreCodes = []string{"MAM-PLAN-0101", "MAM-PLAN-0102", "MAM-PLAN-0103", "MAM-PLAN-0104", "MAM-PLAN-0105", "MAM-PLAN-0106",
 	"MAM-PLAN-0107", "MAM-PLAN-0110", "MAM-PLAN-0111", "MAM-PLAN-0113", "MAM-PLAN-0114", "MAM-PLAN-0119", "MAM-PLAN-0120",
-	"MAM-PLAN-0122", "MAM-PLAN-0123", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0305"}
+	"MAM-PLAN-0122", "MAM-PLAN-0123", "MAM-PLAN-0130", "MAM-PLAN-0201", "MAM-PLAN-0202", "MAM-PLAN-0203", "MAM-PLAN-0301", "MAM-PLAN-0302",
+	"MAM-PLAN-0303", "MAM-PLAN-0304", "MAM-PLAN-0305", "MAM-PLAN-0306", "MAM-PLAN-0307", "MAM-PLAN-0308"}
 
 // Extension is what a node extension adds to planning.
 type Extension struct {

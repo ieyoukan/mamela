@@ -224,7 +224,7 @@ func runAct(ctx context.Context, args []string, stdout, stderr io.Writer) (code 
 	absent := false
 	if outcome == host.OutcomeDone {
 		if o.Adopts {
-			if err = st.RecordCreation(ctx, rt.Stack(), pr.Provider, obs.ID, change.IDs, "act:"+id, id); err == nil {
+			if err = st.RecordAdopted(ctx, rt.Stack(), pr.Provider, obs.ID, change.IDs, id); err == nil {
 				err = st.ForgetAdoption(ctx, pr.Provider, obs.ID)
 			}
 		} else {
@@ -348,7 +348,7 @@ func recoverExplicit(ctx context.Context, st *store.Store, rt *external.Runtime,
 		if absent {
 			return report(stderr, fmt.Errorf("adopted resource is absent; inspect before recovering"))
 		}
-		if err = st.RecordCreation(ctx, rt.Stack(), e.Provider, e.Resource, e.Change.IDs, "act:"+id, id); err != nil {
+		if err = st.RecordAdopted(ctx, rt.Stack(), e.Provider, e.Resource, e.Change.IDs, id); err != nil {
 			return report(stderr, err)
 		}
 		if err = st.ForgetAdoption(ctx, e.Provider, e.Resource); err != nil {

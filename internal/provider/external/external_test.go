@@ -284,6 +284,9 @@ func (noCreations) CreationOrder(context.Context, string) (map[string]int, error
 func (noCreations) RecordCreation(context.Context, string, string, string, map[string]string, string, string) error {
 	return nil
 }
+func (noCreations) Adopted(context.Context, string, string) ([]map[string]string, error) {
+	return nil, nil
+}
 
 // recorded is a record of creations.
 type recorded map[string][]map[string]string
@@ -296,6 +299,9 @@ func (r recorded) CreationOrder(context.Context, string) (map[string]int, error)
 func (r recorded) RecordCreation(_ context.Context, _, provider, resource string, ids map[string]string, _, _ string) error {
 	r[provider+"/"+resource] = append(r[provider+"/"+resource], ids)
 	return nil
+}
+func (r recorded) Adopted(context.Context, string, string) ([]map[string]string, error) {
+	return nil, nil
 }
 
 // An object that carries the provider's marker is Mamela's only if Mamela recorded that it set out

@@ -38,6 +38,36 @@ func TestCreationStackAndOrder(t *testing.T) {
 	}
 }
 
+// What Mamela adopted (mamela act) is told apart from what it created: its record is an adoption,
+// as the records of earlier releases are ("act:" and the operation), and a plan never deletes it
+// (MAM-PLAN-0308). It is Mamela's all the same: its record vouches for it.
+func TestAdoptedIsToldApartFromCreated(t *testing.T) {
+	s, _, _ := open(t)
+	ctx := context.Background()
+	if err := s.RecordCreation(ctx, "infra", "test", "Machine web", map[string]string{"vmid": "101"}, "sha256:plan", "op-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAdopted(ctx, "infra", "test", "Machine legacy", map[string]string{"vmid": "102"}, "act-adopt-vm-1"); err != nil {
+		t.Fatal(err)
+	}
+	// As an earlier release wrote an adoption.
+	if err := s.RecordCreation(ctx, "", "test", "Machine old", map[string]string{"vmid": "103"}, "act:act-adopt-vm-0", "act-adopt-vm-0"); err != nil {
+		t.Fatal(err)
+	}
+	for resource, want := range map[string]string{"Machine web": "", "Machine legacy": "102", "Machine old": "103", "Machine none": ""} {
+		got, err := s.Adopted(ctx, "test", resource)
+		if err != nil || (want == "") != (len(got) == 0) || want != "" && (len(got) != 1 || got[0]["vmid"] != want) {
+			t.Errorf("Adopted(%s) = %v, %v; want %q", resource, got, err, want)
+		}
+	}
+	if c, err := s.Creations(ctx, "test", "Machine legacy"); err != nil || len(c) != 1 || c[0]["vmid"] != "102" {
+		t.Errorf("an adopted object is not vouched for: %v %v", c, err)
+	}
+	if st, err := s.CreationStack(ctx, "test", "Machine legacy"); err != nil || st != "infra" {
+		t.Errorf("stack %q %v", st, err)
+	}
+}
+
 // An object that is gone after a deletion whose answer was lost completes the deletion the way it
 // would have: its records end and its machine's registration with them. An object that vanished
 // without Mamela deleting it only has its creation records forgotten. Repeating is safe.
