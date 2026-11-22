@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/ieyoukan/mamela/internal/graph"
@@ -75,10 +74,9 @@ func (m *artifacts) Make(ctx context.Context, a protocol.Artifact) (host.Prepare
 		var err error
 		switch a.Format {
 		case protocol.SeedUserData:
-			sum := sha256.Sum256(m.Seeds.MameletBinary)
 			url := ""
 			if !m.Seeds.Plain {
-				url = strings.TrimRight(m.Site.ControlPlane.Advertised(), "/") + "/v1/mamelet/" + hex.EncodeToString(sum[:])
+				url = m.Seeds.BinaryURL(m.Site.ControlPlane.Advertised())
 			}
 			name, img, err = m.Seeds.NewUserData(ctx, a.Node, int(id), network, url)
 		default:

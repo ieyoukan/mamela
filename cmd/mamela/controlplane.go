@@ -45,6 +45,9 @@ func runControlPlane(ctx context.Context, args []string, stdout, stderr io.Write
 	if len(args) > 0 && args[0] == "reenroll" {
 		return runReenroll(ctx, args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "enroll" {
+		return runEnroll(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "new-keys" {
 		return runNewKeys(ctx, args[1:], stdout, stderr)
 	}
@@ -342,6 +345,8 @@ const controlPlaneUsage = `Usage: mamela controlplane bundle --url https://<addr
        mamela controlplane redirect --db <state.db> --url https://<address>:<port>
        mamela controlplane agents [--db <state.db>]            the registered mamelets and when their certificates end
        mamela controlplane reenroll --node <name>              a one-time token for a mamelet whose certificate ended
+       mamela controlplane enroll --node <name> --vmid <id> --out <file>
+                                                               a script that installs and enrolls mamelet on an adopted machine
        mamela controlplane new-keys [--confirm]                new CA and keys, keeping the database (every node must enroll again)
        mamela controlplane trust                               the "ca" and "revisionKey" members of a mamelet's config.json
        (backup and restore: mamela backup, mamela restore; docs/recovery.md)

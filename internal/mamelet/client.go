@@ -24,7 +24,8 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 )
 
-// EnrollRequest is sent once, with the one-time token from cloud-init, to get a client certificate.
+// EnrollRequest is sent once, with the one-time token (from the seed, or from the enrollment script
+// of a machine Mamela did not make), to get a client certificate.
 type EnrollRequest struct {
 	Node  string `json:"node"`
 	VMID  int    `json:"vmid"`

@@ -45,6 +45,9 @@ Usage:
   mamela import terraform <pome-dir>  move what Terraform/OpenTofu manages to Mamela: declarations of the
                                       resources of a state (terraform show -json), to adopt (ADR 0009)
   mamela controlplane bundle --url <u> pack the Control Plane for its own host (ADR 0003)
+  mamela controlplane enroll --node <n> --vmid <id> --out <file>
+                                      write a script that installs and enrolls mamelet on an adopted
+                                      machine, for a person to read and run there as root
   mamela serve                        serve mamelet (the agent on the machines): enrollment, revisions, reports
   mamela backup --out <file>          save the database and the Control Plane's keys (secret: they hold the CA key)
   mamela restore --in <file>          put a backup back, on a host that has none of it (docs/recovery.md)
