@@ -1,0 +1,11 @@
+Plan sha256:4132b6f8ec15
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:74bb0518919c)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+= NodeAptUpgrades web/apt-upgrades  [in sync]
+    MAM-PLAN-0168 the package lists on web are 41m old (mamelet's last apt-get update, 2026-11-17T11:20:00Z)
+
+Summary: 2 in sync.
+Nothing has been changed: a plan only describes.

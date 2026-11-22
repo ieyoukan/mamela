@@ -1,0 +1,12 @@
+Plan sha256:df97a5d3fe8d
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:e84d5cb518d0)
+  policy    sha256:33156ab46ab9
+
+= TestVM web  [in sync]  via test
+! NodeAptUpgrades web/apt-upgrades  [blocked]
+    MAM-PLAN-0166 the package lists on web are 400 days old (apt's newest index (release file), 2025-10-13T12:00:00Z), older than 12h00m: mamelet does not read them again on a machine Mamela does not change (MAM-POL-0312)
+      hint: run apt-get update on web by hand to see what is pending, then plan again
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

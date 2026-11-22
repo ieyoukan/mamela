@@ -1,0 +1,12 @@
+Plan sha256:befe6d905b38
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:73f1fd4d6053)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+! NodeAptUpgrades web/apt-upgrades  [blocked]
+    MAM-PLAN-0226 dpkg on web did not finish what it was doing (an upgrade or an installation was cut short): apt installs nothing until it is finished
+      hint: finish it by hand on the node: dpkg --configure -a (then apt-get -f install if it asks), and plan again; Mamela does not do it, because it runs whatever was left half-done
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.
