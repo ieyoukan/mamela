@@ -129,6 +129,7 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-POL-0224 | — | 予約（linux 拡張の操作。NodeAptRepo） |
 | MAM-POL-0225 | ApprovalRequired | `linux.install-artifact`（`NodeArtifact`）。https でダウンロードし、sha256 が plan のものであるときだけ、それ（または `.tar.gz` の 1 つのメンバー）を root として、plan のとおりの mode・owner で置き、挙げたサービスを（動いていれば）再起動する。plan に URL・sha256・メンバーが出る。承認する前に、公開元のリリース（チェックサムファイル）と照らす |
 | MAM-POL-0226 | — | 予約（linux 拡張の操作。NodeArtifact） |
+| MAM-POL-0227 | ApprovalRequired | `linux.upgrade-packages`（`NodeAptUpgrades`）。ノードに入っているパッケージを、plan が示した版に、root として上げる（`apt-get install --only-upgrade <package>=<version> ...`）。maintainer script が動き、パッケージは自分のサービスを再起動する（ライブラリを使うものは、再起動するまで古いものを使い続ける）。plan に、すべてのパッケージの版（前と後）と origin、変更集合の digest が出る。mamelet は直前にもう一度シミュレーションし、承認した変更集合と同じときだけ上げる。削除を含む変更集合は MAM-POL-0304、policy が許さない origin（宣言の `origins` そのものも含む）は MAM-POL-0305 で拒む。カーネルや libc は再起動のあとで効くが、Mamela は再起動しない |
 | MAM-POL-0211 | — | 廃止（ADR 0006）。VM の起動。今はプロバイダーの変更（起動は `late` の変更。provider-authoring.md） |
 | MAM-POL-0209 | ApprovalRequired | プロバイダーの変更（効果は host のカタログで分類したもの） |
 | MAM-POL-0310 | ApprovalRequired | 宣言から消えた、その宣言が作った物の削除（ADR 0013）。承認は Control Plane のホストの `mamela approve` だけ。`mamela api`（GitHub 側）は断る（MAM-API-0201） |
@@ -137,8 +138,8 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-POL-0301 | — | 廃止（ADR 0006）。ディスクの縮小。今はプロバイダーが unsupported とした操作（MAM-POL-0309） |
 | MAM-POL-0302 | — | 廃止（ADR 0006）。イメージの変更。今は MAM-POL-0309 |
 | MAM-POL-0303 | Denied | Mamela が作っていないリソース（Foreign）の変更。プロバイダーが引き継ぎ（adopt）の明示操作を持つなら、`mamela act` で引き継げる |
-| MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある） |
-| MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ |
+| MAM-POL-0304 | Denied | インストールすると他のパッケージが削除される（apt-get -s の変更集合に削除がある）。パッケージを変える拡張の操作（`linux.upgrade-packages`）にも、核が同じ規則で先に判定する |
+| MAM-POL-0305 | Denied | 許可していない APT origin（policy の `allowedAptOrigins`。既定は `Ubuntu:`）からのパッケージ。1 つの版が複数の origin にあれば（Debian の point release のあとのセキュリティ更新は `Debian:13.6/stable` と `Debian-Security:13/stable-security` の両方）、そのすべてを許していなければならない。パッケージを変える拡張の操作（`linux.upgrade-packages`）にも、核が同じ規則で先に判定する。`NodeAptUpgrades` は、宣言の `origins` も policy が許していなければならない（`Debian-Security:` を宣言し、policy が `Debian-Security:13/` だけを許すなら拒む） |
 | MAM-POL-0306 | Denied | プロバイダーの変更に、host のカタログが「データを失いうる」とする要求がある。データを失う操作（削除など）は、plan ではなくプロバイダーの明示操作（`mamela act`）でだけ行う |
 | MAM-POL-0308 | Denied | Control Plane が自分の動くホスト（site の `controlplane.host`）を変える操作（ADR 0003）。`mamela act` も同じ理由で拒む |
 | MAM-POL-0309 | Denied | プロバイダーが実行しない変更（マニフェストで unsupported とした操作。ディスクの縮小、イメージやネットワークの変更など）。差分は表示し、理由を示す |
@@ -190,6 +191,11 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-PLAN-0157 | サービスの起動が、そのサービスを `restart` に挙げた `NodeArtifact` が置かれるのを待つ（バイナリを置いてから起動する） |
 | MAM-PLAN-0158 | `NodeArtifact` の owner または group を、同じ宣言の別のリソース（NodeUser）が作るので、それを待つ。または、同じノードに宣言した `NodePackage` がまだ入っておらず、それが作るかもしれないので待つ（MAM-PLAN-0143 と同じ） |
 | MAM-PLAN-0159 | `NodeArtifact` の path にあるファイルは、Mamela が置いたものではない（ほかの方法で置いた、または置いたあとで変わった。mamelet の記録の sha256 と違う）。承認すると、ダウンロードしたもので置き換える。承認する前に、ノードに何があるかを確かめる（change の注記）。mamelet が置いたものの記録を読めなかったとき（壊れたとき）は、それを状態ディレクトリに `linux-artifacts.json.corrupt` として除けておき（新しい記録で上書きしない）、除けたものがある間はそれを報告し、注記もそう言う（Mamela が前に置いたものかもしれない） |
+| MAM-PLAN-0165 | mamelet からの、ノードの保留中の更新（`NodeAptUpgrades`）の報告を待つ。宣言の `origins` について、mamelet がまだ計算していないとき（宣言を変えた直後。ほかの宣言の origin の報告は使わない）もこれ |
+| MAM-PLAN-0166 | ノードのパッケージの一覧（APT の lists）が古い（12 時間を超える）のに、読み直せない（Blocked）。mamelet の `apt-get update` が失敗した（メッセージに、その時刻と apt の言葉の抜粋を示す。ネットワーク、プロキシ、DNS、なくなったソース、鍵の変わったソース）か、Mamela が変えないマシン（observe-only、Control Plane のホスト）で、mamelet が読み直さない。古い一覧から「保留中の更新はない」とは言わない。apt の言うことをノードで直すか、手で `apt-get update` する。mamelet は 1 時間ごとに試す |
+| MAM-PLAN-0167 | ノードのパッケージの一覧が古い（12 時間を超える）か、ない。mamelet が次の周で自分で読み直す（`apt-get update`。apt-daily と同じ）のを待つ（Waiting）。読み直せなければ MAM-PLAN-0166 になる |
+| MAM-PLAN-0168 | 情報。plan が使ったパッケージの一覧の古さ（mamelet の最後の `apt-get update`、または apt の最も新しいリリースファイルの時刻）。in sync と change の両方に付く。mamelet の最後の `apt-get update` が、あるソースを読めなかったときと、前に承認した更新が終わらなかったとき（途中まで上がったものは残り、この plan が残りを示す）も、ここで言う。状態も操作も変えない |
+| MAM-PLAN-0169 | 警告。ノードが再起動を求めている（`/run/reboot-required`。新しいカーネルや libc のパッケージが書く。`/run/reboot-required.pkgs` のパッケージも示す）。更新はそのあとで効く。Mamela は再起動しない。都合のよいときに、プロバイダーの明示操作（`mamela act`）で再起動する。状態も操作も変えない |
 | MAM-PLAN-0121 | k3s のバイナリは宣言した sha256 のもので、動いてもいるのに、Kubernetes のノードが報告する版が、宣言の `version` と違う（kubelet が `v1.37.2` と、k3s の revision なしで報告しても、`v1.37.2+k3s1` とは同じ版として扱う）。再起動した直後で、ノードがまだ新しい版を報告していないだけなら、少し待って plan し直すと消える。消えないなら、宣言の version と sha256 が別のリリースのもの（version だけ上げて sha256 を忘れた、など）。version のバイナリの sha256（リリースの `sha256sum-<arch>.txt`）に直す。報告が古い、k3s が止まっている、ノードの名前が宣言と違うときは、判断しない |
 | MAM-PLAN-0130 | ノードの mamelet が、Control Plane の revision を拒否している（Blocked）。理由は mamelet の報告のとおり。未知のメンバー（mamelet が Control Plane より古い。[mamelet の更新](mamelet-update.md)の限界）、serial の巻き戻し（Control Plane の DB を古い写しから戻した。最新の DB に戻す）、時計のずれ（ノードの時計を直す）、署名や宛先の不一致（ノードの設定）、revision の内容が不正（宣言の名前や値）。許可は revision で届くので、拒否されているあいだは、承認しても何も届かない。同じノードで同期している（in sync）ものは、そのまま。Control Plane のログにも、拒否の始まりと終わりが出る |
 | MAM-PLAN-0107 | プロバイダーがそのリソースを観測していない（Blocked。宣言の Pome で plan すると観測する） |
@@ -206,6 +212,8 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-PLAN-0217 | mamelet が `NodeArtifact` を観測できない、またはその報告を Control Plane が読めない（Blocked。mamelet が path を断ったときもこれ）。mamelet の linux の報告が 512 KiB を超えるときは、詳しいことを除いて、それぞれに理由だけを書くので、これになる |
 | MAM-PLAN-0218 | `NodeFile`・`NodeArtifact` のファイルは宣言どおりだが、書いたあとの `daemon-reload` か `restart` のサービスの再起動が終わっていない（失敗した、または途中で mamelet が止まった）。mamelet は、書いたファイルのあとに残っていることを状態ディレクトリに記録し、ファイルが書いたときのままの間、報告する。plan は in sync とせず、もう一度承認を求める（承認すると、mamelet はファイルを書き直さず、残りを行う）。前の試みの結果に理由がある。mamelet がこの記録を読めなかったとき（壊れたとき）は、それを状態ディレクトリに `linux-pending.json.corrupt` として除けておき、そのとき見つけたファイルごとに「終わったか分からない」と報告する。plan は、unit なら `daemon-reload` と、宣言した `restart` を、もう一度承認するよう求める（除けたファイルは、見たあとで手で消す） |
 | MAM-PLAN-0219 | linux 拡張の資源（`NodeFile`・`NodeUser`・`NodeAptRepo`・`NodeArtifact`）を、mamelet が観測していない。ノードの revision に、その場所がないため（Waiting）。mamelet は 1 つのノードで種類ごとに上限（ファイル 256、ユーザー 64、ソース 32、artifact 64）までしか観測せず、Control Plane は、いま効いている宣言のものと許可のあるもの、plan した宣言のもの（名前の順）、ほかの宣言の plan が足したもの、の順に入れる。(1) 効いている宣言のもので埋まり、plan した宣言の新しいものが入らない: その plan を承認して apply すると、観測はその宣言のものになり、次の plan で計画される（ほかに変更のない plan は push では承認されないので、ホストで `mamela approve <digest>` と `mamela apply`）。(2) 一緒には入らないほかの宣言と交互に plan され、mamelet が報告する前に除かれた: 入れ替わりで場所を取る。どちらかを apply すると、それが場所を持つ。どちらも、宣言の数を減らしてもよい |
+| MAM-PLAN-0225 | mamelet が保留中の更新を計算できない、またはその報告を Control Plane が読めない（Blocked）。`apt-get -s dist-upgrade` か、宣言の origin のパッケージの `apt-get -s install --only-upgrade` が失敗した（保留にしたパッケージ、入れられない依存）、宣言の origin から上げるパッケージが 1000 を超える（リリースの更新は手で）、mamelet が origin を断った。apt の言葉を示す |
+| MAM-PLAN-0226 | ノードの dpkg が途中で止まっている（`/var/lib/dpkg/updates` に記録がある。更新か導入が途中で切れた。apt は `dpkg --configure -a` まで何も入れない。Blocked）。Mamela は直さない（途中のものを何でも動かすことになる）。ノードで `dpkg --configure -a`（求められれば `apt-get -f install`）を手で行い、plan し直す |
 | MAM-PLAN-0203 | プロバイダーの変更が、別の宣言に対して計算されたもの（Blocked。観測し直す） |
 | MAM-PLAN-0301 | 現在の宣言にないため保持する（理由を記録していない既定。0302〜0306・0308 が詳しい） |
 | MAM-PLAN-0302 | 現在の宣言にないが、別の宣言（stack）が作った物なので保持する（ADR 0013）。作った宣言から消す |

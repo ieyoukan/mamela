@@ -26,5 +26,7 @@ var reserved = []reservation{
 	{KindArtifact, "MAM-PLAN", 155, 159}, {KindArtifact, "MAM-PLAN", 216, 217}, {KindArtifact, "MAM-PLAN", 313, 313},
 	{KindArtifact, "MAM-GRAPH", 215, 219}, {KindArtifact, "MAM-POL", 225, 226},
 
+	{KindAptUpgrades, "MAM-PLAN", 165, 169}, {KindAptUpgrades, "MAM-PLAN", 225, 226}, {KindAptUpgrades, "MAM-POL", 227, 227},
+
 	{"", "MAM-PLAN", 219, 219}, {"", "MAM-PLAN", 314, 319}, {"", "MAM-GRAPH", 205, 205},
 }

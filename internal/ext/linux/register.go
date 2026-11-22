@@ -18,10 +18,11 @@ import (
 // kinds are the extension's kinds, in canonical order. A kind declares what it adds to each layer
 // (fileKind in file.go) and adds itself here, in the order doc.go reserves for it.
 var kinds = []kind{
-	userKind,     // 6: user.go
-	aptRepoKind,  // 7: aptrepo.go
-	artifactKind, // 8: artifact.go
-	fileKind,     // 9: file.go
+	userKind,        // 6: user.go
+	aptRepoKind,     // 7: aptrepo.go
+	artifactKind,    // 8: artifact.go
+	fileKind,        // 9: file.go
+	aptUpgradesKind, // 10: upgrades.go
 }
 
 // kind is what one kind of the extension adds to each layer. Every function works on its own
@@ -190,6 +191,7 @@ func init() {
 			}
 			left.add(&o)
 			noteAptFailures(p, rep.Results, &o)
+			noteUpgradeFailures(p, rep.Results, &o) // NodeAptUpgrades
 			observePending(s, &o)
 			cleanStateDir(s)
 			o.SetAside = setAsideRecords(stateDir(s))

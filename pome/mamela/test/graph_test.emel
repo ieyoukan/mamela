@@ -253,6 +253,24 @@ fn a_flat_apt_repo_with_its_architectures() {
 }
 
 @test
+fn the_security_and_point_release_upgrades_of_a_debian_machine() {
+  g = Lib.empty()
+    |> machine("app-server", Lib.Dhcp)
+    |> Lib.apt_upgrades(app(), ["Debian-Security:", "Debian:"])
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptUpgrades\",\"name\":\"app-server/apt-upgrades\",\"spec\":{\"node\":\"app-server\",\"origins\":[\"Debian-Security:\",\"Debian:\"]}}",
+  )
+}
+
+@test
+fn the_security_upgrades_of_a_debian_machine() {
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.debian_security_upgrades(app())
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeAptUpgrades\",\"name\":\"app-server/apt-upgrades\",\"spec\":{\"node\":\"app-server\",\"origins\":[\"Debian-Security:\"]}}",
+  )
+}
+
+@test
 fn a_pinned_artifact_leaves_its_sha256_to_mamela_sum() {
   a = Lib.Artifact(
     extract: "node_exporter-1.8.2.linux-amd64/node_exporter",
