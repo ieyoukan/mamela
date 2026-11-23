@@ -25,7 +25,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 | `NodeUser` | ユーザーと補助グループ、その SSH の鍵（許すこと、つまり sudo は後） | 0.4.0 |
 | `NodeAptRepo` | APT のソースと、その鍵 | 0.4 の続き |
 | `NodeArtifact` | sha256 で固定したダウンロード（リリースのバイナリ、`.tar.gz` の 1 つのメンバー）。mamelet が Go のコードで https からダウンロードし、置いたものを自分の状態ディレクトリに記録する | 0.4.0 |
-| `NodeAptUpgrades` | 入っているパッケージの、宣言した APT の origin（Debian のセキュリティ・アーカイブなど）からの保留中の更新を、plan が示した版のとおりに上げる（§9） | 0.5.0（2026-11-23） |
+| `NodeAptUpgrades` | 入っているパッケージの、宣言した APT の origin（Debian のセキュリティ・アーカイブなど）からの保留中の更新を、plan が示した版のとおりに上げる（§9） | 0.4.2（2026-11-23） |
 
 - 拡張は、k3s と同じにコンパイル時に組み込む（`internal/ext/linux`、`cmd/mamela` と `cmd/mamelet` の blank import）。実行時に読み込むプラグインはない。
 - `NodePackage` と `NodeService` は核に残す。linux は、パッケージの導入が待つもの（`PackageGate`、NodeAptRepo のため）と、サービスの起動が待つもの（`StartGate`、`restart` に挙げたファイル）で関わる。`PackageGate` は、Blocked にせず待たせることで、apt-get update が一度失敗したあとも mamelacd の push の同期が自分で戻れるようにする（ファイルは揃っているが apt がまだ読んでいないソースは、apt が見つけられないパッケージを待たせ、Blocked にしない）。`ca-certificates` は待たせない（mamelet はソースの鍵を、ノードの証明書で https から取得する。証明書のないノードは、それを入れるまでソースを足せない）。2026-11-19。mamelet は、ノードの証明書（`/etc/ssl/certs/ca-certificates.crt` など、Go が Linux で探す場所）を、ダウンロードのたびに読む。Go の既定は 1 つのプロセスで 1 度しか読まないので、証明書がなくて失敗したあとに `ca-certificates` を入れても、mamelet を再起動するまで使われなかった（2026-11-19 の再レビュー）

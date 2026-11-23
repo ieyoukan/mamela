@@ -177,7 +177,7 @@ k3s server の自動適用ディレクトリ（`/var/lib/rancher/k3s/server/mani
 
 ### NodeFile
 
-ノードの上の 1 つのファイル。宣言したとおりの内容・mode・所有者にする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.file(graph, node, path, content)`（mode 0644、root の所有、再起動なし）、または `Mamela.file_with(graph, node, Mamela.File(mode: "0640", owner: "www-data", restart: ["nginx"], ..Mamela.file_of(path, content)))`。検査と reload は 0.5.0 から `Mamela.File(check: Some(Mamela.Nginx), reload: ["nginx"], ..Mamela.file_of(path, content))`（`FileFrom` も同じ）。内容を宣言の Pome の中のファイルから取るときは、0.4.1 から `Mamela.file_from(graph, node, path, source)`、または `Mamela.file_from_with(graph, node, Mamela.FileFrom(mode: "0640", ..Mamela.file_from_of(path, source)))`。systemd のサービスは `Mamela.systemd_service(graph, node, name, unit)`（`/etc/systemd/system/<name>.service` に unit を置き、書いたら再起動の対象にし〔`restart: [name]`〕、有効にして動かす〔`Mamela.running`〕）と、unit をファイルから取る `Mamela.systemd_service_from(graph, node, name, source)`。
+ノードの上の 1 つのファイル。宣言したとおりの内容・mode・所有者にする（linux 拡張、ADR 0016）。宣言は Mamela Pome（0.4.0 から）の `Mamela.file(graph, node, path, content)`（mode 0644、root の所有、再起動なし）、または `Mamela.file_with(graph, node, Mamela.File(mode: "0640", owner: "www-data", restart: ["nginx"], ..Mamela.file_of(path, content)))`。検査と reload は 0.4.2 から `Mamela.File(check: Some(Mamela.Nginx), reload: ["nginx"], ..Mamela.file_of(path, content))`（`FileFrom` も同じ）。内容を宣言の Pome の中のファイルから取るときは、0.4.1 から `Mamela.file_from(graph, node, path, source)`、または `Mamela.file_from_with(graph, node, Mamela.FileFrom(mode: "0640", ..Mamela.file_from_of(path, source)))`。systemd のサービスは `Mamela.systemd_service(graph, node, name, unit)`（`/etc/systemd/system/<name>.service` に unit を置き、書いたら再起動の対象にし〔`restart: [name]`〕、有効にして動かす〔`Mamela.running`〕）と、unit をファイルから取る `Mamela.systemd_service_from(graph, node, name, source)`。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -296,7 +296,7 @@ Mamela.empty()
 
 ### NodeAptUpgrades
 
-ノードに入っているパッケージの、保留中の更新のうち、宣言した APT の origin から来るもの（Debian のセキュリティ・アーカイブなど）を、承認のたびに、plan が示した版のとおりに上げる（linux 拡張、ADR 0016 の §9）。宣言は Mamela Pome（0.5.0 から）の `Mamela.apt_upgrades(graph, node, origins)`、または Debian のセキュリティ更新だけの `Mamela.debian_security_upgrades(graph, node)`（`origins` が `["Debian-Security:"]`）。
+ノードに入っているパッケージの、保留中の更新のうち、宣言した APT の origin から来るもの（Debian のセキュリティ・アーカイブなど）を、承認のたびに、plan が示した版のとおりに上げる（linux 拡張、ADR 0016 の §9）。宣言は Mamela Pome（0.4.2 から）の `Mamela.apt_upgrades(graph, node, origins)`、または Debian のセキュリティ更新だけの `Mamela.debian_security_upgrades(graph, node)`（`origins` が `["Debian-Security:"]`）。
 
 | フィールド | 型 | 規則 |
 |---|---|---|
@@ -476,8 +476,8 @@ Mamela のバイナリにはまだ版のタグがなく、`mamela version` は b
 | `pome/mamela` | 0.3.2 | Pome の API は 0.3.1 と同じ。0.3.2 の Mamela（監査 2026-11-17 の修正、k3s を `internal/ext/k3s` へ）に合わせた版。graph の検証が厳しくなった（service 名の `:`、制御文字、optional の null などを拒否） | どの版でも読めるが、0.3.2 の修正は PR #36 以降のバイナリ |
 | `pome/mamela` | 0.4.0 | linux 拡張（ADR 0016）の `NodeFile`（`Mamela.file`）、`NodeUser`（`Mamela.user`）、`NodeAptRepo`（`Mamela.apt_repo`）、`NodeArtifact`（`Mamela.artifact`）。ノードの mamelet が linux を受け取る版（0.10.0 以降）でなければ、その資源は MAM-PLAN-0122 | PR #39（`7ecf714`）以降。PR #49 までの修正を含むバイナリを使う。CP を先に、mamelet をあとに更新する（ADR 0016 §4） |
 | `pome/mamela` | 0.4.1 | `NodeFile` の `spec.contentFrom`（`Mamela.file_from`、`Mamela.file_from_with`、`Mamela.systemd_service_from`）。部品の `Mamela.running`、`Mamela.system_user`、`Mamela.systemd_service` は今の kind を出すだけ（0.4.0 のバイナリで読める）。`contentFrom` を古いバイナリは MAM-GRAPH-0003 で断る。`sha256` のない `NodeArtifact`（`Mamela.artifact_pinned`）と `keySha256` のない `NodeAptRepo`（`Mamela.apt_repo_pinned`）は sha256 を `mamela.sum` から取る。古いバイナリは MAM-GRAPH-0004 で断る | `contentFrom` は PR #52（`065d791`）以降。`mamela.sum` は PR #53（`4ac3755`）以降 |
-| `pome/mamela` | 0.5.0 | `NodeAptUpgrades`（`Mamela.apt_upgrades`、`Mamela.debian_security_upgrades`）。古いバイナリは MAM-GRAPH-0005 で断る。ノードの mamelet が linux を受け取る版（0.10.0 以降。この kind は、その 0.10.0 の linux の部分に足したもの）でなければ MAM-PLAN-0122 | この kind を足した PR 以降（マージのあとで、そのコミットを書く） |
-| `pome/mamela` | 0.5.0 | `NodeFile` の `spec.check`（`Mamela.Check` の `Nginx`）と `spec.reload`（`Mamela.File` と `Mamela.FileFrom` の `check`・`reload`）。`File` と `FileFrom` にメンバーが増えたので、`..Mamela.file_of(...)` を使わずにすべてのメンバーを書いていた宣言は直す（互換のない変更）。古いバイナリは `check`・`reload` を MAM-GRAPH-0003 で断る。検査を受け取るのは、この変更を含む mamelet（古い mamelet は、`check` のある書き込みを、知らないメンバーとして linux の部分ごと断り、何も書かない） | この変更の PR 以降 |
+| `pome/mamela` | 0.4.2 | `NodeAptUpgrades`（`Mamela.apt_upgrades`、`Mamela.debian_security_upgrades`）。古いバイナリは MAM-GRAPH-0005 で断る。ノードの mamelet が linux を受け取る版（0.10.0 以降。この kind は、その 0.10.0 の linux の部分に足したもの）でなければ MAM-PLAN-0122 | この kind を足した PR 以降（マージのあとで、そのコミットを書く） |
+| `pome/mamela` | 0.4.2 | `NodeFile` の `spec.check`（`Mamela.Check` の `Nginx`）と `spec.reload`（`Mamela.File` と `Mamela.FileFrom` の `check`・`reload`）。`File` と `FileFrom` にメンバーが増えたので、`..Mamela.file_of(...)` を使わずにすべてのメンバーを書いていた宣言は直す（互換のない変更）。古いバイナリは `check`・`reload` を MAM-GRAPH-0003 で断る。検査を受け取るのは、この変更を含む mamelet（古い mamelet は、`check` のある書き込みを、知らないメンバーとして linux の部分ごと断り、何も書かない） | この変更の PR 以降 |
 | `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
 | `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
 | `pome/k3s` | 0.1.2 | `sha256` のない `NodeK3s`（`K3s.server_pinned`、`K3s.agent_pinned`。`mamela.sum` から）、`contentFrom` の `NodeK3sManifest`（`K3s.manifest_from`）。依存は `pome/mamela` 0.3.0 のまま | PR #53（`4ac3755`）以降（`K3s.manifest_from` の `contentFrom` は PR #52（`065d791`）以降）。古いバイナリは MAM-GRAPH-0004 / 0003 で断る |
