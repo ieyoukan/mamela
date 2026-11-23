@@ -33,11 +33,13 @@
 | 3 | **引き継ぐ前のプレビュー**（`DiffResult.Previews`）: 引き継ぐ対象の物について、引き継いだあとに何が変わるかを plan に示す。承認も送信もしない | mamela | 今回 |
 | 4 | **引き継いだものを消さない**: 引き継いだものは、宣言から外しても削除の対象にしない（今は、引き継いだ VM が、Mamela の作った VM と同じく削除されうる） | mamela | 今回 |
 | 5 | **ProxmoxLXC**: 既存の LXC を引き継ぎ（`adopt-lxc`）、宣言した値（cores、memory、swap、rootfs の拡張、onboot、電源）だけを管理する。説明とタグは、書き換えずに追記する。コンテナはまだ作らない | mamela-proxmox | 今回 |
-| 6 | **境界に名指しで足す**: guard の設定に、引き継ぐ既存のゲスト（node と VMID）の一覧を足す。pool と VMID の範囲の外にあるゲストでも、名指ししたものだけを境界に入れる。Token の ACL も、そのゲスト（`/vms/<vmid>`）だけに足す。段 1 では `VM.Audit` だけ、段 2 で変更の権限を足す（bootstrap が書く） | mamela-proxmox | 次 |
+| 6 | **境界に名指しで足す**: guard の設定に、引き継ぐ既存のゲスト（node と VMID）の一覧を足す。pool と VMID の範囲の外にあるゲストでも、名指ししたものだけを境界に入れる。Token の ACL も、そのゲスト（`/vms/<vmid>`）だけに足す。段 1 では `VM.Audit` だけ、段 2 で変更の権限を足す（bootstrap が書く） | mamela-proxmox | 実装した（Proxmox Pome 0.2.2。LXC だけ） |
 | 7 | **既存のマシンへの mamelet の導入**（enroll）: Control Plane が 1 回限りの token を発行し、人が読んでから root で実行するスクリプトを書く（`mamela controlplane enroll`）。Control Plane が自分でマシンに入ることはしない。LXC では `pct push` と `pct exec`、VM では SSH で実行する | mamela | 実装した |
 | 8 | **ProxmoxVM の、宣言の VMID による引き継ぎ**（Terraform なし）。今の `adopt-vm` は、import の記録か、旧組み込みプロバイダーの印を前提にしている | mamela-proxmox | 次 |
 | 9 | **NodeK3s の HA と引き継ぎ**: embedded etcd の server 3 台。install スクリプトで入れた k3s を読み（unit、`config.yaml`、バイナリの sha256）、宣言と同じなら in sync にする。版上げは 1 台ずつ、etcd の quorum を保ったまま進める（ほかの 2 台が健全なときだけ次へ）。上げる前に etcd のスナップショットを取る | mamela | 次 |
 | 10 | **確認が取れなければ戻す**: 適用したあと、決めた時間内に確認（疎通、名前解決など）が取れなければ、前の状態に戻す。締め出しの危険があるゲスト（SSH の経路、DNS）に要る | mamela | 次 |
+| 11 | **承認した更新**（`NodeAptUpgrades`）: 宣言した APT の origin（Debian のセキュリティ・アーカイブ、point release）から来る、入っているパッケージの保留中の更新を、plan が版の一覧と変更集合の digest で示し、承認したとおりにだけ上げる。一覧が 12 時間より古ければ mamelet が `apt-get update` する（observe-only では行わない） | mamela（linux 拡張） | 実装した（Mamela Pome 0.4.2、mamelet 0.11.0） |
+| 12 | **設定ファイルの検査と reload**（`NodeFile` の `check`、`reload`）: 書いたあと、決まった検査（`nginx -t`）を走らせ、通れば reload（止めない）、通らなければ書く前に戻す | mamela（linux 拡張） | 実装した（同上） |
 
 ## ゲスト 1 台の進め方
 
@@ -151,7 +153,32 @@ ssh -t <user>@<address> 'sudo sh mamelet-enroll.sh && rm mamelet-enroll.sh'
 - 電源の操作の直後のまとめは、Proxmox のクラスタの一覧が更新される前の状態を見ることがある（次の plan では in sync）。
 - MAM-PLAN-0114 の hint は、引き継ぎの操作の名前を `<adopt-op>` としか書かない。プロバイダーのマニフェストから名前を出せる。
 
+## 本番の LXC 1 台を移した（2026-11-23）
+
+同じ Control Plane で、本番の LXC を 1 台、上の「ゲスト 1 台の進め方」のとおりに移した（Debian 13、nginx で公開しているサイト、certbot の証明書。別のノードにあり、pool の外、VMID も範囲の外）。先に、検証環境に同じ形の LXC（Debian 13、nginx、手で書いたサイトの設定）を手で作り、同じ手順を通した。
+
+| 段 | したこと | 結果 |
+|---|---|---|
+| 準備 | vzdump（suspend）。guard に名指し（`access = "observe"`）、bootstrap を実行し直す（`/vms/<vmid>` に `VM.Audit` だけ）。`observe_only` に名前 | plan は引き継ぐ対象（MAM-PLAN-0114）、プレビューは差なし |
+| 引き継ぐ | `access = "change"` にして bootstrap を実行し直し、`adopt-lxc` | 説明に印の行、タグに site のタグが足されただけ。再起動しない |
+| 中を見る | `mamela controlplane enroll` のスクリプトを読み、`pct push`・`pct exec` で実行 | mamelet 0.11.0 が登録。パッケージ、サービス、サイトの設定（バイト単位）が in sync。更新は、APT の一覧が 1 年古く Blocked（observe-only では mamelet は一覧を読み直さない） |
+| 任せる | `observe_only` から外す | mamelet が一覧を読み直し、plan が 106 の更新（nginx、openssl、systemd、libc6 など。導入・削除なし）を示した。承認して apply。nginx はパッケージの postinst で 1 秒以内に再起動し、外から応答した |
+
+検証環境では、加えて、サイトの設定の変更（`nginx -t` が通って reload、master の PID は変わらない）と、壊れた設定（`nginx -t` が失敗し、ファイルはバイト単位で元に戻り、nginx は前の設定のまま動き続け、次の plan が MAM-PLAN-0230 で検査の言葉を示した）を確かめた。
+
+見つけたこと:
+
+- **LXC の中の apt-daily が失敗していた。** `systemd-networkd-wait-online` が待ちきれず（ネットワークは networkd が管理していない）、APT の一覧が 1 年更新されていなかった。`NodeAptUpgrades` は、一覧の古さを plan に出し、mamelet が自分で読み直す。
+- **mamelet を入れる前の、引き継いだマシンの plan** が MAM-PLAN-0110 で「起動で止まっている、再起動せよ」と言った。enroll を示すように直した（#59）。
+- **guard の設定の表の配列**（`[[provider.proxmox.guard.named]]`）を、Mamela の `providers.toml` の読み込みが知らないキーとして断った。直した（#60）。
+- **古いプロバイダーは `named` を知らない設定として断る。** 名指しを書く前に、同じ Control Plane のすべての宣言を、それを知っている版（Proxmox Pome 0.2.2）にする。
+- **名指しのゲストも `max_vms` に数える。** 足すと guard がすべての apply を止めるので、先に `max_vms` を上げる（理由を書いて）。
+- **依存の版を上げたら、Control Plane の Pome のキャッシュに先に入れる。** 入っていないと mamelacd の評価が失敗し、同じコミットでは評価し直さない（新しいコミットが要る）。
+- **plan は、ファイルの新しい内容を全部示すが、前との差は示さない**（前の内容はノードから出さない）。長い設定では、どこが変わったかを読みにくい。
+- **`sync = "push"` では、新しいコミットの push が、その時点で保留中の更新も承認しうる（ADR 0014 の読みで、確かめていない）。** 同じコミットのまま新しい更新が出たときは、ずれと同じく push では承認しない（`self_heal = false`）。ホストで承認するか、次の push で承認される。
+
 ## まだ決めていないこと
 
 - k3s の HA の宣言の形。server の 1 台目（`cluster-init`）と、2 台目以降の join をどう表すか。今の NodeK3s は server 1 台を前提にしている。
 - 境界に名指しで足したゲストを、あとで境界から外す手順。印とタグを消して、Foreign に戻す。
+- `sync = "push"` で、更新の承認を、そのファイルを変えたコミットに限るか（今は、どの宣言のディレクトリのコミットでも、全部の宣言の保留中の更新を承認しうる）。
