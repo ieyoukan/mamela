@@ -22,10 +22,14 @@ const (
 	codeFileUnobserved    = "MAM-PLAN-0211" // mamelet cannot observe it
 	codeFileKept          = "MAM-PLAN-0310" // not declared any more: kept on the node
 	codePending           = "MAM-PLAN-0218" // written, but its daemon-reload or a restart did not finish (NodeArtifact too)
+	codeFileRolledBack    = "MAM-PLAN-0230" // written, then put back: the check of its group failed
+	codeFileUnchecked     = "MAM-PLAN-0231" // written, its check not run yet: mamelet stopped in between (it finishes it)
+	codeFileCheckStuck    = "MAM-PLAN-0232" // its check failed and mamelet cannot put it back, or lost its record of its checks
 )
 
 // filePlanCodes are NodeFile's codes of plan notes, with the two it shares with NodeArtifact (0144, 0218).
-var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileExposed, codeFileUnsafe, codeFileUnobserved, codeFileKept, codePending}
+var filePlanCodes = []string{codeFileAwait, codeFileNoAccount, codeFileStartGate, codeFileAccountComing, codeFileExposed, codeFileUnsafe, codeFileUnobserved, codeFileKept, codePending,
+	codeFileRolledBack, codeFileUnchecked, codeFileCheckStuck}
 
 // accountMakers say which resource of a declaration makes a user (group false) or a group on a node:
 // a file owned by one waits for it instead of being blocked. NodeUser adds its own (user_plan.go).
@@ -119,9 +123,13 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 			Hint:    "give the program a name the node's packages do not use, or install it under /opt/<app>"}
 		return c
 	}
+	if status, note := uncheckedNote(o, want, got); note != nil {
+		c.Status, c.Note = status, note
+		return c
+	}
 	sum := ContentSHA256(want.Content)
 	same := got.Exists && !got.Large && got.SHA256 == sum && got.Mode == want.Mode && got.Owner == want.Owner && got.Group == want.Group
-	left := pendingFor(got.Pending, sum, want.Path, want.Restart)
+	left := pendingForWith(got.Pending, sum, want.Path, want.Restart, want.Reload)
 	if same && left == nil {
 		return k.WithOps(c)
 	}
@@ -132,7 +140,7 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
 	c.Diffs = []plan.Diff{diff("file", "", want.Path)}
 	if same {
-		return pendingChange(k, c, want.Node, want.Path, *left, want.Restart, OpWriteFile)
+		return pendingChangeWith(k, c, want.Node, want.Path, *left, want.Restart, want.Reload, want.Check, OpWriteFile)
 	}
 	old := got.SHA256
 	if got.Large {
@@ -149,41 +157,139 @@ func fileChange(k *plan.Kit, r graph.Resource) plan.Change {
 	for _, dir := range got.Missing {
 		c.Diffs = append(c.Diffs, diff("create directory", "", dir+" (0755 root:root)"))
 	}
-	if IsUnitFile(want.Path) {
-		c.Diffs = append(c.Diffs, diff("daemon-reload", "", "systemd reads its units again (the file is one of them)"))
-	}
-	if len(want.Restart) > 0 {
-		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(want.Restart, ", ")+" (each only if it runs: systemctl try-restart)"))
-	}
+	c.Diffs = append(c.Diffs, afterWrite(want.Path, want.Check, want.Reload, want.Restart)...)
 	if w := exposedWarning(want.Node, want.Path, want.Owner, want.Group, got.Exposed); w != nil {
 		c.Warnings = append(c.Warnings, *w)
 	}
-	return k.WithOps(c, policy.Subject{Op: OpWriteFile})
+	c = k.WithOps(c, policy.Subject{Op: OpWriteFile})
+	if rb := got.RolledBack; rb != nil && rb.SHA256 == sum {
+		c.Note = rolledBackNote(want, *rb)
+	}
+	return c
+}
+
+// afterWrite are the lines of a file's change that say what follows its write, in the order mamelet
+// does it: the check, systemd reading its units again (a unit), the services reloaded, then those
+// restarted.
+func afterWrite(path, check string, reload, restart []string) []plan.Diff {
+	var out []plan.Diff
+	if check != "" {
+		out = append(out, plan.Diff{Field: "check", To: checkText(check)})
+	}
+	if IsUnitFile(path) {
+		out = append(out, plan.Diff{Field: "daemon-reload", To: "systemd reads its units again (the file is one of them)"})
+	}
+	if len(reload) > 0 {
+		out = append(out, plan.Diff{Field: "reload", To: reloadText(reload)})
+	}
+	if len(restart) > 0 {
+		out = append(out, plan.Diff{Field: "restart", To: strings.Join(restart, ", ") + " (each only if it runs: systemctl try-restart)"})
+	}
+	return out
+}
+
+// rolledBackNote says that the last write of the declared content of want was put back (rb): the
+// check of its group failed. The change asks for the same write again.
+func rolledBackNote(want *FileSpec, rb RolledBack) *plan.Note {
+	v, ok := validatorOf(rb.Check)
+	shown := v.Shown
+	if !ok {
+		shown = rb.Check
+	}
+	with := ""
+	if others := slices.DeleteFunc(slices.Clone(rb.Files), func(p string) bool { return p == want.Path }); len(others) > 0 {
+		with = " (together with " + strings.Join(others, ", ") + ")"
+	}
+	said := rb.Output
+	if said == "" {
+		said = "nothing"
+	}
+	return &plan.Note{Code: codeFileRolledBack,
+		Message: fmt.Sprintf("%s on %s was written with this content%s, then put back as it was: the check %s failed (it said: %s); nothing was reloaded or restarted",
+			want.Path, want.Node, with, shown, said),
+		Hint: "fix the declaration (what the check said is wrong with the content), then plan again; approving this plan as it is writes the same content again, " +
+			"and it is put back again unless what the check reads on the node has changed (a file it includes, a certificate)"}
+}
+
+// uncheckedNote is what a file waits for, or why it is blocked, while mamelet has not finished the
+// check of its last write (nil: nothing is unfinished): mamelet runs it when it starts again
+// (waiting), or it cannot put the files back after the check failed, or it lost or cannot read its
+// record of its checks (blocked: a person looks). A record that cannot be read concerns only the files
+// declared with a check.
+func uncheckedNote(o Observed, want *FileSpec, got *FileState) (plan.Status, *plan.Note) {
+	u := got.Unchecked
+	shown := func(check string) string {
+		if v, ok := validatorOf(check); ok {
+			return v.Shown
+		}
+		return check
+	}
+	switch {
+	case u != nil && u.SHA256 != "" && u.Error != "":
+		return plan.StatusBlocked, &plan.Note{Code: codeFileCheckStuck,
+			Message: fmt.Sprintf("the last write of %s on %s failed its check %s, or a write checked with it failed (%s), and mamelet cannot put the files back: %s; it tries again every round, and reloads and restarts nothing",
+				want.Path, want.Node, shown(u.Check), orNothing(u.Failed), u.Error),
+			Hint: "fix what keeps mamelet from putting the file back (the error says what), or put it back by hand; then plan again"}
+	case u != nil && u.SHA256 != "" && u.Failed != "":
+		return plan.StatusWaiting, &plan.Note{Code: codeFileUnchecked,
+			Message: fmt.Sprintf("the last write of %s on %s failed its check %s (%s), and mamelet stopped before it had put the files back: it puts them back when it starts its next round",
+				want.Path, want.Node, shown(u.Check), u.Failed)}
+	case u != nil && u.SHA256 != "":
+		return plan.StatusWaiting, &plan.Note{Code: codeFileUnchecked,
+			Message: fmt.Sprintf("mamelet wrote %s on %s and has not run its check %s yet (it stopped in between): it runs the check when it starts its next round, and puts the files back if it fails",
+				want.Path, want.Node, shown(u.Check))}
+	case want.Check == "":
+		return "", nil
+	case u != nil:
+		return plan.StatusBlocked, &plan.Note{Code: codeFileCheckStuck,
+			Message: fmt.Sprintf("mamelet on %s cannot tell whether the check of a write of %s is unfinished: %s", want.Node, want.Path, u.Error),
+			Hint:    "fix the cause on the node (mamelet's state directory), then plan again"}
+	case slices.Contains(o.SetAside, checksName+corruptSuffix):
+		return plan.StatusBlocked, &plan.Note{Code: codeFileCheckStuck,
+			Message: fmt.Sprintf("mamelet on %s could not read its record of the checks of its writes, and set it aside (%s in its state directory): whether the check of a write of %s was left unfinished, and the file not put back, is not known",
+				want.Node, checksName+corruptSuffix, want.Path),
+			Hint: fmt.Sprintf("run the check on the node by hand (%s) and put back what it does not accept; then remove the file set aside from mamelet's state directory, and plan again", shown(want.Check))}
+	}
+	return "", nil
 }
 
 // pendingFor is what of what mamelet reports pending after the last write of path (left) the
 // declaration still asks for: the file is still the declared one (sum), systemd reads it again if it
 // is a unit, and the services it restarts that are still declared (nil: nothing).
 func pendingFor(left *Pending, sum, path string, restart []string) *Pending {
+	return pendingForWith(left, sum, path, restart, nil)
+}
+
+// pendingForWith is pendingFor of a file that also reloads the services of reload.
+func pendingForWith(left *Pending, sum, path string, restart, reload []string) *Pending {
 	if left == nil || left.SHA256 != sum {
 		return nil
 	}
 	if left.Unknown {
 		// mamelet lost its record: all that follows the write is asked for again.
-		out := Pending{SHA256: sum, Reload: IsUnitFile(path), Restart: slices.Clone(restart), Unknown: true}
-		if !out.Reload && len(out.Restart) == 0 {
+		out := Pending{SHA256: sum, Reload: IsUnitFile(path), Reloads: slices.Clone(reload), Restart: slices.Clone(restart), Unknown: true}
+		if !out.Reload && len(out.Reloads) == 0 && len(out.Restart) == 0 {
 			return nil
 		}
 		return &out
 	}
+	declared := func(names []string) func(string) bool {
+		return func(svc string) bool {
+			return slices.ContainsFunc(names, func(s string) bool { return unitOf(s) == unitOf(svc) })
+		}
+	}
 	out := Pending{SHA256: sum, Reload: left.Reload && IsUnitFile(path)}
+	for _, svc := range left.Reloads {
+		if declared(reload)(svc) {
+			out.Reloads = append(out.Reloads, svc)
+		}
+	}
 	for _, svc := range left.Restart {
-		unit := strings.TrimSuffix(svc, ".service")
-		if slices.ContainsFunc(restart, func(s string) bool { return strings.TrimSuffix(s, ".service") == unit }) {
+		if declared(restart)(svc) {
 			out.Restart = append(out.Restart, svc)
 		}
 	}
-	if !out.Reload && len(out.Restart) == 0 {
+	if !out.Reload && len(out.Reloads) == 0 && len(out.Restart) == 0 {
 		return nil
 	}
 	return &out
@@ -193,6 +299,12 @@ func pendingFor(left *Pending, sum, path string, restart []string) *Pending {
 // write what follows did not finish (left): approving it lets mamelet do it, the file being as
 // approved already (its grant writes nothing then). change has its first diff (the path).
 func pendingChange(k *plan.Kit, c plan.Change, node, path string, left Pending, restart []string, op policy.Op) plan.Change {
+	return pendingChangeWith(k, c, node, path, left, restart, nil, "", op)
+}
+
+// pendingChangeWith is pendingChange of a file that also reloads the services of reload, and is
+// checked by check ("" none): the check runs again before what is left.
+func pendingChangeWith(k *plan.Kit, c plan.Change, node, path string, left Pending, restart, reload []string, check string, op policy.Op) plan.Change {
 	diff := func(field, from, to string) plan.Diff { return plan.Diff{Field: field, From: from, To: to} }
 	message := fmt.Sprintf("%s on %s was written as declared, but %s did not finish afterwards (it failed, or mamelet stopped meanwhile): what runs may not use it yet", path, node, pendingText(left))
 	hint := "approve this plan to have mamelet do it now (the file is not written again); the result of the last attempt says why it did not finish"
@@ -204,12 +316,7 @@ func pendingChange(k *plan.Kit, c plan.Change, node, path string, left Pending, 
 		pending = "the file is as declared; whether " + pendingText(left) + " finished after it was written is not known"
 	}
 	c.Diffs = append(c.Diffs, diff("pending", "", pending))
-	if IsUnitFile(path) {
-		c.Diffs = append(c.Diffs, diff("daemon-reload", "", "systemd reads its units again (the file is one of them)"))
-	}
-	if len(restart) > 0 {
-		c.Diffs = append(c.Diffs, diff("restart", "", strings.Join(restart, ", ")+" (each only if it runs: systemctl try-restart)"))
-	}
+	c.Diffs = append(c.Diffs, afterWrite(path, check, reload, restart)...)
 	c = k.WithOps(c, policy.Subject{Op: op})
 	c.Note = &plan.Note{Code: codePending, Message: message, Hint: hint}
 	return c
@@ -309,18 +416,23 @@ func accountWait(k *plan.Kit, o Observed, node, path, owner, group, done, what s
 	return nil
 }
 
-// fileStartGate: the start of a service that a file of its node restarts waits for that file to be
-// in sync, so that the service starts with it.
+// fileStartGate: the start of a service that a file of its node restarts or reloads waits for that
+// file to be in sync, so that the service starts with it.
 func fileStartGate(k *plan.Kit, node, service string) *plan.Note {
 	unit := strings.TrimSuffix(service, ".service")
 	for _, r := range k.Resources() {
 		f := FileOf(r)
-		if f == nil || f.Node != node || !slices.ContainsFunc(f.Restart, func(s string) bool { return strings.TrimSuffix(s, ".service") == unit }) {
+		names := func(s string) bool { return strings.TrimSuffix(s, ".service") == unit }
+		if f == nil || f.Node != node || !slices.ContainsFunc(f.Restart, names) && !slices.ContainsFunc(f.Reload, names) {
 			continue
 		}
 		if c := fileChange(k, r); c.Status != plan.StatusInSync {
+			how := "restarts"
+			if !slices.ContainsFunc(f.Restart, names) {
+				how = "reloads"
+			}
 			return &plan.Note{Code: codeFileStartGate,
-				Message: fmt.Sprintf("waits for %s to be written before %s is started (the file restarts it)", f.Path, service),
+				Message: fmt.Sprintf("waits for %s to be written before %s is started (the file %s it)", f.Path, service, how),
 				Hint:    "apply the plan that writes the file, then plan again"}
 		}
 	}

@@ -15,6 +15,7 @@ type reservation struct {
 // (codes_test.go checks both, and every code the extension registers, against this).
 var reserved = []reservation{
 	{KindFile, "MAM-PLAN", 140, 144}, {KindFile, "MAM-PLAN", 210, 211}, {KindFile, "MAM-PLAN", 218, 218}, {KindFile, "MAM-PLAN", 310, 310},
+	{KindFile, "MAM-PLAN", 230, 232}, // its checks (file_check.go)
 	{KindFile, "MAM-GRAPH", 203, 204}, {KindFile, "MAM-POL", 220, 220},
 
 	{KindUser, "MAM-PLAN", 145, 149}, {KindUser, "MAM-PLAN", 212, 213}, {KindUser, "MAM-PLAN", 311, 311},

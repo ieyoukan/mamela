@@ -83,7 +83,7 @@ func setAsideRecords(dir string) []string {
 	if dir == "" {
 		return nil
 	}
-	for _, name := range []string{recordName, pendingName} {
+	for _, name := range []string{recordName, pendingName, checksName} {
 		if fi, err := os.Lstat(filepath.Join(dir, name+corruptSuffix)); err == nil && fi.Mode().IsRegular() {
 			out = append(out, name+corruptSuffix)
 		}
@@ -111,7 +111,8 @@ func setPending(dir, p string, left *Pending) (*Pending, error) {
 		return nil, nil
 	case left == nil:
 		delete(rec.Pending, p)
-	case had && cur.SHA256 == left.SHA256 && cur.Reload == left.Reload && cur.Unknown == left.Unknown && slices.Equal(cur.Restart, left.Restart):
+	case had && cur.SHA256 == left.SHA256 && cur.Reload == left.Reload && cur.Unknown == left.Unknown && slices.Equal(cur.Restart, left.Restart) &&
+		slices.Equal(cur.Reloads, left.Reloads):
 		return before, nil
 	default:
 		rec.Pending[p] = *left
@@ -138,39 +139,189 @@ func savePending(dir string, rec pendingRecord) error {
 // before, which the detail goes on from. What is left is recorded before it starts, and taken out
 // once it all has.
 func followUp(ctx context.Context, x *mamelet.Act, p, sum string, restart []string, did []string) (outcome, detail string) {
+	return followFiles(ctx, x, []after{{path: p, sum: sum, restart: restart}}, false, did)
+}
+
+// after is what follows the write of one file: its path, the sha256 written, and the services its
+// declaration reloads and restarts.
+type after struct {
+	path    string
+	sum     string
+	reloads []string
+	restart []string
+}
+
+// left is all that follows the write: nothing of it is done yet.
+func (a after) left() Pending {
+	return Pending{SHA256: a.sum, Reload: IsUnitFile(a.path), Reloads: slices.Clone(a.reloads), Restart: slices.Clone(a.restart)}
+}
+
+func (l Pending) empty() bool { return !l.Reload && len(l.Reloads) == 0 && len(l.Restart) == 0 }
+
+// followFiles is what follows the writes of files (one, or a check group's, whose check passed):
+// systemctl daemon-reload if one of them is a unit, then each service their declarations reload,
+// once, if it is active (it must still be active after), then each service they restart, once, if it
+// runs (try-restart; with confirm, one that ran must still be active after). did is what was done
+// before, which the detail goes on from. What is left of each file is recorded before it starts
+// (pendingBefore did, before the write), and taken out once it is done: a step that fails stops what
+// follows, which stays pending (the next plan asks to approve it again); a service found not active
+// after its reload or restart is reported (outcome failed), not left pending (it was done).
+func followFiles(ctx context.Context, x *mamelet.Act, files []after, confirm bool, did []string) (outcome, detail string) {
 	dir := stateDir(x.System)
-	left := Pending{SHA256: sum, Reload: IsUnitFile(p), Restart: slices.Clone(restart)}
-	if !left.Reload && len(left.Restart) == 0 {
-		setPending(dir, p, nil)
+	lefts := make([]Pending, len(files))
+	nothing := true
+	for i, f := range files {
+		lefts[i] = f.left()
+		nothing = nothing && lefts[i].empty()
+	}
+	record := func() error {
+		var first error
+		for i, f := range files {
+			left := &lefts[i]
+			if left.empty() {
+				left = nil
+			}
+			if _, err := setPending(dir, f.path, left); err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+	if nothing {
+		record()
 		return noderev.OutcomeDone, strings.Join(did, "; ")
 	}
-	if _, err := setPending(dir, p, &left); err != nil {
+	if err := record(); err != nil {
 		did = append(did, "(what is left could not be recorded: "+err.Error()+")")
 	}
 	stop := func(what string, err error) (string, string) {
-		setPending(dir, p, &left)
+		record()
+		var all Pending
+		for _, l := range lefts {
+			all.Reload = all.Reload || l.Reload
+			all.Reloads = appendUnits(all.Reloads, l.Reloads...)
+			all.Restart = appendUnits(all.Restart, l.Restart...)
+		}
+		stays := "the file stays as written"
+		if len(files) > 1 {
+			stays = "the files stay as written"
+		}
 		return noderev.OutcomeFailed, strings.Join(did, "; ") + "; " + what + ": " + err.Error() +
-			"; the file stays as written, and what is left (" + pendingText(left) + ") is pending: the next plan asks to approve it again"
+			"; " + stays + ", and what is left (" + pendingText(all) + ") is pending: the next plan asks to approve it again"
 	}
-	if left.Reload {
+	var problems []string
+	if slices.ContainsFunc(lefts, func(l Pending) bool { return l.Reload }) {
 		if _, err := x.System.Run(ctx, progSystemctl, []string{"daemon-reload"}); err != nil {
 			return stop("systemctl daemon-reload", err)
 		}
 		did = append(did, "reloaded systemd")
-		left.Reload = false
+		for i := range lefts {
+			lefts[i].Reload = false
+		}
 	}
-	for len(left.Restart) > 0 {
-		svc := left.Restart[0]
+	done := func(svc string, list func(l *Pending) *[]string) {
+		for i := range lefts {
+			l := list(&lefts[i])
+			*l = slices.DeleteFunc(*l, func(s string) bool { return unitOf(s) == unitOf(svc) })
+		}
+	}
+	var reloads, restarts []string
+	for _, l := range lefts {
+		reloads, restarts = appendUnits(reloads, l.Reloads...), appendUnits(restarts, l.Restart...)
+	}
+	for _, svc := range reloads {
+		reloaded, err := reloadService(ctx, x.System, svc)
+		var inactive *notActiveError
+		switch {
+		case errors.As(err, &inactive):
+			problems = append(problems, err.Error())
+		case err != nil:
+			return stop("reload "+svc, err)
+		case reloaded:
+			did = append(did, "reloaded "+svc)
+		default:
+			did = append(did, svc+" is not active: not reloaded")
+		}
+		done(svc, func(l *Pending) *[]string { return &l.Reloads })
+	}
+	for _, svc := range restarts {
+		ran := false
+		if confirm {
+			if st, err := x.System.Service(ctx, svc); err == nil {
+				ran = st.Running
+			}
+		}
 		if err := tryRestart(ctx, x.System, svc); err != nil {
 			return stop("restart "+svc, err)
 		}
 		did = append(did, "restarted "+svc+" if it ran")
-		left.Restart = left.Restart[1:]
+		if ran {
+			if st, err := x.System.Service(ctx, svc); err != nil || !st.Running {
+				problems = append(problems, (&notActiveError{svc, "restart"}).Error())
+			}
+		}
+		done(svc, func(l *Pending) *[]string { return &l.Restart })
 	}
-	if _, err := setPending(dir, p, nil); err != nil {
+	for i := range lefts {
+		lefts[i] = Pending{SHA256: files[i].sum}
+	}
+	if err := record(); err != nil {
 		did = append(did, "(the record of what was pending could not be cleared: "+err.Error()+")")
 	}
+	if len(problems) > 0 {
+		return noderev.OutcomeFailed, strings.Join(did, "; ") + "; but " + strings.Join(problems, "; ")
+	}
 	return noderev.OutcomeDone, strings.Join(did, "; ")
+}
+
+// appendUnits appends to l the services of more it does not name yet (with or without ".service").
+func appendUnits(l []string, more ...string) []string {
+	for _, svc := range more {
+		if !slices.ContainsFunc(l, func(s string) bool { return unitOf(s) == unitOf(svc) }) {
+			l = append(l, svc)
+		}
+	}
+	return l
+}
+
+// notActiveError: a service was active, and is not after mamelet reloaded or restarted it.
+type notActiveError struct{ service, what string }
+
+func (e *notActiveError) Error() string {
+	return fmt.Sprintf("%s is not active after its %s (journalctl -u %s on the node says why)", e.service, e.what, e.service)
+}
+
+// reloadService reloads a service if it is active (reloaded false: it is not, and nothing was done),
+// and checks that it is still active after (a *notActiveError when it is not), without holding
+// mamelet for longer than mamelet.StartTimeout.
+func reloadService(ctx context.Context, s *mamelet.System, name string) (reloaded bool, err error) {
+	st, err := s.Service(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	if !st.Running {
+		return false, nil
+	}
+	sctx, cancel := context.WithTimeout(ctx, mamelet.StartTimeout)
+	defer cancel()
+	args := []string{"reload", "--", name}
+	out, errOut, code, err := s.Runner.Run(sctx, progSystemctl, args, nil)
+	switch {
+	case (err != nil || code != 0) && sctx.Err() != nil && ctx.Err() == nil:
+		return false, fmt.Errorf("%s did not finish reloading within %s", name, mamelet.StartTimeout)
+	case err != nil:
+		return false, err
+	case code != 0:
+		msg := strings.TrimSpace(string(errOut))
+		if msg == "" {
+			msg = strings.TrimSpace(string(out))
+		}
+		return false, fmt.Errorf("%s %s: exit %d: %s", progSystemctl, strings.Join(args, " "), code, msg)
+	}
+	if st, err := s.Service(ctx, name); err != nil || !st.Running {
+		return true, &notActiveError{name, "reload"}
+	}
+	return true, nil
 }
 
 // pendingBefore records, before a write of p (whose sha256 will be sum) that restarts restart, what
@@ -179,8 +330,13 @@ func followUp(ctx context.Context, x *mamelet.Act, p, sum string, restart []stri
 // have yet is not reported: observePending). undo puts back what was recorded before, for a write
 // that failed before the file was replaced. Nothing is recorded for a write nothing follows.
 func pendingBefore(dir, p, sum string, restart []string) (undo func(), err error) {
-	left := Pending{SHA256: sum, Reload: IsUnitFile(p), Restart: slices.Clone(restart)}
-	if !left.Reload && len(left.Restart) == 0 {
+	return pendingBeforeWith(dir, p, sum, restart, nil)
+}
+
+// pendingBeforeWith is pendingBefore of a write that also reloads the services of reloads.
+func pendingBeforeWith(dir, p, sum string, restart, reloads []string) (undo func(), err error) {
+	left := after{path: p, sum: sum, reloads: reloads, restart: restart}.left()
+	if left.empty() {
 		return func() {}, nil
 	}
 	before, err := setPending(dir, p, &left)
@@ -190,11 +346,14 @@ func pendingBefore(dir, p, sum string, restart []string) (undo func(), err error
 	return func() { setPending(dir, p, before) }, nil
 }
 
-// pendingText is what is pending, for a person: "systemctl daemon-reload, restart of nginx, app".
+// pendingText is what is pending, for a person: "systemctl daemon-reload, reload of nginx, restart of app".
 func pendingText(left Pending) string {
 	var what []string
 	if left.Reload {
 		what = append(what, "systemctl daemon-reload")
+	}
+	if len(left.Reloads) > 0 {
+		what = append(what, "reload of "+strings.Join(left.Reloads, ", "))
 	}
 	if len(left.Restart) > 0 {
 		what = append(what, "restart of "+strings.Join(left.Restart, ", "))
@@ -299,7 +458,7 @@ func cleanStateDir(s *mamelet.System) {
 	for _, e := range entries {
 		n := e.Name()
 		stale := strings.HasPrefix(n, ".linux-artifact-") || strings.HasPrefix(n, ".linux-apt-key-") ||
-			n == "."+recordName+".tmp" || n == "."+pendingName+".tmp"
+			n == "."+recordName+".tmp" || n == "."+pendingName+".tmp" || n == "."+checksName+".tmp"
 		if stale && e.Type()&fs.ModeType == 0 {
 			os.Remove(filepath.Join(dir, n))
 		}

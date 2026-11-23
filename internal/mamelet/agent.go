@@ -146,6 +146,8 @@ func (a *Agent) Round(ctx context.Context) (noderev.Report, error) {
 	if a.System.StateDir == "" {
 		a.System.StateDir = a.Config.StateDir
 	}
+	// What an extension left half done when mamelet stopped is finished first, whatever the revision.
+	recoverExtensions(ctx, a.System)
 	st, err := a.State.Load()
 	if err != nil {
 		return noderev.Report{}, err
