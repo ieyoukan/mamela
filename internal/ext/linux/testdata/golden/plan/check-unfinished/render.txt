@@ -1,0 +1,12 @@
+Plan sha256:0c3d343c342c
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:3ec22c4da7dd)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
+. NodeFile web/file/etc/nginx/conf.d/site.conf  [waiting]
+    MAM-PLAN-0231 mamelet wrote /etc/nginx/conf.d/site.conf on web and has not run its check nginx -t yet (it stopped in between): it runs the check when it starts its next round, and puts the files back if it fails
+
+Summary: 1 waiting, 2 in sync.
+Nothing has been changed: a plan only describes.

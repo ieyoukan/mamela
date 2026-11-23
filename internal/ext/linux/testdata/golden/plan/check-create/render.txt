@@ -1,0 +1,25 @@
+Plan sha256:5fdf7d156d98
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:fd2be0eaa716)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
++ NodeFile web/file/etc/nginx/conf.d/site.conf  [needs approval]
+      file: /etc/nginx/conf.d/site.conf
+      sha256: 0df3b3696b3968b66e4c9d6212a9295c0b7f738b6e6f57c35055b76cd0a4a0a4
+      content:
+      + server {
+      +   listen 80;
+      +   root /srv/www;
+      + }
+      mode: 0644
+      owner: root
+      group: root
+      check: nginx -t (once the files of this node with this check are written; if it fails, they are put back as they were, and nothing is reloaded or restarted)
+      reload: nginx (each only if it is active: systemctl reload)
+    linux.write-file: needs approval (MAM-POL-0220 writes a file on the node as root, with exactly the content, mode and owner of this plan, and restarts the services it names)
+      hint: read the whole content in this plan: a file can change how the node runs (a unit, a cron job, a service's configuration)
+
+Summary: 1 needs approval, 2 in sync.
+Nothing has been changed: a plan only describes.

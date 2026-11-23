@@ -1,0 +1,22 @@
+Plan sha256:d0002758929f
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:3a156e14939b)
+  policy    sha256:66cbc35c32c3
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
+~ NodeFile web/file/etc/nginx/conf.d/site.conf  [DENIED: observe-only]
+      file: /etc/nginx/conf.d/site.conf
+      sha256: 7b188321c61e303d16a62edd4fd39947fed436638a7e97900323d2dbd27b0f01 -> 0df3b3696b3968b66e4c9d6212a9295c0b7f738b6e6f57c35055b76cd0a4a0a4
+      content:
+      + server {
+      +   listen 80;
+      +   root /srv/www;
+      + }
+      check: nginx -t (once the files of this node with this check are written; if it fails, they are put back as they were, and nothing is reloaded or restarted)
+      reload: nginx (each only if it is active: systemctl reload)
+    linux.write-file: DENIED (MAM-POL-0312 observe-only (observeOnly in the policy, or observe_only in mamela.site.toml): Mamela shows how it differs from the declaration and changes nothing of it or on it)
+      hint: when the plan shows what you expect, remove the name from observeOnly in the policy file, or from observe_only in mamela.site.toml, on the Control Plane's host, and plan again
+
+Summary: 1 denied (1 observe-only), 2 in sync.
+Nothing has been changed: a plan only describes.
