@@ -520,9 +520,10 @@ func (b builder) awaitAgent(node string, waiting *Note) (Status, *Note) {
 		return StatusWaiting, waiting
 	}
 	return StatusBlocked, &Note{Code: "MAM-PLAN-0110",
-		Message: fmt.Sprintf("machine %s has been running for %s, but its agent has never reported: it may be stuck at boot or unable to reach the Control Plane",
+		Message: fmt.Sprintf("machine %s has been running for %s, but its agent has never reported: mamelet is not installed on it (a machine Mamela adopted rather than made), or it is stuck at boot or unable to reach the Control Plane",
 			node, m.uptime.Truncate(time.Minute)),
-		Hint: "look at its console; if it is stuck, restart it with its provider's explicit operation (mamela act, for example reboot-vm or reset-vm of Proxmox)"}
+		Hint: fmt.Sprintf("if Mamela adopted %s, install mamelet on it: on the Control Plane's host, mamela controlplane enroll --node %s --vmid <its id> writes a script to read and run there as root; "+
+			"otherwise look at its console, and if it is stuck, restart it with its provider's explicit operation (mamela act, for example reboot-vm or reset-vm of Proxmox)", node, node)}
 }
 
 func (b builder) pkg(r graph.Resource) Change {
