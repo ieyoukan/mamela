@@ -28,6 +28,19 @@ type Params struct {
 	Network       graph.Network // DHCP or a static address (validated by the graph)
 }
 
+// Where mamelet is on a machine. A seed (cloud-init) and the enrollment script of a machine that
+// exists already (EnrollScript) install it the same way, with the same files (mameletFiles).
+const (
+	BinaryPath = noderev.MameletPath // the unit runs it from there; an update replaces it there
+	ConfigPath = mameletEtc + "/config.json"
+	TokenPath  = mameletEtc + "/enroll-token"
+	CAPath     = mameletEtc + "/ca.pem"
+	UnitPath   = "/etc/systemd/system/mamelet.service"
+	StateDir   = "/var/lib/mamelet"
+
+	mameletEtc = "/etc/mamelet"
+)
+
 // unit is mamelet's systemd service. mamelet needs root for apt and systemctl. A stop sends SIGTERM
 // to mamelet alone (KillMode=mixed): a useradd or usermod it runs is not killed with it (half-changed
 // /etc/passwd and /etc/shadow, locks left behind), and mamelet waits for it (at most the linux
@@ -57,7 +70,7 @@ func Files(p Params) ([]File, error) {
 	sum := sha256.Sum256(p.MameletBinary)
 	// Install mamelet from this seed, only if it is exactly the binary Mamela put there.
 	install := `set -eu; d=$(mktemp -d); mount -o ro -L CIDATA "$d"; ` +
-		`if echo "` + hex.EncodeToString(sum[:]) + `  $d/mamelet" | sha256sum -c -; then install -m 0755 "$d/mamelet" /usr/local/sbin/mamelet; fi; ` +
+		`if echo "` + hex.EncodeToString(sum[:]) + `  $d/mamelet" | sha256sum -c -; then install -m 0755 "$d/mamelet" ` + BinaryPath + `; fi; ` +
 		`umount "$d"; rmdir "$d"`
 	ud, err := userData(p, install, true)
 	if err != nil {
@@ -87,11 +100,11 @@ func UserData(p Params, binaryURL, binarySHA256 string) ([]byte, error) {
 	if p.Network.Mode != graph.NetworkDHCP {
 		return nil, errors.New("seed: user-data configures no network; a cloud machine gets its address from the cloud (dhcp)")
 	}
-	if !strings.HasPrefix(binaryURL, "https://") || len(binarySHA256) != 64 || strings.ContainsAny(binaryURL, "'\"$`\\ \n") {
-		return nil, errors.New("seed: mamelet's URL must be https and its sha256 known")
+	if err := checkBinary(binaryURL, binarySHA256); err != nil {
+		return nil, err
 	}
-	install := `set -eu; f=$(mktemp); curl -fsS --proto =https --cacert /etc/mamelet/ca.pem -o "$f" '` + binaryURL + `'; ` +
-		`if echo "` + binarySHA256 + `  $f" | sha256sum -c -; then install -m 0755 "$f" /usr/local/sbin/mamelet; fi; rm -f "$f"`
+	install := `set -eu; f=$(mktemp); ` + fetch(CAPath, `"$f"`, `'`+binaryURL+`'`) + `; ` +
+		`if echo "` + binarySHA256 + `  $f" | sha256sum -c -; then install -m 0755 "$f" ` + BinaryPath + `; fi; rm -f "$f"`
 	ud, err := userData(p, install, false)
 	if err != nil {
 		return nil, err
@@ -100,6 +113,21 @@ func UserData(p Params, binaryURL, binarySHA256 string) ([]byte, error) {
 		return nil, fmt.Errorf("seed: user-data is %d bytes, over %d", len(ud), MaxUserData)
 	}
 	return ud, nil
+}
+
+// checkBinary checks where a machine fetches mamelet from: the Control Plane, over https, by a
+// sha256 it then checks. The URL goes into a shell command between single quotes.
+func checkBinary(binaryURL, binarySHA256 string) error {
+	if !strings.HasPrefix(binaryURL, "https://") || len(binarySHA256) != 64 || strings.ContainsAny(binaryURL, "'\"$`\\ \n") {
+		return errors.New("seed: mamelet's URL must be https and its sha256 known")
+	}
+	return nil
+}
+
+// fetch is the command that downloads mamelet from the Control Plane to out: https only, and only
+// from a server whose certificate the CA at ca (Mamela's) signed. The arguments are shell words.
+func fetch(ca, out, url string) string {
+	return "curl -fsS --proto =https --cacert " + ca + " -o " + out + " " + url
 }
 
 // PlainFiles are the files of a seed without mamelet, for a site that has no Control Plane: the login
@@ -162,6 +190,29 @@ func plainUserData(p Params, guestAgent bool) ([]byte, error) {
 	return append([]byte("#cloud-config\n"), ud...), nil
 }
 
+// MameletFile is one of the files of mamelet on a machine, but its binary.
+type MameletFile struct {
+	Path    string
+	Mode    string // octal, as cloud-init and install(1) take it
+	Content string
+}
+
+// mameletFiles are mamelet's configuration, its one-time token, its unit and the CA it pins, as a
+// seed writes them (cloud-init's write_files, in this order) and the enrollment script of a machine
+// that exists already (EnrollScript) installs them.
+func mameletFiles(cfg mamelet.Config, token string) ([]MameletFile, error) {
+	c, err := json.Marshal(cfg, json.Deterministic(true))
+	if err != nil {
+		return nil, err
+	}
+	return []MameletFile{
+		{Path: ConfigPath, Mode: "0600", Content: string(c)},
+		{Path: TokenPath, Mode: "0600", Content: token + "\n"},
+		{Path: UnitPath, Mode: "0644", Content: unit},
+		{Path: CAPath, Mode: "0644", Content: cfg.CA},
+	}, nil
+}
+
 // userData is the #cloud-config: the login user, mamelet's configuration and one-time token, its
 // unit, and the commands that install and start it (install is fixed text but for checksums).
 func userData(p Params, install string, guestAgent bool) ([]byte, error) {
@@ -173,9 +224,13 @@ func userData(p Params, install string, guestAgent bool) ([]byte, error) {
 			return nil, errors.New("seed: an SSH key spans lines")
 		}
 	}
-	cfg, err := json.Marshal(p.Mamelet, json.Deterministic(true))
+	files, err := mameletFiles(p.Mamelet, p.EnrollToken)
 	if err != nil {
 		return nil, err
+	}
+	writeFiles := []any{}
+	for _, f := range files {
+		writeFiles = append(writeFiles, map[string]any{"path": f.Path, "permissions": f.Mode, "owner": "root:root", "content": f.Content})
 	}
 	keys := p.SSHPublicKeys
 	if keys == nil {
@@ -197,13 +252,8 @@ func userData(p Params, install string, guestAgent bool) ([]byte, error) {
 		"ssh_pwauth":     false,
 		"package_update": guestAgent,
 		"packages":       packages,
-		"write_files": []any{
-			map[string]any{"path": "/etc/mamelet/config.json", "permissions": "0600", "owner": "root:root", "content": string(cfg)},
-			map[string]any{"path": "/etc/mamelet/enroll-token", "permissions": "0600", "owner": "root:root", "content": p.EnrollToken + "\n"},
-			map[string]any{"path": "/etc/systemd/system/mamelet.service", "permissions": "0644", "owner": "root:root", "content": unit},
-			map[string]any{"path": "/etc/mamelet/ca.pem", "permissions": "0644", "owner": "root:root", "content": p.Mamelet.CA},
-		},
-		"runcmd": runcmd,
+		"write_files":    writeFiles,
+		"runcmd":         runcmd,
 	}
 	ud, err := json.Marshal(doc, json.Deterministic(true))
 	if err != nil {
@@ -293,7 +343,7 @@ type Maker struct {
 
 func (m *Maker) config(node string, vmid int) mamelet.Config {
 	return mamelet.Config{Node: node, VMID: vmid, Server: m.Server, CA: string(m.CA), RevisionKey: m.RevisionKey,
-		EnrollTokenFile: "/etc/mamelet/enroll-token", StateDir: "/var/lib/mamelet", IntervalSeconds: 30,
+		EnrollTokenFile: TokenPath, StateDir: StateDir, IntervalSeconds: 30,
 		AllowedOrigins: m.AllowedOrigins}
 }
 

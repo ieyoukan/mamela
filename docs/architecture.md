@@ -387,7 +387,7 @@ mamela events --node app-server
 mamela reconcile app-server
 ~~~
 
-CLI 名は `mamela`、Node Agent は `mamelet`（マシン内で動く小さな Mamela という意味）。上の CLI は設計案である。実装済みのコマンドは `mamela -h` で分かる（`eval`、`check`、`plan`、`approve`、`revoke`、`apply`、`guard`、`act`、`serve`、`controlplane bundle`、`provider`、`toolchain`）。
+CLI 名は `mamela`、Node Agent は `mamelet`（マシン内で動く小さな Mamela という意味）。上の CLI は設計案である。実装済みのコマンドは `mamela -h` で分かる（`eval`、`check`、`plan`、`approve`、`revoke`、`apply`、`guard`、`act`、`serve`、`controlplane bundle`、`controlplane enroll`、`provider`、`toolchain`）。既存のマシン（Mamela が作っていない、引き継いだもの）には seed がないので、`controlplane enroll` が書くスクリプトを人がマシンの上で root で実行して、mamelet を入れて登録する（[design/adopting-existing-machines.md](design/adopting-existing-machines.md)）。
 
 ## 9. Emela / WASM 技術方針
 

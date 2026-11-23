@@ -15,7 +15,8 @@ import (
 	"github.com/ieyoukan/mamela/internal/noderev"
 )
 
-// Config is mamelet's configuration, written by cloud-init (/etc/mamelet/config.json).
+// Config is mamelet's configuration (/etc/mamelet/config.json), written by the machine's seed
+// (cloud-init), or by the enrollment script of a machine Mamela did not make (internal/seed).
 type Config struct {
 	Node            string   `json:"node"`
 	VMID            int      `json:"vmid"`

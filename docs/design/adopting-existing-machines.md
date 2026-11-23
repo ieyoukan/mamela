@@ -1,6 +1,8 @@
 # 既存のマシンを、作り直さずに Mamela の管理下に移す（計画、2026-11-22）
 
 > 実装した（feat/observe-only と mamela-proxmox の feat/lxc）: 下の「作るもの」の 1〜5。検証環境で確かめた結果は「検証環境での試験」にある。
+>
+> 実装した（feat/enroll-existing）: 7（enroll）。手順は「既存のマシンに mamelet を入れる（enroll）」にある。
 
 人が手で作った Proxmox のゲスト（LXC と VM）と、その中で動くもの（k3s の HA の control plane など）を、作り直さずに Mamela の管理下に移す。この文書はその計画である。
 
@@ -32,7 +34,7 @@
 | 4 | **引き継いだものを消さない**: 引き継いだものは、宣言から外しても削除の対象にしない（今は、引き継いだ VM が、Mamela の作った VM と同じく削除されうる） | mamela | 今回 |
 | 5 | **ProxmoxLXC**: 既存の LXC を引き継ぎ（`adopt-lxc`）、宣言した値（cores、memory、swap、rootfs の拡張、onboot、電源）だけを管理する。説明とタグは、書き換えずに追記する。コンテナはまだ作らない | mamela-proxmox | 今回 |
 | 6 | **境界に名指しで足す**: guard の設定に、引き継ぐ既存のゲスト（node と VMID）の一覧を足す。pool と VMID の範囲の外にあるゲストでも、名指ししたものだけを境界に入れる。Token の ACL も、そのゲスト（`/vms/<vmid>`）だけに足す。段 1 では `VM.Audit` だけ、段 2 で変更の権限を足す（bootstrap が書く） | mamela-proxmox | 次 |
-| 7 | **既存のマシンへの mamelet の導入**（enroll）: Control Plane が 1 回限りの token を発行し、人が読んでから root で実行するスクリプトを書く。Control Plane が自分でマシンに入ることはしない。LXC では `pct push` と `pct exec`、VM では SSH で実行する | mamela（スクリプトは provider も） | 次 |
+| 7 | **既存のマシンへの mamelet の導入**（enroll）: Control Plane が 1 回限りの token を発行し、人が読んでから root で実行するスクリプトを書く（`mamela controlplane enroll`）。Control Plane が自分でマシンに入ることはしない。LXC では `pct push` と `pct exec`、VM では SSH で実行する | mamela | 実装した |
 | 8 | **ProxmoxVM の、宣言の VMID による引き継ぎ**（Terraform なし）。今の `adopt-vm` は、import の記録か、旧組み込みプロバイダーの印を前提にしている | mamela-proxmox | 次 |
 | 9 | **NodeK3s の HA と引き継ぎ**: embedded etcd の server 3 台。install スクリプトで入れた k3s を読み（unit、`config.yaml`、バイナリの sha256）、宣言と同じなら in sync にする。版上げは 1 台ずつ、etcd の quorum を保ったまま進める（ほかの 2 台が健全なときだけ次へ）。上げる前に etcd のスナップショットを取る | mamela | 次 |
 | 10 | **確認が取れなければ戻す**: 適用したあと、決めた時間内に確認（疎通、名前解決など）が取れなければ、前の状態に戻す。締め出しの危険があるゲスト（SSH の経路、DNS）に要る | mamela | 次 |
@@ -52,12 +54,61 @@
    2. `mamela act --confirm <name> adopt-lxc "ProxmoxLXC <name>" <pome-dir>` を実行する。書くのは、説明の末尾の印とタグの追加だけである。
    3. `plan` が in sync になることを確かめる。observe-only のままなので、以後も何も変えない。
 4. **中を見る:**
-   1. enroll（7）で mamelet を入れる。
+   1. enroll（7）で mamelet を入れる（下の「既存のマシンに mamelet を入れる」）。
    2. パッケージ、サービス、ファイル、ユーザーを宣言する。
    3. plan で差を見る。差は拒否され、mamelet には許可が届かない。宣言を直して in sync にする。
 5. **任せる:**
    1. `observe_only` から外す（Control Plane のホストで）。
    2. 最初の変更は小さなもの 1 つにし、結果を確かめる。
+
+## 既存のマシンに mamelet を入れる（enroll）
+
+Mamela が作ったマシンは、seed（cloud-init）で mamelet を入れて登録する。既存のマシンには seed がないので、Control Plane のホストで**スクリプト**を書き、人がそれを読んでから、マシンの上で root で実行する。Control Plane は、マシンに入らない（SSH の鍵も、Proxmox のホストの root も持たない）。
+
+**スクリプトを書く（Control Plane のホストで、DB の所有者として）:**
+
+~~~bash
+sudo -u mamela-cp mamela controlplane enroll --site /etc/mamela/site.toml --db /var/lib/mamela/state.db \
+  --node <名前> --vmid <VMID> --out <ファイル> [--hostname <マシンのホスト名>] [--ttl 1h] [--policy <policy.json>]
+~~~
+
+- **引き継いだマシンだけ。** そのノードに、plan が公開した revision があり、その VMID が `--vmid` と同じこと。revision は、plan がそのマシンを Mamela の物（作った、または引き継いだ）と観測したときだけ公開する（`service.go` の `Managed`）。なければ断る（MAM-PKI-0303。hint: 先に引き継ぐ）。VMID が違えば断る（MAM-PKI-0304）。mamelet が登録済みのノードも断る（MAM-PKI-0305。証明書が切れただけなら `reenroll`。入れ直すなら `--reenroll`）。observe-only のノードにも出せる（mamelet は観測と報告だけをして、許可は届かない）。
+- **token:** 1 回限り、そのノードと VMID にだけ効く。既定 1 時間、最長 24 時間（`reenroll` と同じ表と期限）。ファイルを先に作り（mode 0600、既存のファイルには書かない）、そのあとで token を発行する。断ったときは token を出さない。鍵がない Control Plane では、鍵を作らずに断る（MAM-PKI-0201）。
+- **中身:** seed と同じもの（`internal/seed` の同じコードで作る）。`/etc/mamelet/config.json`（0600）、`enroll-token`（0600）、`ca.pem`（0644）、`/etc/systemd/system/mamelet.service`（0644）、`/usr/local/sbin/mamelet`（0755）。バイナリは、クラウドの seed と同じく、Control Plane の `/v1/mamelet/<sha256>` から https で取り、Mamela の CA で検証し、sha256 を確かめてから入れる（ISO の seed は CD-ROM を mount するので、LXC では使えない）。秘密は token だけである（CA の証明書と revision の公開鍵は秘密ではない）。APT の origin は、`--policy` の `allowedAptOrigins`（なければ既定の `Ubuntu:`）。Debian のマシンでは `Debian:` と `Debian-Security:` を policy に足す。
+- **出力:** 次にすること（LXC と VM の経路）、マシンが Control Plane に届く必要があること、登録の見方。
+
+**スクリプトがすること（POSIX sh、`set -eu`）:**
+
+1. 確かめる。root であること、ホスト名（`uname -n`）が `--hostname`（既定はノードの名前）と同じこと、systemd で動いていること、mamelet がまだないこと（`/etc/mamelet`、unit、バイナリのどれかがあれば断る。`--reenroll` を付けたときだけ置き換える）、curl があること。
+2. ファイルを一時ディレクトリに書き、mamelet を取ってきて sha256 を確かめる。ここまでに失敗すれば、マシンは何も変わっていない。
+3. 入れる。`systemctl daemon-reload`、`systemctl enable --now mamelet`。
+4. 登録を 1 分まで待つ（mamelet が証明書を得て、token のファイルを消す）。確かめ方を表示する。
+
+パッケージ、ユーザー、ネットワークの設定は変えない。
+
+**実行する（例）:**
+
+~~~bash
+# LXC: スクリプトを Proxmox のホストに写してから、ホストで
+pct push <VMID> <ファイル> /root/mamelet-enroll.sh --perms 0600
+pct exec <VMID> -- sh /root/mamelet-enroll.sh
+pct exec <VMID> -- rm /root/mamelet-enroll.sh
+# VM: root になれる利用者で
+scp <ファイル> <user>@<address>:mamelet-enroll.sh
+ssh -t <user>@<address> 'sudo sh mamelet-enroll.sh && rm mamelet-enroll.sh'
+~~~
+
+**確かめる:** スクリプトが「enrolled as <名前>」と表示する。マシンで `journalctl -u mamelet`（「enrolled as」のあとに「connected to the Control Plane」）。Control Plane のホストで `mamela controlplane agents`（ノードが並ぶ）。次の `mamela plan` に、mamelet の観測が出る。終わったら、スクリプトを両方で消す。
+
+**unprivileged の LXC（Debian 13）で確かめたこと（コードを読んで）:**
+
+- mamelet は、DMI、cloud-init、qemu-guest-agent、カーネルのモジュールを使わない。実行するのは `/usr/bin/dpkg-query`、`/usr/bin/apt-get`、`/usr/bin/systemctl`（と拡張の `useradd` などと k3s）だけで、Debian 13 にある。自分の更新は `/proc/self/exe` と `exec` で、LXC でも動く。
+- mamelet の unit は、名前空間を使う設定（`PrivateTmp`、`ProtectSystem` など）を持たない。nesting のないコンテナでも起動する（`internal/seed` の試験が、この種の設定を足すと失敗する）。パッケージが入れるサービスには、nesting（`features: nesting=1`）が要るものがある。
+- スクリプトは `mount` を使わない（unprivileged のコンテナでは AppArmor に止められる）。
+- コンテナの中から VMID は分からない。違うマシンで実行するのを防ぐのは、ホスト名の確かめと、token が名前と VMID に結び付いていることである。
+- Proxmox の Debian のテンプレートに curl がないことがある。スクリプトは何も変えずに断り、`apt-get install curl` を示す。
+- 既定の policy の APT origin は `Ubuntu:` なので、Debian のパッケージは入らない（plan は MAM-POL-0305、mamelet も断る）。policy と mamelet の両方に `Debian:` を足す（スクリプトは `--policy` の値を mamelet の設定に書く）。
+- k3s をコンテナで動かすことは、ここでは扱わない（k3s 自体が privileged などを要する）。linux 拡張で UID を宣言するときは、unprivileged のコンテナでは 65535 までに収める。
 
 ## 順番
 
@@ -102,6 +153,5 @@
 
 ## まだ決めていないこと
 
-- enroll で、token とスクリプトをどう渡すか。LXC ではホストの root（`pct`）、VM では SSH の鍵が要る。
 - k3s の HA の宣言の形。server の 1 台目（`cluster-init`）と、2 台目以降の join をどう表すか。今の NodeK3s は server 1 台を前提にしている。
 - 境界に名指しで足したゲストを、あとで境界から外す手順。印とタグを消して、Foreign に戻す。

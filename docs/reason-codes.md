@@ -1,6 +1,6 @@
 # 理由コード
 
-Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/pin/pin.go`（MAM-PIN）、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/codes.go` の `reserved`。この文書の予約の行と同じであることを `codes_test.go` が確かめる）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
+Mamela が止まったり拒否したりしたときに表示するコード。一度決めたコードを別の意味に使い回さない。正は `internal/graph/problem.go`・`internal/graph/warnings.go`、`internal/evaluate/errors.go`、`internal/pin/pin.go`（MAM-PIN）、`internal/policy/policy.go`、`internal/plan/plan.go`・`internal/plan/kit.go`、ノード拡張の `internal/ext/k3s`・`internal/ext/linux`（linux の kind ごとに予約したコードの範囲は `internal/ext/linux/codes.go` の `reserved`。この文書の予約の行と同じであることを `codes_test.go` が確かめる）、`internal/reconcile/reconcile.go`、`internal/provider/host/errors.go`、`internal/provider/host/upstream.go`（MAM-PRV-0012）、`provider/protocol/catalog.go`（MAM-PRV-0011）、`internal/provider/external/pin.go`（MAM-PRV-0009、0010）、`cmd/mamela/service.go`、`cmd/mamela/revoke.go`（MAM-APR）、`internal/store/migrate.go`（MAM-DB）と `internal/provider/external/runtime.go`（MAM-SITE）、`cmd/mamela/act.go`（MAM-ACT）、`internal/cp`・`cmd/mamela/agentcerts.go`・`cmd/mamela/newkeys.go`・`cmd/mamela/enroll.go`・`cmd/mamelet/main.go`（MAM-PKI）、`cmd/mamela/backup.go` と `internal/cp/server.go`（MAM-BAK）。
 
 使わなくなったコードも、行を消さずに「廃止」と書いて残す。別の意味で使い直さないためである。
 
@@ -333,6 +333,9 @@ CP と mamelet の mTLS の証明書、CP の CA と署名鍵。手順は [recov
 | MAM-PKI-0203 | 鍵はあるが DB が新しい（なかったので、起動時に作った）。登録済みの mamelet がなく、全 mamelet が断られる（`serve` の起動時のログ） | DB を戻す（`mamela restore`）。なければ、ノードごとに `reenroll --node <名前> --vmid <vmid>` |
 | MAM-PKI-0301 | `reenroll` の対象のノードが DB にない、または VMID が登録と違う | `mamela controlplane agents` で名前を確かめる。DB を失ったノードは `--vmid` を付ける |
 | MAM-PKI-0302 | `new-keys` を断った。鍵のディレクトリに、CA か署名鍵のファイルが一部ある | 残すなら戻す。替えるなら、古い CA・署名鍵のファイルを自分で移してから |
+| MAM-PKI-0303 | `controlplane enroll` を断った。そのノードは Control Plane が管理するマシンではない（plan が Mamela の物として観測しておらず、revision がない）。トークンは出していない | 先に引き継ぐ。宣言に ID を書き、plan（MAM-PLAN-0114）、プロバイダーの引き継ぎの明示操作（`mamela act --confirm`）、もう一度 plan |
+| MAM-PKI-0304 | `controlplane enroll` を断った。`--vmid` が、plan が観測したそのノードの ID と違う。別のマシンへのトークンは出さない | マシンの ID を確かめる。ノードが別のマシンになったなら、先に plan する |
+| MAM-PKI-0305 | `controlplane enroll` を断った。そのノードには登録済みの mamelet がある | 証明書が切れただけなら `controlplane reenroll`。入れ直して登録を置き換えるなら `--reenroll` を付け、スクリプトも `--reenroll` で実行する |
 
 ## MAM-BAK — バックアップと復元
 
