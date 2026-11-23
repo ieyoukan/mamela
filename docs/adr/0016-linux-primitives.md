@@ -25,7 +25,7 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 | `NodeUser` | ユーザーと補助グループ、その SSH の鍵（許すこと、つまり sudo は後） | 0.4.0 |
 | `NodeAptRepo` | APT のソースと、その鍵 | 0.4 の続き |
 | `NodeArtifact` | sha256 で固定したダウンロード（リリースのバイナリ、`.tar.gz` の 1 つのメンバー）。mamelet が Go のコードで https からダウンロードし、置いたものを自分の状態ディレクトリに記録する | 0.4.0 |
-| `NodeAptUpgrades` | 入っているパッケージの、宣言した APT の origin（Debian のセキュリティ・アーカイブなど）からの保留中の更新を、plan が示した版のとおりに上げる（§9） | 0.4.2（2026-11-23） |
+| `NodeAptUpgrades` | 入っているパッケージの、宣言した APT の origin（Debian のセキュリティ・アーカイブなど）からの保留中の更新を、plan が示した版のとおりに上げる（§9） | 0.5.0（2026-11-23） |
 
 - 拡張は、k3s と同じにコンパイル時に組み込む（`internal/ext/linux`、`cmd/mamela` と `cmd/mamelet` の blank import）。実行時に読み込むプラグインはない。
 - `NodePackage` と `NodeService` は核に残す。linux は、パッケージの導入が待つもの（`PackageGate`、NodeAptRepo のため）と、サービスの起動が待つもの（`StartGate`、`restart` に挙げたファイル）で関わる。`PackageGate` は、Blocked にせず待たせることで、apt-get update が一度失敗したあとも mamelacd の push の同期が自分で戻れるようにする（ファイルは揃っているが apt がまだ読んでいないソースは、apt が見つけられないパッケージを待たせ、Blocked にしない）。`ca-certificates` は待たせない（mamelet はソースの鍵を、ノードの証明書で https から取得する。証明書のないノードは、それを入れるまでソースを足せない）。2026-11-19。mamelet は、ノードの証明書（`/etc/ssl/certs/ca-certificates.crt` など、Go が Linux で探す場所）を、ダウンロードのたびに読む。Go の既定は 1 つのプロセスで 1 度しか読まないので、証明書がなくて失敗したあとに `ca-certificates` を入れても、mamelet を再起動するまで使われなかった（2026-11-19 の再レビュー）
@@ -110,6 +110,17 @@ mamelet は root で動き、観測する path はユーザーが変えられる
   - mamelet は、一覧が 12 時間より古ければ、承認なしに `apt-get -o DPkg::Lock::Timeout=300 update` を 1 回実行する。**承認なしに行う、ただ 1 つのこと**であり、次の理由で安全と判断した。(1) 変えるのは apt の一覧（何を入れられるか）だけで、入っているもの、設定、サービスは変えない。(2) Debian と Ubuntu の apt-daily が 1 日 2 回するのと同じことで、ノードの設定が `apt-get update` のたびに動かすもの（APT の `Update::Post-Invoke` などのフック）のほかは動かさない。そのフックの設定（`/etc/apt/apt.conf.d`）を Mamela の kind は書けない（CheckPath が断る）。(3) その後の導入と更新は、どれも承認した変更集合のとおりにだけ行われる（一覧が変わって集合が変われば、mamelet は断る）。(4) 固定のプログラムと引数で、宣言は何も足せない。行うのは、そのノードを宣言が `NodeAptUpgrades` で持つとき（revision の部分の `refresh`。plan した宣言が付ける）、承認した更新が待っていないとき、ノードを Control Plane が変えないとき（observe-only、自分のホストでは `Protect` が外す）だけ。失敗は状態ディレクトリ（`linux-apt-refresh.json`）に記録して報告し、1 時間は試さない。ほかの apt がリストのロックを持てば、失敗とせず次の周に試す（その apt が読み直している）。
   - 要る理由: 非特権の LXC のコンテナでは、apt-daily が `systemd-networkd-wait-online` を待って（ネットワークを networkd が管理していない）失敗し、一覧が 1 年前のままだった（2026-11-23、検証環境の Debian 13）。mamelet が読み直さなければ、そのノードは古い一覧で in sync と言うか、ずっと Blocked のままになる。
 - **wire。** revision の部分の `aptUpgrades`（origin の組の和〔観測の対象、`maxAptUpgradeSets` 4 まで〕、`refresh`、承認した `upgrade`）と、報告の `aptUpgrades`（一覧の時刻、mamelet の `apt-get update` の結果、dpkg の中断、再起動、origin の組ごとの変更集合）は、§8 の末尾と同じ理由で、linux の部分の版（`Version` 1）を上げずに足した（mamelet 0.10.0 はまだリリースしていない）。この変更より前に build した 0.10.0 の mamelet は、`aptUpgrades` のある部分を、知らないメンバーとして丸ごと断る（そのノードの linux の資源がすべて MAM-PLAN-0122 になる）。`NodeAptUpgrades` を宣言する前に、ノードの mamelet をこの版にする。
+
+### 10. 追記（2026-11-23）: ファイルの検査は、mamelet に組み込んだ決まった検査の一覧から選ぶ
+
+nginx の設定を Mamela で変えて、公開しているサイトを止めないためである。以前は、`NodeFile` を書いてから `restart` のサービスを `try-restart` していたので、壊れた設定では nginx の `ExecStartPre`（`nginx -t`）が失敗し、nginx は止まったままになった。
+
+- `NodeFile` に `check` と `reload` を足す。`check` は、mamelet に組み込んだ検査の**名前**で、今は `nginx`（`/usr/sbin/nginx -t -q`）だけ。宣言はプログラムも引数も書けない。mamelet は、名前が指す決まったプログラム（絶対 path、決まった引数、シェルなし、1 分まで）だけを実行する。だから §2 の「固定のプログラムだけ」は変わらない。一覧にないものは graph が断り（MAM-GRAPH-0106。hint が使える名前を言う）、mamelet も revision を読むときに断る。検査を足すのは、mamelet がそれで何をするかのテストを書けるものだけ（`sshd -t` などは、そのとき足す。`internal/ext/linux/file_check.go`）。
+- `reload` は、検査が通ったあと、active なサービスだけを `systemctl reload` し、そのあとも active かを確かめる。同じサービスを `restart` と `reload` の両方に書けない。
+- 検査は、同じ apply が同じノードに書く同じ `check` のファイル（組）に、すべて書いたあと一度だけ走らせる（2 つのファイルで 1 つの設定になるので）。reconciler は操作を 1 つずつ行うので、Control Plane は、組の最初の操作の許可に、承認した plan のほかの組のファイルの書き込みを入れる。
+- 書く前に、上書きするもの（内容・mode・所有者、またはないこと）を状態ディレクトリに残し、組を記録する（意図を先に記録する）。検査が通らなければ、組のファイルをすべて元に戻し（なかったものは消す）、何も reload も再起動もせず、検査が言ったことを（長さを限り、制御文字を書き出して）報告する。次の plan は、戻したことと理由を示す（MAM-PLAN-0230。宣言を直す）。検査の前に mamelet が止まれば、次に動き始めたとき、revision がなくても、記録から検査をやり直し、通らなければ戻す（MAM-PLAN-0231・0232）。終わっていないものを終わったことにはしない。
+- 検査は安全の証明ではない。検査が通っても、サービスが新しい設定で期待どおりに動くとは限らない（reload のあとも active かを確かめるだけ）。検査が守るのは、構文や参照の誤りで、サービスが止まることである。
+- 残り: 作ったディレクトリは戻さない（空のまま残る）。256 KiB を超える既存のファイルへの、検査のある書き込みは断る（戻すために残せない）。検査の記録を読めなくなったとき（`.corrupt` として除けたとき）は、`check` のあるファイルを Blocked にし、人が確かめる。
 
 ## 結果
 
