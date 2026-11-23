@@ -1,0 +1,11 @@
+Plan sha256:94e46beaa681
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:e14ab26f677d)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+. NodeAptUpgrades web/apt-upgrades  [waiting]
+    MAM-PLAN-0165 waits for the agent on web to work out the pending upgrades from the origins declared here (Debian-Security:)
+
+Summary: 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.

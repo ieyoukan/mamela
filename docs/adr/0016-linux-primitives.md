@@ -25,11 +25,12 @@ Mamela は、マシンを作り（provider）、そこに APT のパッケージ
 | `NodeUser` | ユーザーと補助グループ、その SSH の鍵（許すこと、つまり sudo は後） | 0.4.0 |
 | `NodeAptRepo` | APT のソースと、その鍵 | 0.4 の続き |
 | `NodeArtifact` | sha256 で固定したダウンロード（リリースのバイナリ、`.tar.gz` の 1 つのメンバー）。mamelet が Go のコードで https からダウンロードし、置いたものを自分の状態ディレクトリに記録する | 0.4.0 |
+| `NodeAptUpgrades` | 入っているパッケージの、宣言した APT の origin（Debian のセキュリティ・アーカイブなど）からの保留中の更新を、plan が示した版のとおりに上げる（§9） | 0.4.2（2026-11-23） |
 
 - 拡張は、k3s と同じにコンパイル時に組み込む（`internal/ext/linux`、`cmd/mamela` と `cmd/mamelet` の blank import）。実行時に読み込むプラグインはない。
 - `NodePackage` と `NodeService` は核に残す。linux は、パッケージの導入が待つもの（`PackageGate`、NodeAptRepo のため）と、サービスの起動が待つもの（`StartGate`、`restart` に挙げたファイル）で関わる。`PackageGate` は、Blocked にせず待たせることで、apt-get update が一度失敗したあとも mamelacd の push の同期が自分で戻れるようにする（ファイルは揃っているが apt がまだ読んでいないソースは、apt が見つけられないパッケージを待たせ、Blocked にしない）。`ca-certificates` は待たせない（mamelet はソースの鍵を、ノードの証明書で https から取得する。証明書のないノードは、それを入れるまでソースを足せない）。2026-11-19。mamelet は、ノードの証明書（`/etc/ssl/certs/ca-certificates.crt` など、Go が Linux で探す場所）を、ダウンロードのたびに読む。Go の既定は 1 つのプロセスで 1 度しか読まないので、証明書がなくて失敗したあとに `ca-certificates` を入れても、mamelet を再起動するまで使われなかった（2026-11-19 の再レビュー）
 - `apt-get update` は、ソースを取得できなくても 0 で終わる（`W: Failed to fetch` を出すだけ。Debian 12・13 で確かめた）。mamelet は、update のあと、このソースの URI と suite を apt が読んだか（リリースファイル）と、apt がそれについて言ったこと（`Err:`、`E:`、`W: Failed to fetch`、`W: GPG error`）を見て、読めていなければ（前に読んだものを持ち続けるだけなら、それも）失敗として記録する。理由には apt の言葉を、長さを限って入れる。その理由は、grant が revision にあるあいだ報告に入り（`failed`）、plan の MAM-PLAN-0152 が示す（以前は「ran apt-get update」と Done になり、0152 の hint は「前の試みの結果が理由を言う」と言うのに、何も言っていなかった）。`-o APT::Update::Error-Mode=any` は使わない: ほかのソース（ノードのミラー）の失敗でも 100 で終わるので、このソースの追加が、自分のものでない理由で失敗する（古い apt は知らないオプションを無視するので、使うこと自体はできる）。2026-11-19 の再レビュー
-- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。理由コードの範囲も kind ごとに予約した（`internal/ext/linux/codes.go`。操作の名前は `doc.go`）。
+- kind の並び（digest に入る）は、核と k3s と provider のあとに 6〜9。一つの plan の操作は並びの順に走るので、アカウント、ソース、ダウンロード、ファイルの順にした（NodeUser 6、NodeAptRepo 7、NodeArtifact 8、NodeFile 9）。あとから足した NodeAptUpgrades は 10（並びは digest に入るので、ほかを動かさずに最後に足した。2026-11-23）。理由コードの範囲も kind ごとに予約した（`internal/ext/linux/codes.go`。操作の名前は `doc.go`）。
 
 ### 2. 任意のシェルはない
 
@@ -94,6 +95,21 @@ mamelet は root で動き、観測する path はユーザーが変えられる
   - 数を超える部分を、mamelet は断らない（2026-11-19）。断ると、その中の grant（承認した main の変更）が行われないからである。mamelet は、grant のある項目、`inForce` の項目、残りを名前の順に、上限まで観測し、ほかは報告に理由（`error`）だけを書く（plan は Blocked で理由を示す）。観測の対象の一覧（所有者、グループなど）は、はじめの 16 だけを見る。断るのは、grant が上限を超える部分だけ。Control Plane は上限を超える部分を作らないので（5a）、これは版の違う Control Plane への備えである。
 
 ここで足した報告と revision のメンバー（`exposed`、`pending`、`newHomes`、`notOwned`、`more`、ユーザーの `homes`、`error`。2026-11-19 の再レビューの `shadows`、ソースの `failed`、Control Plane だけが持つ `held`）は、linux の部分の版（`Version` 1）を上げずに足した（作る home は 5a の観測の対象の和で、`homes` と、home ごとの `newHomes`。形は `internal/ext/linux/testdata/wire/v1.txt`）。linux を受け取る mamelet 0.10.0 は、まだリリースしていない（タグがない）からである。リリースのあとに足すものは版を上げる。
+
+### 9. 入っているパッケージの更新は、承認した変更集合のとおりにだけ（`NodeAptUpgrades`、2026-11-23）
+
+`NodePackage` は入れるだけで、上げない。既存の Debian・Ubuntu のマシンのセキュリティ更新は、手か unattended-upgrades に任されていた。unattended-upgrades は承認なしに上げ、何が上がるかを plan に出さない（MVP 対象外の「無条件アップグレード」）。そこで、承認した変更集合のとおりにだけ上げる kind を足した。
+
+- **宣言は origin だけ。** `NodeAptUpgrades`（`<node>/apt-upgrades`、1 つのノードに 1 つ）の `origins` は、policy の `allowedAptOrigins` と同じ形（apt-get -s の `<label>:<version>/<suite>`、またはラベルと `:` までの先頭）。`Debian-Security:` は Debian のセキュリティ・アーカイブ、`Debian:` は point release と stable-updates。どのパッケージを上げるかは宣言に書かない（書けば、新しいセキュリティ更新のたびに宣言を変えることになる）。
+- **mamelet が計算し、plan が全部を示す。** mamelet は `apt-get -s dist-upgrade`（シミュレーション、ロックなし）の `Inst` 行から、入っているパッケージの候補の版とその origin を読み、origin のどれかが宣言に当たるものを、その版に固定して `apt-get -s install --only-upgrade <package>=<version> ...` でシミュレーションする。その行（依存で入るもの、消えるものも）が変更集合で、digest は Control Plane と mamelet が同じ関数（`aptChangeSet`）で計算する。plan は 1 行ずつ（前と後の版、origin）と digest を示す。point release のあとは、同じ版が main とセキュリティの両方にあり、apt は両方の origin を示す。どちらかが宣言に当たれば対象にする。
+- **policy は核の規則。** 操作 `linux.upgrade-packages` は承認が要る（MAM-POL-0227）。そのうえで、核の policy が、パッケージを変える拡張の操作にも、導入と同じ規則を先に当てる: 削除を含む集合は MAM-POL-0304、policy が許さない origin（変更集合の行のすべての origin と、宣言の `origins`）は MAM-POL-0305。拡張が自分の判定でこれを緩めることはできない（`policy.Decide`）。observe-only のノードでは示して MAM-POL-0312。
+- **承認した digest にだけ。** grant は、承認した plan の観測が持つパッケージと版と digest を運ぶ（`AptUpgrade`）。mamelet は直前にもう一度シミュレーションし、digest が同じで、削除がなく、すべての origin を自分の設定（`allowedOrigins`）が許すときだけ、`apt-get -o DPkg::Lock::Timeout=300 -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install --only-upgrade <package>=<version> ...`（核の導入と同じオプション）を実行する。違えば何もせずに断り、次の plan が新しい集合を示す。版を固定するので、plan のあとに新しい版が出ても、承認していない版は入らない。
+- **中断とやり直し。** 意図は Control Plane の journal に先に書く（核の reconcile）。mamelet は、`apt-get install` を、止められても kill しない（dpkg を途中で止めるとパッケージが半端に残る。30 分で打ち切る）。記録の前に mamelet が止まっても、次の周のシミュレーションが分ける: すべて承認した版なら（変更集合が空）done、一部だけなら digest が違うので断り、次の plan が残りを示す。dpkg 自身が途中で止まっていれば（`/var/lib/dpkg/updates`）、plan は Blocked（MAM-PLAN-0226）で、人が `dpkg --configure -a` を行う（Mamela は、途中のものを何でも動かすことになるので、しない）。
+- **再起動しない。** パッケージの maintainer script は自分のサービスを再起動する（nginx など）。Mamela はほかを再起動しない。`/run/reboot-required` があれば、plan は警告（MAM-PLAN-0169）で示すだけで、再起動は人がプロバイダーの明示操作で行う。
+- **一覧の古さと、承認なしの `apt-get update`。** 古い一覧から「保留中の更新はない」と言えば、それは誤りである。plan は、使った一覧の古さを示し（MAM-PLAN-0168）、12 時間（`AptListsMaxAge`）より古ければ plan しない（MAM-PLAN-0167 で待つ、読み直せなければ MAM-PLAN-0166 で Blocked。mamelet の `apt-get update` が言ったことを示す）。古さは、mamelet の最後の `apt-get update`（すべてのソースを読めたもの）と、apt の最も新しいリリースファイル（`/var/lib/apt/lists/*_InRelease`、`*_Release`）の mtime の新しいほうから測る（apt は取得したファイルにサーバーの最終更新の時刻を付けるので、mtime だけでは、静かなアーカイブを読み直した直後でも古く見える）。
+  - mamelet は、一覧が 12 時間より古ければ、承認なしに `apt-get -o DPkg::Lock::Timeout=300 update` を 1 回実行する。**承認なしに行う、ただ 1 つのこと**であり、次の理由で安全と判断した。(1) 変えるのは apt の一覧（何を入れられるか）だけで、入っているもの、設定、サービスは変えない。(2) Debian と Ubuntu の apt-daily が 1 日 2 回するのと同じことで、ノードの設定が `apt-get update` のたびに動かすもの（APT の `Update::Post-Invoke` などのフック）のほかは動かさない。そのフックの設定（`/etc/apt/apt.conf.d`）を Mamela の kind は書けない（CheckPath が断る）。(3) その後の導入と更新は、どれも承認した変更集合のとおりにだけ行われる（一覧が変わって集合が変われば、mamelet は断る）。(4) 固定のプログラムと引数で、宣言は何も足せない。行うのは、そのノードを宣言が `NodeAptUpgrades` で持つとき（revision の部分の `refresh`。plan した宣言が付ける）、承認した更新が待っていないとき、ノードを Control Plane が変えないとき（observe-only、自分のホストでは `Protect` が外す）だけ。失敗は状態ディレクトリ（`linux-apt-refresh.json`）に記録して報告し、1 時間は試さない。ほかの apt がリストのロックを持てば、失敗とせず次の周に試す（その apt が読み直している）。
+  - 要る理由: 非特権の LXC のコンテナでは、apt-daily が `systemd-networkd-wait-online` を待って（ネットワークを networkd が管理していない）失敗し、一覧が 1 年前のままだった（2026-11-23、検証環境の Debian 13）。mamelet が読み直さなければ、そのノードは古い一覧で in sync と言うか、ずっと Blocked のままになる。
+- **wire。** revision の部分の `aptUpgrades`（origin の組の和〔観測の対象、`maxAptUpgradeSets` 4 まで〕、`refresh`、承認した `upgrade`）と、報告の `aptUpgrades`（一覧の時刻、mamelet の `apt-get update` の結果、dpkg の中断、再起動、origin の組ごとの変更集合）は、§8 の末尾と同じ理由で、linux の部分の版（`Version` 1）を上げずに足した（mamelet 0.10.0 はまだリリースしていない）。この変更より前に build した 0.10.0 の mamelet は、`aptUpgrades` のある部分を、知らないメンバーとして丸ごと断る（そのノードの linux の資源がすべて MAM-PLAN-0122 になる）。`NodeAptUpgrades` を宣言する前に、ノードの mamelet をこの版にする。
 
 ## 結果
 

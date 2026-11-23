@@ -1,0 +1,12 @@
+Plan sha256:6d3f4e76b3bb
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:9d36af6e6fce)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+! NodeAptUpgrades web/apt-upgrades  [blocked]
+    MAM-PLAN-0225 the agent on web cannot work out the upgrades from the origins declared here (Debian-Security:): apt-get -s install --only-upgrade: /usr/bin/apt-get ...: exit 100: E: Unable to correct problems, you have held broken packages.
+      hint: fix the cause on the node (apt-get -s install --only-upgrade of the packages shows what apt says: a held package, a dependency it cannot install), then plan again
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

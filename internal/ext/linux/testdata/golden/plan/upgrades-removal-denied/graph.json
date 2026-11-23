@@ -1,0 +1,1 @@
+{"resources":[{"kind":"TestVM","name":"web","provider":"test","spec":{"network":{"mode":"dhcp"}}},{"kind":"NodeAptUpgrades","name":"web/apt-upgrades","spec":{"node":"web","origins":["Debian-Security:"]}}],"schema":"mamela-graph/v2"}

@@ -99,7 +99,8 @@ func checkHomes(g *graph.Graph, v *graph.Validator, claims map[string][]claim) {
 // checkCounts refuses more of a kind on one node than mamelet observes (MaxNodeFiles and the like):
 // mamelet would refuse the whole linux part of the node's revision.
 func checkCounts(g *graph.Graph, v *graph.Validator) {
-	most := map[graph.Kind]int{KindFile: MaxNodeFiles, KindUser: MaxNodeUsers, KindAptRepo: MaxNodeAptRepos, KindArtifact: MaxNodeArtifacts}
+	most := map[graph.Kind]int{KindFile: MaxNodeFiles, KindUser: MaxNodeUsers, KindAptRepo: MaxNodeAptRepos, KindArtifact: MaxNodeArtifacts,
+		KindAptUpgrades: 1}
 	seen := map[string]int{}
 	for _, r := range g.Sorted() {
 		k, ok := kindOf(r.Kind)

@@ -30,7 +30,7 @@ Mamela は、[Emela](https://github.com/emela-lang/emela) で宣言したイン�
 
 MVP: プロバイダー（Proxmox VE など）を通した Ubuntu のマシンの作成/観測、cloud-init による Agent 配備、Agent の Pull、APT の状態観測と承認済みインストール、systemd サービスの有効化/稼働、差分/承認/履歴、SQLite を用いた単一 Control Plane。Emela → WASM の構成評価経路は最初に PoC を行う。
 
-MVP 対象外: 任意コマンド/任意スクリプト、マシン/Volume の自動削除、未知の APT ソースの自動追加、無条件アップグレード、既存（Mamela 管理外）のマシンの取り込み（プロバイダーが「Mamela が別の形で作ったもの」と認めたものの引き継ぎ `adopt` だけは、明示操作で行える）、マルチクラウド、HA Control Plane、無停止や完全ロールバックの保証。
+MVP 対象外: 任意コマンド/任意スクリプト、マシン/Volume の自動削除、未知の APT ソースの自動追加、無条件アップグレード（承認なしの、または何が上がるか分からない `apt-get upgrade`。linux 拡張の `NodeAptUpgrades` は、宣言した origin からの保留中の更新を、plan が全行と digest で示した変更集合のとおりに、承認のたびに上げるもので、これには当たらない。§6「APT の計画」）、既存（Mamela 管理外）のマシンの取り込み（プロバイダーが「Mamela が別の形で作ったもの」と認めたものの引き継ぎ `adopt` だけは、明示操作で行える）、マルチクラウド、HA Control Plane、無停止や完全ロールバックの保証。
 
 ## 3. 全体構成
 
@@ -286,6 +286,8 @@ SQLite の WAL モードとトランザクションを使い、**単一 Control 
 2. Control Plane はその集合を Plan に含め、判定と承認をその集合に紐づける。
 3. Agent は実行直前に再シミュレーションし、集合が承認時と異なれば実行せず再計画を要求する。
 4. 削除を含む集合は `Denied`。
+
+入っているパッケージの更新（linux 拡張の `NodeAptUpgrades`、ADR 0016 §9）も同じ形である。宣言は「どの origin（Debian のセキュリティ・アーカイブなど）からの更新を上げるか」だけを言い、Agent が、候補の版がその origin から来るパッケージを `apt-get -s dist-upgrade` で見つけ、その版に固定した `apt-get -s install --only-upgrade <package>=<version> ...` の変更集合を報告する。plan はすべての行（前と後の版と origin）と digest を示し、承認はその digest に結び付く。Agent は直前に再シミュレーションし、同じ集合のときだけ上げる。何が上がるかを承認する人が見て決めるので、「無条件アップグレード」（§2 の MVP 対象外）ではない。Agent が承認なしに行うのは、一覧が 12 時間より古いときの `apt-get update`（apt-daily と同じ。入っているものは変えない）だけで、Mamela が変えないノード（observe-only、Control Plane のホスト）では行わない。
 
 ## 7. セキュリティ / AI 自動適用
 

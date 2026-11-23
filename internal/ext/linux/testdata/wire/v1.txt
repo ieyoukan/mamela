@@ -155,6 +155,23 @@ part: linux.Part {
       }
     }
   }
+  "aptUpgrades" (omitempty) *linux.AptUpgrades {
+    "sets" [][]string
+    "inForce" (omitzero) bool
+    "held" (omitempty) []string
+    "refresh" (omitzero) bool
+    "upgrade" (omitempty) *linux.AptUpgrade {
+      "origins" []string
+      "packages" []string
+      "changeSet" string
+      "grant" noderev.Once {
+        "operation" string
+        "attempt" int
+        "action" string
+        "expires" (omitzero) time.Time
+      }
+    }
+  }
 }
 
 report: linux.Observed {
@@ -371,6 +388,30 @@ report: linux.Observed {
       }
       "unread" (omitempty) []string
       "conflicts" (omitempty) []string
+    }
+    "failed" (omitempty) string
+    "error" (omitempty) string
+  }
+  "aptUpgrades" (omitempty) *linux.AptUpgradesState {
+    "listsAt" (omitzero) time.Time
+    "refreshedAt" (omitzero) time.Time
+    "refreshFailed" (omitempty) string
+    "refreshFailedAt" (omitzero) time.Time
+    "dpkgInterrupted" (omitzero) bool
+    "rebootRequired" (omitzero) bool
+    "rebootPackages" (omitempty) []string
+    "sets" (omitempty) []linux.AptUpgradeSet {
+      "origins" []string
+      "packages" (omitempty) []string
+      "changes" (omitempty) []linux.AptChange {
+        "action" string
+        "package" string
+        "from" (omitempty) string
+        "version" (omitempty) string
+        "origins" (omitempty) []string
+      }
+      "digest" (omitempty) string
+      "error" (omitempty) string
     }
     "failed" (omitempty) string
     "error" (omitempty) string

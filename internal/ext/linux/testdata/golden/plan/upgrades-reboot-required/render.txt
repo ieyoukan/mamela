@@ -1,0 +1,13 @@
+Plan sha256:6c1913a88fa5
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:34170395fe88)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+= NodeAptUpgrades web/apt-upgrades  [in sync]
+    warning MAM-PLAN-0169 web says it needs a reboot (/run/reboot-required), for linux-image-6.12.57+deb13-amd64
+      hint: what was upgraded (a kernel, libc) takes effect after a reboot, which Mamela never does by itself: reboot the machine when it suits, with its provider's explicit operation (mamela act)
+    MAM-PLAN-0168 the package lists on web are 41m old (mamelet's last apt-get update, 2026-11-17T11:20:00Z)
+
+Summary: 2 in sync.
+Nothing has been changed: a plan only describes.

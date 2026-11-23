@@ -126,6 +126,11 @@ func TestEveryMemberOfThePartIsCovered(t *testing.T) {
 				URIs: s.URIs, Suites: s.Suites, Components: s.Components, KeyURL: s.KeyURL, KeySHA256: s.KeySHA256, SourcesSHA256: armored,
 				Grant: once(ActionAddAptRepo, exp)}}}}
 		},
+		"AptUpgrades": func(exp time.Time) Part {
+			origins := []string{"Debian-Security:"}
+			return Part{AptUpgrades: &AptUpgrades{Sets: [][]string{origins}, Refresh: true, Upgrade: &AptUpgrade{Origins: origins,
+				Packages: []string{"bind9-libs=1:9.20.15-1~deb13u1"}, ChangeSet: "sha256:" + sumA, Grant: once(ActionUpgradePackages, exp)}}}
+		},
 	}
 	if s := encode(Part{}); string(s) != "{}" {
 		t.Errorf("an empty part is %s", s)
@@ -142,7 +147,7 @@ func TestEveryMemberOfThePartIsCovered(t *testing.T) {
 				t.Fatalf("Part.%s has no sample here: add one, with a grant", field.Name)
 			}
 			live := sample(mt0.Add(time.Hour))
-			if reflect.ValueOf(live).Field(i).Len() == 0 {
+			if reflect.ValueOf(live).Field(i).IsZero() {
 				t.Fatalf("the sample does not set Part.%s", field.Name)
 			}
 			r := noderev.Revision{Schema: noderev.Schema, Node: "web", VMID: 7001, Serial: 1, IssuedAt: mt0, ExpiresAt: mt0.Add(time.Hour)}

@@ -1,0 +1,12 @@
+Plan sha256:c3a36d8964ed
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:e84d5cb518d0)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+. NodeAptUpgrades web/apt-upgrades  [waiting]
+    MAM-PLAN-0167 waits for mamelet to read the package lists again: the package lists on web are 400 days old (apt's newest index (release file), 2025-10-13T12:00:00Z), older than 12h00m (mamelet runs apt-get update itself then, as apt-daily does)
+      hint: the next report has fresh lists; if it does not come, the plan says what apt-get update said
+
+Summary: 1 waiting, 1 in sync.
+Nothing has been changed: a plan only describes.

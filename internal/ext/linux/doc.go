@@ -45,19 +45,26 @@
 //	aptrepo_node.go    NodeAptRepo: the node's revision (publish, prune, protect, grant)
 //	aptrepo_mamelet.go NodeAptRepo: what mamelet observes (its files, apt's lists, other sources)
 //	                   and does (the key's download with download.go, the files, apt-get update)
+//	upgrades.go        NodeAptUpgrades: spec, decoding, validation (graph)
+//	upgrades_wire.go   NodeAptUpgrades: its members of Part and Observed, the change set's digest
+//	upgrades_plan.go   NodeAptUpgrades: plan, the lists' age
+//	upgrades_node.go   NodeAptUpgrades: the node's revision (publish, prune, protect, grant)
+//	upgrades_mamelet.go NodeAptUpgrades: what mamelet works out (apt-get -s), the upgrade it carries
+//	                   out, and the apt-get update it runs by itself when the lists are old
 //
 // # Reserved for the kinds that follow
 //
 // The canonical order of a kind is part of every graph's digest and never changes. The core's kinds
 // are 1, 2 and 5, k3s's 3 and 4, and the providers' kinds sort at 5 by name; the linux kinds come
 // after all of them, in the order an apply should run them in (the operations of one plan run in
-// canonical order): accounts, sources, downloads, then files.
+// canonical order): accounts, sources, downloads, then files. NodeAptUpgrades, added later, is last.
 //
 //	kind          order  operations (linux.<verb>-<object>)  resource name
 //	NodeUser      6      linux.create-user, linux.change-user  <node>/user/<name>
 //	NodeAptRepo   7      linux.add-apt-repo                    <node>/apt-repo/<name>
 //	NodeArtifact  8      linux.install-artifact                <node>/artifact/<path>
 //	NodeFile      9      linux.write-file                      <node>/file/<path>
+//	NodeAptUpgrades 10   linux.upgrade-packages                <node>/apt-upgrades
 //
 // The codes of each kind (its plan notes, graph warnings and policy decisions), and those kept for the
 // kinds that follow, are in one table: reserved, in codes.go. docs/reason-codes.md reserves the same

@@ -54,6 +54,10 @@ type Part struct {
 	// NodeAptRepo (aptrepo_wire.go): the APT sources mamelet observes, by name (sorted), each with
 	// its approved addition, if any.
 	AptRepos []AptRepo `json:"aptRepos,omitempty"`
+
+	// NodeAptUpgrades (upgrades_wire.go): the upgrades mamelet works out (at most one entry a node),
+	// with the approved upgrade, if any.
+	AptUpgrades *AptUpgrades `json:"aptUpgrades,omitempty"`
 }
 
 // File is a file mamelet observes, and writes once if Write grants it.
@@ -219,6 +223,9 @@ type Observed struct {
 	// NodeAptRepo (aptrepo_wire.go): what mamelet found of each APT source of the part.
 	AptRepos []AptRepoState `json:"aptRepos,omitempty"`
 
+	// NodeAptUpgrades (upgrades_wire.go): the node's package lists and pending upgrades.
+	AptUpgrades *AptUpgradesState `json:"aptUpgrades,omitempty"`
+
 	// Error says why the details were left out of the report (it would have been larger than
 	// MaxObserved): each entry then has only its path or name, and its own Error.
 	Error string `json:"error,omitempty"`
@@ -362,6 +369,9 @@ func encodeObserved(o Observed) jsontext.Value {
 	for _, r := range o.AptRepos {
 		d.AptRepos = append(d.AptRepos, AptRepoState{Name: r.Name, Error: why})
 	}
+	if o.AptUpgrades != nil {
+		d.AptUpgrades = o.AptUpgrades.trimmed(why) // NodeAptUpgrades
+	}
 	if out = encode(d); len(out) > MaxObserved {
 		out = encode(Observed{Error: why})
 	}
@@ -429,7 +439,8 @@ func partGrants(raw jsontext.Value) ([]noderev.Grant, error) {
 	}
 	out = append(out, userGrants(p)...)
 	out = append(out, artifactGrants(p)...)
-	out = append(out, aptRepoGrants(p)...) // NodeAptRepo
+	out = append(out, aptRepoGrants(p)...)     // NodeAptRepo
+	out = append(out, aptUpgradesGrants(p)...) // NodeAptUpgrades
 	return out, nil
 }
 
@@ -454,7 +465,8 @@ func partForMamelet(raw jsontext.Value, now time.Time) (jsontext.Value, error) {
 	}
 	handOutUsers(&p, now)
 	handOutArtifacts(&p, now)
-	handOutAptRepos(&p, now) // NodeAptRepo
+	handOutAptRepos(&p, now)    // NodeAptRepo
+	handOutAptUpgrades(&p, now) // NodeAptUpgrades
 	return encode(p), nil
 }
 
@@ -471,6 +483,11 @@ func stripHeld(p *Part) {
 	}
 	for i := range p.AptRepos {
 		p.AptRepos[i].Held = nil
+	}
+	if p.AptUpgrades != nil {
+		u := *p.AptUpgrades
+		u.Held = nil
+		p.AptUpgrades = &u
 	}
 }
 
@@ -533,7 +550,8 @@ func checkPart(raw jsontext.Value) error {
 	}
 	problems = append(problems, checkUsers(p.Users)...)
 	checkArtifacts(p, add)
-	problems = append(problems, aptRepoPartProblems(p)...) // NodeAptRepo
+	problems = append(problems, aptRepoPartProblems(p)...)     // NodeAptRepo
+	problems = append(problems, aptUpgradesPartProblems(p)...) // NodeAptUpgrades
 	if len(problems) > 0 {
 		return fmt.Errorf("invalid linux part: %s", strings.Join(problems, "; "))
 	}

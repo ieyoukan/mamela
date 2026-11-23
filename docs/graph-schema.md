@@ -50,7 +50,7 @@ Emela の宣言を WASM で評価したとき、stdout に書かれる JSON 1 �
 
 ## kind
 
-組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeUser`、`NodeAptRepo`、`NodeArtifact`、`NodeFile`（linux、ADR 0016）で、どれもマシンの上のものである。
+組み込みの kind は、核の `NodePackage`、`NodeService`、`NodeMamelet` と、ノード拡張（[ノード拡張](design/node-extensions.md)）の `NodeK3s`、`NodeK3sManifest`（k3s）、`NodeUser`、`NodeAptRepo`、`NodeArtifact`、`NodeFile`、`NodeAptUpgrades`（linux、ADR 0016）で、どれもマシンの上のものである。
 
 **マシンは、プロバイダーの kind である**（ADR 0004、0006）。プロバイダーがマニフェストで `node: true` とした kind（Proxmox の VM、EC2 のインスタンスなど）のリソースが、mamelet の載るマシンになる。組み込みの `VirtualMachine` はなくなった。書くと MAM-GRAPH-0005 で拒否し、プロバイダーの Pome で宣言するよう示す。
 
@@ -289,6 +289,47 @@ Mamela.empty()
 
 最初の plan はソースを足し（承認が要る）、docker-ce は MAM-PLAN-0151 で待つ。apply のあとの plan が docker-ce の変更集合を示す。Docker のパッケージの origin（`Docker CE:noble`）を policy の `allowedAptOrigins` とノードの mamelet の `allowedOrigins` に足すまで、その導入は拒まれる。
 
+### NodeAptUpgrades
+
+ノードに入っているパッケージの、保留中の更新のうち、宣言した APT の origin から来るもの（Debian のセキュリティ・アーカイブなど）を、承認のたびに、plan が示した版のとおりに上げる（linux 拡張、ADR 0016 の §9）。宣言は Mamela Pome（0.4.2 から）の `Mamela.apt_upgrades(graph, node, origins)`、または Debian のセキュリティ更新だけの `Mamela.debian_security_upgrades(graph, node)`（`origins` が `["Debian-Security:"]`）。
+
+| フィールド | 型 | 規則 |
+|---|---|---|
+| `name` | string | `<node>/apt-upgrades`（`web/apt-upgrades`）。1 つのノードに 1 つ |
+| `spec.node` | string | 同じ Graph のノード（provider のマシン） |
+| `spec.origins` | string の配列 | 1〜8 個、同じものは 2 度書けない（順は意味を持たず、正規形では並べる）。apt-get -s が版について示す origin（`<label>:<version>/<suite>`。policy の `allowedAptOrigins` と同じ形）か、その先頭で、少なくともラベルと `:` まで（`Debian-Security:` は Debian のセキュリティ・アーカイブ、`Debian:` は point release と stable-updates、`Ubuntu:24.04/noble-security` は Ubuntu のセキュリティ。`Deb` のようなラベルの途中までは不可）。英数字と `. _ + ~ -`、ラベルの中の空白（`Docker CE:`）、`:` のあとは英数字と `. _ + ~ : / -` だけ。100 バイトまで |
+
+- **何を上げるか:** 入っているパッケージで、候補（candidate）の版がいまより高く、その候補の origin のどれかが宣言の origin に当たる（先頭が一致する）もの。mamelet は `apt-get -s dist-upgrade`（シミュレーション、apt のロックなし）の `Inst` 行から候補とその origin を読み、当たるものを候補の版に固定して（`<package>=<version>`）`apt-get -s install --only-upgrade` でシミュレーションする。その `Inst`・`Remv` 行が変更集合で、plan は 1 行ずつ示す（`upgrade bind9-libs 1:9.20.11-4 -> 1:9.20.15-1~deb13u1 (Debian-Security:13/stable-security)`。依存で新しく入るものは `install`、消えるものは `remove`）。変更集合の digest も示し、承認はその digest に結び付く。point release のあとは、多くのセキュリティ更新が main のアーカイブにもあり、apt は両方の origin（`Debian:13.6/stable, Debian-Security:13/stable-security`）を示す。どちらかが宣言に当たれば対象にする。セキュリティと point release の両方を上げるなら、`origins` に `Debian-Security:` と `Debian:` を書く。
+- **policy:** 承認が要る（MAM-POL-0227）。変更集合に削除があれば MAM-POL-0304、変更集合のどの行の origin も、宣言の `origins` そのものも、policy の `allowedAptOrigins` が許していなければ MAM-POL-0305（パッケージの導入と同じ規則。1 つの版が 2 つの origin にあれば、両方を許していなければならない。Debian なら `Debian:` と `Debian-Security:`）。observe-only のノードでは示すだけで、MAM-POL-0312 で保つ。
+- **mamelet の動き:** 承認のあと 1 回だけ（試みごと）。承認したパッケージと版で、もう一度シミュレーションし、変更集合の digest が承認したものと同じで、削除がなく、すべての origin を mamelet の `allowedOrigins` が許すときだけ、`apt-get -o DPkg::Lock::Timeout=300 -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install --only-upgrade <package>=<version> ...` を実行する（変えた設定ファイルは残す）。違えば何もせずに断り（refused、「plan again」）、次の plan が新しい変更集合を示す。すでに承認した版になっていれば（中断した試み、手での更新）、何もせずに done。上げる途中で失敗すれば failed（apt の言葉）で、上がったものは残り、次の plan が残りを示す（MAM-PLAN-0168 が前の試みの失敗を言う）。`apt-get install` は、mamelet が止められても途中で kill しない（dpkg を途中で止めると、パッケージが半端に残る）。30 分で打ち切る。
+- **再起動しない:** パッケージの maintainer script は、自分のサービスを再起動する（nginx など）。Mamela はほかに何も再起動しない。ノードが再起動を求めていれば（`/run/reboot-required`）、plan は警告 MAM-PLAN-0169 で示す（情報だけで、状態も操作も変えない）。再起動は、プロバイダーの明示操作（`mamela act`）で人が行う。
+- **一覧の古さ:** plan は、使ったパッケージの一覧（`/var/lib/apt/lists`）の古さを示す（MAM-PLAN-0168）。古さは、mamelet の最後の `apt-get update`（すべてのソースを読めたもの）と、apt の最も新しいリリースファイル（`*_InRelease`、`*_Release`）の mtime の、新しいほうから測る（apt は、取得したファイルに、サーバーが言う最終更新の時刻を付けるので、mtime は「持っている最も新しい索引がいつのものか」である）。12 時間より古い一覧からは plan しない: mamelet が読み直すのを待つ（MAM-PLAN-0167）か、読み直せなければ Blocked（MAM-PLAN-0166。mamelet の `apt-get update` が言ったことの抜粋と、その時刻）。
+- **mamelet が自分で `apt-get update` する:** 一覧が 12 時間より古ければ、mamelet は承認なしに `apt-get -o DPkg::Lock::Timeout=300 update` を 1 回実行する（Debian・Ubuntu の apt-daily が 1 日 2 回するのと同じ）。承認なしに行う、ただ 1 つのことである。変えるのは apt が「何を入れられるか」の一覧（`/var/lib/apt/lists`）だけで、入っているものは変えない。そのノードの宣言が `NodeAptUpgrades` を持つときだけ（revision の部分の `refresh`）、Mamela が変えないノード（observe-only、Control Plane のホスト）では行わない。承認した更新が待つあいだも行わない（承認した版が新しい一覧から消えることがある）。失敗したら（ソースを読めない `Err:`・`W: Failed to fetch`・`E:` を含む）、その理由を状態ディレクトリ（`linux-apt-refresh.json`）に記録して報告し、1 時間は試さない。ほかの apt がリストのロックを持っていれば、失敗とせず次の周に試す。理由は ADR 0016 の §9。
+- **dpkg が途中で止まっている:** `/var/lib/dpkg/updates` に記録があれば（更新か導入が途中で切れた）、Blocked（MAM-PLAN-0226）。`dpkg --configure -a` を手で行う。
+- **計算できない:** シミュレーションが失敗した（保留にしたパッケージ、入れられない依存）、上げるパッケージが 1000 を超える（リリースの更新は手で）なら Blocked（MAM-PLAN-0225）。
+- **宣言から外す:** mamelet は計算も一覧の読み直しもやめる。上げたパッケージは、そのまま残る。
+- **mamelet の版:** `NodeFile` と同じく 0.10.0 から（それより前は MAM-PLAN-0122）。
+
+例（Debian 13 のマシン `web` のセキュリティ更新。policy の `allowedAptOrigins` とノードの mamelet の `allowedOrigins` に `Debian-Security:` と `Debian:` があること）:
+
+```emela
+Mamela.empty()
+  |> Mamela.debian_security_upgrades(web)
+```
+
+plan の例:
+
+```text
+~ NodeAptUpgrades web/apt-upgrades  [needs approval]
+      pending upgrades: 3 from Debian-Security: -> 0
+      changeSet: sha256:de1702408...
+      apt: upgrade bind9-dnsutils 1:9.20.11-4 -> 1:9.20.15-1~deb13u1 (Debian-Security:13/stable-security, Debian:13.6/stable)
+      apt: upgrade bind9-libs 1:9.20.11-4 -> 1:9.20.15-1~deb13u1 (Debian-Security:13/stable-security)
+      apt: upgrade libssl3t64 3.5.1-1 -> 3.5.1-1+deb13u1 (Debian-Security:13/stable-security)
+    linux.upgrade-packages: needs approval (MAM-POL-0227 ...)
+    MAM-PLAN-0168 the package lists on web are 41m old (mamelet's last apt-get update, 2026-11-17T11:20:00Z)
+```
+
 ### NodeArtifact
 
 ノードの上の 1 つのファイルを、https のダウンロードから、sha256 で固定して置く（linux 拡張、ADR 0016）。リリースのバイナリ、または `.tar.gz` の中の 1 つのファイル。宣言は Mamela Pome（0.4.0 から）の `Mamela.artifact(graph, node, path, url, sha256)`（ダウンロードそのもの、mode 0755、root の所有、再起動なし）、または `Mamela.artifact_with(graph, node, Mamela.Artifact(extract: "app-1.0/app", restart: ["app"], ..Mamela.artifact_of(path, url, sha256)))`。sha256 を `mamela.sum` に任せるときは `Mamela.artifact_pinned(path, url)`（0.4.1 から。`sha256` が `""` の `Artifact` も同じ）。
@@ -407,7 +448,7 @@ pub fn node_exporter(graph: Mamela.Graph, node: Mamela.Node) -> Mamela.Graph {
 
 ## 正規化と digest
 
-- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile の順に 6〜9 を持つ）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
+- 正規形: リソースを kind の順（NodePackage → NodeService → NodeK3s → NodeK3sManifest → NodeMamelet とプロバイダーの kind を名前の順 → linux の kind。linux は NodeUser、NodeAptRepo、NodeArtifact、NodeFile、NodeAptUpgrades の順に 6〜10 を持つ）、次に名前の順に並べ、キーをソートし、空白なしで書いたもの。`after` は名前の順に並べて重複を除き、空なら書かない。
 - digest: 正規形の SHA-256（`sha256:<hex>`）。宣言の順番を入れ替えても digest は変わらない。
 - `pome/mamela` の出力は、リソースが kind 順に並んでいれば正規形と 1 バイトも違わない（テストで確認）。ただし `after` は宣言した順に書くので、名前の順でなければ、Go が並べ直してから digest を取る。
 
@@ -430,6 +471,7 @@ Mamela のバイナリにはまだ版のタグがなく、`mamela version` は b
 | `pome/mamela` | 0.3.2 | Pome の API は 0.3.1 と同じ。0.3.2 の Mamela（監査 2026-11-17 の修正、k3s を `internal/ext/k3s` へ）に合わせた版。graph の検証が厳しくなった（service 名の `:`、制御文字、optional の null などを拒否） | どの版でも読めるが、0.3.2 の修正は PR #36 以降のバイナリ |
 | `pome/mamela` | 0.4.0 | linux 拡張（ADR 0016）の `NodeFile`（`Mamela.file`）、`NodeUser`（`Mamela.user`）、`NodeAptRepo`（`Mamela.apt_repo`）、`NodeArtifact`（`Mamela.artifact`）。ノードの mamelet が linux を受け取る版（0.10.0 以降）でなければ、その資源は MAM-PLAN-0122 | PR #39（`7ecf714`）以降。PR #49 までの修正を含むバイナリを使う。CP を先に、mamelet をあとに更新する（ADR 0016 §4） |
 | `pome/mamela` | 0.4.1 | `NodeFile` の `spec.contentFrom`（`Mamela.file_from`、`Mamela.file_from_with`、`Mamela.systemd_service_from`）。部品の `Mamela.running`、`Mamela.system_user`、`Mamela.systemd_service` は今の kind を出すだけ（0.4.0 のバイナリで読める）。`contentFrom` を古いバイナリは MAM-GRAPH-0003 で断る。`sha256` のない `NodeArtifact`（`Mamela.artifact_pinned`）と `keySha256` のない `NodeAptRepo`（`Mamela.apt_repo_pinned`）は sha256 を `mamela.sum` から取る。古いバイナリは MAM-GRAPH-0004 で断る | `contentFrom` は PR #52（`065d791`）以降。`mamela.sum` は PR #53（`4ac3755`）以降 |
+| `pome/mamela` | 0.4.2 | `NodeAptUpgrades`（`Mamela.apt_upgrades`、`Mamela.debian_security_upgrades`）。古いバイナリは MAM-GRAPH-0005 で断る。ノードの mamelet が linux を受け取る版（0.10.0 以降。この kind は、その 0.10.0 の linux の部分に足したもの）でなければ MAM-PLAN-0122 | この kind を足した PR 以降（マージのあとで、そのコミットを書く） |
 | `pome/k3s` | 0.1.0 | `NodeK3s`（`K3s.server`、`K3s.agent`）。`pome/mamela` 0.3.0 に依存 | PR #12（`d2c2d03`）以降 |
 | `pome/k3s` | 0.1.1 | `NodeK3sManifest`（`K3s.manifest`） | PR #18（`754c452`）以降 |
 | `pome/k3s` | 0.1.2 | `sha256` のない `NodeK3s`（`K3s.server_pinned`、`K3s.agent_pinned`。`mamela.sum` から）、`contentFrom` の `NodeK3sManifest`（`K3s.manifest_from`）。依存は `pome/mamela` 0.3.0 のまま | PR #53（`4ac3755`）以降（`K3s.manifest_from` の `contentFrom` は PR #52（`065d791`）以降）。古いバイナリは MAM-GRAPH-0004 / 0003 で断る |

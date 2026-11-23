@@ -154,7 +154,9 @@ func (p Policy) Digest() string {
 type Subject struct {
 	Op      Op
 	Service string // for service operations
-	// For install-package: whether the change set removes packages, and its origins.
+	// For an operation that changes APT packages (install-package, and an extension's such as
+	// linux.upgrade-packages): whether the change set removes packages, and its origins. Every
+	// operation that says so is held to the same rules (MAM-POL-0304, MAM-POL-0305).
 	Removes bool
 	Origins []string
 }
@@ -205,11 +207,8 @@ func (p Policy) Decide(s Subject) Decision {
 			return Decision{Denied, "MAM-POL-0304", "installing would remove other packages; Mamela never removes packages",
 				"find out why apt wants to remove them, and resolve it by hand"}
 		}
-		for _, o := range s.Origins {
-			if !p.allowedOrigin(o) {
-				return Decision{Denied, "MAM-POL-0305", "a package would come from APT origin " + o + ", which the policy does not allow",
-					"install only from allowed origins (allowedAptOrigins), or add this origin to the policy after review"}
-			}
+		if d, denied := p.originDenied(s.Origins); denied {
+			return d
 		}
 		return Decision{ApprovalRequired, "MAM-POL-0204", "installing a package runs its maintainer scripts as root",
 			"approve after checking the package and its source"}
@@ -228,11 +227,33 @@ func (p Policy) Decide(s Subject) Decision {
 			"rename the declaration, or adopt the resource by hand"}
 	default:
 		if d, ok := extOps[s.Op]; ok {
+			// An extension's operation that changes APT packages (linux.upgrade-packages) is held to the
+			// core's rules of an apt change set first, whatever its own decision: it never removes a
+			// package, and every package comes from an origin the policy allows.
+			if s.Removes {
+				return Decision{Denied, "MAM-POL-0304", "apt would remove packages to do it; Mamela never removes packages",
+					"find out why apt wants to remove them (the change set above names them), and resolve it by hand"}
+			}
+			if d, denied := p.originDenied(s.Origins); denied {
+				return d
+			}
 			return d.decision
 		}
 		return Decision{Denied, "MAM-POL-0399", "the operation is not known to the policy",
 			"this is a bug in Mamela; unknown operations are always denied"}
 	}
+}
+
+// originDenied is the decision for packages from origins one of which the policy does not allow
+// (denied false when it allows them all).
+func (p Policy) originDenied(origins []string) (Decision, bool) {
+	for _, o := range origins {
+		if !p.allowedOrigin(o) {
+			return Decision{Denied, "MAM-POL-0305", "a package would come from APT origin " + o + ", which the policy does not allow",
+				"install only from allowed origins (allowedAptOrigins), or add this origin to the policy after review"}, true
+		}
+	}
+	return Decision{}, false
 }
 
 func (p Policy) allowedOrigin(o string) bool {

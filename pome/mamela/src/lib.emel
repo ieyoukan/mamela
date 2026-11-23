@@ -531,6 +531,36 @@ pub fn apt_repo_with(graph: Graph, node: Node, r: AptRepo) -> Graph {
   )
 }
 
+## Declares that the pending upgrades of the packages installed on `node` whose candidate version
+## comes from one of `origins` are applied, each time with an approval (the linux extension's
+## `NodeAptUpgrades`). An origin is written as apt shows it, `<label>:<version>/<suite>`, or its
+## beginning up to the ":" at least, as the policy's `allowedAptOrigins` are: `"Debian-Security:"` is
+## Debian's security archive (`debian_security_upgrades`), `"Debian:"` its point releases and
+## stable-updates, `"Ubuntu:24.04/noble-security"` Ubuntu's security pocket. The policy must allow each
+## origin, and every package the upgrade touches. mamelet works out what is pending, and the plan shows
+## every package with its versions and origin and the change set's digest; approved, mamelet upgrades
+## exactly that (`apt-get install --only-upgrade <package>=<version> ...`), only if a simulation just
+## before gives the same change set. It never removes a package, never reboots (the plan says when the
+## machine asks for a reboot), and reads the package lists again (`apt-get update`) itself when they
+## are older than 12 hours, as apt-daily does. One a node.
+pub fn apt_upgrades(graph: Graph, node: Node, origins: List[String]) -> Graph {
+  on_node(
+    graph,
+    node,
+    "NodeAptUpgrades",
+    "#{node.name}/apt-upgrades",
+    [("origins", Items(origins.map(Text)))],
+  )
+}
+
+## Declares that the security updates of the Debian machine `node` are applied, each time with an
+## approval: `apt_upgrades(graph, node, ["Debian-Security:"])`. The policy allows `"Debian-Security:"`,
+## and `"Debian:"` too when an update is also in the main archive (after a point release, apt names both
+## origins of such a version, and the policy must allow each).
+pub fn debian_security_upgrades(graph: Graph, node: Node) -> Graph {
+  apt_upgrades(graph, node, ["Debian-Security:"])
+}
+
 ## Declares that `name` is installed on `node`.
 pub fn package(graph: Graph, node: Node, name: String) -> Graph {
   Graph(packages: List.append(graph.packages, [Package(node: node.name, name:)]), ..graph)

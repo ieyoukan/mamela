@@ -1,0 +1,12 @@
+Plan sha256:de756d44710b
+  revision  sha256:1aa15259a778
+  observed  2026-11-17T12:01:00Z (snapshot sha256:bae68cb56fa7)
+  policy    sha256:83e1bff6cd60
+
+= TestVM web  [in sync]  via test
+! NodeAptUpgrades web/apt-upgrades  [blocked]
+    MAM-PLAN-0166 the package lists on web are 400 days old (apt's newest index (release file), 2025-10-13T12:00:00Z), older than 12h00m, and mamelet could not read them again: its apt-get update at 2026-11-17T11:40:00Z said: W: Failed to fetch http://security.debian.org/debian-security/dists/trixie-security/InRelease  Temporary failure resolving 'security.debian.org' | W: Failed to fetch http://deb.debian.org/debian/dists/trixie/InRelease  Temporary failure resolving 'deb.debian.org'
+      hint: fix what apt-get update says on web (a network, proxy or DNS it cannot use, a source that is gone or whose key changed: sources.list or sources.list.d), or run apt-get update there by hand; mamelet tries again every 1h00m, and the next plan has the pending upgrades
+
+Summary: 1 blocked, 1 in sync.
+Nothing has been changed: a plan only describes.

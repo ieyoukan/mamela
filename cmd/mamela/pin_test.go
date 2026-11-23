@@ -32,7 +32,7 @@ version = "0.1.0"
 emela = "0.27.0"
 
 [dependencies]
-"github.com/ieyoukan/mamela/pome/mamela" = "v0.4.1"
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.4.2"
 
 [replace]
 "github.com/ieyoukan/mamela/pome/mamela" = { path = "`+filepath.Join(root, "pome/mamela")+`" }
