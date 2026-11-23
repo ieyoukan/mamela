@@ -158,7 +158,7 @@ MAM-EVAL-05xx は、Graph の問題として、`contentFrom` の場所（`/resou
 | MAM-PLAN-0106 | サービスの unit がまだない（それを入れるパッケージや k3s が入っていない）ので待つ |
 | MAM-PLAN-0108 | mamelet からの k3s の報告を待つ |
 | MAM-PLAN-0109 | k3s の agent が、server のアドレスの報告を待つ |
-| MAM-PLAN-0110 | マシンが初回起動に十分な時間（15 分）を超えて動いているのに、mamelet が、宣言したものを何も報告していない（何か 1 つでも報告していれば、新しく宣言したものは次の poll を待つだけで、これにはならない）。起動で止まっている（緊急モードなど）か、Control Plane に届かない。コンソールを確かめ、プロバイダーの明示操作で再起動する（`mamela act`。Proxmox なら `reboot-vm`、応答しなければ `reset-vm`） |
+| MAM-PLAN-0110 | マシンが初回起動に十分な時間（15 分）を超えて動いているのに、mamelet が、宣言したものを何も報告していない（何か 1 つでも報告していれば、新しく宣言したものは次の poll を待つだけで、これにはならない）。Mamela が引き継いだ（作っていない）マシンで、mamelet をまだ入れていない（Control Plane のホストで `mamela controlplane enroll` が書くスクリプトを、そのマシンで root で実行する）。または、起動で止まっている（緊急モードなど）か、Control Plane に届かない。コンソールを確かめ、プロバイダーの明示操作で再起動する（`mamela act`。Proxmox なら `reboot-vm`、応答しなければ `reset-vm`） |
 | MAM-PLAN-0111 | マシンが止まっているので、その上のリソースは起動を待つ |
 | MAM-PLAN-0112 | k3s の agent のサービスは、server の k3s が動くまで起動しない（agent の起動は server を待ち、mamelet を止めてしまう） |
 | MAM-PLAN-0113 | プロバイダーのリソースが、`after` の依存先を待つ（ADR 0007）。依存先がまだない、Mamela のものと確かめられない（Foreign）、または作成が途中で止まっている（もう一度 apply すると終わる）。プロバイダーには、このリソースの diff を求めない。依存先を作る plan を apply してから、もう一度 plan する。依存先が Foreign のままなら待ち続けるので、依存先の理由（MAM-POL-0303 など）を見る |
