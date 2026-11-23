@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -518,6 +519,32 @@ func TestSeveralAPIsConfig(t *testing.T) {
 		if _, err := load(bad); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A provider's guard settings are passed to it as they are, an array of tables in them too (the
+// toml decoder reports its keys as undecoded although the values are in the map).
+func TestGuardSettingsWithTableArrays(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "p.toml")
+	os.WriteFile(p, []byte("[provider.proxmox]\napi_url = \"https://pve.example:8006/api2/json\"\nauth = \"proxmox\"\ntoken_id = \"mamela@pve!t\"\ntoken_file = \"t\"\n\n"+
+		"[provider.proxmox.guard]\nnode = \"pve1\"\nmax_vms = 8\n\n"+
+		"[[provider.proxmox.guard.named]]\nnode = \"pve2\"\nvmid = 150\ntype = \"lxc\"\naccess = \"observe\"\n\n"+
+		"[[provider.proxmox.guard.named]]\nnode = \"pve3\"\nvmid = 151\ntype = \"lxc\"\naccess = \"change\"\n"), 0o600)
+	c, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(c.Provider["proxmox"].Guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"max_vms":8,"named":[{"access":"observe","node":"pve2","type":"lxc","vmid":150},{"access":"change","node":"pve3","type":"lxc","vmid":151}],"node":"pve1"}`
+	if string(b) != want {
+		t.Errorf("guard settings passed on:\n got %s\nwant %s", b, want)
+	}
+	os.WriteFile(p, []byte("[provider.proxmox]\napi_url = \"https://pve.example:8006/api2/json\"\nauth = \"proxmox\"\ntoken_id = \"mamela@pve!t\"\ntoken_file = \"t\"\nunknown = 1\n"), 0o600)
+	if _, err := LoadConfig(p); err == nil || !strings.Contains(err.Error(), "unknown keys") {
+		t.Errorf("an unknown key beside the guard is still refused: %v", err)
 	}
 }
 

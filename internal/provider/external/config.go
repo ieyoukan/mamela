@@ -118,6 +118,21 @@ func (a APIConfig) inherit(sub APIConfig) APIConfig {
 	return sub
 }
 
+// undecoded are the keys of the file that the configuration has no place for. A provider's guard
+// settings are passed to it as they are (a map of anything), so nothing under them is unknown here:
+// the toml decoder reports the keys of an array of tables in them ([[provider.proxmox.guard.named]])
+// as undecoded although their values are in the map. The provider checks its settings itself.
+func undecoded(md toml.MetaData) []toml.Key {
+	var un []toml.Key
+	for _, k := range md.Undecoded() {
+		if len(k) > 3 && k[0] == "provider" && k[2] == "guard" {
+			continue
+		}
+		un = append(un, k)
+	}
+	return un
+}
+
 // LoadConfig reads the configuration. A missing file configures nothing.
 func LoadConfig(path string) (Config, error) {
 	c := Config{dir: filepath.Dir(path)}
@@ -132,7 +147,7 @@ func LoadConfig(path string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("%s: %w", path, err)
 	}
-	if un := md.Undecoded(); len(un) > 0 {
+	if un := undecoded(md); len(un) > 0 {
 		return c, fmt.Errorf("%s: unknown keys %v", path, un)
 	}
 	for name, a := range c.Provider {
