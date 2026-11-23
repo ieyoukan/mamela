@@ -164,6 +164,8 @@ sudo -u mamela-cp mamela restore --in <backup> --site /etc/mamela/site.toml --db
 # mamelet の証明書の終わりを見る。切れたノードは、トークンを出して登録し直す
 mamela controlplane agents --db /var/lib/mamela/state.db
 mamela controlplane reenroll --db /var/lib/mamela/state.db --node <名前>
+# 引き継いだ既存のマシンに mamelet を入れるスクリプト（人が読んで、マシンで root で実行する）
+mamela controlplane enroll --site /etc/mamela/site.toml --db /var/lib/mamela/state.db --node <名前> --vmid <VMID> --out <ファイル>
 ~~~
 
 - **バックアップに入るもの:** DB と、鍵のディレクトリ（CA、revision の署名鍵、サーバー証明書）。site・providers・トークン、mamelacd は入らない（理由は recovery.md の 1）。

@@ -1,6 +1,6 @@
-// Command mamelet is the Mamela agent that runs in each VM (as a systemd service). It enrolls once
-// with the one-time token from cloud-init, then pulls its signed revision, observes, makes only
-// the allowed changes and reports, every interval.
+// Command mamelet is the Mamela agent that runs on each machine, a VM or a container (as a systemd
+// service). It enrolls once with the one-time token from its seed (cloud-init) or enrollment script,
+// then pulls its signed revision, observes, makes only the allowed changes and reports, every interval.
 package main
 
 import (
@@ -30,7 +30,7 @@ import (
 var version = mamelet.Release + "+dev"
 
 func main() {
-	configPath := flag.String("config", "/etc/mamelet/config.json", "configuration written by cloud-init")
+	configPath := flag.String("config", "/etc/mamelet/config.json", "configuration written by the seed or the enrollment script")
 	once := flag.Bool("once", false, "run one round and exit")
 	showVersion := flag.Bool("version", false, "print the version and exit (an update runs the new binary with this before it replaces mamelet)")
 	flag.Parse()

@@ -1,0 +1,1 @@
+{"ethernets":{"primary":{"addresses":["192.0.2.10/24"],"dhcp4":false,"match":{"name":"e*"},"nameservers":{"addresses":["192.0.2.1"]},"routes":[{"to":"default","via":"192.0.2.1"}]}},"version":2}

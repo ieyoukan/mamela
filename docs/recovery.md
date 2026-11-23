@@ -133,6 +133,7 @@ revision の serial は、ノードごとに増える。mamelet は、受け入�
 - **再登録は新しい登録**である。前の証明書は使えなくなり、そのノードについて作った plan と承認は無効になる（MAM-NODE-0101）。plan し直して承認する。
 - **一度に 1 台ずつ。** トークンは、そのノードの名前と VMID にだけ効く。
 - **CP のホストを失って DB もない**ときは、`--vmid <config.json の vmid>` を付ける（DB が知らないノードにも、この 1 台分のトークンを出す）。
+- **ノードの mamelet のファイルごと失った**（`/etc/mamelet` を消した、入れ直したい）ときは、手でファイルを書く代わりに、引き継いだマシンと同じスクリプトを使える。`mamela controlplane enroll --node <名前> --vmid <VMID> --reenroll --out <ファイル>` で書き、ノードで `sh <ファイル> --reenroll` を root で実行する（[adopting-existing-machines.md](design/adopting-existing-machines.md) の「既存のマシンに mamelet を入れる」）。スクリプトは今の CA と revision の鍵を書くので、6.4 で鍵を替えたあとの各ノードにも使える。
 
 ### 6.4 CA と revision の署名鍵（0.3.2 では回転しない）
 

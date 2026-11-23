@@ -302,6 +302,18 @@ Ubuntu 24.04 の公式の apt には、kubelet・kubeadm・k3s のどれもな�
   - `internal/gitops`: 偽の API で、先頭の扱い（先頭だけを apply する、信頼できない先頭は plan しない、待ち・拒否・前提の違いは plan し直す、API が答えないとき）を確かめる。
   - `internal/api`: API の拒否（リンク、ツリーの外、期限、未知の項目）を確かめる。
 
+## 既存のマシンに mamelet を入れる（enroll、2026-11-23）
+
+設計と手順は [design/adopting-existing-machines.md](design/adopting-existing-machines.md) の 7 と「既存のマシンに mamelet を入れる」。
+
+- **コード:**
+  - `internal/seed/enroll.go`: スクリプト（POSIX sh）。seed と同じファイル（`mameletFiles`）、パス、取ってくるコマンド（`fetch`）、mamelet の設定（`Maker.config`）を使う。
+  - `cmd/mamela/enroll.go`: `mamela controlplane enroll`。管理するマシン（revision があり、VMID が同じ）だけに、1 回限りのトークンを出す。
+- **試験:**
+  - `internal/seed/golden_test.go`: seed の中身をバイト単位で固定する（共有にする前に書いた）。スクリプトの golden も同じ場所。
+  - `internal/seed/enroll_test.go`: 一時的な root（`MAMELA_INSTALL_ROOT`）と偽の `id`・`uname`・`systemctl`・`curl` で、スクリプトを sh と dash で実際に動かす。入れる、2 回目は断る、`--reenroll`、断るときは何も変えないこと。
+  - `cmd/mamela/enroll_test.go`: トークンが名前と VMID にだけ、1 回だけ効くこと、期限、断る場合（引き継いでいない、VMID が違う、登録済み、鍵がない、既存のファイル）にファイルもトークンも作らないこと。
+
 ## テストの優先順位
 
 1. 非許可の操作と任意 shell コマンドを拒否する。
