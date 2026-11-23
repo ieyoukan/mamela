@@ -1,0 +1,12 @@
+Plan sha256:2bb959d29b06
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:71ab9107492e)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
+. NodeFile web/file/etc/nginx/conf.d/site.conf  [waiting]
+    MAM-PLAN-0231 the last write of /etc/nginx/conf.d/site.conf on web failed its check nginx -t (nginx: [emerg] unknown directive), and mamelet stopped before it had put the files back: it puts them back when it starts its next round
+
+Summary: 1 waiting, 2 in sync.
+Nothing has been changed: a plan only describes.

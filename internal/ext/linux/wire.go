@@ -102,7 +102,9 @@ func (h *OwnerTargets) heldGroups() []string {
 }
 
 // Write is an approved, one-time write of a file: mamelet writes exactly Content (whose sha256 is
-// SHA256, or nothing), with Mode, Owner and Group, then restarts the running services of Restart.
+// SHA256, or nothing), with Mode, Owner and Group, runs the validator of Check once the writes of the
+// part with that check are made (and puts them all back as they were if it fails), then reloads the
+// active services of Reload and restarts the running services of Restart.
 type Write struct {
 	Content string   `json:"content"`
 	SHA256  string   `json:"sha256"`
@@ -110,6 +112,10 @@ type Write struct {
 	Owner   string   `json:"owner"`
 	Group   string   `json:"group"`
 	Restart []string `json:"restart,omitempty"`
+	// Check names one of mamelet's validators ("" none: file_check.go).
+	Check string `json:"check,omitempty"`
+	// Reload are the services reloaded after the write (and its check), each only if it is active.
+	Reload []string `json:"reload,omitempty"`
 	// Before is what was at the path when the approved plan was made: mamelet writes only while the
 	// file is still so, or once its content is already the approved one (compare and swap).
 	Before Before `json:"before"`
@@ -285,6 +291,13 @@ type FileState struct {
 	// restarts of its services): the file is as approved, but what runs may not use it yet. Reported
 	// while the file is still the one written (MAM-PLAN-0218).
 	Pending *Pending `json:"pending,omitempty"`
+	// RolledBack: mamelet wrote the file, the check of its group failed, and it put the file back as
+	// it was (or removed it): reported while it is still so (MAM-PLAN-0230).
+	RolledBack *RolledBack `json:"rolledBack,omitempty"`
+	// Unchecked: mamelet wrote the file and has not finished its check: it stopped before the check
+	// ran (it runs it when it starts again: MAM-PLAN-0231), or it could not put the files back after
+	// the check failed, or it cannot read its record of the checks (MAM-PLAN-0232).
+	Unchecked *Unchecked `json:"unchecked,omitempty"`
 	// Error says why it could not be observed (including a path mamelet refuses: CheckPath).
 	Error string `json:"error,omitempty"`
 }
@@ -298,15 +311,38 @@ type DirOwner struct {
 }
 
 // Pending is what is left to do after a file was written (FileState.Pending): systemctl
-// daemon-reload, and the services to restart (try-restart), in the order the write names them.
+// daemon-reload (Reload), the services to reload (Reloads, systemctl reload), and the services to
+// restart (try-restart), in the order the write names them.
 type Pending struct {
 	SHA256  string   `json:"sha256"` // of the file written
 	Reload  bool     `json:"reload,omitzero"`
+	Reloads []string `json:"reloads,omitempty"`
 	Restart []string `json:"restart,omitempty"`
 	// Unknown: mamelet lost its record of what was left after its writes (it could not be read, and
 	// was set aside): whether what follows the write of this file (its daemon-reload, the restarts its
 	// declaration names) finished is not known. Restart is then empty.
 	Unknown bool `json:"unknown,omitzero"`
+}
+
+// RolledBack is a write mamelet put back (FileState.RolledBack): the check of its group failed.
+type RolledBack struct {
+	SHA256 string `json:"sha256"` // of the content written, and put back
+	Check  string `json:"check"`
+	// Output is what the check's program said (escaped, at most maxCheckOutput bytes).
+	Output string `json:"output,omitempty"`
+	// Files are the paths of the group put back together (this one included), sorted.
+	Files []string `json:"files,omitempty"`
+}
+
+// Unchecked is a write whose check mamelet has not finished (FileState.Unchecked).
+type Unchecked struct {
+	SHA256 string `json:"sha256,omitempty"` // of the content written
+	Check  string `json:"check,omitempty"`
+	// Failed is what the check's program said, when it failed: the files are being put back.
+	Failed string `json:"failed,omitempty"`
+	// Error says why mamelet has not finished: putting the files back failed, or its record of its
+	// checks cannot be read (it then names no write, and stands for every file).
+	Error string `json:"error,omitempty"`
 }
 
 // MaxContent bounds a file's content, in bytes.
@@ -577,11 +613,19 @@ func checkWrite(w Write) error {
 	if _, err := ParseMode(w.Mode); err != nil {
 		return err
 	}
-	for _, s := range w.Restart {
+	for _, s := range append(slices.Clone(w.Restart), w.Reload...) {
 		if !names.Service(s) {
 			return fmt.Errorf("%q is not a service name", s)
 		}
 		if why := CheckRestart(s); why != "" {
+			return errors.New(why)
+		}
+	}
+	if why := overlapProblem(w.Restart, w.Reload); why != "" {
+		return errors.New(why)
+	}
+	if w.Check != "" {
+		if why := checkProblem(w.Check); why != "" {
 			return errors.New(why)
 		}
 	}

@@ -12,7 +12,8 @@ import (
 const (
 	// CodeSecret: a file's content looks like a secret (a private key, a token).
 	CodeSecret graph.Code = "MAM-GRAPH-0203"
-	// CodeRestartUndeclared: a file restarts a service that the declaration does not have on the node.
+	// CodeRestartUndeclared: a file restarts (or reloads) a service that the declaration does not have
+	// on the node.
 	CodeRestartUndeclared graph.Code = "MAM-GRAPH-0204"
 )
 
@@ -150,6 +151,13 @@ func graphWarnings(g *graph.Graph) []graph.Warning {
 			if !services[f.Node+"\x00"+strings.TrimSuffix(svc, ".service")] {
 				out = append(out, graph.Warning{Code: CodeRestartUndeclared, Resource: r.ID(),
 					Message: fmt.Sprintf("%s restarts service %s on %s, which the declaration does not have there: it is restarted only if it exists and runs", f.Path, svc, f.Node),
+					Hint:    fmt.Sprintf("declare the service: Mamela.service(graph, node, %q, True, True), or check its name", strings.TrimSuffix(svc, ".service"))})
+			}
+		}
+		for _, svc := range f.Reload {
+			if !services[f.Node+"\x00"+strings.TrimSuffix(svc, ".service")] {
+				out = append(out, graph.Warning{Code: CodeRestartUndeclared, Resource: r.ID(),
+					Message: fmt.Sprintf("%s reloads service %s on %s, which the declaration does not have there: it is reloaded only if it exists and is active", f.Path, svc, f.Node),
 					Hint:    fmt.Sprintf("declare the service: Mamela.service(graph, node, %q, True, True), or check its name", strings.TrimSuffix(svc, ".service"))})
 			}
 		}

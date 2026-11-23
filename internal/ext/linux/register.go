@@ -175,6 +175,8 @@ func init() {
 		Wire:     Version,
 		Check:    checkPart,
 		Programs: programs,
+		// NodeFile's checks that mamelet stopped in the middle of (file_check_mamelet.go).
+		Recover: recoverChecks,
 		Observe: func(ctx context.Context, s *mamelet.System, rev *noderev.Revision, rep *noderev.Report) {
 			raw, ok := rev.Ext[Name]
 			if !ok {
@@ -193,6 +195,7 @@ func init() {
 			noteAptFailures(p, rep.Results, &o)
 			noteUpgradeFailures(p, rep.Results, &o) // NodeAptUpgrades
 			observePending(s, &o)
+			observeChecks(s, &o) // NodeFile's checks
 			cleanStateDir(s)
 			o.SetAside = setAsideRecords(stateDir(s))
 			if rep.Ext == nil {

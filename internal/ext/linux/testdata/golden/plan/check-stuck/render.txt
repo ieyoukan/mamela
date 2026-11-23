@@ -1,0 +1,13 @@
+Plan sha256:eeea607362c1
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:6b047d13c0b7)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/nginx/conf.d/site.conf  [blocked]
+    MAM-PLAN-0232 the last write of /etc/nginx/conf.d/site.conf on web failed its check nginx -t, or a write checked with it failed (nginx: [emerg] unknown directive), and mamelet cannot put the files back: put back /etc/nginx/conf.d/site.conf: no space left on device; it tries again every round, and reloads and restarts nothing
+      hint: fix what keeps mamelet from putting the file back (the error says what), or put it back by hand; then plan again
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

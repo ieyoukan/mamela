@@ -17,6 +17,8 @@ part: linux.Part {
       "owner" string
       "group" string
       "restart" (omitempty) []string
+      "check" (omitempty) string
+      "reload" (omitempty) []string
       "before" linux.Before {
         "exists" (omitzero) bool
         "sha256" (omitempty) string
@@ -196,8 +198,21 @@ report: linux.Observed {
     "pending" (omitempty) *linux.Pending {
       "sha256" string
       "reload" (omitzero) bool
+      "reloads" (omitempty) []string
       "restart" (omitempty) []string
       "unknown" (omitzero) bool
+    }
+    "rolledBack" (omitempty) *linux.RolledBack {
+      "sha256" string
+      "check" string
+      "output" (omitempty) string
+      "files" (omitempty) []string
+    }
+    "unchecked" (omitempty) *linux.Unchecked {
+      "sha256" (omitempty) string
+      "check" (omitempty) string
+      "failed" (omitempty) string
+      "error" (omitempty) string
     }
     "error" (omitempty) string
   }
@@ -251,8 +266,21 @@ report: linux.Observed {
         "pending" (omitempty) *linux.Pending {
           "sha256" string
           "reload" (omitzero) bool
+          "reloads" (omitempty) []string
           "restart" (omitempty) []string
           "unknown" (omitzero) bool
+        }
+        "rolledBack" (omitempty) *linux.RolledBack {
+          "sha256" string
+          "check" string
+          "output" (omitempty) string
+          "files" (omitempty) []string
+        }
+        "unchecked" (omitempty) *linux.Unchecked {
+          "sha256" (omitempty) string
+          "check" (omitempty) string
+          "failed" (omitempty) string
+          "error" (omitempty) string
         }
         "error" (omitempty) string
       }
@@ -290,8 +318,21 @@ report: linux.Observed {
       "pending" (omitempty) *linux.Pending {
         "sha256" string
         "reload" (omitzero) bool
+        "reloads" (omitempty) []string
         "restart" (omitempty) []string
         "unknown" (omitzero) bool
+      }
+      "rolledBack" (omitempty) *linux.RolledBack {
+        "sha256" string
+        "check" string
+        "output" (omitempty) string
+        "files" (omitempty) []string
+      }
+      "unchecked" (omitempty) *linux.Unchecked {
+        "sha256" (omitempty) string
+        "check" (omitempty) string
+        "failed" (omitempty) string
+        "error" (omitempty) string
       }
       "error" (omitempty) string
     }
@@ -324,8 +365,21 @@ report: linux.Observed {
       "pending" (omitempty) *linux.Pending {
         "sha256" string
         "reload" (omitzero) bool
+        "reloads" (omitempty) []string
         "restart" (omitempty) []string
         "unknown" (omitzero) bool
+      }
+      "rolledBack" (omitempty) *linux.RolledBack {
+        "sha256" string
+        "check" string
+        "output" (omitempty) string
+        "files" (omitempty) []string
+      }
+      "unchecked" (omitempty) *linux.Unchecked {
+        "sha256" (omitempty) string
+        "check" (omitempty) string
+        "failed" (omitempty) string
+        "error" (omitempty) string
       }
       "error" (omitempty) string
     }
@@ -350,8 +404,21 @@ report: linux.Observed {
       "pending" (omitempty) *linux.Pending {
         "sha256" string
         "reload" (omitzero) bool
+        "reloads" (omitempty) []string
         "restart" (omitempty) []string
         "unknown" (omitzero) bool
+      }
+      "rolledBack" (omitempty) *linux.RolledBack {
+        "sha256" string
+        "check" string
+        "output" (omitempty) string
+        "files" (omitempty) []string
+      }
+      "unchecked" (omitempty) *linux.Unchecked {
+        "sha256" (omitempty) string
+        "check" (omitempty) string
+        "failed" (omitempty) string
+        "error" (omitempty) string
       }
       "error" (omitempty) string
     }
@@ -376,8 +443,21 @@ report: linux.Observed {
       "pending" (omitempty) *linux.Pending {
         "sha256" string
         "reload" (omitzero) bool
+        "reloads" (omitempty) []string
         "restart" (omitempty) []string
         "unknown" (omitzero) bool
+      }
+      "rolledBack" (omitempty) *linux.RolledBack {
+        "sha256" string
+        "check" string
+        "output" (omitempty) string
+        "files" (omitempty) []string
+      }
+      "unchecked" (omitempty) *linux.Unchecked {
+        "sha256" (omitempty) string
+        "check" (omitempty) string
+        "failed" (omitempty) string
+        "error" (omitempty) string
       }
       "error" (omitempty) string
     }

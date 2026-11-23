@@ -29,6 +29,9 @@
 //	file_plan.go       NodeFile: plan, the start gate of the services it restarts, files kept
 //	file_node.go       NodeFile: the node's revision (publish, prune, protect, grant)
 //	file_mamelet.go    NodeFile: what mamelet observes and does
+//	file_check.go      NodeFile's checks: the fixed list of validators mamelet runs (nginx -t)
+//	file_check_mamelet.go  NodeFile's checks in mamelet: a check group written, checked once, put
+//	                   back if it fails; its record, and what mamelet finishes when it starts again
 //	authkeys.go        the lines of authorized_keys (graph and mamelet read them alike)
 //	user.go            NodeUser: spec, decoding, validation, warnings (graph)
 //	user_plan.go       NodeUser: plan, the users files wait for, users kept
@@ -69,6 +72,10 @@
 // The codes of each kind (its plan notes, graph warnings and policy decisions), and those kept for the
 // kinds that follow, are in one table: reserved, in codes.go. docs/reason-codes.md reserves the same
 // (codes_test.go checks it, and that every code the extension registers is in its kind's ranges).
+//
+// NodeFile's checks have notes of their own (file_plan.go): MAM-PLAN-0230, a write put back because
+// the check of its group failed; 0231, a check mamelet has not finished yet; 0232, one it cannot
+// finish (it cannot put the files back, or lost its record of its checks).
 //
 // NodeFile and NodeArtifact share two notes (pending.go, file_plan.go): MAM-PLAN-0144, the warning of
 // a file written below a directory a user other than root can change, and MAM-PLAN-0218, a file that

@@ -121,11 +121,21 @@ pub fn mamelet(graph: Graph, node: Node, version: String, sha256: String) -> Gra
 ## machine that was never declared by a typo.
 pub type Node(name: String)
 
+## A program mamelet runs to check a file once it is written, before anything reloads or restarts a
+## service with it. The list is fixed, compiled into mamelet: a declaration names one, and mamelet
+## runs that program only (no command of the declaration). `Nginx` runs `nginx -t`.
+pub enum Check {
+  Nginx
+}
+
 ## A file on a node (the linux extension's `NodeFile`): exactly `content` (text, at most 256 KiB) at
 ## the absolute `path`, with `mode` (four octal digits, without the setuid, setgid and sticky bits,
 ## not writable by everyone), `owner` and `group` (names that exist on the node), and the services of
-## `restart` on the node restarted, if they run, after it changes. `file_of` makes one with the
-## defaults, to change with `File(mode: "0640", ..Mamela.file_of(path, content))`.
+## `restart` on the node restarted, if they run, and those of `reload` reloaded, if they are active,
+## after it changes (a service is in one of them). With a `check`, mamelet runs it once the files of
+## the same apply on the node with that check are written; if it fails, it puts them all back as they
+## were, and reloads and restarts nothing. `file_of` makes one with the defaults, to change with
+## `File(check: Some(Mamela.Nginx), reload: ["nginx"], ..Mamela.file_of(path, content))`.
 pub type File(
   path: String,
   content: String,
@@ -133,16 +143,28 @@ pub type File(
   owner: String,
   group: String,
   restart: List[String],
+  check: Option[Check],
+  reload: List[String],
 )
 
-## A file at `path` with `content`, mode "0644", owned by root, that restarts nothing.
+## A file at `path` with `content`, mode "0644", owned by root, that nothing checks, and that reloads
+## and restarts nothing.
 pub fn file_of(path: String, content: String) -> File {
-  File(path:, content:, mode: "0644", owner: "root", group: "root", restart: [])
+  File(
+    path:,
+    content:,
+    mode: "0644",
+    owner: "root",
+    group: "root",
+    restart: [],
+    check: None,
+    reload: [],
+  )
 }
 
 ## Declares that `node` has the file at `path` with exactly `content`, mode "0644", owned by root
-## (`file_with` declares another mode, owner, or services to restart). The plan shows the whole
-## content and asks for an approval; changing it is a new approval. A file that is no longer
+## (`file_with` declares another mode, owner, services to restart or reload, or a check). The plan
+## shows the whole content and asks for an approval; changing it is a new approval. A file that is no longer
 ## declared stays on the node as it is. Mamela never writes through a symbolic link, and refuses
 ## the paths that are not files to write (the kernel's, mamelet's, k3s's, users and sudoers, the
 ## APT sources and keys named `mamela-*`, `.ssh/authorized_keys`). Keep secrets out: the content
@@ -153,12 +175,24 @@ pub fn file(graph: Graph, node: Node, path: String, content: String) -> Graph {
 
 ## Declares the file `f` on `node`.
 pub fn file_with(graph: Graph, node: Node, f: File) -> Graph {
-  node_file(graph, node, f.path, ("content", Text(f.content)), f.mode, f.owner, f.group, f.restart)
+  node_file(
+    graph,
+    node,
+    f.path,
+    ("content", Text(f.content)),
+    f.mode,
+    f.owner,
+    f.group,
+    f.restart,
+    f.check,
+    f.reload,
+  )
 }
 
 ## A file on a node whose content is the file `source` of the declaration's own Pome: a path relative
 ## to the directory of its `Pome.toml`, such as "files/app.service" (not absolute, without `..`, and
-## through no symbolic link). `path`, `mode`, `owner`, `group` and `restart` are as a `File`'s.
+## through no symbolic link). `path`, `mode`, `owner`, `group`, `restart`, `check` and `reload` are as
+## a `File`'s.
 ## Mamela reads the source when it evaluates the declaration, byte for byte (a regular file of UTF-8
 ## text without NUL, at most 256 KiB, nothing trimmed or converted), and the graph has its text as if
 ## it had been written in: the plan, its digest and its approval are the same, and the plan says which
@@ -172,17 +206,28 @@ pub type FileFrom(
   owner: String,
   group: String,
   restart: List[String],
+  check: Option[Check],
+  reload: List[String],
 )
 
 ## A file at `path` whose content is the Pome's file `source`, mode "0644", owned by root, that
-## restarts nothing.
+## nothing checks, and that reloads and restarts nothing.
 pub fn file_from_of(path: String, source: String) -> FileFrom {
-  FileFrom(path:, source:, mode: "0644", owner: "root", group: "root", restart: [])
+  FileFrom(
+    path:,
+    source:,
+    mode: "0644",
+    owner: "root",
+    group: "root",
+    restart: [],
+    check: None,
+    reload: [],
+  )
 }
 
 ## Declares that `node` has the file at `path` with exactly the content of the Pome's file `source`,
-## mode "0644", owned by root (`file_from_with` declares another mode, owner, or services to
-## restart). Everything else is as `file`.
+## mode "0644", owned by root (`file_from_with` declares another mode, owner, services to restart
+## or reload, or a check). Everything else is as `file`.
 pub fn file_from(graph: Graph, node: Node, path: String, source: String) -> Graph {
   file_from_with(graph, node, file_from_of(path, source))
 }
@@ -198,7 +243,16 @@ pub fn file_from_with(graph: Graph, node: Node, f: FileFrom) -> Graph {
     f.owner,
     f.group,
     f.restart,
+    f.check,
+    f.reload,
   )
+}
+
+## The name of a check, as the graph has it.
+fn check_name(c: Check) -> String {
+  c match {
+    Nginx -> "nginx"
+  }
 }
 
 ## A `NodeFile` whose content is `content`: the text itself, or the Pome's file that has it.
@@ -211,11 +265,22 @@ fn node_file(
   owner: String,
   group: String,
   restart: List[String],
+  check: Option[Check],
+  reload: List[String],
 ) -> Graph {
   restarted = if List.is_empty(restart) {
     []
   } else {
     [("restart", Items(restart.map(Text)))]
+  }
+  checked = check match {
+    Some(c) -> [("check", Text(check_name(c)))]
+    None    -> []
+  }
+  reloaded = if List.is_empty(reload) {
+    []
+  } else {
+    [("reload", Items(reload.map(Text)))]
   }
   on_node(
     graph,
@@ -230,7 +295,7 @@ fn node_file(
         ("owner", Text(owner)),
         ("group", Text(group)),
       ],
-      restarted,
+      List.append(restarted, List.append(checked, reloaded)),
     ),
   )
 }

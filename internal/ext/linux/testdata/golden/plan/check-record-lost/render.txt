@@ -1,0 +1,13 @@
+Plan sha256:fccda2ab3fb3
+  revision  sha256:7b57a3cf1ba3
+  observed  2026-11-17T12:01:00Z (snapshot sha256:fa7caf25b052)
+  policy    sha256:b2ad900beffb
+
+= NodeService web/nginx  [in sync]
+= TestVM web  [in sync]  via test
+! NodeFile web/file/etc/nginx/conf.d/site.conf  [blocked]
+    MAM-PLAN-0232 mamelet on web could not read its record of the checks of its writes, and set it aside (linux-checks.json.corrupt in its state directory): whether the check of a write of /etc/nginx/conf.d/site.conf was left unfinished, and the file not put back, is not known
+      hint: run the check on the node by hand (nginx -t) and put back what it does not accept; then remove the file set aside from mamelet's state directory, and plan again
+
+Summary: 1 blocked, 2 in sync.
+Nothing has been changed: a plan only describes.

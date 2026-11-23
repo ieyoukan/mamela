@@ -16,8 +16,10 @@ import (
 const KindFile graph.Kind = "NodeFile"
 
 // FileSpec says a node has a file at Path with exactly Content (text), Mode, Owner and Group, and
-// that the services of Restart are restarted (if they run) after it changes. The resource's name is
-// "<node>/file<path>". The plan shows the whole content; writing it needs an approval.
+// that the services of Restart are restarted (if they run) and those of Reload reloaded (if they are
+// active) after it changes, once the program of Check (one of mamelet's validators: file_check.go)
+// accepts it. The resource's name is "<node>/file<path>". The plan shows the whole content; writing
+// it needs an approval.
 type FileSpec struct {
 	Node    string
 	Path    string
@@ -26,6 +28,12 @@ type FileSpec struct {
 	Owner   string   // a user's name, "root" by default
 	Group   string   // a group's name, "root" by default
 	Restart []string // services on the node, restarted after a change (systemctl try-restart)
+	// Check names the validator mamelet runs once the file is written ("" none: validators): if it
+	// fails, the file is put back as it was, and nothing is reloaded or restarted.
+	Check string
+	// Reload are services on the node, reloaded after a change if they are active (systemctl reload),
+	// none of them in Restart.
+	Reload []string
 }
 
 // Defaults of a file's optional members.
@@ -52,15 +60,19 @@ type wireFile struct {
 	Owner       jsontext.Value `json:"owner"`   // optional
 	Group       jsontext.Value `json:"group"`   // optional
 	Restart     jsontext.Value `json:"restart"` // optional
+	Check       jsontext.Value `json:"check"`   // optional
+	Reload      jsontext.Value `json:"reload"`  // optional
 }
 
 type canonFile struct {
+	Check   string   `json:"check,omitempty"`
 	Content string   `json:"content"`
 	Group   string   `json:"group"`
 	Mode    string   `json:"mode"`
 	Node    string   `json:"node"`
 	Owner   string   `json:"owner"`
 	Path    string   `json:"path"`
+	Reload  []string `json:"reload,omitempty"`
 	Restart []string `json:"restart,omitempty"`
 }
 
@@ -73,7 +85,8 @@ var fileKind = kind{
 		Validate: validateFile,
 		Canonical: func(spec any) any {
 			s := spec.(*FileSpec)
-			return canonFile{Content: s.Content, Group: s.Group, Mode: s.Mode, Node: s.Node, Owner: s.Owner, Path: s.Path, Restart: s.Restart}
+			return canonFile{Check: s.Check, Content: s.Content, Group: s.Group, Mode: s.Mode, Node: s.Node, Owner: s.Owner, Path: s.Path,
+				Reload: s.Reload, Restart: s.Restart}
 		},
 		Node: func(spec any) string { return spec.(*FileSpec).Node },
 		Fields: func(spec any) map[string]string {
@@ -88,6 +101,7 @@ var fileKind = kind{
 	claims:       func(r graph.Resource) (string, string, bool) { f := FileOf(r); return f.Node, f.Path, true },
 	content:      func(r graph.Resource) int { return len(FileOf(r).Content) },
 	warningCodes: []graph.Code{CodeSecret, CodeRestartUndeclared},
+	programs:     validatorPrograms(), // its checks (file_check.go)
 	codes:        filePlanCodes,
 	planner:      filePlanner,
 	ops:          []operation{writeFileOp},
@@ -113,17 +127,31 @@ func decodeFile(d *graph.SpecDecoder) any {
 	mode := d.OptionalString(s.Mode, "mode")
 	owner := d.OptionalString(s.Owner, "owner")
 	group := d.OptionalString(s.Group, "group")
-	var restart []string
+	check := d.OptionalString(s.Check, "check")
+	var restart, reload []string
 	if s.Restart != nil {
 		if string(s.Restart) == "null" || json.Unmarshal(s.Restart, &restart) != nil {
 			d.Invalid(graph.CodeWrongType, "restart", "restart is not a list of service names",
 				`leave the member out (nothing is restarted), or write a list such as ["nginx"]`)
 		}
 	}
+	if s.Reload != nil {
+		if string(s.Reload) == "null" || json.Unmarshal(s.Reload, &reload) != nil {
+			d.Invalid(graph.CodeWrongType, "reload", "reload is not a list of service names",
+				`leave the member out (nothing is reloaded), or write a list such as ["nginx"]`)
+		}
+	}
 	if !d.OK() {
 		return nil
 	}
-	f := &FileSpec{Node: *s.Node, Path: *s.Path, Content: *content, Mode: DefaultMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart}
+	f := &FileSpec{Node: *s.Node, Path: *s.Path, Content: *content, Mode: DefaultMode, Owner: DefaultOwner, Group: DefaultGroup, Restart: restart, Reload: reload}
+	if check != nil {
+		if *check == "" {
+			d.Invalid(graph.CodeInvalidValue, "check", "check is empty", checkHint())
+			return nil
+		}
+		f.Check = *check
+	}
 	if mode != nil {
 		f.Mode = *mode
 	}
@@ -166,18 +194,32 @@ func validateFile(v *graph.Validator, r graph.Resource) {
 	if !ValidAccount(s.Group) {
 		v.Problem(r, graph.CodeInvalidValue, "spec.group", fmt.Sprintf("%q is not a group's name", s.Group), `a group's name, such as "root" or "www-data"`)
 	}
+	validateServices(v, r, "spec.restart", s.Restart)
+	validateServices(v, r, "spec.reload", s.Reload)
+	if why := overlapProblem(s.Restart, s.Reload); why != "" {
+		v.Problem(r, graph.CodeInvalidValue, "spec.reload", why,
+			"name the service in one of them: reload when the service reads its configuration again on a reload (nginx), restart otherwise")
+	}
+	if why := checkProblem(s.Check); why != "" {
+		v.Problem(r, graph.CodeInvalidValue, "spec.check", why, checkHint())
+	}
+}
+
+// validateServices checks the services a file restarts or reloads (field): service names, each once,
+// and not mamelet.
+func validateServices(v *graph.Validator, r graph.Resource, field string, services []string) {
 	seen := map[string]bool{}
-	for _, svc := range s.Restart {
+	for _, svc := range services {
 		unit := strings.TrimSuffix(svc, ".service")
 		switch {
 		case !names.Service(svc):
-			v.Problem(r, graph.CodeInvalidValue, "spec.restart", fmt.Sprintf("%q is not a valid systemd service name", svc),
+			v.Problem(r, graph.CodeInvalidValue, field, fmt.Sprintf("%q is not a valid systemd service name", svc),
 				`write the unit name without ".service", for example "nginx"`)
 		case seen[unit]:
-			v.Problem(r, graph.CodeInvalidValue, "spec.restart", fmt.Sprintf("service %s is named twice", svc), "name each service once")
+			v.Problem(r, graph.CodeInvalidValue, field, fmt.Sprintf("service %s is named twice", svc), "name each service once")
 		case CheckRestart(svc) != "":
-			v.Problem(r, graph.CodeInvalidValue, "spec.restart", CheckRestart(svc),
-				"take mamelet out of restart: mamelet is updated with NodeMamelet (Mamela.mamelet), and reads its configuration when it starts")
+			v.Problem(r, graph.CodeInvalidValue, field, CheckRestart(svc),
+				"take mamelet out of "+strings.TrimPrefix(field, "spec.")+": mamelet is updated with NodeMamelet (Mamela.mamelet), and reads its configuration when it starts")
 		}
 		seen[unit] = true
 	}

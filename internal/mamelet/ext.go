@@ -48,6 +48,21 @@ type Extension struct {
 	// Results are the recorded outcomes of the extension's grants in the revision, in the report's
 	// order for the phase (known: the outcome of an attempt, if there is one).
 	Results func(rev *noderev.Revision, phase Phase, known func(op string, attempt int) (noderev.Result, bool)) []noderev.Result
+	// Recover finishes, from the extension's own record in the state directory, what a change of it
+	// that mamelet stopped in the middle of left half done (mamelet was killed, the node lost power).
+	// It runs at the start of every round, before the revision is fetched and whatever it says (none,
+	// or one that expired while mamelet was down): it only finishes or undoes what the extension began
+	// under a grant, and starts nothing.
+	Recover func(ctx context.Context, s *System)
+}
+
+// recoverExtensions runs each extension's Recover.
+func recoverExtensions(ctx context.Context, s *System) {
+	for _, e := range extensions {
+		if e.Recover != nil {
+			e.Recover(ctx, s)
+		}
+	}
 }
 
 var extensions []Extension

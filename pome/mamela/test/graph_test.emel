@@ -190,6 +190,32 @@ fn a_file_with_its_mode_owner_and_restart() {
 }
 
 @test
+fn an_nginx_site_checked_and_reloaded() {
+  f = Lib.File(
+    check: Some(Lib.Nginx),
+    reload: ["nginx"],
+    ..Lib.file_of("/etc/nginx/conf.d/app.conf", "server {}\n"),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.file_with(app(), f)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/nginx/conf.d/app.conf\",\"spec\":{\"check\":\"nginx\",\"content\":\"server {}\\n\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/nginx/conf.d/app.conf\",\"reload\":[\"nginx\"]}}",
+  )
+}
+
+@test
+fn a_file_from_the_pome_checked_and_reloaded() {
+  f = Lib.FileFrom(
+    check: Some(Lib.Nginx),
+    reload: ["nginx"],
+    ..Lib.file_from_of("/etc/nginx/nginx.conf", "files/nginx.conf"),
+  )
+  g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.file_from_with(app(), f)
+  assert Lib.to_json(g).contains(
+    "{\"kind\":\"NodeFile\",\"name\":\"app-server/file/etc/nginx/nginx.conf\",\"spec\":{\"check\":\"nginx\",\"contentFrom\":\"files/nginx.conf\",\"group\":\"root\",\"mode\":\"0644\",\"node\":\"app-server\",\"owner\":\"root\",\"path\":\"/etc/nginx/nginx.conf\",\"reload\":[\"nginx\"]}}",
+  )
+}
+
+@test
 fn a_user_with_the_defaults() {
   g = Lib.empty() |> machine("app-server", Lib.Dhcp) |> Lib.user(app(), "deploy")
   assert Lib.to_json(g).contains(
