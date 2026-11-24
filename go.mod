@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/aws/aws-sdk-go-v2 v1.48.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.62.0
 )
 
